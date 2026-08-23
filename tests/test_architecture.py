@@ -55,23 +55,17 @@ FORBIDDEN = {
 # collect/listed_companies.py로, terms.py를 core로 옮겼다). 나머지는 단순
 # 배치 문제가 아니라 실제 결합이라 별도 리팩터링이 필요하다. 목록이 조용히
 # 늘지 않도록 아래 stale 테스트가 지킨다.
-KNOWN_DEBT = {
-    # 수집이 기사에 종목을 태깅하려고 analyze 의 추출기를 쓴다. 태깅을 분석 평면으로
-    # 미루면 풀린다.
-    #
-    # 2026-08-17 재확인: `_make_resolver`가 symbol→회사명 조회에 쓰는
-    # `entities.load_table`/`load_us_table`은 fetch(이미 collect/
-    # listed_companies.py로 옮김)뿐 아니라 fuzzy 텍스트매칭용 정제 로직
-    # (parse_us_list/parse_symbol_dir/build_table/build_us_table/
-    # clean_listed_name/_clean_us_name + 관련 정규식 상수 9개, pandas 의존)까지
-    # analyze 쪽에 있다. 이걸 전부 collect로 옮기거나(진짜 도메인 재설계 —
-    # "파싱"과 "추출"의 경계를 다시 그어야 함) resolver를 외부 주입으로
-    # 바꾸려면 유일한 호출부인 `quant/apps/report_cli.py`(작업 금지 대상)를
-    # 고쳐야 한다. 둘 다 이번 상환 범위를 넘는 수술이라 보류.
-    ("quant/collect/sources/__init__.py", "quant.analyze"),
-    # 루프가 Settings 타입을 참조한다. 필요한 값만 주입받으면 풀린다.
-    ("quant/trade/loop.py", "quant.apps.config"),
-}
+KNOWN_DEBT: set[tuple[str, str]] = set()
+# 2026-08-24 부채 완납 — 이 집합은 이제 비어 있고, 계속 비어 있어야 한다.
+#   (지불 기록)
+#   quant/collect/sources/__init__.py → quant.analyze:
+#     symbol→회사명 resolver 를 분석 평면(entities.make_symbol_resolver)이 만들어
+#     호출부(report/apps)가 주입한다 — 수집은 팩토리를 받아 쓸 뿐 종목 사전을
+#     모른다. build_sources 의 죽은 cache_dir 파라미터도 함께 제거.
+#   quant/trade/loop.py → quant.apps.config:
+#     루프가 Settings 에서 실제로 쓰던 것은 raw·poll_seconds·reload_if_changed
+#     셋뿐 — trade/loop.py 의 EngineSettings Protocol 로 구조적 계약만 남기고
+#     임포트를 끊었다. apps.config.Settings 는 코드 변경 없이 이를 만족한다.
 
 # 평면별 금지 외부 라이브러리.
 FORBIDDEN_EXTERNAL = {

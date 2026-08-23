@@ -19,9 +19,9 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
 from quant.trade.approval import STATUS_REJECTED, ApprovalGate, ApprovalRequest
-from quant.apps.config import Settings
 from quant.core import oms
 from quant.trade.control import TradingControl
 from quant.core.ports import Context, EventSink, Notifier, OrderSink, RiskManager, Strategy
@@ -31,6 +31,19 @@ from quant.core.models import (
 from quant.core.portfolio.portfolio import to_krw
 from quant.trade.risk.books import StrategyBooks
 from quant.trade.risk.manager import MARKET_CLOSED_MARKER
+
+class EngineSettings(Protocol):
+    """루프가 설정에게 실제로 요구하는 것 전부 — 부채 상환(2026-08-24)으로
+    `apps.config.Settings` 임포트를 이 구조적 계약으로 바꿨다(거래 평면이
+    조립 평면을 알면 의존 방향이 뒤집힌다, tests/test_architecture.py 의
+    KNOWN_DEBT 였던 엣지). `apps.config.Settings` 는 이 Protocol 을 코드
+    변경 없이 구조적으로 만족한다."""
+
+    raw: dict
+    poll_seconds: float
+
+    def reload_if_changed(self) -> bool: ...
+
 
 logger = logging.getLogger(__name__)
 
@@ -1401,7 +1414,7 @@ async def run_paper_loop(
     ctx: Context,
     risk: RiskManager,
     sinks: EventSink,
-    settings: Settings,
+    settings: EngineSettings,
     notifier: Notifier | None = None,
     control: TradingControl | None = None,
     market_data: object | None = None,

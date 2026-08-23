@@ -71,12 +71,20 @@ def _collect_snapshot(market: str, session, cache_dir: Path, news_since: datetim
     옮긴 것(동작 변화 없음) — open 블록 자체는 회귀 위험을 피하려 손대지
     않고 그대로 남겨 두었다."""
     snap = collect(
-        market, session, build_sources(market, session, cache_dir, news_since=news_since),
+        market, session, build_sources(market, session, news_since=news_since),
     )
     ranking = snap.results.get("toss_rankings")
     if ranking is not None and ranking.ok and ranking.data:
+        # resolver 는 분석 평면에서 만들어 주입한다(부채 상환 2026-08-24 —
+        # 수집이 종목 사전을 직접 만들면 collect → analyze 평면 위반).
+        from quant.analyze.entities import make_symbol_resolver
+
         seeded = collect(
-            market, session, build_seeded_source(market, ranking.data, cache_dir),
+            market, session,
+            build_seeded_source(
+                market, ranking.data,
+                resolver_factory=lambda: make_symbol_resolver(market, cache_dir),
+            ),
         )
         snap = replace(snap, results={**snap.results, **seeded.results})
     return snap

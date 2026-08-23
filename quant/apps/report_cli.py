@@ -29,6 +29,7 @@ from quant.analyze.telegram_view import build_telegram_view
 from quant.core.report_clock import KST, publish_at
 from quant.collect import collector
 from quant.collect.snapshot import collect, load_snapshot, save_snapshot
+from quant.analyze.entities import make_symbol_resolver
 from quant.collect.sources import build_seeded_source, build_sources
 from quant.collect.sources.dart import append_ledger as append_disclosures
 from quant.collect.sources.dart import fetch_disclosures
@@ -615,7 +616,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"뉴스 표본 시작: {news_since:%Y-%m-%d %H:%M %Z}")
         snap = collect(
             a.market, session,
-            build_sources(a.market, session, cache_dir, news_since=news_since),
+            build_sources(a.market, session, news_since=news_since),
         )
         # 2차 배치: 랭킹 시드 뉴스는 toss_rankings 결과에 의존한다. 1차와 같이
         # 돌리면 랭킹 API를 병렬로 두 번 불러 레이트 리밋에 걸린다.
@@ -623,7 +624,10 @@ def main(argv: list[str] | None = None) -> int:
         if ranking is not None and ranking.ok and ranking.data:
             seeded = collect(
                 a.market, session,
-                build_seeded_source(a.market, ranking.data, cache_dir),
+                build_seeded_source(
+                    a.market, ranking.data,
+                    resolver_factory=lambda: make_symbol_resolver(a.market, cache_dir),
+                ),
             )
             snap = replace(snap, results={**snap.results, **seeded.results})
         print(f"스냅샷 {save_snapshot(snap, snap_root)}")

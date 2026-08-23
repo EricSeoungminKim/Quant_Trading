@@ -400,3 +400,19 @@ def _preferred_share_names(base: dict[str, str]) -> dict[str, str]:
         # 대상이 아닌데 끝자리가 0이라 그냥 두면 걸려든다.
         if _CODE.match(code) and code.endswith("0") and code[:-1] + "5" not in base
     }
+
+
+def make_symbol_resolver(market_code: str, cache_dir: "Path | None"):
+    """symbol -> 회사명 resolver. 부채 상환(2026-08-24)으로 collect 의
+    `_make_resolver`가 여기로 왔다 — 종목 사전(fuzzy 정제 로직 포함)은 분석
+    평면의 소유물이고, 수집은 이 함수를 **주입받아** 쓴다(collect → analyze
+    임포트 절단, tests/test_architecture.py KNOWN_DEBT 였던 엣지).
+
+    cache_dir 이 없으면(테스트·기존 호환) 이름 해석 없이 None 만 돌려준다.
+    테이블 로딩은 이 함수를 호출한 시점에 일어난다 — 호출부(collect 의 소스
+    람다)가 스레드풀 안에서 부르므로 laziness 계약은 그대로다."""
+    if cache_dir is None:
+        return lambda symbol: None
+    table = load_us_table(cache_dir) if market_code == "US" else load_table(cache_dir)
+    lookup = {code: name for name, code in table}
+    return lambda symbol: lookup.get(symbol)

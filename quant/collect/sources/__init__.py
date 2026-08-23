@@ -8,10 +8,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from pathlib import Path
 from typing import Callable
 
-from quant.analyze import entities
 from quant.collect.sources import calendar as calendar_src
 from quant.collect.sources import (
     after_hours, feeds, fred, kr_flow, market, naver_flow, seeded_news, sentiment,
@@ -21,24 +19,8 @@ from quant.collect.sources import (
 Source = tuple[str, Callable[[], dict]]
 
 
-def _make_resolver(market_code: str, cache_dir: Path | None) -> Callable[[str], str | None]:
-    """symbol -> 회사명. cache_dir이 없으면(기존 호출부·테스트 호환) 이름 해석
-    없이 symbol 그대로 쓰도록 None만 돌려준다. 종목 사전 로딩은 이 소스가
-    실제로 실행될 때(스레드풀 안) 한 번만 일어나야 하므로 즉시 읽지 않고
-    클로저로 감싼다."""
-    if cache_dir is None:
-        return lambda symbol: None
-    table = (
-        entities.load_us_table(cache_dir)
-        if market_code == "US"
-        else entities.load_table(cache_dir)
-    )
-    lookup = {code: name for name, code in table}
-    return lambda symbol: lookup.get(symbol)
-
-
 def build_sources(
-    market_code: str, session_date: date, cache_dir: Path | None = None,
+    market_code: str, session_date: date,
     news_since: datetime | None = None,
 ) -> dict[str, Source]:
     """`news_since`: 뉴스 표본의 시작 시각(직전 리포트 생성시각). None 이면 피드가
@@ -102,8 +84,15 @@ def build_sources(
     return common
 
 
+# resolver 팩토리 타입 — symbol→회사명 함수를 **나중에**(스레드풀 안에서) 만들어
+# 돌려주는 무인자 호출가능객체. 종목 사전은 분석 평면 소유라 수집이 직접 만들지
+# 않고 주입받는다(부채 상환 2026-08-24 — 예전엔 quant.analyze.entities 를 여기서
+# 임포트했다). None 이면 이름 해석 없이 동작한다(기존 cache_dir=None 과 동일).
+ResolverFactory = Callable[[], Callable[[str], "str | None"]]
+
+
 def build_seeded_source(
-    market_code: str, rankings: dict, cache_dir: Path | None = None
+    market_code: str, rankings: dict, resolver_factory: "ResolverFactory | None" = None,
 ) -> dict[str, Source]:
     """랭킹 시드 뉴스 — **1차 수집이 끝난 뒤 2차로 돈다.**
 
@@ -115,7 +104,9 @@ def build_seeded_source(
         "seeded_news": (
             "https://news.google.com/rss/search",
             lambda: seeded_news.fetch_seeded_news(
-                market_code, _make_resolver(market_code, cache_dir), rankings
+                market_code,
+                resolver_factory() if resolver_factory else (lambda symbol: None),
+                rankings,
             ),
         ),
     }
