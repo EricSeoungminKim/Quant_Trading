@@ -167,7 +167,19 @@ def build_market_data(client, clock, *, interval: str, symbols: list[str],
         history = HistoryDataFeed(symbols)
         # 가용성 판정은 시계와 무관해야 한다. history()는 set_now() 전에는 항상
         # 빈 프레임을 주므로 프로브로 쓰면 데이터가 있어도 "없음"이 된다.
-        loaded = [s for s in symbols if len(history.bar_closes(s, interval)) > 0]
+        #
+        # 심볼별 격리(2026-08-24): 069500 의 tz 혼재 파티션 하나가 여기서
+        # TypeError 를 던져 **27개 심볼 전체의** 폴백 라우트가 8-19부터 꺼져
+        # 있었다. 로더가 tz 를 통일해 원인 자체는 고쳤지만, 다음 번 "이상한
+        # 파티션 하나"가 또 전체를 끄지 못하게 프로브를 심볼 단위로 가둔다.
+        loaded = []
+        for s in symbols:
+            try:
+                if len(history.bar_closes(s, interval)) > 0:
+                    loaded.append(s)
+            except Exception as e:  # noqa: BLE001 — 한 심볼의 불량이 전체 폴백을 죽이면 안 된다
+                logger.warning("과거 데이터 프로브 실패 — %s 제외: %s: %s",
+                               s, type(e).__name__, e)
         if loaded:
             routes.append(
                 SourceRoute(

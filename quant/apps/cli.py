@@ -658,6 +658,162 @@ def cmd_forensics(args: argparse.Namespace) -> None:
     print(forensics_text(rows, skipped, title=title, rules_result=rules_result))
 
 
+def cmd_equity_snapshot(args: argparse.Namespace) -> None:
+    """자본 곡선 1점 기록 — 세션 마감 후 총자산·전략별 장부 평가액(KRW)을
+    `data/ledger/equity_curve.jsonl` 에 덧붙인다 (gs-quant 대조 도입, 2026-08-24).
+
+    거래 원장(bps)은 거래의 질문에 답하고, 이 곡선은 자본의 질문(변동성·샤프·
+    MDD·CAGR — `cli performance`)에 답한다. 둘은 다른 데이터다 — 곡선이 안
+    쌓이면 성과 분석은 영원히 거래 단위에 갇힌다.
+
+    시세는 session-pnl 과 같은 경로(Toss /prices 배치). **시세가 없는 종목은
+    평균단가로 저하하고 그 사실을 기록한다**(marked/degraded 카운트) — 없는
+    시세를 지어내지 않되, 한 종목 시세 실패가 그날 곡선 점 자체를 잃게 하지도
+    않는다(빠진 날은 나중에 복원할 수 없다).
+
+    같은 (date, market) 은 마지막 기록이 이긴다 — 재실행은 덮어쓰기가 아니라
+    append 이고, 읽는 쪽(`cli performance`)이 마지막 것만 쓴다(원장 관례)."""
+    import json as _json
+    import sys
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.core.models import market_of_symbol
+
+    load_settings()
+    market = args.market
+    tz = ZoneInfo("Asia/Seoul") if market == "KR" else ZoneInfo("America/New_York")
+    today = _dt.now(tz).date().isoformat()
+
+    state = REPO_ROOT / "data" / "state"
+    try:
+        portfolio = _json.loads((state / "portfolio.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        print(f"자본 스냅샷 불가 — portfolio.json 읽기 실패: {type(e).__name__}: {e}")
+        raise SystemExit(1)
+
+    positions = {
+        sym: p for sym, p in (portfolio.get("positions") or {}).items()
+        if float(p.get("qty", 0) or 0) > 0
+    }
+
+    quotes: dict[str, float] = {}
+    if positions:
+        from quant.apps.assembly import MissingCredentials, build_toss_client
+        try:
+            rows = build_toss_client().prices(list(positions))
+            for row in rows or []:
+                if not isinstance(row, dict) or not row.get("symbol"):
+                    continue
+                price = row.get("price") or row.get("lastPrice") or row.get("close")
+                try:
+                    if price is not None and float(price) > 0:
+                        quotes[row["symbol"]] = float(price)
+                except (TypeError, ValueError):
+                    continue
+        except (MissingCredentials, Exception) as e:  # noqa: BLE001 — 시세 실패가 곡선 점을 잃게 하지 않는다(저하 기록)
+            print(f"시세 조회 실패 — 전 종목 평균단가 저하: {type(e).__name__}: {e}", file=sys.stderr)
+
+    # 환율: 전략별 장부와 같은 소스(FxProvider). 실패 시 보수 고정값 — 장부 관례.
+    from quant.core.fx import FixedFxProvider
+    fx = FixedFxProvider()
+    from quant.core.portfolio.portfolio import to_krw
+
+    degraded = []
+    total_krw = float(portfolio.get("cash", 0.0))
+    for sym, p in positions.items():
+        qty = float(p.get("qty", 0) or 0)
+        price = quotes.get(sym)
+        if price is None:
+            price = float(p.get("avg_cost", 0) or 0)
+            degraded.append(sym)
+        total_krw += to_krw(qty * price, market_of_symbol(sym), fx)
+
+    # 전략별 장부 평가액 — books 의 equity_krw 와 같은 산식(현금 + 마크 평가).
+    books_equity: dict[str, float] = {}
+    try:
+        books = _json.loads((state / "strategy_books.json").read_text(encoding="utf-8"))
+        for sid, book in (books.get("books") or {}).items():
+            eq = float(book.get("cash_krw", 0.0))
+            for sym, pos in (book.get("positions") or {}).items():
+                qty = float(pos.get("qty", 0) or 0)
+                if qty <= 0:
+                    continue
+                price = quotes.get(sym) or float(pos.get("avg_cost", 0) or 0)
+                eq += to_krw(qty * price, pos.get("market") or market_of_symbol(sym), fx)
+            books_equity[sid] = round(eq, 2)
+    except (OSError, ValueError):
+        pass  # 장부 없음(shared 모드) — 총자산만 기록
+
+    row = {
+        "date": today,
+        "market": market,
+        "total_krw": round(total_krw, 2),
+        "books": books_equity,
+        "marked": len(quotes),
+        "degraded": degraded,
+        "recorded_at": _dt.now(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds"),
+    }
+    out = REPO_ROOT / "data" / "ledger" / "equity_curve.jsonl"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("a", encoding="utf-8") as f:
+        f.write(_json.dumps(row, ensure_ascii=False) + "\n")
+    print(f"자본 곡선 기록: {today} {market} 총 {total_krw:,.0f}원 "
+          f"(마크 {len(quotes)} / 저하 {len(degraded)}) 전략 장부 {len(books_equity)}개")
+
+
+def cmd_performance(args: argparse.Namespace) -> None:
+    """자본 곡선 → 성과 요약 (gs-quant 의 econometrics 상당, `core/timeseries`).
+
+    같은 (date, market) 중복은 마지막 기록만 쓴다. 점 5개 미만이면 곡선별로
+    "표본 부족"을 출력한다 — 이 숫자로 아무것도 판단하지 마라."""
+    import json as _json
+    from quant.adapters.env import REPO_ROOT
+    from quant.core.timeseries import performance_summary
+
+    path = REPO_ROOT / "data" / "ledger" / "equity_curve.jsonl"
+    if not path.exists():
+        print("자본 곡선 원장 없음 — `cli equity-snapshot` 이 아직 안 돌았다")
+        return
+
+    latest: dict[tuple, dict] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = _json.loads(line)
+        except ValueError:
+            continue
+        latest[(r.get("date"), r.get("market"))] = r
+    rows = sorted(latest.values(), key=lambda r: r["date"])
+
+    def _curve(getter, name):
+        vals = []
+        for r in rows:
+            v = getter(r)
+            if v is not None and v > 0:
+                vals.append(float(v))
+        s = performance_summary(vals)
+        if s["n_points"] < 5:
+            print(f"[{name}] 점 {s['n_points']}개 — 표본 부족(5 미만), 판단 금지")
+            return
+        mdd = s["max_drawdown"]
+        sharpe = s["sharpe_rf0"]
+        vol = s["volatility"]
+        print(f"[{name}] 점 {s['n_points']}개 · 누적 {s['total_return']*100:+.2f}% · "
+              f"MDD {mdd*100:.1f}% · 변동성(연) {vol*100:.1f}% · "
+              f"샤프(rf=0) {sharpe:+.2f}" if sharpe is not None else
+              f"[{name}] 점 {s['n_points']}개 · 누적 {s['total_return']*100:+.2f}% · 샤프 계산 불가")
+
+    _curve(lambda r: r.get("total_krw"), "총자산")
+    sids = sorted({sid for r in rows for sid in (r.get("books") or {})})
+    for sid in sids:
+        _curve(lambda r, s=sid: (r.get("books") or {}).get(s), sid)
+    print("\n※ 샤프는 무위험 이자율 0 가정 — 과대평가 방향. MDD 를 수익률보다 먼저 보라.")
+
+
 def cmd_experiments(args: argparse.Namespace) -> None:
     """자동 판정 — "바꿨다 → 쌓인다 → 판정이 온다"의 마지막 칸 (2026-08-24).
 
@@ -2074,6 +2230,13 @@ def main() -> None:
     p_scoreboard = sub.add_parser("scoreboard", help="누적 거래 원장 기반 전략별·종목별 성적표 (승률/payoff/bps)")
     p_scoreboard.add_argument("--days", type=int, default=None, help="최근 N일만 (기본: 전체 누적)")
     p_scoreboard.set_defaults(func=cmd_scoreboard)
+
+    p_eq = sub.add_parser("equity-snapshot", help="자본 곡선 1점 기록 — 세션 마감 후 총자산·전략별 장부 평가액(KRW)")
+    p_eq.add_argument("--market", required=True, choices=["KR", "US"])
+    p_eq.set_defaults(func=cmd_equity_snapshot)
+
+    p_perf = sub.add_parser("performance", help="자본 곡선 성과 — CAGR/변동성/샤프(rf=0)/MDD (gs-quant econometrics 상당)")
+    p_perf.set_defaults(func=cmd_performance)
 
     p_experiments = sub.add_parser("experiments", help="자동 판정 — 파라미터 변경 감지 + 이중차분 효과 판정 + 전략 사망 경보 (판정 없으면 무출력)")
     p_experiments.add_argument("--verbose", action="store_true", help="지문/대기 상태를 stderr 로")

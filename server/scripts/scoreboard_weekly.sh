@@ -29,3 +29,8 @@ ${ALL:-누적 스코어보드 생성 실패}"
 # 실패해도 스코어보드 발송은 이미 끝났으므로 영향이 없다 — 별도 메시지로 보낸다.
 FORENSICS="$(timeout 180 .venv/bin/python -m quant.apps.cli forensics 2>/dev/null)"
 tg "${FORENSICS:-거래 부검 생성 실패 — data/scoreboard.log 확인}"
+
+# 자본 곡선 성과(2026-08-24, gs-quant 대조 도입) — 거래 단위(bps)가 아니라
+# 자본 단위(변동성·샤프·MDD). 곡선 점이 5개 미만이면 "표본 부족"이 그대로 간다.
+PERF="$(timeout 60 .venv/bin/python -m quant.apps.cli performance 2>/dev/null)"
+tg "${PERF:-자본 곡선 성과 생성 실패}"

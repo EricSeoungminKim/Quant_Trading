@@ -14,6 +14,7 @@ docs/data-availability.md) — 예컨대 15분봉만 있는데 5분봉을 요청
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -21,6 +22,8 @@ import pandas as pd
 
 from quant.adapters.data.resample import resample_1m
 from quant.core.models import Quote
+
+logger = logging.getLogger(__name__)
 
 _COLUMNS = ["open", "high", "low", "close", "volume"]
 
@@ -85,7 +88,28 @@ class HistoryDataFeed:
         통째로 불가능했고, TQQQ/SQQQ 는 빈 파일이 안 쓰는 간격에 있어 우연히
         피하고 있었다.
         """
-        frames = [d for d in (pd.read_parquet(p) for p in parts) if not d.empty]
+        frames = []
+        for p in parts:
+            d = pd.read_parquet(p)
+            if d.empty:
+                continue
+            # tz 통일(2026-08-24 실측 결함): 069500·122630 의 1분봉이 5~7월은
+            # UTC+09:00, 8월은 UTC 로 저장돼 있었다(수집기 세대 교체의 흔적).
+            # tz-aware 끼리라도 tz 가 다르면 concat 인덱스가 object 로 떨어지고
+            # resample 이 TypeError 로 죽는다 — 그 예외가 조립부에서 **심볼
+            # 하나 때문에 폴백 라우트 전체를** 꺼버렸다(8-19부터 재시작마다
+            # "과거 데이터 폴백 라우트 비활성"). 같은 순간의 다른 표기이므로
+            # UTC 변환은 데이터 조작이 아니다.
+            #
+            # tz 가 아예 없는 파티션은 **버린다** — 그 벽시계가 어느 존인지 알
+            # 수 없고, 9시간을 추측해 붙이면 그게 조작이다. 조용히 버리지 않고
+            # 로그를 남긴다(조용한 소실 금지).
+            if isinstance(d.index, pd.DatetimeIndex) and d.index.tz is not None:
+                d.index = d.index.tz_convert("UTC")
+            else:
+                logger.warning("tz 없는 파티션 버림(존 추측 금지): %s (%d행)", p, len(d))
+                continue
+            frames.append(d)
         if not frames:
             return pd.DataFrame(columns=_COLUMNS)
         df = pd.concat(frames)
