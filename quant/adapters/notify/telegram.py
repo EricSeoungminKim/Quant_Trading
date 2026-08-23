@@ -60,11 +60,23 @@ class TelegramNotifier:
         if len(text) > _MAX_LEN:
             text = text[: _MAX_LEN - 1] + "…"
         try:
-            resp = httpx.post(
-                _SEND_URL.format(token=self.token),
-                json={"chat_id": self.chat_id, "text": text},
-                timeout=3.0,
-            )
+            try:
+                resp = httpx.post(
+                    _SEND_URL.format(token=self.token),
+                    json={"chat_id": self.chat_id, "text": text},
+                    timeout=3.0,
+                )
+            except httpx.TimeoutException:
+                # 타임아웃은 대부분 일시적이다 — **딱 1회** 즉시 재시도(2026-08-24,
+                # 8-21 포지션 현황이 ReadTimeout 한 번에 영구 유실된 실측).
+                # 무한 재시도는 금지(아래 뮤트 회로차단기가 폭주 방지 담당이고,
+                # 이 재시도는 그 계약을 흔들지 않는다). 4xx 등 다른 예외는
+                # 재시도해도 같은 답이라 재시도하지 않는다.
+                resp = httpx.post(
+                    _SEND_URL.format(token=self.token),
+                    json={"chat_id": self.chat_id, "text": text},
+                    timeout=3.0,
+                )
             resp.raise_for_status()
             self._consecutive_failures = 0
             self._record(text, ok=True)
