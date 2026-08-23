@@ -1,0 +1,1064 @@
+
+
+
+
+
+
+
+
+<head>	
+	<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" /> 
+	<title>메인 | 자본시장통계, FreeSIS</title>
+  
+	<!-- <script type="text/javascript" src="/resources/stat/js/popup.js"></script> -->
+	<!-- <script src="http://www.kofia.or.kr/index/freesis.do" type="text/javascript"></script> -->
+	<script src="https://www.kofia.or.kr/index/freesis.do" type="text/javascript"></script>
+	<link rel="stylesheet" href="/resources/stat/css/style.css" type="text/css" />
+	<script type="text/javascript" src="/resources/stat/js/jquery-1.7.2.min.js" ></script>
+	<!--  -->
+	<script type="text/javascript" src="/resources/stat/js/jquery.easing.1.3.min.js"></script>
+	<script type="text/javascript" src="/resources/stat/js/jquery.carouFredSel-6.2.0-packed.js"></script>
+	<script type="text/javascript" src="/resources/stat/js/menu.js"></script>
+	<script type="text/javascript" src="/resources/stat/js/freesis.js"></script> 
+	<script type="text/javascript" src="/resources/stat/js/AC_OETags.js"></script> 
+    
+	<script type="text/javascript">
+	//=======================================================
+	//전역변수
+	//=======================================================
+
+	/* var c_tab_val = "1"; */
+	/* var r_tab_val = "1";   */ 
+	
+	/* var userGb = "N"; */
+	/* var appPersonGb  = "";  //승인자 미승인자 여부 */
+	
+	/* var serverUrl = "freesis.kofia.or.kr"; */
+	
+	/* var center_list_val = "1"; */
+	/* var right_list_val = "1"; */
+
+	// chart 
+	/* var labelArr = new Array(); */
+	
+	/* var tmpv2KospiArr = new Array();
+	var tmpv3TosaArr = new Array();
+	var tmpv4SinArr = new Array();
+	var tmpv7FundArr = new Array();
+	
+	var tmpv5CbfArr = new Array();
+	var tmpv6tTbfArr = new Array();
+	var tmpv9BondArr = new Array();	
+	var vMainChart; */
+
+	
+	//***키워드 검색 팝업 호출
+	function clickSearch(){
+		var keyword = document.getElementById("sch").value;
+		$("#keyword").val(keyword);	
+		
+		var frmPop = document.freesisFrm;
+		var pop_title = "popupView";
+		
+		var popupWidth = "1015";
+		var popupHeight = "610";
+		var popupX = (window.screen.width/2)-(popupWidth/2);
+		var popupY = (window.screen.height/2)-(popupHeight/2);
+		
+		var option = "width=" + popupWidth + ",height=" + popupHeight;
+		option += ",left=" + popupX + ",top=" + popupY;
+		option += ",menubar=no";
+		option += ",toolbar=no";
+		option += ",location=no";
+		option += ",scroll=yes";
+		option += ",resizable =no";
+		
+		window.open("", pop_title, option);
+		
+		frmPop.action = "/keywordSearch/keywordSearch.do";
+		frmPop.target = pop_title;
+		frmPop.submit();
+	}
+
+	//***사이트맵 팝업 호출
+	function clickSiteMap(){
+		var frmPop = document.freesisFrm;
+		var pop_title = "popupView";
+		
+		var popupWidth = "1015";
+		var popupHeight = "610";
+		var popupX = (window.screen.width/2)-(popupWidth/2);
+		var popupY = (window.screen.height/2)-(popupHeight/2);
+		
+		var option = "width=" + popupWidth + ",height=" + popupHeight;
+		option += ",left=" + popupX + ",top=" + popupY;
+		option += ",menubar=no";
+		option += ",toolbar=no";
+		option += ",location=no";
+		option += ",scroll=yes";
+		option += ",scrollbars=yes";
+		option += ",resizable =no";
+		
+		window.name = "freesisPopup"
+		window.open("", pop_title, option);
+		
+		frmPop.action = "/stats/siteMap.do";
+		frmPop.target = pop_title;
+		frmPop.submit();
+	}
+
+	//***공표일정 팝업 호출
+	function clickScheduleMap(){
+		var frmPop = document.freesisFrm;
+		var pop_title = "popupView2";
+		
+		var popupWidth = "1015";
+		var popupHeight = "610";
+		var popupX = (window.screen.width/2)-(popupWidth/2);
+		var popupY = (window.screen.height/2)-(popupHeight/2);
+		
+		var option = "width=" + popupWidth + ",height=" + popupHeight;
+		option += ",left=" + popupX + ",top=" + popupY;
+		option += ",menubar=no";
+		option += ",toolbar=no";
+		option += ",location=no";
+		option += ",scroll=yes";
+		option += ",scrollbars=yes";
+		option += ",resizable =no";
+		
+		window.name = "freesisPopup2"
+		window.open("", pop_title, option);
+		
+		frmPop.action = "/stats/scheduleMap.do";
+		frmPop.target = pop_title;
+		frmPop.submit();
+	}
+	
+	var getCookie = function(c_name){
+		var i,x,y,ARRcookies=document.cookie.split(";");
+
+		for (i=0;i<ARRcookies.length;i++){
+			x=ARRcookies[i].substr(0,ARRcookies[i].indexOf("="));
+			y=ARRcookies[i].substr(ARRcookies[i].indexOf("=")+1);
+			x=x.replace(/^\s+|\s+$/g,"");
+
+			if (x==c_name){
+				return unescape(y);
+			}
+		}
+	}
+
+	/* //TOP 메뉴 클릭 처리
+	function popupClick(key){
+
+		var boolen = popupContent(key, "");
+
+		if(boolen == true){
+
+			document.getElementById("popFlash").style.display="inline";
+
+		}
+
+	} */
+
+	
+
+
+	/*
+
+	 * 팝업에서 사용하는 function
+
+	 */
+
+	 /* //팝업 메뉴 클릭
+
+	 function clickPopupMenu(value){
+
+	 	goPage(value, "");
+
+	 } */
+
+	 
+
+	 //팝업 서비스 클릭
+
+	 /* function clickPopupService(parentDivId, serviceId){
+
+	 	goPage(parentDivId, serviceId)
+
+	 } */
+
+	 
+	//***지수 항목 클릭
+	function clickJisuMenu(id){
+		var OBJ = setJisuId("jisu", id);
+		goPage(OBJ.PARENTDVIID, OBJ.SERVICEID);	
+
+	}
+
+	
+	/* function viewBoardPop(a,boardid,statementid) {
+		
+		var url = '/stat/boardDetail.do?boardId='+boardid+'&statementId='+statementid;
+		//window.open(url,'boardPop','width=1030,height=600');
+		
+	} */
+	
+	// ***통계속보  more
+	function moreClickBoard() {
+		
+		var url = '/stat/FreeSIS.do?parentDivId=MSIS06000000000000&divisionId=MSIS06100000000000';
+		location.href = url;
+		
+	}	
+		
+	// ***자주찾는통계 more
+	function moreClickFavorite() {
+		
+		var url = '/stat/FreeSIS.do?parentDivId=MSIS06000000000000&divisionId=MSIS06060000000000';
+		location.href = url;
+		
+	}		
+	
+	// ***통계속보 상세 조회 이동
+	function viewBoardPop1(a,boardid,statementid) {
+		var url = '/stat/FreeSIS.do?parentDivId=MSIS06000000000000&divisionId=MSIS06100000000000&boardId='+boardid+'&statementId='+statementid+'&mainGbn=Y';
+		location.href = url;
+	}	
+	
+
+	// 게시물 조회 
+	/* function viewBoard( divId, boardId, statementId ){	
+
+		var OBJ = setBoardId(divId);
+
+		$("#parentDivId").val(OBJ.PARENTDVIID);
+		$("#serviceId").val(OBJ.SERVICEID);
+		$("#boardId").val(boardId);
+		$("#statementId").val(statementId);	
+
+		document.getElementById("freesisFrm").action = "/resources/FreeSIS.do";
+		document.getElementById("freesisFrm").submit();
+
+	} */
+
+	// ***자주찾는통계 이동
+	function viewBoard2( id_1, id_2, id_3 ){
+
+		var topParentDivId = id_1;
+		var parentDivId    = id_2;
+		var serviceId      = id_3; 
+		//펀드일경우
+		if(parentDivId.substring(0,5) == "MSIS4"){
+			parentDivId = topParentDivId;
+		}
+
+		goPage(parentDivId, serviceId);
+	}
+	
+
+	// ***유관기관바로가기
+	function selectGo(){
+		var url = $("#selectSite").val();
+
+		if(url != ""){
+			top.location = url;
+		}
+	}
+
+	// ***family Site 이동
+	function selectGo1(){
+		var url = $("#selectSite1").val();
+		if(url != ""){
+			top.location = url;
+		}
+	}
+
+	
+
+	/*
+	 * 	IP 주소 호출
+	 */
+
+	/* function getIpAddress(){
+		return ipAddress;
+	} */
+
+
+
+	/* 팝업창 */
+	function Pop(){	
+		if(getCookie("freesisPop1") == "" || getCookie("freesisPop1") == null){
+			window.open("pop.html", "_new", "scrollbars=no");
+		}
+	}
+	
+	/**
+
+		* Time 스트링을 Date 객체로 변환
+
+		* parameter time: Time 형식의 String
+
+		* return : Date object
+
+		*/
+
+		function toTimeObject(time) { //parseTime(time)
+
+		var year  = time.substr(0,4);
+
+		var month = time.substr(4,2) - 1; // 1월=0,12월=11
+
+		var day   = time.substr(6,2);
+
+		var hour  = time.substr(8,2);
+
+		var min   = time.substr(10,2);
+
+		 
+
+		return new Date(year,month,day,hour,min);
+
+		}
+
+		 
+
+		/**
+
+		* Time이 현재시각 이후인지 체크
+
+		* parameter time: Time 형식의 String
+
+		* return : true/false
+
+		*/
+
+		function isFutureTime(time) {
+
+		return (toTimeObject(time) > new Date());
+
+		}
+
+		 
+
+		/**
+
+		* Time이 현재시각 이전인지 체크
+
+		* parameter time: Time 형식의 String
+
+		* return : true/false
+
+		*/
+
+		function isPastTime(time) {
+
+		return (toTimeObject(time) < new Date());
+
+		}	
+		
+		function openPopup(stime, etime, wname, wurl, wsize, hsize, lpos, tpos){
+	
+		if(isPastTime(stime) && isFutureTime(etime)){
+		
+			window.open(wurl, wname, 'width='+ wsize +', height='+hsize+',top='+tpos+',left='+lpos);
+		
+		}
+	
+	}	
+	
+	/* 팝업창 */
+
+	function openPopInit(){	
+
+        //window.open("http://www.kofia.or.kr/kofiastop.html", "", "left=700, top=300 ,width=465, height=485, resizable=no, scrollbars=no, status=no;");
+		openPopup( "202406100900", "202406151200", "freesis", "https://www.kofia.or.kr/kofiastop.html", 465, 485, 700, 300);
+
+	}
+	</script>
+	
+</head> 
+
+<body onload=openPopInit();>
+
+<form id="freesisFrm" name="freesisFrm" method="post" action="">
+	<input type="hidden" id="parentDivId" name="parentDivId" value=""/>
+	<input type="hidden" id="serviceId" name="serviceId" value=""/>
+	<input type="hidden" id="boardId" name="boardId" value=""/>
+	<input type="hidden" id="statementId" name="statementId" value=""/>
+	<input type="hidden" id="keyword" name="keyword" value=""/>
+</form>
+	<!-- skip navigation -->
+	<div id="skipnavigation">
+		<ul>
+			<li><a href="#gnb">메뉴바로가기</a></li>
+			<li><a href="#main-container">본문바로가기</a></li>
+		</ul>
+	</div>
+	<!--//skip navigation -->
+	<div id="wrap">
+		<!--header-->
+		<div id="header">
+			<h1><a href="#" onclick="clickTopMenu('goPage','home');"><img src="/resources/stat/img/main/logo.gif" alt="금융투자협회 Korea Financal Investment Association" /></a></h1>
+			<div class="util">
+				<ul>
+					<li><a href="#;" onclick="clickTopMenu('goPage','home');"><img src="/resources/stat/img/main/util-01.gif" alt="HOME" /></a></li><!-- HOME -->
+
+					<li><a href="#;" onclick="clickTopMenu('freesis.kofia.or.kr','login');"><img src="/resources/stat/img/main/util-02.gif" alt="로그인" /></a></li><!-- 로그인 -->
+					<li><a href="#" onclick="clickSiteMap();"><img src="/resources/stat/img/main/util-04.gif" alt="사이트맵" /></a></li><!-- 사이트맵 -->
+					<li><a href="#" onclick="clickScheduleMap();"><img src="/resources/stat/img/main/util-11.gif" alt="통계공표일정" /></a></li><!-- 통계공표일정 -->
+					<li><a href="#" onclick="clickTopMenu('goPage','service');"><img src="/resources/stat/img/main/util-05.gif" alt="부가서비스" /></a></li><!-- 부가서비스 -->
+					<li><a href="#" onclick="clickTopMenu('goPage','statDic');"><img src="/resources/stat/img/main/util-06.gif" alt="통계용어사전" /></a></li><!-- 통계용어사전 -->
+
+					<li><a href="#;" onclick="clickTopMenu('freesis.kofia.or.kr','engStat');"><img src="/resources/stat/img/main/util-07.gif" alt="ENGLISH" /></a></li><!-- 영문통계 -->
+				</ul>			
+			</div>
+			<div id="gnb">
+				<div id="TopMenuSub">
+					<ul>
+						<li class="menu1"><a href="/stat/FreeSIS.do?parentDivId=MSIS10000000000000"><img src="/resources/stat/img/main/gnb01.gif" alt="주식" /></a>
+							<div class="TopSubMenu" >
+								<ul class="depth-01">
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS10000000000000&amp;serviceId=STATSCU0100000060"><img src="/resources/stat/img/main/sub0101.gif" alt="증시자금추이" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS10000000000000&amp;serviceId=STATSCU0100000020"><img src="/resources/stat/img/main/sub0102.gif" alt="유가증권시장" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS10000000000000&amp;serviceId=STATSCU0100000030"><img src="/resources/stat/img/main/sub0103.gif" alt="코스닥시장" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS10000000000000&amp;serviceId=STATSCU0100000070"><img src="/resources/stat/img/main/sub0104.gif" alt="신용공여 잔고 추이" /></a></li>
+									<!--<li><a href="/stat/FreeSIS.do?parentDivId=MSIS10000000000000&amp;serviceId=STATFBD0100000010"><img src="/resources/stat/img/main/sub0105.gif" alt="K-OTC시장 현황" /></a></li>-->
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS10000000000000&amp;serviceId=STATSCU0100000130"><img src="/resources/stat/img/main/sub0106.gif" alt="주식 대차거래내역" /></a></li>
+									<li><a href="https://otcinfo.kofia.or.kr" onclick="window.open(this.href,'_blank'); return false;"><img src="/resources/stat/img/main/sub0107.gif" alt="비상장주식 가격정보 공시" /></a></li>
+								</ul>
+							</div>
+						</li>
+						<li class="menu2"><a href="/stat/FreeSIS.do?parentDivId=MSIS20000000000000"><img src="/resources/stat/img/main/gnb02.gif" alt="채권" /></a>
+							<div style="" class="TopSubMenu">
+								<ul class="depth-02">
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS20000000000000&amp;serviceId=STATBND0100000010"><img src="/resources/stat/img/main/sub0201.gif" alt="최종호가수익률" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS20000000000000&amp;serviceId=STATBND0100000230"><img src="/resources/stat/img/main/sub0203.gif" alt="발행통계" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS20000000000000&amp;serviceId=STATBND0100000240"><img src="/resources/stat/img/main/sub0204.gif" alt="만기통계" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS20000000000000&amp;serviceId=STATBND0100000280"><img src="/resources/stat/img/main/sub0206.gif" alt="채권 대차거래내역" /></a></li>
+								</ul>
+							</div>
+						</li>
+						<li class="menu2"><a href="/stat/FreeSIS.do?parentDivId=MSIS30000000000000"><img src="/resources/stat/img/main/gnb03.gif" alt="파생상품" /></a>
+							<div style="" class="TopSubMenu">
+								<ul class="depth-03">
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS30000000000000&amp;serviceId=STATDRV0100000010"><img src="/resources/stat/img/main/sub0301.gif" alt="주요 선물 가격 동향" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS30000000000000&amp;serviceId=STATDRV0100000030"><img src="/resources/stat/img/main/sub0302.gif" alt="국내투자자의 해외파생상품 거래동향" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS30000000000000&amp;serviceId=STATDRV0100000040"><img src="/resources/stat/img/main/sub0303.gif" alt="ELS발행동향" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS30000000000000&amp;serviceId=STATDRV0100000310"><img src="/resources/stat/img/main/sub0304.gif" alt="차액결제거래(CFD)" /></a></li> 
+									
+								</ul>
+							</div>
+						</li>
+						<li class="menu2"><a href="/stat/FreeSIS.do?parentDivId=MSIS35000000000000&amp;serviceId=STATASM0100100010"><img src="/resources/stat/img/main/gnb04.gif" alt="자산관리" /></a>
+							<div style="" class="TopSubMenu">
+								<ul class="depth-04">
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS35000000000000&amp;serviceId=STATASM0100100010"><img src="/resources/stat/img/main/sub0401.gif" alt="펀드 · 자문/일임 · 시탁규모" /></a></li>
+								</ul>
+							</div>
+						</li>
+						<li class="menu2"><a href="/stat/FreeSIS.do?parentDivId=MSIS40100000000000"><img src="/resources/stat/img/main/gnb05.gif" alt="펀드" /></a>
+							<div style="" class="TopSubMenu">
+								<ul class="depth-05">
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS40200000000000&amp;serviceId=STATFND0200100130"><img src="/resources/stat/img/main/sub0501.gif" alt="회사별설정규모" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS40100000000000&amp;serviceId=STATFND0100100030"><img src="/resources/stat/img/main/sub0502.gif" alt="기간자금유출입" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS40100000000000&amp;serviceId=STATFND0100100260"><img src="/resources/stat/img/main/sub0503.gif" alt="유형별기간설정" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS40100000000000&amp;serviceId=STATFND0100200150"><img src="/resources/stat/img/main/sub0504.gif" alt="유형별판매규모" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS40300000000000&amp;serviceId=STATFND0400000030"><img src="/resources/stat/img/main/sub0505.gif" alt="유형별적립식규모" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS40300000000000&amp;serviceId=STATFND0400000070"><img src="/resources/stat/img/main/sub0506.gif" alt="해외투자펀드설정규모" /></a></li>
+								</ul>
+							</div>
+						</li>
+						<li class="menu2"><a href="/stat/FreeSIS.do?parentDivId=MSIS60000000000000"><img src="/resources/stat/img/main/gnb06.gif" alt="자문일임" /></a>
+							<div style="" class="TopSubMenu">
+								<ul class="depth-06">
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS60000000000000&amp;serviceId=STATFND0100400240"><img src="/resources/stat/img/main/sub0601.gif" alt="증권사일임형 랩어카운트 잔고현황" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS60000000000000&amp;serviceId=STATCHR0100000020"><img src="/resources/stat/img/main/sub0602.gif" alt="투자자문계약현황" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS60000000000000&amp;serviceId=STATCHR0100000030"><img src="/resources/stat/img/main/sub0603.gif" alt="투자자문재산형황" /></a></li>
+								</ul>
+							</div>
+						</li>
+							<li class="menu2"><a href="/stat/FreeSIS.do?parentDivId=MSIS70000000000000"><img src="/resources/stat/img/main/gnb07.gif" alt="신탁" /></a>
+							<div style="" class="TopSubMenu">
+								<ul class="depth-07">
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS70000000000000&amp;serviceId=STATTRT0100000020"><img src="/resources/stat/img/main/sub0701.gif" alt="신탁계약현황" /></a></li>
+								</ul>
+							</div>
+						</li>
+							<li class="menu2"><a href="/stat/FreeSIS.do?parentDivId=MSIS50000000000000"><img src="/resources/stat/img/main/gnb08.gif" alt="단기자금" /></a>
+							<div style="" class="TopSubMenu">
+								<ul class="depth-08">
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS50000000000000&amp;serviceId=STATSCU0100000090"><img src="/resources/stat/img/main/sub0801.gif" alt="일자별 CMA현황" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS50000000000000&amp;serviceId=STATSCU0100000110"><img src="/resources/stat/img/main/sub0802.gif" alt="운용대상별 CMA잔고 추이" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS50000000000000&amp;serviceId=STATBND0100000050"><img src="/resources/stat/img/main/sub0803.gif" alt="CD거래현황" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS50000000000000&amp;serviceId=STATBND0100000060"><img src="/resources/stat/img/main/sub0804.gif" alt="CP대표수익률" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS50000000000000&amp;serviceId=STATBND0100000070"><img src="/resources/stat/img/main/sub0805.gif" alt="대고객 RP기관별 매매잔고" /></a></li>
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS50000000000000&amp;serviceId=STATBND0100000080"><img src="/resources/stat/img/main/sub0806.gif" alt="대고객 RP종류별 매매잔고" /></a></li>
+								</ul>
+							</div>
+						</li>
+							<li class="menu2"><a href="/stat/FreeSIS.do?parentDivId=MSIS80000000000000"><img src="/resources/stat/img/main/gnb09.gif" alt="금융투자업자" /></a>
+							<div style="" class="TopSubMenu">
+								<ul class="depth-09">
+									<li><a href="/stat/FreeSIS.do?parentDivId=MSIS80000000000000&amp;serviceId=STATCOM0100000010"><img src="/resources/stat/img/main/sub0901.gif" alt="일반현황" /></a></li>
+								</ul>
+							</div>
+						</li>
+					</ul>
+				</div>
+				<div class="search-area">
+					<label for="sch">검색</label>
+					<input type="text" id="sch" name="sch" style="outline-style:none;" title="검색어" class="w150" value=""/>
+					<input type="image" onclick="clickSearch()" style="outline-style:none;" src="/resources/stat/img/main/search-btn.gif" alt="검색"/>
+				</div>
+			</div>
+		</div>
+		<!--//header-->
+		<!-- mian-container -->
+		<div id="main-container">
+			<!-- main-contents -->
+			<div id="main-contents">
+				<!-- left-->
+				<div id="left-con">
+					<div class="chart-list">
+						<ul>
+							
+							
+								<li>	
+									<dl>
+																				
+										
+										<dt class="chart-name"><a href="#" onclick="clickJisuMenu('OS0001')">KOSPI지수</a></dt>
+										<dd class="etc"><span class="dan">P</span> | <span class="date">08/11</span></dd>
+										<dd class="chart-num">
+											<span class="num1">6,345.53</span>
+											
+											
+												<span class="num2a">45.87</span>
+											
+											
+											<span class="num3">0.73%</span>
+										</dd>
+									</dl>
+								</li>
+									                			    
+							
+								<li>	
+									<dl>
+																				
+										
+										<dt class="chart-name"><a href="#" onclick="clickJisuMenu('OS0021')">투자자예탁금</a></dt>
+										<dd class="etc"><span class="dan">백만원</span> | <span class="date">08/11</span></dd>
+										<dd class="chart-num">
+											<span class="num1">97,928,935</span>
+											
+											
+											
+												<span class="num2b">-2,789,089</span>
+											
+											<span class="num3">-2.77%</span>
+										</dd>
+									</dl>
+								</li>
+									                			    
+							
+								<li>	
+									<dl>
+																				
+										
+										<dt class="chart-name"><a href="#" onclick="clickJisuMenu('OS0026')">신용융자</a></dt>
+										<dd class="etc"><span class="dan">백만원</span> | <span class="date">08/11</span></dd>
+										<dd class="chart-num">
+											<span class="num1">30,038,722</span>
+											
+											
+												<span class="num2a">14,954</span>
+											
+											
+											<span class="num3">0.05%</span>
+										</dd>
+									</dl>
+								</li>
+									                			    
+							
+								<li>	
+									<dl>
+																				
+										
+										<dt class="chart-name"><a href="#" onclick="clickJisuMenu('OS0030')">CMA잔고</a></dt>
+										<dd class="etc"><span class="dan">백만원</span> | <span class="date">08/11</span></dd>
+										<dd class="chart-num">
+											<span class="num1">104,465,304</span>
+											
+											
+											
+												<span class="num2b">-40,214</span>
+											
+											<span class="num3">-0.04%</span>
+										</dd>
+									</dl>
+								</li>
+									                			    
+							
+								<li>	
+									<dl>
+																				
+										
+										<dt class="chart-name"><a href="#" onclick="clickJisuMenu('OS0033')">국고채(3년)</a></dt>
+										<dd class="etc"><span class="dan">%</span> | <span class="date">08/12</span></dd>
+										<dd class="chart-num">
+											<span class="num1">3.798</span>
+											
+											
+											
+												<span class="num2b">-0.01</span>
+											
+											<span class="num3">-0.26%</span>
+										</dd>
+									</dl>
+								</li>
+									                			    
+							
+								<li>	
+									<dl>
+																				
+										
+										<dt class="chart-name"><a href="#" onclick="clickJisuMenu('OS0032')">회사채(3년, AA-)</a></dt>
+										<dd class="etc"><span class="dan">%</span> | <span class="date">08/12</span></dd>
+										<dd class="chart-num">
+											<span class="num1">4.499</span>
+											
+											
+											
+												<span class="num2b">-0.005</span>
+											
+											<span class="num3">-0.11%</span>
+										</dd>
+									</dl>
+								</li>
+									                			    
+							
+								<li>	
+									<dl>
+																				
+										
+										<dt class="chart-name"><a href="#" onclick="clickJisuMenu('OS0054')">주식형펀드 순자산</a></dt>
+										<dd class="etc"><span class="dan">억원</span> | <span class="date">08/11</span></dd>
+										<dd class="chart-num">
+											<span class="num1">3,717,536</span>
+											
+											
+												<span class="num2a">6,911</span>
+											
+											
+											<span class="num3">0.19%</span>
+										</dd>
+									</dl>
+								</li>
+									                			    
+							
+								<li>	
+									<dl>
+																				
+										
+										<dt class="chart-name"><a href="#" onclick="clickJisuMenu('OS0060')">펀드 순자산</a></dt>
+										<dd class="etc"><span class="dan">억원</span> | <span class="date">08/11</span></dd>
+										<dd class="chart-num">
+											<span class="num1">15,377,244</span>
+											
+											
+												<span class="num2a">31,615</span>
+											
+											
+											<span class="num3">0.21%</span>
+										</dd>
+									</dl>
+								</li>
+									                			    
+							
+						</ul>
+					</div>
+				</div>
+				<!--// left-->
+
+				<!-- center -->
+				<div id="center-con">
+					<!-- center popup -->
+					<div id="center-pop">
+						<div class="banner_play">
+							<ul>
+								<li id="popzone_stopz">
+									<a onkeypress="popupZoneStop2('p');" onclick="popupZoneStop2('p');" href="#startpopup"><img src="/resources/stat/img/main/btn-stop.gif"  alt="멈춤"/></a>
+								</li>
+								<li id="popzone_startz">
+									<a onkeypress="popupZoneStop2('s');" onclick="popupZoneStop2('s');" href="#stoppopup"><img src="/resources/stat/img/main/btn-play.gif" alt="다음보기"/></a>
+								</li>
+							</ul>
+						</div>
+						<div class="banner_num">
+								<p class="popup01"><a onfocus="this.onmouseover();" onmouseover="popupZoneMove(1)" href="#popup_zone1"><img src="/resources/stat/img/main/center_banner0_on.gif" id="popnum1" alt="주식"/></a></p>
+								<div id="popBanner_1">
+									<p class="tit"><img src="/resources/stat/img/main/center-title01.png" alt="Equity 주식" /></p>
+									<ul class="link-list" onmouseover="popupZoneStop2('p');" >
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS10000000000000&amp;serviceId=STATSCU0100000060"><img src="/resources/stat/img/main/center0101.png" alt="증시자금추이" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS10000000000000&amp;serviceId=STATSCU0100000020"><img src="/resources/stat/img/main/center0102.png" alt="유가증권시장" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS10000000000000&amp;serviceId=STATSCU0100000030"><img src="/resources/stat/img/main/center0103.png" alt="코스닥시장" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS10000000000000&amp;serviceId=STATSCU0100000070"><img src="/resources/stat/img/main/center0104.png" alt="신용공여 잔고 추이" /></a></li>
+									</ul>
+								</div>
+
+								<p class="popup02"><a onfocus="this.onmouseover();" onmouseover="popupZoneMove(2)" href="#popup_zone2"><img src="/resources/stat/img/main/center_banner02.gif" id="popnum2" alt="채권"/></a></p>
+								<div id="popBanner_2">
+									<p class="tit"><img src="/resources/stat/img/main/center-title02.png" alt="Fixed Income 채권" /></p>
+									<ul class="link-list" onmouseover="popupZoneStop2('p');" >
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS20000000000000&amp;serviceId=STATBND0100000010"><img src="/resources/stat/img/main/center0201.png" alt="최종호가수익률" /></a></li>
+										<!--li><a href="/stat/FreeSIS.do?parentDivId=MSIS20000000000000&amp;serviceId=STATBND0100000020"><img src="/stat/img/main/center0202.gif" alt="잔존만기별수익률" /></a></li-->
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS20000000000000&amp;serviceId=STATBND0100000230"><img src="/resources/stat/img/main/center0203.png" alt="발행통계" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS20000000000000&amp;serviceId=STATBND0100000240"><img src="/resources/stat/img/main/center0204.png" alt="만기통계" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS20000000000000&amp;serviceId=STATBND0100000280"><img src="/resources/stat/img/main/center0205.png" alt="채권 대차거래내역" /></a></li>
+									</ul>
+								</div>
+
+								<p class="popup03"><a onfocus="this.onmouseover();" onmouseover="popupZoneMove(3)" href="#popup_zone3"><img src="/resources/stat/img/main/center_banner03.gif" id="popnum3" alt="파생상품" /></a></p>
+								<div id="popBanner_3">
+									<p class="tit"><img src="/resources/stat/img/main/center-title03.png" alt="Derivatives 파생상품" /></p>
+									<ul class="link-list" onmouseover="popupZoneStop2('p');" >
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS30000000000000&amp;serviceId=STATDRV0100000010"><img src="/resources/stat/img/main/center0301.png" alt="주요 선물 가격 동향" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS30000000000000&amp;serviceId=STATDRV0100000030"><img src="/resources/stat/img/main/center0302.png" alt="국내투자자의 해외파생상품 거래동향" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS30000000000000&amp;serviceId=STATDRV0100000040"><img src="/resources/stat/img/main/center0303.png" alt="ELS발행동향" /></a></li>
+									</ul>
+								</div>
+
+								<p class="popup04"><a onfocus="this.onmouseover();" onmouseover="popupZoneMove(4)" href="#popup_zone4"><img src="/resources/stat/img/main/center_banner04.gif" id="popnum4" alt="자산관리" /></a></p>
+								<div id="popBanner_4">
+									<p class="tit"><img src="/resources/stat/img/main/center-title04.png" alt="Asset Under Management 자산관리" /></p>
+									<ul class="link-list" onmouseover="popupZoneStop2('p');" >
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS35000000000000&amp;serviceId=STATASM0100100010"><img src="/resources/stat/img/main/center0401.png" alt="펀드 · 자문/일임 · 시탁규모" /></a></li>
+									</ul>
+								</div>
+
+								<p class="popup05"><a onfocus="this.onmouseover();" onmouseover="popupZoneMove(5)" href="#popup_zone5"><img src="/resources/stat/img/main/center_banner05.gif" id="popnum5" alt="펀드" /></a></p>
+								<div id="popBanner_5">
+									<p class="tit"><img src="/resources/stat/img/main/center-title05.png" alt="Fund 펀드" /></p>
+									<ul class="link-list" onmouseover="popupZoneStop2('p');" >
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS40200000000000&amp;serviceId=STATFND0200100130"><img src="/resources/stat/img/main/center0501.png" alt="회사별설정규모" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS40100000000000&amp;serviceId=STATFND0100100030"><img src="/resources/stat/img/main/center0502.png" alt="기간자금유출입" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS40100000000000&amp;serviceId=STATFND0100100260"><img src="/resources/stat/img/main/center0503.png" alt="유형별기간설정" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS40100000000000&amp;serviceId=STATFND0100200150"><img src="/resources/stat/img/main/center0504.png" alt="유형별판매규모" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS40300000000000&amp;serviceId=STATFND0400000030"><img src="/resources/stat/img/main/center0505.png" alt="유형별적립식규모" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS40300000000000&amp;serviceId=STATFND0400000070"><img src="/resources/stat/img/main/center0506.png" alt="해외투자펀드설정규모" /></a></li>
+									</ul>
+								</div>
+
+								<p class="popup06"><a onfocus="this.onmouseover();" onmouseover="popupZoneMove(6)" href="#popup_zone6"><img src="/resources/stat/img/main/center_banner06.gif" id="popnum6" alt="자문일임" /></a></p>
+								<div id="popBanner_6">
+									<p class="tit"><img src="/resources/stat/img/main/center-title06.png" alt="Investment Advice 자문일임" /></p>
+									<ul class="link-list" onmouseover="popupZoneStop2('p');" >
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS60000000000000&amp;serviceId=STATFND0100400240"><img src="/resources/stat/img/main/center0601.png" alt="증권사일임형 랩어카운트 잔고현황" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS60000000000000&amp;serviceId=STATCHR0100000020"><img src="/resources/stat/img/main/center0602.png" alt="투자자문계약현황" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS60000000000000&amp;serviceId=STATCHR0100000030"><img src="/resources/stat/img/main/center0603.png" alt="투자자문재산현황" /></a></li>
+									</ul>
+								</div>
+
+								<p class="popup07"><a onfocus="this.onmouseover();" onmouseover="popupZoneMove(7)" href="#popup_zone7"><img src="/resources/stat/img/main/center_banner07.gif" id="popnum7" alt="신탁" /></a></p>
+								<div id="popBanner_7">
+									<p class="tit"><img src="/resources/stat/img/main/center-title07.png" alt="Trust 신탁" /></p>
+									<ul class="link-list" onmouseover="popupZoneStop2('p');" >
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS70000000000000&amp;serviceId=STATTRT0100000020"><img src="/resources/stat/img/main/center0701.png" alt="신탁계약현황" /></a></li>
+									</ul>
+								</div>
+
+								<p class="popup08"><a onfocus="this.onmouseover();" onmouseover="popupZoneMove(8)" href="#popup_zone8"><img src="/resources/stat/img/main/center_banner08.gif" id="popnum8" alt="단기자금" /></a></p>
+								<div id="popBanner_8">
+									<p class="tit"><img src="/resources/stat/img/main/center-title08.png" alt="Liquid Assets 단기자금" /></p>
+									<ul class="link-list" onmouseover="popupZoneStop2('p');" >
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS50000000000000&amp;serviceId=STATSCU0100000090"><img src="/resources/stat/img/main/center0801.png" alt="일자별 CMA현황" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS50000000000000&amp;serviceId=STATBND0100000050"><img src="/resources/stat/img/main/center0802.png" alt="CD거래현황" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS50000000000000&amp;serviceId=STATBND0100000060"><img src="/resources/stat/img/main/center0803.png" alt="CP대표수익률" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS50000000000000&amp;serviceId=STATBND0100000070"><img src="/resources/stat/img/main/center0804.png" alt="대고객 RP기관별 매매잔고" /></a></li>
+										<li><a href="/stat/FreeSIS.do?parentDivId=MSIS50000000000000&amp;serviceId=STATBND0100000080"><img src="/resources/stat/img/main/center0805.png" alt="대고객 RP종류별 매매잔고" /></a></li>
+									</ul>
+								</div>
+						</div>
+					</div>
+					<!--//center popup -->
+
+					<!-- board 1-->
+					<div class="board-wrap">
+						<h3><img id="tab1" src="/resources/stat/img/main/notice-01on.gif" alt="통계속보" /></h3>
+						<div id="noticeList1">
+							<ul class="board-01">
+								
+									<li>
+				     	            	
+										<a href="#;"  onclick="viewBoardPop1('statNews', '206', '85728')" title='[2026-08-11] 투자자문일임계약규모 통계가 발표되었습니다.' >
+											[2026-08-11] 투자자문일임계약규모 통계가 발표되었습니다.
+										</a>
+										
+											
+										    
+											<a href="/stat/FreeSIS.do?parentDivId=MSIS40100000000000&amp;serviceId=STATFND0100100260">[유형별기간설정]</a>
+										
+									</li>
+								
+									<li>
+				     	            	
+										<a href="#;"  onclick="viewBoardPop1('statNews', '206', '85727')" title='[2026-08-11] CMA 계좌수 및 잔고현황 통계가 발표되었습니다.' >
+											[2026-08-11] CMA 계좌수 및 잔고현황 통계가 발표되었습니다.
+										</a>
+										
+											
+										    
+											<a href="/stat/FreeSIS.do?parentDivId=MSIS50000000000000&amp;serviceId=STATSCU0100000090">[일자별 CMA현황]</a>
+										
+									</li>
+								
+									<li>
+				     	            	
+										<a href="#;"  onclick="viewBoardPop1('statNews', '206', '85726')" title='[2026-08-11] 신용공여통계관리 통계가 발표되었습니다.' >
+											[2026-08-11] 신용공여통계관리 통계가 발표되었습니다.
+										</a>
+										
+											
+										    
+											<a href="/stat/FreeSIS.do?parentDivId=MSIS10000000000000&amp;serviceId=STATSCU0100000060">[증시자금추이]</a>
+										
+									</li>
+								
+									<li>
+				     	            	
+										<a href="#;"  onclick="viewBoardPop1('statNews', '206', '85724')" title='[2026-08-11] 펀드집계 통계가 발표되었습니다.' >
+											[2026-08-11] 펀드집계 통계가 발표되었습니다.
+										</a>
+										
+											
+										    
+											<a href="/stat/FreeSIS.do?parentDivId=MSIS40100000000000&amp;serviceId=STATFND0100100010">[투자신탁구분]</a>
+										
+									</li>
+								
+									<li>
+				     	            	
+										<a href="#;"  onclick="viewBoardPop1('statNews', '206', '85722')" title='[2026-08-12]  통계가 발표되었습니다.' >
+											[2026-08-12]  통계가 발표되었습니다.
+										</a>
+										
+											
+										    
+											<a href="/stat/FreeSIS.do?parentDivId=MSIS40100000000000&amp;serviceId=STATFND0100300190">[투자자산별비중]</a>
+										
+									</li>
+								
+								
+	
+							</ul>
+							<p class="more"><a href="#;" onclick="moreClickBoard()" ><img src="/resources/stat/img/main/btn-more.gif" alt="통계속보 더보기" /></a></p>
+						</div>
+					</div>
+					<!-- // board 1 -->
+
+					<!-- board 2-->
+					<div class="board-wrap">
+						<h3><img id="tab2" src="/resources/stat/img/main/notice-02on.gif" alt="자주찾는통계" /></h3>
+						<div id="noticeList2">
+							<ul class="board-01">
+								 
+									<li>
+										<a href="#;" onclick="viewBoard2('MSIS10000000000000', 'MSIS10040020000000','STATSCU0100000140')" title=' 주식 &gt; 대차거래 &gt; 대차거래추이'>
+											 주식 &gt; 대차거래 &gt; 대차거래추이
+										</a>
+									</li>
+								 
+									<li>
+										<a href="#;" onclick="viewBoard2('MSIS10000000000000', 'MSIS10030010000000','STATSCU0100000070')" title=' 주식 &gt; 신용공여현황 &gt; 신용공여 잔고 추이'>
+											 주식 &gt; 신용공여현황 &gt; 신용공여 잔고 추이
+										</a>
+									</li>
+								 
+									<li>
+										<a href="#;" onclick="viewBoard2('MSIS10000000000000', 'MSIS10020010000000','STATSCU0100000060')" title=' 주식 &gt; 증시자금 &gt; 증시자금추이'>
+											 주식 &gt; 증시자금 &gt; 증시자금추이
+										</a>
+									</li>
+								 
+									<li>
+										<a href="#;" onclick="viewBoard2('MSIS40200000000000', 'MSIS40200010130000','STATFND0200100010')" title=' 펀드 &gt; 회사 &gt; 운용사통계 &gt; 회사별설정규모'>
+											 펀드 &gt; 회사 &gt; 운용사통계 &gt; 회사별설정규모
+										</a>
+									</li>
+								 
+									<li>
+										<a href="#;" onclick="viewBoard2('MSIS40200000000000', 'MSIS40200010130000','STATFND0200100130')" title=' 펀드 &gt; 회사 &gt; 운용사통계 &gt; 회사별설정규모'>
+											 펀드 &gt; 회사 &gt; 운용사통계 &gt; 회사별설정규모
+										</a>
+									</li>
+								
+								
+							</ul>						
+							<p class="more"><a href="#;" onclick="moreClickFavorite()" ><img src="/resources/stat/img/main/btn-more.gif" alt="자주찾는통계 더보기" /></a></p>
+						</div>
+					</div>
+					<!-- // board 2 -->
+				</div>
+				<!--//center con -->
+
+				<!-- right con -->
+				<div id="right-con">
+					<div class="quick">
+						<ul>
+							<li><a href="#" onclick="clickTopMenu('goPage','capitalStat');"><img src="/resources/stat/img/main/quick01.gif" alt="한눈에 보는 자본시장 통계" /></a></li>
+							<li><a href="#" onclick="clickTopMenu('goPage','martStat');"><img src="/resources/stat/img/main/quick02.gif" alt="시장지수" /></a></li>
+							<li><a href="#" onclick="clickTopMenu('goPage','crossStat');"><img src="/resources/stat/img/main/quick03.gif" alt="교차통계" /></a></li>
+							<!--<li><a href="#" onclick="clickTopMenu('goPage','evnetStat');"><img src="/resources/stat/img/main/quick04.gif" alt="Event로 보는 자본시장 통계" /></a></li> -->
+						</ul>
+					</div>
+
+					
+					<!-- kospi -->
+					<div id="kospi">
+						<div id="kospiTab">
+							<p><a onfocus="stockView(1);return false;" onmouseover="stockView(1);return false;" href="#"><img src="/resources/stat/img/main/kospitab01_over.gif"  id="kospiTit1" alt="국내" /></a></p>
+							<div id="kospiArea1">
+								<div class="realtimeTop">
+									<span class="in1">KOSPI</span>
+									<span class="in3" id="idx11">fdfd</span>
+									<span class="in4" id="idx11_f">-13.31</span>
+								</div>
+								<div class="realtime">
+									<span class="in1">KOSPI200</span>
+									<span class="in3" id="idx13">263.95</span>
+									<span class="in4" id="idx13_f">-2.01</span>
+								</div>
+								<div class="realtime">
+									<span class="in1">KOSDAQ</span>
+									<span class="in3" id="idx12">509.01</span>
+									<span class="in4" id="idx12_f">0.29</span>
+								</div>
+								<!-- 20260714 2015년에 종료된 지수 삭제 
+								<div class="realtime">
+									<span class="in1">KOSTAR</span>
+									<span class="in3 blue" id="idx15">1,153.59</span>
+									<span class="in4" id="idx15_f">-0.59</span>
+								</div>
+								-->
+							</div>
+							<p><a onfocus="stockView(2);return false;" onmouseover="stockView(2);return false;" href="#"><img src="/resources/stat/img/main/kospitab02.gif"  id="kospiTit2" alt="해외" /></a></p>
+							<div id="kospiArea2">
+								<div class="realtimeTop">
+									<span class="in1">DOW JONES</span>
+									<span class="in3" id="idx21">1.94</span>
+									<span class="in4" id="idx21_f">-13.31</span>
+								</div>
+								<div class="realtime">
+									<span class="in1">NASDAQ</span>
+									<span class="in3" id="idx22">qq.95</span>
+									<span class="in4" id="idx22_f">-2.01</span>
+								</div>
+								<div class="realtime">
+									<span class="in1">NIKEI225</span>
+									<span class="in3" id="idx26">509.01</span>
+									<span class="in4" id="idx26_f">0.29</span>
+								</div>
+								<div class="realtime">
+									<span class="in1">HANGSENG</span>
+									<span class="in3" id="idx27">1,153.59</span>
+									<span class="in4" id="idx27_f">-0.59</span>
+								</div>
+							</div>
+							<p><a onfocus="stockView(3);return false;" onmouseover="stockView(3);return false;" href="#"><img src="/resources/stat/img/main/kospitab03.gif" id="kospiTit3" alt="환율금리" /></a></p>
+							<div id="kospiArea3">
+								<div class="realtimeTop">
+									<span class="in1">원/달러 환율</span>
+									<span class="in3" id="idx34">1,997.94</span>
+									<span class="in4 in4b" id="idx34_f">-13.31</span>
+								</div>
+								<div class="realtime">
+									<span class="in1">원/앤 환율</span>
+									<span class="in3" id="idx35">263.95</span>
+									<span class="in4" id="idx35_f">-2.01</span>
+								</div>
+								<div class="realtime">
+									<span class="in1">국고채(5년)</span>
+									<span class="in3" id="idx31">509.01</span>
+									<span class="in4" id="idx31_f">0.29</span>
+								</div>
+								<div class="realtime">
+									<span class="in1">회사채(3년)</span>
+									<span class="in3" id="idx32">1,153.59</span>
+									<span class="in4" id="idx32_f">-0.59</span>
+								</div>
+							</div>
+						</div>
+					</div>
+					<!--// kospi -->
+				
+					<!-- relation-site -->
+					<div class="relation-site">
+						<label for="selectSite" class="hid">유관기관 바로가기</label>
+						<select id="selectSite" name="selectSite">
+							<option value="">유관기관 바로가기</option>
+				            <option value="https://www.moef.go.kr/">기획재정부</option>
+				            <option value="http://www.fsc.go.kr/">금융위원회</option>
+				            <option value="http://kostat.go.kr/">통계청</option>
+				            <option value="http://www.fss.or.kr/">금융감독원</option> 
+				            <option value="http://www.krx.co.kr/">한국거래소</option>
+				            <option value="http://www.ksd.or.kr/">한국예탁결제원</option>
+				            <option value="http://www.ksfc.co.kr/">한국증권금융</option>
+				            <option value="http://dart.fss.or.kr/">DART 전자공시</option>
+				            <option value="http://fisis.fss.or.kr/">금융통계정보시스템</option>
+				            <!-- <option value="http://fsc.go.kr/roadahead/">금융시장 안정대책</option> -->
+				            <option value="http://data.krx.co.kr/">KRX 정보데이터시스템</option>
+						</select>     
+						<input type="image" style="margin-top:-1px" src="/resources/stat/img/main/btn-move.gif"  alt="이동" onclick="selectGo(); return false;"/>
+					</div>
+					<div class="relation-site">
+						<label for="selectSite1" class="hid">family site</label>
+						<select id="selectSite1" name="selectSite1">
+							<option value="">family site</option>
+				            <option value="http://www.kofia.or.kr/">금융투자협회</option>
+				            <option value="http://dis.kofia.or.kr/">전자공시서비스</option>
+				            <option value="http://license.kofia.or.kr/">자격시험접수센터</option>
+				            <option value="http://www.kifin.or.kr/">금융투자교육원</option>
+				            <option value="http://www.kofiabond.or.kr/">채권정보센터</option>
+				            <option value="http://www.k-otc.or.kr/">K-OTC시장</option>
+				            <option value="http://www.k-otcbb.or.kr/">K-OTCBB</option>      
+							<option value="http://www.k-otcpro.or.kr/">K-OTC PRO</option> 	
+				            <option value="http://law.kofia.or.kr/">법규정보시스템</option>   
+				            <option value="http://www.kcie.or.kr/">전국투자자교육협의회</option>
+						</select>
+						<input type="image" style="margin-top:-1px" src="/resources/stat/img/main/btn-move.gif" alt="이동" onclick="selectGo1(); return false;"/>
+					</div>
+					<!--//relation-site -->
+				</div>
+				<!-- //right con -->
+			</div>
+			<!--//main-contents-->
+		</div>
+		<!--//mian-container -->
+		<!-- <div id="chartttt"></div> -->
+		<!--footer-->
+		<div id="footerWrap">
+			<div id="footer">
+				<p class="privacy"><a href="http://www.kofia.or.kr/wpge/m_34/etc02.do" target="_blank" title="새창열림"><img src="/resources/stat/img/main/privacy.gif" alt="개인정보처리방침" /></a></p>
+				<div class="infor">
+					<address>서울시 영등포구 여의도동 의사당대로 143 금투센터 | TEL : 02-2003-9000 |</address>
+					<p class="copyright">COPYRIGHT(C) 2012 KOFIA. ALL RIGHT RESERVED.</p>
+					<p class="caution">금융투자협회에서 제공하는 정보는 참고용이며 이용자의 판단에 따른 투자수익 및 정보의 오류 등에 따른 손익에 대해서는 책임지지 않습니다.</p>
+				</div>
+				<p class="iso-mark"><img src="/resources/stat/img/main/iso-mark.gif" alt="ISO 10002 : 2004 고객만족경영시스템" /></p>
+			</div>
+		</div>
+		<!--/footer-->
+	</div>
+
+	<script>
+	<!--
+	var popupItemCount = 8;
+	var popupZoneVal = 0;
+	var popupZoneTmpVal = 0;
+	var autocontrolvar;
+	popupZone();
+	//-->
+	</script>  
+
+</body>

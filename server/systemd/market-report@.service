@@ -1,0 +1,44 @@
+# 시장별 리포트 생성 (템플릿 유닛). market-report@KR / market-report@US
+#
+# **실거래 엔진과 같은 박스에서 돈다.** quant-engine.service 가 항상 우선이므로
+# 자원을 명시적으로 제한한다 — tg-bridge.service 와 같은 방침이다.
+# 실측 최대 RSS 231MB(KR)/214MB(US) 이라 500M 은 2배 여유였다.
+# 500M→1000M(2026-08-18, 품질 레인 도입): Claude CLI 서브프로세스(node, 실측
+# 수백 MB)가 이제 같은 cgroup 에서 뜬다 — 빌드 파이썬(231MB)+CLI 를 합치면
+# 500M 은 OOM 위험이 있다. 1.8GB 박스에서 엔진 우선순위는 아래 OOMScoreAdjust=
+# 500(리포트가 먼저 죽는다)이 그대로 보장한다 — 상한을 올려도 엔진 안전은
+# 흔들리지 않는다.
+[Unit]
+Description=Market report (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/quant_trading_kiwoom
+Environment=TZ=Asia/Seoul
+ExecStart=/home/ubuntu/quant_trading_kiwoom/server/scripts/run_report.sh %i
+
+# 자원 격리 — 리포트가 폭주해도 거래 엔진의 CPU/메모리를 뺏지 않는다
+MemoryMax=1000M
+CPUQuota=50%
+Nice=10
+IOSchedulingClass=idle
+
+# 발행 시각까지 대기하는 구간이 있어 넉넉히 (최대 90분 대기 + 빌드 ~2분)
+TimeoutStartSec=7200
+
+# 파일 시스템 보호 — 리포트는 자기 디렉토리 밖을 쓸 이유가 없다
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/quant_trading_kiwoom/data /home/ubuntu/quant_trading_kiwoom/out
+
+# 1.8GB 박스. 메모리가 마르면 이 작업이 먼저 양보한다 — 거래 엔진
+# (OOMScoreAdjust=-500)이 마지막까지 살아남아야 한다.
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

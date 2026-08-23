@@ -1,0 +1,30 @@
+# secrets
+.env
+.env.local
+*.pem
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+
+# runtime state & caches (never commit market data or positions)
+# 루트 한정 — quant_engine/data/ 는 소스 코드다
+/data/
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
+
+# omc runtime state
+.omc/
+
+# graphify 지식 그래프 — 재생성 가능한 산출물만 제외한다.
+# docs/vault/*.md (손으로 쓴 기억 노트)는 추적한다 — 그게 AI의 영속 메모리다.
+graphify-out/
+docs/vault/graph/
+data/backups/
+out/

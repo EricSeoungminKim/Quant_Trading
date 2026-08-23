@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  오프사이트 백업 pull — **Mac(받는 쪽)에서 돈다.** Phase 5.1 의 남은 조각.
+
+  왜 EC2 가 밀지 않고 Mac 이 당기나: EC2 가 털렸을 때 백업까지 지울 수 있는 키를
+  같은 박스에 두지 않으려는 것이다. 그래서 전송 주체가 받는 쪽이어야 한다.
+
+  설치:
+    cp server/launchd/com.quant.backup-pull.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.quant.backup-pull.plist
+    launchctl kickstart -p gui/$(id -u)/com.quant.backup-pull     # 즉시 1회 확인
+  해제:
+    launchctl bootout gui/$(id -u)/com.quant.backup-pull
+
+  **설치 직후 반드시 `kickstart` 로 1회 확인한다.** 2026-08-14 실측: `RunAtLoad` 가
+  켜져 있고 `launchctl print` 도 `properties = runatload` 라고 답하는데 `runs = 0` 이다
+  — `load`·`bootstrap` 어느 쪽으로도 뛰지 않았다. 그러므로 **부팅 직후 1회는
+  안전망이 아니다.** 그렇게 믿으면 설치했는데 한 번도 안 당겨온 상태를 정상으로 본다.
+
+  Mac 이 꺼져 있는 시간이 있다는 문제는 그대로 남는다. 실제 안전망은 하나뿐이다:
+  감시(`cli health` 의 `backup` 항목)가 EC2 쪽 LAST_PULL **나이**를 본다. 며칠
+  안 당겨오면 그게 잡는다 — 스케줄이 아니라 결과를 본다.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.quant.backup-pull</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <!--
+      경로를 사용자가 고쳐야 하는 유일한 줄. 저장소 위치가 사람마다 다르다.
+
+      **`bash <스크립트>` 로 부른다 — `./스크립트` 로 직접 exec 하지 않는다.**
+      저장소가 `~/Documents` 안에 있고 그 디렉토리는 macOS TCC 보호 대상이다.
+      2026-08-14 실측: launchd 가 Documents 안의 스크립트를 **직접 exec 하면**
+      그 프로세스는 이후 Documents 접근이 거부돼(`Operation not permitted`)
+      번들 대조가 4/4 실패한다 — cwd 도 정상이고 파일도 그대로인데 실패한다.
+      같은 스크립트를 `bash <경로>` 로 부르면(bash 가 파일을 읽어 실행) 통과한다.
+      `/tmp` 에 복사해 두고 돌리면 역시 통과했다 — 즉 인터프리터나 PATH 문제가
+      아니라 **실행 파일의 위치**가 판정을 갈랐다.
+
+      실패가 조용하지는 않았다: LAST_PULL 을 갱신하지 않으므로 EC2 의 감시
+      (`cli health` 의 `backup` 항목)가 오프사이트 사본 나이로 잡는다. 그래도
+      경보 경로에 기대지 않고 여기서 막는다.
+    -->
+    <string>cd "$HOME/Documents/GitHub/quant_trading_kiwoom" &amp;&amp; /bin/bash ./server/scripts/backup_pull.sh</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <!-- KR 개장 전(08:30 KST). EC2 백업이 03:30 에 끝나므로 그날 번들이 이미 있다. -->
+    <key>Hour</key><integer>8</integer>
+    <key>Minute</key><integer>30</integer>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/tmp/quant-backup-pull.log</string>
+  <key>StandardErrorPath</key><string>/tmp/quant-backup-pull.err</string>
+</dict>
+</plist>

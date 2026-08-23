@@ -1,0 +1,19 @@
+# 한국장: 09:00 KST 개장 60분 전 = 08:00 (발행 시각 불변 — run_report.sh 가
+# REPORT_BUILD_LEAD 만큼 기다렸다가 08:00 에 도착하게 시작 시각을 역산한다).
+# 07:30 에 깨우는 이유(2026-08-18, 품질 레인 도입): 아침판이 Claude CLI
+# 서브프로세스를 4곳에서 부르는 품질 레인으로 바뀌면서 빌드 리드가
+# 480초→1500초(25분)로 늘었다(run_report.sh REPORT_BUILD_LEAD 참고) — 07:50
+# 기상으로는 발행 시각(08:00) 전에 빌드를 시작할 여유가 부족해 20분 당겼다.
+# 매일 발행 이유(서브프로젝트 G): 주말·공휴일 포함 매일 — 개장일 아침 리포트가
+# 휴장 기간 산출물(engine JSON)을 종목별 최신일 우선으로 집계하려면 그 기간에도
+# 매일 발행 자체는 계속돼야 한다.
+[Unit]
+Description=Market report KR (daily 08:00 KST)
+
+[Timer]
+OnCalendar=*-*-* 07:30 Asia/Seoul
+Persistent=false
+Unit=market-report@KR.service
+
+[Install]
+WantedBy=timers.target

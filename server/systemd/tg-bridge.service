@@ -1,0 +1,29 @@
+# systemd unit — install:
+#   sudo cp server/systemd/tg-bridge.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now tg-bridge
+#
+# venv python 직접 실행 (uv run 아님) — quant-engine.service와 동일한 이유.
+#
+# MemoryMax/CPUQuota로 상한을 걸어 두는 이유: 이 브리지는 실거래 엔진
+# (quant-engine.service)과 같은 서버에서 함께 돈다. 브리지가 클로드 서브프로세스를
+# 띄우다 폭주해도 엔진의 CPU/메모리를 빼앗지 않도록 — 엔진이 항상 우선이다.
+[Unit]
+Description=quant_trading_kiwoom Telegram <-> Claude bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/quant_trading_kiwoom
+# claude CLI가 ~/.local/bin에 있음 — systemd 기본 PATH에는 없으므로 명시 필수
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=TZ=Asia/Seoul
+ExecStart=/home/ubuntu/quant_trading_kiwoom/.venv/bin/python server/scripts/tg_bridge.py
+Restart=on-failure
+RestartSec=10
+MemoryMax=400M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

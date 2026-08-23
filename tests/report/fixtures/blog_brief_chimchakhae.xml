@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<rss xmlns:activity="http://activitystrea.ms/spec/1.0/"
+     version="2.0">
+
+    <channel>
+
+            <title><![CDATA[침착해]]></title>
+            <link><![CDATA[https://blog.naver.com/stock_blog?fromRss=true&trackingCode=rss]]></link>
+
+            <description><![CDATA[]]></description>
+            <language>ko</language>
+            <generator>Naver Blog</generator>
+            <pubDate>Mon, 17 Aug 2026 02:55:54 +0900</pubDate>
+
+            <item>
+                <author>stock_blog</author>
+                <category><![CDATA[잡다한 매매]]></category>
+                <title><![CDATA[코스피 선물 1100억 트레이딩 관점]]></title>
+                <link><![CDATA[https://blog.naver.com/stock_blog/224261045776?fromRss=true&trackingCode=rss]]></link>
+                <guid>https://blog.naver.com/stock_blog/224261045776</guid>
+
+                <description><![CDATA[안녕하세요? 침착해입니다. 아주 오랜만에 블로그 글 올리네요.]]></description>
+                <pubDate>Wed, 22 Apr 2026 11:47:53 +0900</pubDate>
+                <tag><![CDATA[]]></tag>
+                <activity:verb>http://activitystrea.ms/schema/1.0/post</activity:verb>
+                <activity:object-type>http://activitystrea.ms/schema/1.0/blog-entry</activity:object-type>
+            </item>
+
+            <item>
+                <author>stock_blog</author>
+                <category><![CDATA[잡다한 매매]]></category>
+                <title><![CDATA[10월 매매들 & 결산]]></title>
+                <link><![CDATA[https://blog.naver.com/stock_blog/223637900700?fromRss=true&trackingCode=rss]]></link>
+                <guid>https://blog.naver.com/stock_blog/223637900700</guid>
+
+                <description><![CDATA[10/10일 에코프로비엠 금투세 폐지 기대감 120선 돌파 후 슈팅 기대했으나 일정 미뤄지면서 투매.]]></description>
+                <pubDate>Tue, 29 Oct 2024 10:25:26 +0900</pubDate>
+                <tag><![CDATA[침착해,종베,주식쟁이화이팅]]></tag>
+                <activity:verb>http://activitystrea.ms/schema/1.0/post</activity:verb>
+                <activity:object-type>http://activitystrea.ms/schema/1.0/blog-entry</activity:object-type>
+            </item>
+
+            <item>
+                <author>stock_blog</author>
+                <category><![CDATA[잡다한 매매]]></category>
+                <title><![CDATA[9월 매매 몇 개 공부거리들..]]></title>
+                <link><![CDATA[https://blog.naver.com/stock_blog/223601537773?fromRss=true&trackingCode=rss]]></link>
+                <guid>https://blog.naver.com/stock_blog/223601537773</guid>
+
+                <description><![CDATA[안녕하세요 침착해입니다. 강의 이후로 뭔가 많이 지쳐있기도 했고..]]></description>
+                <pubDate>Mon, 30 Sep 2024 10:02:11 +0900</pubDate>
+                <tag><![CDATA[유한양행,에코프로비엠,블루엠텍,주미사]]></tag>
+                <activity:verb>http://activitystrea.ms/schema/1.0/post</activity:verb>
+                <activity:object-type>http://activitystrea.ms/schema/1.0/blog-entry</activity:object-type>
+            </item>
+
+    </channel>
+</rss>

@@ -1,0 +1,56 @@
+[project]
+name = "quant-trading-kiwoom"
+version = "0.2.0"
+description = "KR/US 자동매매 + 뉴스 수집 + 시황 리포트 — 4평면 단일 저장소"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+    "websockets>=13.0",
+    "pandas>=2.2",
+    "pyarrow>=17.0",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+    "yfinance>=1.5.2",
+    # 아래 셋은 2026-08-13 market_report 흡수로 편입됐다 (수집·분석 평면 전용).
+    # 거래 평면은 이 셋 없이도 돌아야 한다 — 아키텍처 테스트가 강제한다.
+    "lxml>=5.0",
+    "jinja2>=3.1",
+    # 분석 저장소(Phase 3). 순수 파이썬이라 EC2 에 빌드 의존이 없다.
+    # **거래 평면은 이걸 임포트할 수 없다** — test_architecture.py 가 막는다.
+    "pymysql>=1.1",
+    # 휘발성 캐시(Phase 3b). 없어도 NullKeyValue 로 동작한다 — 선택 사항이다.
+    "redis>=5.0",
+    # Parquet 위 분석 질의(Phase 4). **데몬이 아니라 라이브러리** — 1.8GB 박스에서
+    # 상주 메모리를 안 먹는다. 봉 데이터를 MySQL 에 넣지 않기 위한 선택.
+    "duckdb>=1.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ipykernel>=7.0",
+    "matplotlib>=3.9",
+    "nbformat>=5.10",
+]
+# 파라미터 최적화/walk-forward 검증(quant_engine/research/) 전용 — 선택 의존성.
+# AWS 배포는 거래 엔진(quant_engine.run paper)만 돌리므로 이 그룹 없이도 동작해야
+# 한다. optuna/quantstats는 항상 함수 내부에서 지연 임포트한다.
+research = [
+    "optuna>=4.0",
+    "quantstats>=0.0.62",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["live: 네트워크를 타는 테스트 (기본 실행에서 제외)"]
+# importlib 모드가 필요한 이유: 두 저장소를 합치면서 tests/ 와 tests/report/ 에
+# 같은 이름의 파일이 생겼다(test_clock.py, test_indicators.py). 기본 prepend
+# 모드는 basename 이 겹치면 "import file mismatch" 로 죽는다.
+addopts = "-m 'not live' --import-mode=importlib"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["quant"]

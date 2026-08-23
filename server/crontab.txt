@@ -1,0 +1,263 @@
+# install: crontab server/crontab.txt   (server TZ must be Asia/Seoul, see setup_ec2.sh)
+# Phase 1 최소 구성: 매일 아침 뱅커 리포트 + 주간 로그/캐시 정리.
+#
+# 전작(stock-algo-trade)의 교훈 (deploy/crontab.txt):
+# - venv python 직접 실행(uv run 아님) — cron은 로그인 셸이 아니라 PATH가 비어 있고,
+#   uv가 PATH/셸 초기화에 의존해 조용히 실패하는 사례가 있었다. venv 바이너리를
+#   직접 가리키면 그 문제를 완전히 피한다.
+# - DST 주의: 미국 시장 마감/개장 시각은 서머타임에 따라 KST 기준으로 매년 두 번
+#   한 시간씩 밀린다. 여기 07:00은 뱅커 리포트(계좌 진단)용 고정 KST 시각이라 DST
+#   영향은 없지만, 추후 US 세션 관련 cron을 추가할 땐 EDT/EST 전환을 반드시 감안할 것
+#   (전작 테크감사 2026-07-17: 05:15 고정 크론이 동계에 하루 늦게 실행된 사례).
+
+# 매일 07:00 KST — Private Banker 일일 리포트 (Toss 실계좌 진단 → Telegram)
+0 7 * * * cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.cli report >> data/report.log 2>&1
+
+# 매일 07:20 KST — DART 공시 수집 (H-2). KR 리포트(market-report-kr.timer, 07:50
+# 발행) 전에 원장(data/ledger/disclosures.jsonl)을 채워야 리포트가 오늘 공시를
+# 종목 카드에 붙일 수 있다. 공시는 뉴스보다 정확한 팩트 이벤트인데, 네이버 공시
+# 페이지는 robots.txt 전면 비허용이라 공식 DART OpenAPI 가 유일한 경로다.
+20 7 * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/dart_collect.sh >> data/dart.log 2>&1
+
+# 매주 일요일 03:00 KST — 로그 로테이션 + 캐시 정리 (7일 이상 지난 로그/캐시 삭제)
+0 3 * * 0 cd /home/ubuntu/quant_trading_kiwoom && find data -name "*.log" -mtime +7 -delete && find data/cache -mtime +7 -delete 2>/dev/null || true
+
+# 2026-08-17 사용자 세션 표에 맞춰 KR 자동 편입 체인 전체를 전진했다: 08:30~09:00은
+# 동시호가(호가가 쌓여 개장가를 형성하는 창)라 그 전에 편입이 끝나 있어야 그날 새
+# 후보가 개장가부터 반영된다. KR 리포트는 08:00 발행(빌드 리드 포함)이므로 08:12에는
+# 읽을 수 있다 — 체인: 리포트 08:00 → watch-reset 08:05 → own_brief 08:12 →
+# 유니버스 롤 08:27(_universe_roll_bucket) → 08:30 동시호가 진입 대비 완료.
+# (이전 체인은 08:30 초기화 → 08:40 브리핑 → 08:57 롤 → 09:00 개장으로, 동시호가
+# 구간 전체가 전날 유니버스로 진입해야 하는 비대칭이 있었다.)
+#
+# 브리핑의 AUTO_WATCH 후보(무제한)는 확신도 엔진(watch-score)을 거쳐 임계값
+# 통과분만 관심종목에 자동 등록되고, 엔진이 08:27 KST 유니버스 리로드로 흡수한다
+# — 사용자 설계 워크플로우(2026-08-10, 2026-08-17 시각 전진).
+# 주말 제외: 시황 리포트는 거래일에만 발행된다(주말마다 "없음" 알림이 오면 소음).
+# 평일 08:05 KST — 한국 관심종목 초기화 (KR 개장 전, 08:12 브리핑 자동 편입 직전).
+# 시장별 초기화라 사용자가 넣어둔 미국 종목은 건드리지 않는다. 열린 포지션의 청산
+# 관리는 유니버스와 무관하게 계속된다(유니버스는 신규 진입 대상 선정일 뿐).
+# 2026-08-11 사용자 지시: "항상 장 시작 전 정해진 시간에 초기화, 그 뒤 내가 추가".
+5 8 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python server/scripts/tg_bridge.py watch-reset KR >> data/brief.log 2>&1
+
+# 2026-08-13: 입력을 **회사 리포트 → 자체 리포트**로 갈아탔다(사용자 지시: 회사
+# 자산에 의존하지 않는다). own_brief.sh는 같은 박스의 market_report 산출물
+# (out/YYYY/MM/DD/KR_engine.json, 08:00 발행)을 읽는다 — LLM이 경로에서 빠져
+# 프롬프트 주입면·600초 세션 타임아웃이 함께 사라졌다. 리포트가 없거나 낡으면
+# 랭킹 발굴(--discover-kr)만으로 계속 돌고 그 사실을 알린다.
+# daily_brief.sh는 삭제하지 않고 남겨둔다 — 회사 리포트로 되돌릴 때 쓴다.
+12 8 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/own_brief.sh KR >> data/brief.log 2>&1
+
+# (2026-08-10 09:05 검증 통과로 제거됨 — 실전 서버 실시간 틱 수신 확인 후
+#  kiwoom.realtime.enabled: true. 스크립트는 재검증용으로 남겨둔다:
+#  ./server/scripts/kiwoom_ws_check.sh)
+
+# 평일 21:50 KST — 미국 관심종목 자동 편입 (US 개장 40분 전).
+# daily_brief(08:40)와 별도인 이유: 그쪽 소스는 한국 회사 리포트라 US 후보가 사실상
+# 안 나온다(실측: 자동 등록 전부 KR). US는 Toss 거래대금 랭킹 발굴이 유일한 경로다.
+# LLM 미사용 — 발굴도 채점도 결정론적이라 브리핑의 주입 방어가 불필요하다.
+# 서머타임: US 개장은 22:30(EDT)/23:30(EST)이라 21:50은 두 체계 모두에서 개장 전이다.
+# 평일 21:40 KST — 미국 관심종목 초기화 (US 발굴 10분 전). KR 종목은 유지.
+40 21 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python server/scripts/tg_bridge.py watch-reset US >> data/us_discover.log 2>&1
+
+# 2026-08-13: us_watch_discover.sh → own_brief.sh US. 이제 US도 **자체 리포트**가
+# 후보를 시드한다(20:00/21:00 KST 발행) — 랭킹 발굴만 쓰던 이전 경로는 뉴스 촉매를
+# 못 봤다. 랭킹 발굴(--discover-us)은 그대로 함께 돌아 후보 출처가 둘이 된다.
+# 편입분은 22:10 유니버스 롤(_universe_roll_bucket)에서 흡수돼 개장부터 거래된다.
+# us_watch_discover.sh는 남겨둔다 — 리포트 없이 랭킹만으로 돌릴 때의 폴백.
+50 21 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/own_brief.sh US >> data/us_discover.log 2>&1
+
+# 평일 13:25 KST — DART 공시 오후 재수집 (2026-08-17 감사, P2). 07:20 스냅샷만
+# 있으면 13:40 마감 포지션 리포트(run_close_report.sh)가 읽는
+# data/ledger/disclosures.jsonl에 09:00~13:40 장중 공시(수주·자사주 등 촉매)가
+# 비어, 오후판이 그 시간대 이벤트를 못 본다. dart_collect.sh는 append_ledger가
+# rcept_no 기준으로 중복 제거하는 append-only 원장이라(quant/collect/sources/
+# dart.py) 재실행이 안전하다 — 07:20 항목과 스크립트를 공유한다.
+25 13 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/dart_collect.sh >> data/dart.log 2>&1
+
+# 평일 13:55 KST — KR 오후 마감 포지션 리포트(market-close-report-kr.timer, 13:40
+# 빌드 → 13:50 전후 발행) 기반 자동 편입 (서브프로젝트 T Task 2, 2026-08-17).
+# 체인: 리포트 13:40 빌드 → 13:50 발행 → own_brief 13:55(--session close, KR_close_
+# engine.json 을 읽는다) → 13:58 데드라인 → 유니버스 롤 14:00(_universe_roll_bucket)
+# → 14:00~15:30 마감 포지션 구간에 당일 단타 후보(EVENT_SCALP)가 매매 대상이 된다.
+# 08:12/21:50 아침판과 달리 세션 인자(KR close)가 own_brief.sh의 데드라인·롤·읽는
+# 파일명을 오후용으로 바꾼다 — own_brief.sh 상단 주석 참고. KR 전용(US 오후판 없음).
+55 13 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/own_brief.sh KR close >> data/brief.log 2>&1
+
+# --- 세션 마감 손익 (2026-08-13 사용자 요청: "%만 말고 실제 금액으로") ---
+# 스코어보드는 누적 bps/승률이라 "오늘 얼마 벌었나"에 답하지 못한다. 이쪽은 그
+# 세션의 실현손익·수수료를 통화 단위로 보여준다(KRW/USD를 섞지 않는다).
+# KR 정규장 마감 15:30 KST → 15:35.
+35 15 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/session_pnl.sh KR >> data/session_pnl.log 2>&1
+
+# US 마감은 05:00 KST(EDT) / 06:00 KST(EST)라 06:10이면 서머타임 양쪽 모두 마감 후다.
+# 미국 월-금 세션은 한국 달력으로 익일에 걸리므로 요일이 화-토(2-6)다.
+10 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/session_pnl.sh US >> data/session_pnl.log 2>&1
+
+# --- 장타(가치·팩터) 전략 전제 데이터 (2026-08-19: 수집기는 있었지만 아무도
+# 부르지 않았던 배선 누락 — naver_quant.py/dart_financials.py의 fetch_and_persist가
+# 호출부 0건이었다) ---
+#
+# 매일 15:45 KST — 네이버 거래상위 펀더멘털(시가총액/PER/ROE) 수집. KR 정규장
+# 마감(15:30) 이후라야 그날 종가 기준 값이 잡힌다. session_pnl KR(15:35)과 5분
+# 띄웠다 — 같은 분에 몰지 않는다(1.8GB 박스). PER/ROE는 장중 계속 바뀌지만
+# append_ledger가 (date, code) 기준으로 그날 첫 관측값만 남기므로 마감 후 한 번이면
+# 충분하다.
+45 15 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/naver_fundamentals_collect.sh >> data/naver_fundamentals.log 2>&1
+
+# 매주 일 15:50 KST — DART 재무제표(부채비율/ROE/BPS) 수집. 분기 실적 발표
+# 주기로만 바뀌는 데이터라 매일 부르면 API 할당량 낭비다(사용자 지시) — 주 1회로
+# 충분하다. 일요일인 이유: KR 정규장이 없어 거래 엔진과 자원 경쟁이 없고, 재무제표
+# 값 자체는 요일과 무관하다(어느 요일에 조회해도 같은 사업보고서 값).
+50 15 * * 0 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/dart_fundamentals_collect.sh >> data/dart_fundamentals.log 2>&1
+
+# 매일 16:35 KST — KR 개별종목 일봉 백필(장타 팩터 백테스트 데이터 관문, 관심종목
+# KR 종목 + 069500). backfill_kr_daily.sh(069500 개장일 판정 앵커, 16:30)가 끝난
+# 뒤로 5분 띄웠다 — 같은 Toss 일봉 소스를 쓰지만 프로세스가 분리돼 있어 순서를
+# 강제할 수는 없고, 그냥 같은 분 충돌만 피한다. 최초 실행은 17종목×2년 ≈ 430
+# 호출·3~4분, 이후는 backfill()의 gap-only 재조회라 훨씬 싸다(스크립트 상단 주석).
+35 16 * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backfill_kr_stock_daily.sh >> data/backfill.log 2>&1
+
+# 매일 05:40 KST — 1분봉 적재 (scalp_1m, 2026-08-18). Toss 1m API는 **과거
+# 4거래일 롤링만** 제공한다(docs/data-availability.md 실측) — 매일 당겨 쌓지
+# 않으면 1분봉 백테스트 표본이 영원히 안 생긴다. 유니버스+앵커(QQQ·069500·
+# TQQQ·SOXL) 대상, 기존 backfill() writer 재사용(같은 ts dedup). 05:40 은
+# US 마감(05:00 EDT) 후·KR 개장 전이라 양 시장의 직전 세션이 다 잡힌다.
+40 5 * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backfill_1m.sh >> data/backfill.log 2>&1
+
+# --- 봉 백필 (2026-08-13 신규: 스케줄이 아예 없었다) ---
+# QQQ 일봉. 화-토 07:00 KST — US 마감 05:00(EDT)/06:00(EST) 양쪽 모두 지난 시각이고,
+# 미국 월-금 세션은 한국 달력으로 익일에 걸리므로 요일이 화-토(2-6)다.
+#
+# **이건 백테스트용이 아니라 라이브 사이징에 걸린 파일이다.** regime provider가
+# data/history/QQQ/1d/를 직접 읽어 US 국면(방어 0.5x/중립 1.0x/공격 1.3x)을 계산한다.
+# 실측 사고: 마지막 봉이 07-31에 멈춘 채 08-13까지 돌았고, 추세 지표 부호가 뒤집혀
+# (-2.66% 하락 → 실제로는 +3.23% 상승) 13일간 aggressive(1.3x)여야 할 구간을
+# neutral(1.0x)로 사이징했다. 원인은 단순히 이 크론이 없었던 것이다.
+#
+# 스크립트가 받은 뒤 **커버리지로 되짚고**, 여전히 낡으면 알린다 — fetch의 exit 0이
+# "봉이 최신"을 뜻하지 않는다(alpaca 무료 구독이 rc=0으로 빈 결과를 주던 실측).
+0 7 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backfill_us_daily.sh >> data/backfill.log 2>&1
+
+# 매일 16:30 KST — 069500(KODEX200) 일봉 백필. 개장일 판정(quant/analyze/opendays.py)이
+# 이 파일의 마지막 봉 날짜를 앵커로 쓴다(G). 요일 제한 없이 **매일**인 이유: 이 파일
+# 자체가 "오늘이 개장일인가"의 판정 근거라 휴장일에도 갱신 시도가 필요하고, 휴장일엔
+# yfinance가 새 봉을 안 주니 그냥 무해한 no-op이다. yfinance는 키·IP 화이트리스트가
+# 필요 없다.
+30 16 * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backfill_kr_daily.sh >> data/backfill.log 2>&1
+
+# 매주 금 16:10 KST — 누적/주간 스코어보드 (전략별 승률·payoff·거래당 bps → 텔레그램).
+# 숫자가 자본 배분을 결정한다 — 주말에 전략을 끄고 켤 판단 근거.
+10 16 * * 5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/scoreboard_weekly.sh >> data/scoreboard.log 2>&1
+# 자동 판정 루프(2026-08-24) — 파라미터 변경 감지 + 이중차분 효과 판정 + 전략
+# 사망 경보. **판정할 게 없으면 텔레그램을 보내지 않는다**(조용한 것이 기본값).
+# 매일 도는 이유: 판정은 표본이 차는 순간 나와야지 주 단위로 미루면 최대 6일
+# 늦는다. 16:30 = KR 마감 후이고 마감 리포트(13:50)·스코어보드(금 16:10)와 안 겹침.
+30 16 * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/experiments_daily.sh >> data/experiments.log 2>&1
+
+# --- Phase 5: 백업 + 운영 감시 (2026-08-13 신규) ---
+#
+# 매일 03:30 KST — 아티팩트 + MySQL 덤프를 번들로. KR 개장 전, US 마감 후의 조용한 시각.
+# **번들을 만들 뿐 전송하지 않는다** — 전송은 받는 쪽(Mac)이 backup_pull.sh 로 당긴다.
+# EC2 가 털렸을 때 백업까지 지울 수 있는 키를 같은 박스에 두지 않으려는 것이다.
+# 문제(줄어듦·덤프 실패)가 있으면 종료코드 1 + 텔레그램.
+30 3 * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backup.sh >> data/backup.log 2>&1
+
+# 매주 일 04:00 KST — 복원 리허설. **안 해본 백업은 백업이 아니다.**
+# 종료코드 0=전부 확인 / 1=문제 / 2=부분 통과(확인 못 한 항목 있음).
+0 4 * * 0 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backup_restore_check.sh >> data/backup.log 2>&1
+
+# 매시 05분 — 운영 감시. watchdog(5분)이 "엔진의 침묵"을 본다면 이쪽은 **엔진이 잘
+# 도는데 틀린 것**을 본다: 낡은 봉, 죽은 피드, 원장 불일치, 로그에 남은 시크릿,
+# 설치본 드리프트, 백업 부재. 정상이면 **아무 말도 하지 않는다**(매시간 "정상"
+# 알림이 오면 사람이 끄고, 끈 알림은 없는 알림이다). 같은 발견 집합은 한 번만 알린다.
+5 * * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/ops_watch.sh >> data/ops_watch.log 2>&1
+
+# --- Phase 7: 채점 (2026-08-14 신규) ---
+#
+# 매일 16:00 KST — 전방 수익률 채우기 + 결정론적 판단 기록.
+# KR 마감(15:30) 직후. **그날 만기가 된 지평만** 채우므로 과거 시세 조회가 없다 —
+# 오늘 종가만 필요하고, 그건 리포트가 이미 매일 받는다.
+# `pending_outcomes()` 는 원래 있었지만 부르는 코드가 없어 199행 중 outcome 이 0건이었다.
+0 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.cli outcomes >> data/outcomes.log 2>&1
+
+# 매일 16:20 KST — 장마감 결과 리포트(§E-3). outcomes(16:00) 뒤 — 그날 채워진
+# 값을 읽는다. 그날 만기된 outcome 상위/하위 + 리더보드 판정 + 누적 스코어보드를
+# 텔레그램으로. 표본 0건이면 침묵하지 않고 "만기 지평 없음"을 명시한다.
+#
+# OPS_NARRATOR=openrouter — 기본값 claude 로 두면 EC2(1.8GB)에서 Claude Code CLI
+# 서브프로세스가 매번 뜨고 최악 30분이 걸린다(deepdive 크론 줄과 같은 근거, I2).
+# close-report 는 이제 결정론 요약을 narrate 호출 **전에** flush 하므로(2026-08-15
+# 리뷰 수정) 서술기가 죽거나 늦어도 요약 자체는 나가지만, 애초에 안 죽는 경로를
+# 쓰는 게 낫다. OPENROUTER_API_KEY 가 없으면 make_narrator() 가 NullNarrator 로
+# 안전하게 떨어진다.
+#
+# OPENROUTER_MAX_TOKENS=4000 — 기본 700 은 deepdive 에서 이미 부족했던 값이다
+# (추론 모델 nemotron-3-ultra 가 최종 답 전에 "생각"에 토큰을 먼저 쓴다). 프롬프트
+# 크기는 deepdive 보다 작지만 생각 과정에 드는 토큰은 프롬프트 크기와 무관하게
+# 소진될 수 있어 같은 값으로 맞춘다 — 실측 전까지는 보수적으로.
+#
+# 요일 제한 없이 매일(서브프로젝트 G): 휴장일엔 outcomes(16:00)가 채울 만기 지평이
+# 애초에 없으므로 build_close_report 가 정직하게 "만기 지평 없음"을 보낸다 —
+# 억지로 걸러 침묵하는 것보다 매일 원칙이 단순하고, 조용한 실패를 피한다.
+20 16 * * * cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 ./server/scripts/close_report.sh >> data/close_report.log 2>&1
+
+# 매주 금 16:30 KST — 리더보드 승격 판정. **자동 적용하지 않는다**(판정만 낸다).
+# 표본 수를 거래일로 세므로 20거래일 전에는 계속 "판단 불가"가 정상이다.
+30 16 * * 5 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.cli leaderboard >> data/leaderboard.log 2>&1
+
+# 5분마다 — 데드맨 스위치. 서비스 다운/행(hang)을 감지해 알림+복구. 장애당 알림 1회(중복 방지).
+*/5 * * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/watchdog.sh >> data/watchdog.log 2>&1
+
+# --- 뉴스 심화 파이프라인 (2026-08-15 신규, 서브프로젝트 A) ---
+#
+# 야간 심화(본문·관계·업종). 리포트 발행과 독립: 실패해도 리포트는 정시(A 는
+# relations.json/sector_map.json 아티팩트를 갱신할 뿐, 못 갱신하면 어제 것이
+# 그대로 남는다 — run_deepdive 계약). 시각은 리포트 발행 T-마감 상대다(스펙
+# docs/superpowers/specs/2026-08-15-news-deepdive-design.md): KR 07:50 발행 →
+# 05:00 시작(상한 07:00), US 19:50 발행 → 17:30 시작(상한 19:30).
+#
+# OPS_NARRATOR=openrouter — 서술기 선택은 셸이 아니라 make_narrator() 한 곳에
+# 있지만(ops_watch.sh 와 같은 계약), 여기서 그 선택을 env 로 명시한다. 기본값
+# claude 로 두면 EC2(1.8GB)에서 Claude Code CLI 서브프로세스가 매번 뜨는데
+# 최악 30분이 걸린다(I2) — OpenRouter 무료 레인은 API 호출 한 번이다.
+# OPENROUTER_API_KEY 가 없으면 make_narrator() 가 NullNarrator 로 안전하게
+# 떨어진다(정직한 skipped_llm) — 배포 체크: .env.local 에 키를 넣어야 실제로
+# 서술이 동작한다.
+#
+# OPENROUTER_MAX_TOKENS=4000 — 기본 700 은 운영 서술("텔레그램 한 통")용으로
+# 튜닝된 값인데, 기본 모델(nemotron-3-ultra)은 추론 모델이라 생각 과정에서
+# 토큰을 먼저 쓴다. deepdive 의 9K자 프롬프트에 700 을 주면 최종 답이 잘려
+# 후보가 0건이었고(E2E 실측 2026-08-15), 4000 으로 올리면 정상 파싱됐다.
+#
+# 요일 제한 없이 매일(서브프로젝트 G): 매일 발행 리포트(market-report@.timer)가
+# 휴장일에도 그날 재료를 engine.json 으로 쌓고, 개장일 아침 리포트가 그걸 최신일
+# 우선으로 집계한다(§Task 3) — deepdive 가 휴장일에 쉬면 그 재료의 relations/
+# sector 심화만 비어 집계에서 빠진다.
+0 5  * * * cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 .venv/bin/python -m quant.apps.report_cli deepdive --market KR >> data/deepdive.log 2>&1
+30 17 * * * cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 .venv/bin/python -m quant.apps.report_cli deepdive --market US >> data/deepdive.log 2>&1
+
+# --- 판단하는 워치독 (2026-08-19, 사용자 지시) ---
+#
+# ops_watch.sh(매시 05분, 규칙 기반 — "파일이 있나/신선한가")와 역할이 다르다:
+# 이쪽은 quant.control.ops_judge(도구 호출 LLM 에이전트)로 서로 다른 데이터
+# 소스(포트폴리오·원장·전략 설정·리포트·지수 봉·운영 로그)를 대조해 **규칙이
+# 놓친, 값 자체는 그럴듯하지만 서로 앞뒤가 안 맞는** 유형의 문제를 찾는다
+# (server/scripts/ops_judge.sh 상단 주석 — 왜 필요한지의 실측 근거).
+# 하루 2회, 사용자가 지정한 시각대로:
+#
+#   KR 13:10 — "한국장 중에, 오후 리포트 나오기 전". 오후 마감 리포트 빌드는
+#     13:40(market-close-report-kr.timer) 이므로 13:10 이면 30분 여유가 있고,
+#     13:25 DART 재수집과도 겹치지 않는다. 그날 KR 정규장 체결이 이미 상당히
+#     쌓인 시점이라 원장 대조 표본도 있다.
+#   US 01:30 — "미국장 중간에 한 번"(사용자 명시: KST 01:00~02:00 사이). US
+#     정규장은 22:30(EDT)/23:30(EST) 개장 ~ 05:00/06:00 마감이라 01:30 은
+#     서머타임 양쪽 모두에서 세션 중간 근처다.
+#
+# `nice -n 10`은 셸 스크립트 안(ops_judge.sh)에서 판단 단계에만 건다(1.8GB
+# 박스에서 엔진과 자원 경쟁하지 않도록 — ops_watch.sh narrate 호출과 같은 관례).
+# LLM 예산은 OPS_JUDGE_TIME_BUDGET(기본 240초) — close_report.sh 처럼 OpenRouter
+# 무료 레인(chat_with_tools, 도구 호출 루프)을 쓴다. OPENROUTER_API_KEY 가 없으면
+# "review"(확인 필요)로 안전하게 떨어진다(narrate.py 와 같은 무자격증명 안전망).
+10 13 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/ops_judge.sh kr-midday >> data/ops_judge.log 2>&1
+30 1 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/ops_judge.sh us-midsession >> data/ops_judge.log 2>&1

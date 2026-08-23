@@ -1,0 +1,48 @@
+# 마감 포지션 리포트 생성(서브프로젝트 R, 템플릿 유닛). market-close-report@KR.
+#
+# 아침 리포트(market-report@.service)와 같은 박스에서 돈다 — 실거래 엔진이
+# 항상 우선이므로 자원을 명시적으로 제한한다(같은 방침).
+[Unit]
+Description=Market close report (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/quant_trading_kiwoom
+Environment=TZ=Asia/Seoul
+ExecStart=/home/ubuntu/quant_trading_kiwoom/server/scripts/run_close_report.sh %i
+
+# 자원 격리 — 아침판(market-report@.service)과 동일 상한
+MemoryMax=500M
+CPUQuota=50%
+Nice=10
+IOSchedulingClass=idle
+
+# 발행 시각까지 기다리지 않는다(고정 13:40 KST) — 빌드만 도므로 아침판보다
+# 짧게 잡는다.
+#
+# 600→1500 (2026-08-18 P0 실측): 첫 가동에서 무료 LLM 레인 퇴화로 빌드가
+# 600초를 넘겨 systemd 가 cgroup 째 SIGTERM — run_close_report.sh 의 실패
+# 알림(notify fail) 분기까지 같이 죽어 **무음 실패**가 됐다(산출물 0 + 알림 0
+# + 13:55 오후 편입 랭킹 폴백 저하). 빌드 자체는 LLM 벽시계 예산(마감판
+# 180s, agent_interpret)으로 이제 ~7분 안에 끝나는 게 정상이고, 이 값은
+# 발행 시한을 지키는 장치가 아니라 **스크립트의 실패-알림 경로가 실행될
+# 기회를 보장하는 최후 백스톱**이다 — 시한 방어는 예산이, 사망 알림은
+# 스크립트가, 진짜 행(hang)만 이 타임아웃이 잡는다.
+TimeoutStartSec=1500
+
+# 파일 시스템 보호 — 리포트는 자기 디렉토리 밖을 쓸 이유가 없다
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/quant_trading_kiwoom/data /home/ubuntu/quant_trading_kiwoom/out
+
+# 1.8GB 박스. 메모리가 마르면 이 작업이 먼저 양보한다 — 거래 엔진
+# (OOMScoreAdjust=-500)이 마지막까지 살아남아야 한다.
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

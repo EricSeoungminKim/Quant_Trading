@@ -1,0 +1,36 @@
+# systemd unit — install:
+#   sudo cp server/systemd/quant-engine.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now quant-engine
+#
+# venv python 직접 실행 (uv run 아님) — systemd/cron 데몬 환경에서 uv가 PATH/셸
+# 초기화에 의존해 조용히 실패하는 사례가 있었다 (전작 stock-algo-trade 교훈).
+# venv 바이너리를 직접 가리키면 그 문제를 완전히 피한다.
+[Unit]
+Description=quant_trading_kiwoom paper trading engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/quant_trading_kiwoom
+Environment=TZ=Asia/Seoul
+# MODE는 여기가 단일 진실 소스다. load_settings()가 "프로세스 환경 > .env.local"
+# 우선순위를 보장하므로(.env.local이 이 값을 덮어쓸 수 없다), 실전 전환은
+# 이 한 줄을 live로 바꾸고 daemon-reload + restart 하는 것으로만 일어난다.
+# .env.local의 MODE는 로컬 개발용 기본값일 뿐이다.
+Environment=MODE=paper
+ExecStart=/home/ubuntu/quant_trading_kiwoom/.venv/bin/python -m quant.apps.cli paper
+Restart=always
+RestartSec=30
+# SIGTERM(=143)은 정상 종료 — 재배포 재시작마다 'Failed' 오경보가 찍히는 것 방지
+SuccessExitStatus=143
+
+# **OOM 킬러가 가장 마지막에 죽이는 프로세스로 만든다.** 박스가 1.8GB 인데
+# MySQL(분석 저장소)까지 얹혔다. 메모리가 말라도 돈을 움직이는 이 프로세스는
+# 살아남아야 한다 — 손절·마감청산이 여기서 돈다. DB 장애가 매매를 멈추면 안
+# 된다는 규칙의 메모리 버전이다.
+OOMScoreAdjust=-500
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,2220 @@
+"""CLI 엔트리포인트: python -m quant.apps.cli {backtest|paper|report}"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import os
+from datetime import datetime
+
+from quant.core import log_redact as _redact
+from quant.adapters.env import load_env as _load_dotenv_secrets
+from quant.apps.config import load_settings
+from quant.trade.loop import run_paper_loop
+from quant.backtest import run_backtest
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
+# 시크릿 마스킹은 로거가 만들어진 직후 걸어둔다. `os.environ` 기반 값(TOKEN/SECRET/
+# APP_KEY/API_KEY/PASSWORD 이름 힌트)은 `SecretRedactingFilter`가 매 로그마다 새로
+# 읽으므로 `load_settings()`가 나중에 `.env`/`.env.local`을 `os.environ`에 채워도
+# 자동으로 잡힌다. 하지만 `quant.adapters.env.get_key()`(dart.py 등 수집기가 쓰는
+# 경로)는 `.env.local`을 직접 읽을 뿐 `os.environ`을 채우지 않는다(실측: DART_API_KEY
+# 가 dart-fundamentals 로그의 httpx GET 쿼리스트링에 평문으로 남았었다) — 그 값은
+# `os.environ` 스캔으로 잡히지 않으므로 여기서 `.env.local`을 직접 읽어 주입한다.
+# `quant/core/`는 `quant/adapters/`를 임포트할 수 없어(4평면 규칙) 스스로는 못 한다.
+_redact.install(extra_secrets=_redact.known_secrets(env=_load_dotenv_secrets()))
+
+
+def cmd_fitness(args: argparse.Namespace) -> None:
+    """적합도 함수 — 에이전트가 부르는 진입점. JSON 한 덩어리를 stdout 으로 낸다.
+
+    `backtest` 와 나눈 이유: `backtest` 는 사람이 읽는 표를 내고, 이건 **기계가
+    비교할 수 있는 지표 묶음**을 낸다. 하네스(Phase 8)가 변형끼리 비교할 때
+    사람용 출력을 파싱하게 두면 형식이 바뀌는 순간 조용히 틀린다.
+    """
+    import json as _json
+
+    from quant.backtest.fitness import ZeroCostBacktest, evaluate
+
+    symbols = args.symbols.split() if args.symbols else None
+    result = run_backtest(
+        strategy_id=args.strategy, days=args.days, interval=args.interval,
+        source=args.source, symbols=symbols,
+    )
+    try:
+        fit = evaluate(result, require_costs=not args.allow_zero_cost)
+    except ZeroCostBacktest as e:
+        # 실패도 JSON 으로 낸다 — 호출자가 stderr 를 파싱하게 두지 않는다.
+        print(_json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+        raise SystemExit(2)
+
+    out = {
+        "ok": True,
+        "strategy": args.strategy,
+        "days": args.days,
+        "interval": args.interval,
+        "source": args.source,
+        **fit.to_dict(),
+    }
+
+    # 실데이터로 돌렸다면 **커버리지를 같이 낸다.** 봉이 빠진 구간에서 나온 숫자는
+    # 멀쩡해 보이지만 근거가 없고, 하네스는 그걸 그대로 믿는다. 2026-08-13 실측:
+    # 마지막 봉이 08-01 인데 그날은 08-13 이었다 — 최근 12일이 조용히 비어 있었다.
+    # None 은 "커버리지 정상"이 아니라 **"모른다"**다(DuckDB 미설치·파일 없음).
+    if args.source == "history":
+        from quant.adapters.olap import coverage
+
+        cov = {}
+        for sym in (symbols or [args.strategy]):
+            c = coverage(sym, args.interval)
+            cov[sym] = None if c is None else c.to_dict()
+        out["coverage"] = cov
+
+    print(_json.dumps(out, ensure_ascii=False))
+
+
+def cmd_backtest(args: argparse.Namespace) -> None:
+    # --symbols "TQQQ SQQQ": 관심종목(watchlist) 전략(symbols: [])은 이게 없으면
+    # settings.yaml의 빈 symbols로 돌아 symbols[0] 접근에서 IndexError로 죽는다 —
+    # run_backtest이 그 대신 명확한 에러로 멈춘다.
+    symbols = args.symbols.split() if args.symbols else None
+    result = run_backtest(
+        strategy_id=args.strategy, days=args.days, interval=args.interval, source=args.source,
+        symbols=symbols,
+    )
+    print(f"\n=== Backtest: {args.strategy} ({args.days}d, {args.interval}, {args.source}) ===")
+    for key, value in result.metrics.items():
+        print(f"{key:>18}: {value}")
+    print(f"{'n_bars':>18}: {len(result.equity_curve)}")
+
+    # 전략이 on_cycle에서 예외로 죽어 스킵된 사이클 — "n_trades 0"이 조건 미충족인지
+    # 침묵 실패인지 이게 없으면 구분할 수 없다(mean_reversion이 실측으로 이렇게
+    # 죽었었다: run_cycle이 예외를 삼키고 "OK, n_trades 0"만 남겼다).
+    if result.strategy_errors:
+        print("\n--- 전략 사이클 에러 ---")
+        for sid, info in result.strategy_errors.items():
+            print(f"{sid:>18}: {info['cycles_skipped']}회 스킵 — {info['last_error']}")
+    else:
+        print(f"{'strategy_errors':>18}: 0")
+
+    # 회계 검산 내역을 항상 함께 낸다. run_backtest이 이미 통과를 강제하지만, 성과
+    # 숫자만 단독으로 떠다니면 그게 어떤 통화의 무엇을 합산한 것인지 아무도 모른다 —
+    # 손익이 USD, 자산곡선이 KRW인 채로 몇 달을 보낸 적이 있다.
+    rec = result.reconciliation
+    ccy = rec["currency"]
+    print(f"\n--- 회계 검산 ({ccy}) ---")
+    print(f"{'초기자산':>18}: {rec['initial_equity']:>18,.0f}")
+    print(f"{'최종자산':>18}: {rec['final_equity']:>18,.0f}")
+    print(f"{'실현손익':>18}: {rec['realized_pnl']:>18,.0f}")
+    print(f"{'미실현손익':>18}: {rec['unrealized_pnl']:>18,.0f}")
+    print(f"{'수수료':>18}: {-rec['fees']:>18,.0f}")
+    print(f"{'잔차':>18}: {rec['residual']:>18,.6f}  (허용 {rec['tolerance']:,.6f})")
+
+    # 벤치마크(단순 매수보유) 비교를 전략 수익률과 항상 나란히 찍는다 — 이 비교가
+    # 없으면 10년 -34% 백테스트를 같은 기간 TQQQ 단순보유 +2,941%와 한 번도
+    # 나란히 못 본다.
+    bench = result.benchmark
+    print(f"\n--- 벤치마크 비교 (단순 매수보유, {ccy}) ---")
+    for label, key in (("buy&hold 100%", "buy_hold"), ("buy&hold 50%", "buy_hold_50pct")):
+        m = bench.get(key, {})
+        print(
+            f"{label:>18}: return {m.get('total_return_pct', 0):>8.2f}%  "
+            f"cagr {m.get('cagr_pct', 0):>8.2f}%  mdd {m.get('mdd_pct', 0):>8.2f}%  "
+            f"sharpe {m.get('sharpe', 0):>6.2f}"
+        )
+
+
+def cmd_paper(args: argparse.Namespace) -> None:
+    """실시세 기반 모의매매 루프. 조립은 app/assembly.py가 담당한다."""
+    from quant.apps.assembly import MissingCredentials, build_paper_runtime, rebuild_strategies
+
+    settings = load_settings()
+    _redact.install()
+    try:
+        rt = build_paper_runtime(settings)
+    except MissingCredentials as e:
+        logger.error("%s", e)
+        raise SystemExit(2)
+
+    def _rebuild():
+        """세션 롤에서 전략을 다시 조립한다. settings.raw를 그때 다시 읽으므로 핫
+        리로드된 설정이 반영되고, 열린 포지션 종목은 유니버스에서 빠졌어도 전략에
+        남는다(유니버스는 신규 진입 후보를 고르는 장치일 뿐이다).
+
+        rebuild_strategies가 돌려주는 markets는 매번 새로 만든 dict라 그냥
+        버리면 유니버스 롤로 새로 들어온 심볼이 risk.market_of/broker.market_of에
+        영영 반영되지 않는다(A-4). risk.market_of와 broker.market_of는 조립
+        시점에 같은 dict 객체를 공유하므로(assembly.build_paper_runtime), 그
+        dict를 **재할당하지 않고 in-place update**해야 양쪽에 다 반영된다.
+
+        leverage_of는 rt.leverage_of(부팅 시점 스냅샷)를 그대로 다시 넘긴다 —
+        재조회하지 않는다(market_of와 달리 여기서 갱신 배선을 하지 않기로 한
+        판단은 assembly.rebuild_strategies의 docstring 참고). 넘기지 않으면
+        MeanReversionStrategy가 매 세션 롤마다 leverage_of=None으로 재조립돼
+        레버리지 금지 게이트가 첫 세션 이후로 조용히 꺼지는 회귀가 생긴다."""
+        held = [sym for sym, pos in rt.ctx.broker.positions().items() if pos.is_open]
+        strategies, _markets, _active = rebuild_strategies(
+            settings.raw, rt.universe, held_symbols=held, leverage_of=rt.leverage_of,
+        )
+        rt.risk.market_of.update(_markets)
+        return strategies
+
+    logger.info("paper loop 시작 — poll_seconds=%s", settings.poll_seconds)
+    asyncio.run(run_paper_loop(
+        rt.strategies, rt.ctx, rt.risk, rt.sinks, settings, rt.notifier,
+        control=rt.control, market_data=rt.data, active_markets=rt.active_markets,
+        approval=rt.approval, approval_notifier=rt.approval_notifier,
+        approval_cfg=rt.approval_cfg, reconciler=rt.reconciler, regime=rt.regime,
+        universe=rt.universe, rebuild_strategies=_rebuild if rt.universe is not None else None,
+        name_of=rt.name_of, books=rt.books,
+    ))
+
+
+def cmd_fetch(args: argparse.Namespace) -> None:
+    """과거 데이터 백필 → data/history/{symbol}/{YYYY}/{MM}.parquet(1분봉) 또는
+    data/history/{symbol}/{interval}/{YYYY}/{MM}.parquet(1분봉이 아닌 native interval)."""
+    load_settings()  # .env/.env.local 로드
+    from datetime import datetime
+
+    from quant.collect.quotes.backfill import DEFAULT_HISTORY_DIR, backfill
+
+    start = datetime.fromisoformat(args.start)
+    end = datetime.fromisoformat(args.end) if args.end else datetime.now()
+
+    if args.source == "toss":
+        if args.interval not in ("1m", "1d"):
+            raise ValueError("toss 소스는 1분봉(1m) 또는 일봉(1d)만 지원합니다")
+        from quant.adapters.brokers.toss.client import TossClient
+        from quant.collect.quotes.toss_source import TossCandleSource
+
+        client = TossClient(
+            client_id=os.environ.get("TOSS_CLIENT_ID", ""),
+            client_secret=os.environ.get("TOSS_CLIENT_SECRET", ""),
+            account_seq=os.environ.get("TOSS_ACCOUNT_SEQ", ""),
+            mode="paper",
+        )
+        source = TossCandleSource(client)
+        report = backfill(args.symbol, source, start, end, interval=args.interval)
+    elif args.source == "yfinance":
+        from quant.collect.quotes.yf_source import YFinanceCandleSource
+
+        source = YFinanceCandleSource(args.interval)
+        report = backfill(args.symbol, source, start, end, interval=args.interval)
+    elif args.source == "alpaca":
+        from quant.collect.quotes.alpaca_source import AlpacaCandleSource
+
+        # 일봉(1d) 타임스탬프는 세션 시작 시각(04:00~05:00 ET)이라 정규장
+        # 09:30~15:45 between_time 필터를 통과하지 못해 전부 걸러진다(실측
+        # 확인됨) — 1d에 한해 정규장 필터를 끈다. 분봉(1m/5m/15m/1h)은 기존
+        # 동작(regular_session_only=True) 그대로 유지한다.
+        regular_session_only = args.interval != "1d"
+        source = AlpacaCandleSource(args.interval, regular_session_only=regular_session_only)
+        report = backfill(args.symbol, source, start, end, interval=args.interval)
+    else:
+        raise ValueError(f"지원하지 않는 데이터 소스: {args.source}")
+
+    print(f"\n=== fetch: {args.symbol} ({args.start} ~ {args.end or 'now'}, source={args.source}, interval={args.interval}) ===")
+    print(f"partitions_written: {report.partitions_written or '(none)'}")
+    print(f"partitions_skipped: {report.partitions_skipped or '(none)'}")
+    print(f"total_bars: {report.total_bars}")
+    print(f"missing weekday sessions: {len(report.gaps)}")
+    for g in report.gaps[:20]:
+        print(f"  - {g}")
+    print(f"written to: {DEFAULT_HISTORY_DIR / args.symbol}/")
+
+
+def cmd_naver_fundamentals(args: argparse.Namespace) -> None:
+    """네이버 거래상위(시가총액/PER/ROE) 스냅샷 → `data/ledger/fundamentals_naver.jsonl`.
+
+    KR 마감(15:30) 이후 매일 돌린다 — 장중 값은 계속 바뀌지만 이 원장은 append_ledger가
+    (date, code) 기준으로 그날의 첫 관측값만 남기므로 마감 직후든 몇 시간 뒤든 결과는
+    같다. DART 재무제표(분기 단위로만 바뀜)와 갱신 주기가 달라 서브커맨드를 분리했다
+    — 매일 도는 이쪽과 달리 dart-fundamentals는 주 1회면 충분하다."""
+    from pathlib import Path
+
+    from quant.collect.sources.naver_quant import fetch_and_persist
+
+    root = Path(args.root)
+    stat = fetch_and_persist(root)
+    print(
+        f"네이버 펀더멘털: 조회 {stat['fetched']}건, 신규 적재 {stat['added']}건 "
+        f"(date={stat['date']})"
+    )
+
+
+def _kr_watchlist_symbols(root) -> list[str]:
+    """watchlist.yaml의 KR 종목(6자리 숫자)만. `backfill_kr_stock_daily.sh`가 셸에서
+    하는 것과 같은 필터를 파이썬 쪽에서도 하나 둔다(대상 종목 기본값 산출용) —
+    `quant.trade.universe`의 파서는 비공개(`_parse_watchlist*`)라 여기서 얇게
+    재구현한다(`cmd_health`의 `_watchlist_intake_tags`와 같은 관례)."""
+    import yaml
+
+    from quant.core.models import market_of_symbol
+
+    path = root / "data" / "watchlist.yaml"
+    if not path.exists():
+        return []
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return []
+    entries = raw.get("symbols") or []
+    out: list[str] = []
+    for e in entries:
+        sym = e.get("symbol") if isinstance(e, dict) else e
+        if sym and market_of_symbol(str(sym)) == "KR":
+            out.append(str(sym))
+    return out
+
+
+def cmd_dart_fundamentals(args: argparse.Namespace) -> None:
+    """DART 재무제표(자본총계/부채총계/순이익/발행주식수 → 부채비율/ROE/BPS) →
+    `data/ledger/fundamentals_dart.jsonl`. 대상은 기본적으로 관심종목(watchlist.yaml)의
+    KR 종목이고, `--symbols`로 직접 지정할 수도 있다.
+
+    사업보고서(reprt_code=11011, 연간)만 자본총계/부채총계/당기순이익을 온전히
+    담는다(dart_financials.py 모듈 docstring) — 그래서 기본 서브커맨드로 이걸 쓴다.
+    사업연도 기본값: 사업보고서는 다음 해 3월 말까지 제출되므로, 4월 이후면 작년도가
+    이미 나와 있고 1~3월엔 아직 재작년도까지만 확정이다(실측 2026-08-19,
+    bsns_year=2025 정상 응답 — dart_financials.py 모듈 docstring 참고)."""
+    from datetime import datetime
+    from pathlib import Path
+
+    from quant.collect.sources.dart_financials import fetch_and_persist
+
+    root = Path(args.root)
+    stock_codes = args.symbols.split() if args.symbols else _kr_watchlist_symbols(root)
+    if not stock_codes:
+        print("대상 종목 없음 — watchlist.yaml에 KR 종목이 없고 --symbols도 지정되지 않음")
+        return
+
+    if args.bsns_year:
+        bsns_year = args.bsns_year
+    else:
+        now = datetime.now()
+        bsns_year = str(now.year - 1) if now.month >= 4 else str(now.year - 2)
+
+    stat = fetch_and_persist(stock_codes, bsns_year, args.reprt_code, root)
+    print(
+        f"DART 펀더멘털: 대상 {stat['requested']}종목, 신규 적재 {stat['added']}건 "
+        f"(bsns_year={bsns_year}, reprt_code={args.reprt_code})"
+    )
+    if stat["errors"]:
+        print(f"오류 {len(stat['errors'])}건:")
+        for err in stat["errors"]:
+            print(f"  - {err}")
+
+
+def _load_param_space(strategy_id: str, path: str | None) -> dict:
+    if path is not None:
+        import yaml
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    from quant.research.param_spaces import DEFAULT_PARAM_SPACES
+    if strategy_id not in DEFAULT_PARAM_SPACES:
+        raise SystemExit(
+            f"'{strategy_id}'용 기본 param space가 없음 — --param-space로 YAML 경로를 지정하세요."
+        )
+    return DEFAULT_PARAM_SPACES[strategy_id]
+
+
+def cmd_optimize(args: argparse.Namespace) -> None:
+    """파라미터 최적화 + walk-forward 검증. 연구 스택(optuna/quantstats, `research`
+    dependency group)이 필요 — 여기서만 지연 임포트한다."""
+    from datetime import datetime
+    from pathlib import Path
+
+    from quant.research import report
+    from quant.research.walkforward import split_windows, walk_forward
+
+    param_space = _load_param_space(args.strategy, args.param_space)
+    windows = split_windows(
+        start=datetime.fromisoformat(args.start),
+        end=datetime.fromisoformat(args.end),
+        train_days=args.train_days,
+        test_days=args.test_days,
+        step_days=args.step_days or args.test_days,
+        embargo_days=args.embargo_days,
+    )
+    if not windows:
+        raise SystemExit(
+            f"윈도우 0개 — start~end 구간이 train_days({args.train_days})+"
+            f"test_days({args.test_days})(+embargo {args.embargo_days})를 못 채움"
+        )
+
+    result = walk_forward(
+        strategy_id=args.strategy, param_space=param_space, windows=windows,
+        n_trials=args.trials, source=args.source, seed=args.seed, interval=args.interval,
+    )
+
+    print()
+    print(quant.analyze.render_text(result, strategy_id=args.strategy))
+
+    out_dir = Path("data/research")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_path = out_dir / f"{args.strategy}_walkforward.html"
+    if report.render_html(result, str(html_path), strategy_id=args.strategy):
+        print(f"\nHTML 리포트: {html_path}")
+
+
+def cmd_report(args: argparse.Namespace) -> None:
+    """Toss 실계좌 일일 진단 리포트 → Telegram (미설정 시 콘솔 출력)."""
+    load_settings()  # .env/.env.local 로드
+    from quant.control.banker import run_report
+    from quant.adapters.brokers.toss.client import TossClient
+
+    class _ConsoleNotifier:
+        def send(self, text: str) -> None:
+            print(text)
+
+    notifier = _ConsoleNotifier()
+    try:
+        from quant.adapters.notify.telegram import TelegramNotifier
+        tg = TelegramNotifier.from_env()
+        if getattr(tg, "enabled", False):
+            notifier = tg
+    except Exception as e:
+        logger.warning("텔레그램 미설정 — 콘솔로 출력: %s", e)
+
+    mode = os.environ.get("MODE", "paper")
+    if mode != "live":
+        logger.warning("banker report는 실계좌(holdings) 조회가 필요 — MODE=live로 실행해야 함")
+    client = TossClient(
+        client_id=os.environ.get("TOSS_CLIENT_ID", ""),
+        client_secret=os.environ.get("TOSS_CLIENT_SECRET", ""),
+        account_seq=os.environ.get("TOSS_ACCOUNT_SEQ", ""),
+        mode=mode,
+    )
+    run_report(client, notifier)
+
+
+def cmd_watch_score(args: argparse.Namespace) -> None:
+    """워치리스트 후보 종목 결정론적 채점 — 08:40 daily-brief cron 전용(리포팅 레이어).
+    최종 줄 `PASS: ...` 포맷은 셸 스크립트가 파싱하므로 그대로 유지할 것.
+    입력 토큰 포맷: `SYMBOL[:TAGS[:YYYYMMDD]]` (TAGS는 TREND/REBOUND/EVENT를
+    '+'로 조합, 세 번째 필드는 리포트 발행일)."""
+    import json
+    from pathlib import Path
+
+    settings = load_settings()
+    _redact.install()  # .env/.env.local + settings.yaml 로드
+    from quant.apps.assembly import MissingCredentials, build_toss_client
+    from quant.analyze.watch_scorer import resolve_regime_label, run_watch_score
+
+    auto_score_cfg = settings.universe.get("watchlist", {}).get("auto_score", {})
+    enabled = auto_score_cfg.get("enabled", True)
+
+    threshold = args.threshold
+    if threshold is None:
+        threshold = auto_score_cfg.get("threshold", 50)
+
+    regime_state: dict | None = None
+    # CWD가 아니라 저장소 루트 기준으로 고정 — cron이 어느 디렉토리에서 불려도 동일하게 찾는다.
+    regime_path = regime_state_path()
+    if regime_path.exists():
+        try:
+            regime_state = json.loads(regime_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("regime.json 파싱 실패 — neutral로 대체: %s", e)
+    regime_label, stale_reason = resolve_regime_label(regime_state)
+    if stale_reason:
+        logger.warning("watch-score: %s", stale_reason)
+
+    tokens = args.symbols.split()
+
+    discover_markets = []
+    if getattr(args, "discover_kr", False):
+        discover_markets.append("KR")
+    if getattr(args, "discover_us", False):
+        discover_markets.append("US")
+
+    if not tokens and not discover_markets:
+        print("PASS: 없음")
+        return
+
+    if not enabled:
+        results = run_watch_score(tokens, None, threshold, regime_label, enabled=False)
+    else:
+        try:
+            client = build_toss_client()
+        except MissingCredentials as e:
+            logger.error("%s", e)
+            raise SystemExit(2)
+        # 발굴 후보(--discover-kr / --discover-us): 시장별 거래대금 랭킹 상위를
+        # 리포트 후보와 합친다. 리포트 후보가 우선 — 같은 심볼이 양쪽에 있으면
+        # 리포트 쪽 태그를 쓴다. US는 회사 리포트(한국 시황)에 안 나오므로 사실상
+        # 이 발굴 경로가 유일한 자동 편입 수단이다(2026-08-11 사용자 요청).
+        if discover_markets:
+            from quant.analyze.watch_scorer import discover_candidates
+            for market in discover_markets:
+                have = {t.split(":")[0] for t in tokens}
+                found = [
+                    t for t in discover_candidates(client, market=market)
+                    if t.split(":")[0] not in have
+                ]
+                if found:
+                    logger.info("%s 발굴 후보 %d개 추가: %s", market, len(found), " ".join(found))
+                    tokens = tokens + found
+
+        # 종목별 수급(ka10059)용 키움 클라이언트 — 키가 있으면 붙인다. 서버 IP가
+        # 아직 WAF에 안 풀렸거나 조회가 실패하면 scorer가 시장 조류로 폴백하므로
+        # 여기서 실패해도 채점은 계속된다.
+        kiwoom_client = None
+        app_key = os.environ.get("KIWOOM_APP_KEY", "")
+        secret_key = os.environ.get("KIWOOM_SECRET_KEY", "")
+        if app_key and secret_key:
+            try:
+                from quant.adapters.brokers.kiwoom.client import KiwoomClient
+                kiwoom_client = KiwoomClient(app_key=app_key, secret_key=secret_key)
+            except Exception as e:  # noqa: BLE001 — 보조 데이터 소스 실패는 치명 아님
+                logger.warning("키움 클라이언트 생성 실패 — 시장 조류로 폴백: %s", e)
+        results = run_watch_score(
+            tokens, client, threshold, regime_label, enabled=True, kiwoom_client=kiwoom_client,
+            allow_kr_stocks=auto_score_cfg.get("allow_kr_stocks", False),
+        )
+
+    # 세분화 출력(2026-08-10 사용자 요청): 항목별 득점/만점 → 총점 → 임계값 구성.
+    # 마지막 `PASS:` 줄만 기계 계약(daily_brief.sh 파싱) — 나머지는 텔레그램용.
+    import re as _re
+
+    passing = []
+    for r in results:
+        status = "✅ PASS" if r.passed else "❌ FAIL"
+        profile = r.profile or ("+".join(r.tags) if r.tags else "무태그")
+        thr = f"임계 {r.eff_threshold}" + (f" = {' '.join(r.threshold_notes)}" if r.threshold_notes else "")
+        print(f"{r.symbol} [{profile}] 총 {r.score}/100 → {status} ({thr})")
+        for name, earned, mx, detail in r.breakdown:
+            mark = "●" if earned > 0 else "○"
+            mx_str = f"/{mx}" if mx else ""
+            print(f" {mark} {name}: {earned}{mx_str} — {detail}")
+        # 게이트/수급/경고 등 점수 외 사유 — 증거 항목(끝이 "(+N)")은 breakdown이
+        # 이미 보여줬으니 중복 출력하지 않는다.
+        for reason in r.reasons:
+            if not _re.search(r"\(\+\d+\)($|;)", reason):
+                print(f" · {reason}")
+        if r.passed:
+            # 태그를 PASS 토큰에 실어보낸다(2026-08-12, news_momentum의 EVENT 게이트가
+            # 필요로 함) — daily_brief.sh가 SYMBOL[:TAG[+TAG]] 형태로 파싱해
+            # watch-add --tags로 그대로 넘긴다. r.tags는 입력 토큰(SYMBOL:TAGS:...)에서
+            # 파싱된 태그다(무태그 best-of로 채점됐어도 원래 태그가 없었으면 빈 리스트 —
+            # 채점에 쓰인 profile을 태그로 승격하지 않는다: EVENT는 뉴스 근거를 뜻하지
+            # "EVENT 프로필로 가장 높은 점수가 나왔다"를 뜻하지 않는다).
+            token = r.symbol + (":" + "+".join(r.tags) if r.tags else "")
+            passing.append(token)
+
+    print(f"PASS: {' '.join(passing) if passing else '없음'}")
+
+
+def _news_scalp_verdict_line() -> str:
+    """갈래 A(news_scalp) 승격 판정 줄 — intraday_verify 하네스가 남긴 원장
+    (`data/ledger/intraday_verify.jsonl`)의 최신 `metrics`(=aggregate_metrics()
+    출력 그대로)를 직접 읽는다. `quant.control.ledger`는 `quant.backtest`를
+    임포트하지 않으므로(의도적 결합 축소, news_scalp_promotion_verdict docstring)
+    aggregate 조립은 이 apps 계층(양쪽 평면을 다 아는 주입 지점)이 한다."""
+    import json
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.control.ledger import news_scalp_promotion_verdict
+
+    path = REPO_ROOT / "data" / "ledger" / "intraday_verify.jsonl"
+    if not path.exists():
+        return "갈래 A(news_scalp) 승격 판정: intraday_verify 하네스 미실행 — 원장 없음"
+    aggregate = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and isinstance(row.get("metrics"), dict):
+            aggregate = row["metrics"]
+    if aggregate is None:
+        return "갈래 A(news_scalp) 승격 판정: intraday_verify 원장이 비어 있음"
+
+    settings = load_settings()
+    execution_cfg = settings.raw.get("execution", {}) or {}
+    fee_bps_cfg = execution_cfg.get("fee_bps", 0.0)
+    fee_bps_kr = fee_bps_cfg.get("KR", 0.0) if isinstance(fee_bps_cfg, dict) else fee_bps_cfg
+    # 왕복(진입+청산) 수수료 + KR 개별주 매도 거래세 — news_scalp 후보는 KR 전용.
+    round_trip_fee_bps = float(fee_bps_kr) * 2 + float(execution_cfg.get("kr_stock_sell_tax_bps", 0.0))
+    verdict = news_scalp_promotion_verdict(aggregate, round_trip_fee_bps=round_trip_fee_bps)
+    return f"갈래 A(news_scalp) 승격 판정: {verdict['reason']}"
+
+
+def cmd_scoreboard(args: argparse.Namespace) -> None:
+    """누적 거래 원장(data/state/trades.jsonl) → 전략별·종목별 스코어보드.
+
+    승률·payoff·거래당 bps가 자본 배분 판단의 근거다(2026-08-10 사용자 원칙).
+    출력은 stdout — 주간 크론(server/scripts/scoreboard_weekly.sh)이 텔레그램으로 쏜다.
+
+    **3갈래 자동화(T) 승격 판정**(2026-08-17, spec §4) — 판정만 노출하고 자동
+    승격은 하지 않는다(`quant.control.ledger`의 두 판정 함수 docstring 참고).
+    스코어보드 표 자체(원장 raw trades 기준)와는 별도로, 갈래 A는 intraday_verify
+    하네스 원장을, 갈래 B는 같은 raw trades를 재사용한다."""
+    from pathlib import Path
+
+    from quant.control.ledger import (
+        filter_recent, frgn_accumulate_promotion_verdict, load_trades, round_trips,
+        scoreboard_text,
+    )
+
+    ledger_path = ledger_state_path()
+    trades = load_trades(ledger_path)
+    trips = round_trips(trades)
+    title = "누적 스코어보드"
+    if args.days:
+        trips = filter_recent(trips, args.days)
+        title = f"최근 {args.days}일 스코어보드"
+    print(scoreboard_text(trips, title=title))
+
+    print()
+    frgn_verdict = frgn_accumulate_promotion_verdict(trades)
+    print(f"갈래 B(frgn_accumulate) 승격 판정: {frgn_verdict['reason']}")
+    print(_news_scalp_verdict_line())
+
+
+def cmd_forensics(args: argparse.Namespace) -> None:
+    """거래 부검 — 원장의 "졌다"를 "무엇 때문에 졌다"로 바꾼다.
+
+    `scoreboard`가 결과(승률·payoff)를 낸다면 이건 **원인 후보**를 낸다:
+    보유 중 최대유리(MFE) 대비 실현이 얼마였나(청산 효율), 진입 위치가 실제로
+    승패를 갈랐나(대조군), 사전 지정 청산 규칙을 그 봉에 다시 돌리면 어땠나.
+
+    2026-08-21에 이 분석을 손으로 했고 그때 나온 답이 "고칠 곳은 진입이 아니라
+    청산"이었다(MFE 중앙 +113bp vs 실현 -47bp, 진입 위치 rho=+0.00). 1회용
+    스크립트로 두면 다음에도 손으로 다시 해야 하므로 커맨드로 고정한다 —
+    주간 크론이 `scoreboard` 옆에서 같이 돈다.
+
+    청산 규칙은 **여기 하드코딩된 4종만** 재생한다(탐색 4회). 파라미터를
+    탐색하지 않는 게 요점이다: 표본 수십 건에 규칙 수십 개를 시험하면 그중
+    몇 개는 반드시 우연히 훌륭해 보인다."""
+    from pathlib import Path
+
+    import pandas as pd
+
+    # 루트는 REPO_ROOT 하나만 센다 — `quant/data/state/...` 를 읽어 "거래 없음"을
+    # 출력한 착오가 이 파일에서 이미 세 번 났다(ledger_state_path docstring).
+    from quant.adapters.env import REPO_ROOT
+    from quant.control.forensics import forensics_text, replay_all, simulate_exit_rules
+    from quant.control.ledger import filter_recent, load_trades, round_trips
+
+    root = REPO_ROOT
+    trips = round_trips(load_trades(ledger_state_path()))
+    title = "거래 부검"
+    if args.days:
+        trips = filter_recent(trips, args.days)
+        title = f"거래 부검 — 최근 {args.days}일"
+    if args.strategy:
+        trips = [t for t in trips if t.get("strategy") == args.strategy]
+        title += f" [{args.strategy}]"
+
+    history_dir = root / "data" / "history"
+    _cache: dict[tuple[str, str], object] = {}
+
+    def load_bars(symbol: str, ts):
+        """1분봉은 `data/history/{symbol}/{YYYY}/{MM}.parquet`(2단계 경로).
+        간격 디렉토리가 있는 3단계 경로(1d/15m 등)와 구조가 다르다 —
+        adapters/data/history.py `_load_1m` 과 같은 규칙이다.
+
+        같은 (심볼, 월) 파티션을 종결마다 다시 읽지 않도록 캐시한다."""
+        ts = pd.Timestamp(ts)
+        key = (symbol, f"{ts.year}{ts.month:02d}")
+        if key not in _cache:
+            path = history_dir / symbol / str(ts.year) / f"{ts.month:02d}.parquet"
+            if not path.exists():
+                _cache[key] = None
+            else:
+                try:
+                    df = pd.read_parquet(path)
+                    if df.index.tz is None:
+                        df.index = df.index.tz_localize("UTC")
+                    _cache[key] = df
+                except Exception as e:  # noqa: BLE001 — 봉 하나 못 읽는다고 부검 전체를 버리지 않는다
+                    logger.warning("부검: %s 봉 읽기 실패(건너뜀): %s", symbol, e)
+                    _cache[key] = None
+        month = _cache[key]
+        if month is None:
+            return None
+        day = month[month.index.normalize() == ts.normalize()]
+        return day if len(day) else None
+
+    rows, skipped = replay_all(trips, load_bars)
+
+    # 사전 지정 청산 규칙 — 이 목록을 늘릴 때는 다중검정 편향을 함께 고지한다.
+    # (익절 100 / 손절 100 은 2026-08-21 실측으로 채택돼 지금 배선된 값이다 —
+    #  현행이 그 규칙대로 도는지 확인하는 기준선 역할도 한다.)
+    RULES = [
+        ("무규칙(마감까지)", None, None),
+        ("익절+100bp", 100.0, None),
+        ("익절+100/손절-100", 100.0, 100.0),
+        ("손절-100bp만", None, 100.0),
+    ]
+    rules_result = simulate_exit_rules(trips, load_bars, RULES) if rows else None
+
+    print(forensics_text(rows, skipped, title=title, rules_result=rules_result))
+
+
+def cmd_experiments(args: argparse.Namespace) -> None:
+    """자동 판정 — "바꿨다 → 쌓인다 → 판정이 온다"의 마지막 칸 (2026-08-24).
+
+    매일 돈다. 하는 일 셋:
+      1. `config/settings.yaml`의 전략 파라미터 지문을 찍어 바뀐 것만 원장에 남긴다
+         (사람이 기록하지 않는다 — 자리를 비우면 사람 규율은 반드시 끊긴다).
+      2. 표본이 찬 변경에 대해 이중차분(DiD) 판정을 낸다 — 대조군은 같은 기간
+         파라미터가 안 바뀐 전략들이라 장세 몫이 상쇄된다.
+      3. 표본이 충분한데 실현 엣지가 유의하게 음수인 전략을 경보한다.
+
+    **판정할 게 없으면 아무것도 출력하지 않는다**(exit 0). 크론이 stdout 이
+    비어 있으면 텔레그램을 보내지 않는다 — 매일 "아직 모릅니다"를 보내면 사람이
+    안 읽고, 안 읽는 알림은 진짜 경보까지 같이 묻는다.
+
+    설정 파일은 **읽기만 한다** — 판정만 하고 반영은 사람이 한다(거버너 층 0과
+    같은 원칙: 사이징·전략 on/off 는 자동화하지 않는다).
+    """
+    import sys as _sys
+    from datetime import date as _date
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.control.experiments import daily_report, load_changes, record_fingerprints
+    from quant.control.ledger import load_trades, round_trips
+
+    settings = load_settings()
+    changes_path = REPO_ROOT / "data" / "ledger" / "param_changes.jsonl"
+    today = _date.today()
+
+    added = record_fingerprints(
+        (settings.raw.get("strategies") or {}), today, changes_path,
+    )
+    if added and args.verbose:
+        for a in added:
+            kind = "기준선" if a["baseline"] else "변경 감지"
+            print(f"[{kind}] {a['strategy']} {a['fingerprint']}", file=_sys.stderr)
+
+    trips = round_trips(load_trades(ledger_state_path()))
+    msg, settled = daily_report(trips, load_changes(changes_path), today)
+
+    # 하트비트 — **이 잡이 멈춘 것과 "판정할 게 없는 것"은 겉보기가 같다**
+    # (둘 다 텔레그램 무소식). 매 실행 기록해 규칙 기반 감시(cli health 의
+    # job_findings)가 조용한 죽음을 대신 잡게 한다. ok=True 는 "판정이
+    # 좋았다"가 아니라 "이 잡이 죽지 않고 끝냈다"다(ops-judge 와 같은 의미).
+    try:
+        from quant.adapters.kv import make_kv
+        from quant.control.opstate import record_run
+
+        record_run(make_kv(), "experiments", ok=True,
+                  detail=f"verdicts={len(settled)} changes={len(added)}")
+    except Exception:  # noqa: BLE001 — 상태 기록 실패가 판정 출력을 막으면 안 된다
+        pass
+
+    if msg is None:
+        if args.verbose:
+            print("판정할 것 없음 — 조용히 대기", file=_sys.stderr)
+        return
+    print(msg)
+    if args.verbose and settled:
+        print(f"확정된 실험: {', '.join(settled)}", file=_sys.stderr)
+
+
+def cmd_session_pnl(args: argparse.Namespace) -> None:
+    """세션(정규장) 마감 후 실화폐 손익 리포트 — 실현손익/수수료/전략별·종목별
+    내역은 원장(오프라인)에서, 미실현손익(보유분 평가)은 현재 포트폴리오+실시세로.
+
+    스코어보드(bps/승률, 통화 무관 축)와 달리 이건 "이번 세션에 실제 얼마"를
+    시장별 통화(KR=원, US=달러)로 보여준다 — 절대 섞지 않는다(2026-08-13
+    사용자 원칙). 출력은 stdout — server/scripts/session_pnl.sh가 텔레그램으로 쏜다."""
+    import json as _json
+    from datetime import date as _date
+    from pathlib import Path
+    from zoneinfo import ZoneInfo
+
+    from quant.control.ledger import load_trades, session_pnl_summary, session_pnl_text
+    from quant.core.models import market_of_symbol
+
+    load_settings()  # .env/.env.local 로드 — 미실현손익 조회용 Toss 자격증명이 여기서 온다
+
+    market = args.market
+    tz = ZoneInfo("Asia/Seoul") if market == "KR" else ZoneInfo("America/New_York")
+    today = datetime.now(tz).date()
+    on = _date.fromisoformat(args.date) if args.date else today
+
+    # parents[1] 은 `quant/` 다 — 저장소 루트가 아니다. 이 착오로 세션 손익이
+    # `quant/data/state/trades.jsonl`(존재하지 않는 경로)을 읽어, 08-18 KR 에
+    # 실제 체결 16건이 있는데도 매일 15:35 텔레그램에 "이 세션에 체결된 거래 없음"
+    # 을 보내고 있었다(2026-08-19 발견). regime_state_path/ledger_state_path 가
+    # 같은 착오로 이미 두 번 고쳐졌다 — 루트를 세는 곳은 REPO_ROOT 하나뿐이다.
+    from quant.adapters.env import REPO_ROOT
+
+    repo_root = REPO_ROOT
+    ledger_path = repo_root / "data" / "state" / "trades.jsonl"
+    trades = load_trades(ledger_path)
+    summary = session_pnl_summary(trades, market, on)
+    print(session_pnl_text(summary))
+    print()
+
+    def _fmt(v: float) -> str:
+        return f"{v:,.0f}원" if market == "KR" else f"${v:,.2f}"
+
+    # --- 미실현손익(보유 중 평가) — 반드시 "지금" 포트폴리오+시세로만 계산할 수
+    # 있다. 과거 --date 요청은 그 시점 포지션을 원장에서 재구성하지 않는 한
+    # 알 수 없으므로 추측하지 않고 생략한다("모르면 0으로 위장하지 않는다" 원칙).
+    if on != today:
+        print("📦 보유 중 · 평가 손익: 과거 세션이라 생략 (현재 포트폴리오 상태만 확인 가능, 그 시점은 재구성 불가)")
+        return
+
+    portfolio_path = repo_root / "data" / "state" / "portfolio.json"
+    if not portfolio_path.exists():
+        print("📦 보유 중 · 평가 손익: 포트폴리오 상태 파일 없음 (data/state/portfolio.json)")
+        return
+    try:
+        portfolio = _json.loads(portfolio_path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as e:
+        print(f"📦 보유 중 · 평가 손익: 포트폴리오 상태 읽기 실패 ({type(e).__name__}: {e})")
+        return
+
+    positions = {
+        sym: p for sym, p in (portfolio.get("positions") or {}).items()
+        if market_of_symbol(sym) == market and float(p.get("qty", 0) or 0) > 0
+    }
+    if not positions:
+        print("📦 보유 중 · 평가 손익: 보유 종목 없음")
+        return
+
+    from quant.apps.assembly import MissingCredentials, build_toss_client
+
+    try:
+        client = build_toss_client()
+    except MissingCredentials as e:
+        print(f"📦 보유 중 · 평가 손익: 생략 — Toss 자격증명 없음 ({e})")
+        return
+
+    try:
+        rows = client.prices(list(positions))
+    except Exception as e:  # noqa: BLE001 — 시세 조회 실패는 "생략" 사유일 뿐, CLI를 죽이면 안 된다
+        print(f"📦 보유 중 · 평가 손익: 생략 — 시세 조회 실패 ({type(e).__name__}: {e})")
+        return
+
+    quotes: dict[str, float] = {}
+    for row in rows or []:
+        if not isinstance(row, dict) or not row.get("symbol"):
+            continue
+        price = row.get("price") or row.get("lastPrice") or row.get("close")
+        try:
+            if price is not None and float(price) > 0:
+                quotes[row["symbol"]] = float(price)
+        except (TypeError, ValueError):
+            continue
+
+    print("📦 보유 중 · 평가 손익 (현재 시점 마크 — 세션 마감 시점 마크가 아님)")
+    total = 0.0
+    missing: list[str] = []
+    for sym, p in positions.items():
+        qty = float(p.get("qty", 0) or 0)
+        avg = float(p.get("avg_cost", 0) or 0)
+        mark = quotes.get(sym)
+        if mark is None:
+            missing.append(sym)
+            print(f"  {sym}: 시세 조회 실패 — 합계에서 제외")
+            continue
+        pnl = (mark - avg) * qty
+        total += pnl
+        pct = (mark / avg - 1) * 100 if avg else 0.0
+        print(f"  {sym}: {_fmt(pnl)} ({pct:+.2f}%, 수량 {qty:g} · 평단 {avg:,.2f} · 현재가 {mark:,.2f})")
+    suffix = f" (시세실패 {len(missing)}건 제외)" if missing else ""
+    print(f"  평가손익 합계 {_fmt(total)}{suffix}")
+
+
+def cmd_strategy_pnl(args: argparse.Namespace) -> None:
+    """전략별 독립 명목계좌(각 1,000만원) 성과 요약 — 평가금액·수익률·실현/미실현손익·
+    보유종목·거래수/승률을 전략별로 나눠 보여준다.
+
+    session-pnl/scoreboard는 계좌 전체를 하나로 뭉치지만, 이건 "어느 전략이
+    이기고 있나"에 답한다(2026-08-19 사용자 요청). 장부(data/state/
+    strategy_books.json)는 리스크 평면(별도 작업자)이 쓴다 — 여기선 읽기만.
+    시세 조회는 session-pnl과 같은 패턴(Toss 실시세, 자격증명 없으면 생략).
+    출력은 stdout — server/scripts/session_pnl.sh가 텔레그램으로 쏜다."""
+    from pathlib import Path
+
+    from quant.control.ledger import load_trades, round_trips
+    from quant.control.strategy_books import (
+        MESSAGE_SEPARATOR,
+        load_strategy_books,
+        strategy_books_messages,
+    )
+
+    load_settings()  # .env/.env.local — 미실현손익 조회용 Toss 자격증명
+
+    # 루트는 REPO_ROOT 하나로만 센다 — parents[1] 은 `quant/` 라서 장부가 있는데도
+    # "장부 파일 없음"이 찍혔다(2026-08-19 배포 검증에서 발견, session-pnl 과 동일 착오).
+    from quant.adapters.env import REPO_ROOT
+
+    repo_root = REPO_ROOT
+    books_data = load_strategy_books(repo_root / "data" / "state" / "strategy_books.json")
+    trades = load_trades(repo_root / "data" / "state" / "trades.jsonl")
+    trips = round_trips(trades)
+
+    quotes: dict[str, float] = {}
+    usd_krw = 1500.0
+    quote_error: str | None = None
+
+    symbols = sorted({
+        sym
+        for book in books_data["books"].values()
+        for sym, p in (book.get("positions") or {}).items()
+        if float(p.get("qty", 0) or 0) != 0
+    })
+    if symbols:
+        from quant.apps.assembly import MissingCredentials, build_toss_client
+
+        try:
+            client = build_toss_client()
+            rows = client.prices(symbols)
+            for row in rows or []:
+                if not isinstance(row, dict) or not row.get("symbol"):
+                    continue
+                price = row.get("price") or row.get("lastPrice") or row.get("close")
+                try:
+                    if price is not None and float(price) > 0:
+                        quotes[row["symbol"]] = float(price)
+                except (TypeError, ValueError):
+                    continue
+            usd_krw = client.usd_krw()
+        except MissingCredentials as e:
+            quote_error = f"Toss 자격증명 없음 ({e}) — 미실현손익 생략"
+        except Exception as e:  # noqa: BLE001 — 시세 조회 실패가 CLI를 죽이면 안 된다
+            quote_error = f"시세 조회 실패 ({type(e).__name__}: {e})"
+
+    # 텍스트 생성(순수)과 발송(I/O)을 분리한다(2026-08-19 Phase C) — 여기서는
+    # 메시지 리스트를 만들 뿐이고, 전략마다 따로 보내는 건 호출부
+    # (server/scripts/session_pnl.sh)의 몫이다. 메시지 사이는 MESSAGE_SEPARATOR로
+    # 구분해 stdout에 한 번에 찍는다 — 그 스크립트가 다시 잘라 하나씩 보낸다.
+    messages = strategy_books_messages(books_data, trips, quotes, usd_krw, quote_error=quote_error)
+    print(MESSAGE_SEPARATOR.join(messages), end="")
+
+
+def regime_state_path():
+    """국면 캐시 경로. 저장소 루트 기준(CWD 무관 — cron 이 어디서 불려도 같아야 한다).
+
+    **`parents[1]` 은 `quant/` 였다.** 그래서 `quant/data/state/regime.json` 을 찾고
+    없으니 조용히 neutral 로 떨어졌다 — 실제 파일은 `data/state/regime.json` 에 있다
+    (2026-08-14). 이제 루트를 세는 곳은 `adapters.env.REPO_ROOT` 하나뿐이다.
+    """
+    from quant.adapters.env import REPO_ROOT
+
+    return REPO_ROOT / "data" / "state" / "regime.json"
+
+
+def ledger_state_path():
+    """체결 원장 경로. 저장소 루트 기준.
+
+    **같은 착오가 여기서 제일 비쌌다**: 스코어보드가 `quant/data/state/trades.jsonl`
+    을 읽어 "종결된 트레이드가 아직 없음"을 출력했다. 실제 원장에는 종결 26건이
+    있었고, 루트 CLAUDE.md 는 "숫자가 자본 배분을 결정한다"고 못 박고 있다.
+    """
+    from quant.adapters.env import REPO_ROOT
+
+    return REPO_ROOT / "data" / "state" / "trades.jsonl"
+
+
+def cmd_backup(args: argparse.Namespace) -> None:
+    """백업 번들 생성/대조. JSON 을 stdout 으로 — 셸 스크립트와 감시가 파싱한다.
+
+    문제가 있으면 **종료코드 1** 이다. 크론이 성공으로 읽고 넘어가면 안 된다.
+    """
+    import json as _json
+    import sys
+    from datetime import datetime as _dt
+    from pathlib import Path
+
+    from quant.control.backup import create, manifest, read_manifest, regressions, verify
+
+    if args.verify:
+        problems = verify(args.verify)
+        print(_json.dumps({"bundle": args.verify, "problems": problems},
+                          ensure_ascii=False, indent=2))
+        raise SystemExit(1 if problems else 0)
+
+    out_dir = Path(args.out)
+    # 지난 번들을 먼저 집어둔다 — 새 번들을 쓰고 나면 "가장 최근"이 바뀐다.
+    previous = sorted(out_dir.glob("quant-*.tar.gz"))
+    prev_manifest = {}
+    if previous:
+        try:
+            prev_manifest = read_manifest(previous[-1])
+        except Exception as e:  # noqa: BLE001 — 지난 번들이 깨졌어도 새 백업은 만든다
+            print(f"경고: 지난 번들을 읽지 못해 회귀 검사를 건너뛴다 ({type(e).__name__})",
+                  file=sys.stderr)
+
+    # 초까지 넣는다 — 분 단위면 같은 분에 두 번 돌 때 자기 자신을 덮어쓰고,
+    # 그러면 "지난 번들"이 방금 만든 번들이 되어 회귀 검사가 무력해진다.
+    stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+    bundle = out_dir / f"quant-{stamp}.tar.gz"
+    stats = create(Path(args.root), bundle, extra=[Path(p) for p in (args.include or [])])
+
+    # 회귀는 **경고가 아니라 실패**다. 망가진 소스를 그대로 백업하면 지난 백업까지
+    # 덮어쓴다(보관 개수가 유한하므로).
+    problems = regressions(manifest(Path(args.root)), prev_manifest) if prev_manifest else []
+    stats["compared_to"] = str(previous[-1]) if previous else None
+    stats["problems"] = problems
+    # 운영 상태 기록 — 감시의 `backup` 항목이 이걸 읽는다. 없으면 "기록이 없다"만
+    # 영원히 답한다(2026-08-13 감시 배포 때 드러난 계측 공백).
+    try:
+        from quant.adapters.kv import make_kv
+        from quant.control.opstate import record_run
+
+        record_run(make_kv(), "backup", ok=not problems,
+                   detail=f"{stats['files']}파일 {stats['bytes']}바이트"
+                          + (f" 문제 {len(problems)}건" if problems else ""))
+    except Exception:  # noqa: BLE001 — 기록 실패가 백업을 죽이지 않는다
+        pass
+    print(_json.dumps(stats, ensure_ascii=False, indent=2))
+    raise SystemExit(1 if problems else 0)
+
+
+def cmd_health(args: argparse.Namespace) -> None:
+    """운영 이상 점검 — JSON 을 stdout 으로. Phase 5.3.
+
+    판정과 종료코드가 **세 갈래**다: `ok`=0, `alert`=1, `unknown`=2.
+    "모른다"를 정상으로 합산하지 않는다 — 그게 이 저장소가 반복해서 다친 모양이다.
+
+    감지 규칙은 전부 `quant.control.health` 의 순수 함수다. 여기는 I/O 만 한다:
+    읽기 실패는 예외로 올리지 않고 `None` 으로 내려보내 `unknown` 이 되게 한다.
+    """
+    import json as _json
+    import shutil
+    import subprocess
+    import sys
+    from datetime import timedelta, timezone
+    from pathlib import Path
+
+    from zoneinfo import ZoneInfo
+
+    from quant.adapters import olap as OLAP
+    from quant.adapters.kv import make_kv
+    from quant.adapters.olap import coverage
+    from quant.control import health as H
+    from quant.control.ledger import load_trades
+    from quant.control.opstate import llm_stats, snapshot, stale_feeds
+    # 봉 신선도 임계값은 **거래 평면의 상수를 그대로 쓴다.** 여기 숫자를 따로 적으면
+    # 언젠가 갈라지고, 갈라진 쪽이 조용한 쪽이 된다. (apps 는 두 평면을 다 안다 —
+    # control 이 trade 를 임포트하는 건 아키텍처 위반이므로 주입 지점이 여기다.)
+    from quant.trade.regime.provider import STALE_DAILY_BARS_AFTER
+
+    load_settings()
+    root = Path(args.root)
+    now = datetime.now(timezone.utc)
+    _KST_TZ = ZoneInfo("Asia/Seoul")
+
+    def _read(path: Path) -> str | None:
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+    def _json_file(path: Path) -> dict | None:
+        raw = _read(path)
+        if raw is None:
+            return None
+        try:
+            return _json.loads(raw)
+        except _json.JSONDecodeError:
+            return None
+
+    def _run(cmd: list[str]) -> str | None:
+        """명령이 없거나 실패하면 None — "이상 없음"이 아니라 "모른다"로 흐른다."""
+        if not shutil.which(cmd[0]):
+            return None
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return r.stdout if r.returncode == 0 else None
+
+    findings: list[H.Finding] = []
+    kv = make_kv()
+
+    # 작업·피드 — Redis 가 죽으면 둘 다 unknown 이 된다(빈 목록이 아니라).
+    # deepdive:KR/US·close-report 는 일 1회 잡이라 신선도 창이 다르다 —
+    # opstate.JOB_HEARTBEAT_TTL 에서 30시간으로 오버라이드된다(I1c). ops-judge(판단
+    # 워치독, 2026-08-19)는 하루 2회 잡이라 20시간으로 오버라이드된다(opstate.py) —
+    # **이 감시 자체가 조용히 죽는 경로**(크론 삭제·LLM 자격증명 만료로 계속 서브셸
+    # 실패 등)를 기존 규칙 기반 감시가 잡게 하려는 것이다(판단 레이어가 스스로를
+    # 지키지 못하므로 밑단 규칙이 대신 지킨다).
+    jobs = ["collect:KR", "collect:US", "report:KR", "report:US", "ingest", "backup",
+            "deepdive:KR", "deepdive:US", "close-report", "report_close:KR", "ops-judge",
+            "experiments"]
+    findings += H.job_findings(snapshot(kv, jobs))
+    # 현재 설정된 피드 이름을 주입한다 — 없으면 개편으로 사라진 옛 이름이 영구히
+    # "죽은 피드"로 경보된다(2026-08-13 실측: 연합뉴스·한경). 로스터를 못 구하면
+    # None 을 넘겨 걸러내지 않는다.
+    try:
+        from quant.collect.sources.feeds import NEWS_FEEDS
+        roster = {m: list(feeds) for m, feeds in NEWS_FEEDS.items()}
+    except Exception:  # noqa: BLE001 — 로스터 부재가 점검을 죽이지 않는다
+        roster = {}
+    for market in ("KR", "US"):
+        healthy = kv.healthy()
+        findings += H.feed_findings(market, stale_feeds(kv, market, now) if healthy else [],
+                                   healthy, configured=roster.get(market))
+
+    # 봉 — 라이브 사이징에 걸린 파일. coverage() 는 못 읽으면 None 이다.
+    cov = coverage("QQQ", "1d", root / "data" / "history")
+    findings += H.bar_findings({"QQQ 1d": cov.last_ts if cov else None},
+                               now, STALE_DAILY_BARS_AFTER)
+
+    # 봉 값 자체의 타당성 — 신선도(위)와 다른 축. 앵커 2종(US=QQQ, KR=KODEX200)의
+    # 마지막 2개 봉을 직접 읽는다. 디스크 포맷은 olap 밖에서 재구현하지 않고
+    # olap.glob_for()/olap.query() 를 그대로 쓴다(둘 다 실패를 삼켜 None 을 낸다).
+    def _last_bars(symbol: str, interval: str) -> list[dict] | None:
+        pattern = OLAP.glob_for(symbol, interval, root / "data" / "history")
+        rows = OLAP.query(
+            "SELECT ts, open, high, low, close FROM "
+            f"read_parquet('{pattern}', union_by_name=true) ORDER BY ts DESC LIMIT 2"
+        )
+        if rows is None:
+            return None
+        return [
+            {
+                "ts": r[0].isoformat() if hasattr(r[0], "isoformat") else r[0],
+                "open": r[1], "high": r[2], "low": r[3], "close": r[4],
+            }
+            for r in reversed(rows)  # DESC 로 뽑았으니 오래된 것 → 최신 순으로 되돌린다
+        ]
+
+    findings += H.bar_sanity_findings(
+        {"QQQ 1d": _last_bars("QQQ", "1d"), "069500 1d": _last_bars("069500", "1d")}, now)
+
+    # 1분봉 적재 신선도 — scalp_1m 표본 축적(2026-08-18). data/history/*/1m/ 이
+    # 하나도 없으면(백필 크론 05:40 첫 가동 전) 빈 dict를 그대로 넘긴다 —
+    # intraday_history_findings가 그 경우 조용히 빈 목록을 낸다(소음 방지).
+    history_root = root / "data" / "history"
+    one_m_symbols = sorted(
+        p.parent.name for p in history_root.glob("*/1m") if p.is_dir()
+    ) if history_root.exists() else []
+    last_1m_bars = {
+        sym: (coverage(sym, "1m", history_root).last_ts
+              if coverage(sym, "1m", history_root) else None)
+        for sym in one_m_symbols
+    }
+    findings += H.intraday_history_findings(last_1m_bars, now)
+
+    # 시계 — 호스트 TZ + 엔진 하트비트. heartbeat.ts 는 ISO 가 아니라 epoch 다.
+    hb = _json_file(root / "data" / "state" / "heartbeat.json")
+    hb_stamp = None
+    if hb and isinstance(hb.get("ts"), (int, float)):
+        hb_stamp = datetime.fromtimestamp(hb["ts"], tz=timezone.utc).isoformat()
+    local_offset = datetime.now().astimezone().utcoffset()
+    findings += H.clock_findings(
+        None if local_offset is None else int(local_offset.total_seconds()), hb_stamp, now)
+
+    # 원장 ↔ 포트폴리오
+    findings += H.ledger_portfolio_findings(
+        load_trades(root / "data" / "state" / "trades.jsonl"),
+        _json_file(root / "data" / "state" / "portfolio.json"))
+
+    # 원장 신선도 — DART 공시·텔레그램·외국인 수급·선정 4개 원장이 계속 쌓이나.
+    # 타임스탬프 필드명은 writer마다 다르다: dart.py 는 rcept_dt(YYYYMMDD, 시각
+    # 없음), telegram_channels.py 는 published(ISO, 시각 있음), frgn_flow.py·
+    # selections.py 는 date(YYYY-MM-DD, 시각 없음) — 날짜만 있는 값은
+    # fromisoformat 이 자정으로 해석해 그대로 UTC 자정 취급된다(임계가 일 단위라
+    # 충분하다). 파일이 없거나 마지막 줄이 깨지면 None → unknown(_read/_json_file
+    # 과 같은 관례) — "원장이 아예 없는 신규 설치"와 구분하지 않는다(지금 EC2엔
+    # 4개 다 있다).
+    def _ledger_last_ts(path: Path, field: str, date_fmt: str | None = None) -> str | None:
+        raw = _read(path)
+        if raw is None:
+            return None
+        lines = [ln for ln in raw.splitlines() if ln.strip()]
+        if not lines:
+            return None
+        try:
+            row = _json.loads(lines[-1])
+        except _json.JSONDecodeError:
+            return None
+        value = row.get(field) if isinstance(row, dict) else None
+        if value is None:
+            return None
+        if date_fmt is None:
+            return str(value)
+        try:
+            return datetime.strptime(str(value), date_fmt).date().isoformat()
+        except ValueError:
+            return None
+
+    def _ledger_max_date(path: Path, field: str) -> str | None:
+        """전 행에서 field 최댓값(ISO 날짜는 사전순=시간순).
+
+        frgn_flow 는 append-only 가 아니라 **upsert 재기록** 원장이라 파일의
+        마지막 줄이 최신 날짜가 아니다 — 2026-08-17 EC2 첫 실행에서 '28일
+        낡음' 거짓 경보가 그 가정에서 나왔다(마지막 줄은 심볼 블록의 옛 날짜).
+        파일이 작아(심볼×최대 20일) 전체 스캔 비용은 무시할 수준이다.
+        """
+        raw = _read(path)
+        if raw is None:
+            return None
+        best: str | None = None
+        for ln in raw.splitlines():
+            if not ln.strip():
+                continue
+            try:
+                value = _json.loads(ln).get(field)
+            except _json.JSONDecodeError:
+                continue
+            if isinstance(value, str) and (best is None or value > best):
+                best = value
+        return best
+
+    ledger_root = root / "data" / "ledger"
+    last_ts_by_ledger = {
+        "disclosures": _ledger_last_ts(ledger_root / "disclosures.jsonl", "rcept_dt", "%Y%m%d"),
+        "telegram_msgs": _ledger_last_ts(ledger_root / "telegram_msgs.jsonl", "published"),
+        "frgn_flow": _ledger_max_date(ledger_root / "frgn_flow.jsonl", "date"),
+        "selections": _ledger_last_ts(ledger_root / "selections.jsonl", "date"),
+    }
+    max_age_by_ledger = {
+        # DART 수집 크론은 07:20 1일 1회 — 4일이면 주말+연휴를 넘겨도 안 울린다.
+        "disclosures": timedelta(days=4),
+        # 텔레그램은 리포트 빌드마다(하루 여러 번) 갱신된다 — 2일이면 하루 결항도 버틴다.
+        "telegram_msgs": timedelta(days=2),
+        # 외국인 수급도 리포트 빌드가 채운다(하루 여러 번) — disclosures 와 같은 여유.
+        "frgn_flow": timedelta(days=4),
+        # 선정 원장도 리포트 빌드마다 쌓인다 — 같은 여유.
+        "selections": timedelta(days=4),
+    }
+    findings += H.ledger_findings(last_ts_by_ledger, now, max_age_by_ledger)
+
+    def _tail_jsonl(path: Path, n: int) -> list[dict]:
+        """마지막 n줄만 파싱한다 — 원장이 커져도 매시 크론이 파일 전체를 읽지 않게."""
+        raw = _read(path)
+        if raw is None:
+            return []
+        rows = []
+        for ln in [ln for ln in raw.splitlines() if ln.strip()][-n:]:
+            try:
+                rows.append(_json.loads(ln))
+            except _json.JSONDecodeError:
+                continue
+        return rows
+
+    # 뉴스 발행량 이상 — KR/US 각각 오늘 건수 + 직전 7일. data/news/{market}/{day}.jsonl
+    # 은 collector.py 가 하루치를 링크 기준으로 중복 제거해 재기록하므로 줄 수 =
+    # 그날의 고유 기사 수다. 파일이 없는 날은 "그날 수집 0건"으로 0 취급한다.
+    now_kst = now.astimezone(_KST_TZ)
+    zero_check_active = now_kst.hour >= 14
+    for market in ("KR", "US"):
+        def _news_count(d) -> int:
+            raw = _read(root / "data" / "news" / market / f"{d.isoformat()}.jsonl")
+            return 0 if raw is None else len([ln for ln in raw.splitlines() if ln.strip()])
+
+        today_kst = now_kst.date()
+        today_count = _news_count(today_kst)
+        trailing = [_news_count(today_kst - timedelta(days=i)) for i in range(1, 8)]
+        findings += H.flow_anomaly_findings(today_count, trailing, market, zero_check_active)
+
+    # 텔레그램 전채널 동시 침묵 — 원장 뒤쪽 5천 줄만 파싱해 채널별 최신 published 를
+    # 뽑는다(읽기는 한 번에 하되 파싱 비용을 뒤쪽으로 한정 — 근거는 위 _tail_jsonl).
+    # _read 를 따로 한 번 더 하는 이유: "파일이 없다"(None → UNKNOWN)와 "파싱할 줄이
+    # 없다"(빈 dict)를 구분하기 위해서다.
+    telegram_path = ledger_root / "telegram_msgs.jsonl"
+    telegram_raw = _read(telegram_path)
+    newest_by_channel: dict[str, str | None] | None
+    if telegram_raw is None:
+        newest_by_channel = None
+    else:
+        newest_by_channel = {}
+        for row in _tail_jsonl(telegram_path, 5000):
+            handle, published = row.get("handle"), row.get("published")
+            if not handle or not published:
+                continue
+            if handle not in newest_by_channel or published > newest_by_channel[handle]:
+                newest_by_channel[handle] = published
+    findings += H.telegram_silence_findings(newest_by_channel, now)
+
+    # 외국인 수급 원장 퇴화 — 최근 200행이 전부 foreign_net=0 인가.
+    findings += H.frgn_flow_degenerate_findings(_tail_jsonl(ledger_root / "frgn_flow.jsonl", 200))
+
+    # 선정 원장 중복 자연키 — 최근 500행.
+    findings += H.selection_dup_findings(_tail_jsonl(ledger_root / "selections.jsonl", 500))
+
+    # 시크릿 — 최근 로그. 값은 마스킹된 상태로만 경보에 실린다.
+    journal = _run(["journalctl", "-u", "quant-engine", "--since", "1 hour ago", "--no-pager"])
+    if journal is not None:
+        findings += H.secret_findings(journal.splitlines())
+    else:
+        findings.append(H.Finding("secrets", H.UNKNOWN,
+                                  "로그를 읽지 못했다 — 시크릿 유출 여부를 모른다"))
+
+    # 타이머
+    timers_out = _run(["systemctl", "list-timers", "--all", "--no-pager"])
+    if timers_out is None:
+        findings.append(H.Finding("timers", H.UNKNOWN, "systemd 타이머 목록을 읽지 못했다"))
+    else:
+        present = {tok for line in timers_out.splitlines() for tok in line.split()
+                   if tok.endswith(".timer")}
+        findings += H.timer_findings({u: None for u in present}, args.expect_timer or [])
+
+    # 설치본 드리프트 — 저장소는 옳고 설치본만 낡는 부류(실측: EC2 crontab).
+    findings += H.install_drift_findings(_run(["crontab", "-l"]),
+                                        _read(root / "server" / "crontab.txt"))
+
+    # 리포트 결측 — 리포트가 `engine.json` 의 `missing` 에 **이미 기록하는데** 아무도
+    # 읽지 않았다. 2026-08-14: API 키를 못 읽어 소스 5개가 결측인 채로 발행됐고,
+    # 사람이 빌드 출력의 "결측 5건"을 보고도 "장중이라 그런가"로 미뤘다.
+    today = datetime.now(timezone.utc).astimezone(_KST_TZ).date()
+
+    def _engine_json(market: str, d) -> dict | None:
+        return _json_file(root / "out" / f"{d:%Y/%m/%d}" / f"{market}_engine.json")
+
+    engine_payload_by_market: dict[str, dict | None] = {
+        market: _engine_json(market, today) for market in ("KR", "US")
+    }
+    missing_by_market: dict[str, list[str] | None] = {
+        market: (None if payload is None else list(payload.get("missing") or []))
+        for market, payload in engine_payload_by_market.items()
+    }
+    findings += H.report_findings(missing_by_market, required=args.required_source or [])
+
+    # 발행↔편입 정합 — 리포트는 발행됐는데 편입이 랭킹 폴백뿐인가(2026-08-14~17
+    # 나흘간 own_brief 경로 기본값이 옛 체크아웃을 가리켜 실제로 이 모양이었다,
+    # H.report_intake_findings docstring). 편입 결과는 `data/watchlist.yaml`
+    # 에서 읽는다 — `data/own_brief.log`의 "편입 완료: $DISPLAY" 줄은 셸에서
+    # 태그를 이미 벗겨내 심볼만 남기므로(own_brief.sh DISPLAY 조립부) 태그
+    # 판정에 못 쓴다. watchlist.yaml 은 own_brief.sh → tg_bridge.py watch-add
+    # 가 `source`/`tags`/`added_at`을 그대로 남긴다(server/scripts/
+    # tg_bridge.py: _handle_watch_unlocked).
+    def _auto_watch_token_count(auto_watch) -> int:
+        """`report_cli.py: _auto_watch_count` 와 같은 로직 — 그 함수는 apps
+        내부 비공개(`_` 접두)라 여기서 3줄을 다시 쓴다(임포트보다 저렴하고,
+        형식(`"AUTO_WATCH: 없음"`)은 report_cli.py 가 이미 고정 계약으로 쓰고
+        있어 갈라질 위험이 낮다)."""
+        body = str(auto_watch or "").removeprefix("AUTO_WATCH:").strip()
+        return 0 if not body or body == "없음" else len(body.split())
+
+    def _watchlist_intake_tags(path: Path, session_date) -> dict[str, list[str] | None]:
+        """오늘 자동 편입(`source=="auto"`, `added_at` 이 오늘)된 항목의
+        태그를 시장별로 합친다. 태그만 갱신되고 신규 등록이 아닌 경우
+        (FRGN_EXIT `--tags-only` 갱신)는 `added_at` 이 안 바뀌어 여기 안
+        잡힌다 — 이 검사가 보려는 건 "오늘 신규 편입이 리포트를 실제로
+        읽었나"이므로 신규 등록만으로 충분하다.
+        """
+        raw = _read(path)
+        if raw is None:
+            return {"KR": None, "US": None}
+        try:
+            import yaml
+            data = yaml.safe_load(raw) or {}
+        except Exception:  # noqa: BLE001 — 파싱 실패는 예외가 아니라 None
+            return {"KR": None, "US": None}
+        entries = data.get("symbols")
+        if not isinstance(entries, list):
+            return {"KR": None, "US": None}
+        from quant.core.models import market_of_symbol
+
+        tags_by_market: dict[str, set[str]] = {"KR": set(), "US": set()}
+        for e in entries:
+            if not isinstance(e, dict) or e.get("source") != "auto":
+                continue
+            added_at = e.get("added_at")
+            if not isinstance(added_at, str):
+                continue
+            try:
+                added_date = datetime.fromisoformat(added_at).date()
+            except ValueError:
+                continue
+            if added_date != session_date:
+                continue
+            symbol = str(e.get("symbol") or "")
+            if not symbol:
+                continue
+            tags_by_market[market_of_symbol(symbol)].update(e.get("tags") or [])
+        return {m: sorted(tags) for m, tags in tags_by_market.items()}
+
+    report_exists = {market: payload is not None
+                     for market, payload in engine_payload_by_market.items()}
+    intake_tags = _watchlist_intake_tags(root / "data" / "watchlist.yaml", today)
+    findings += H.report_intake_findings(report_exists, intake_tags)
+
+    # 리포트 품질 회귀 — 후보 수·AI 해석 상태가 어제보다 조용히 나빠졌나
+    # (H.report_quality_findings docstring — 실측 확인한 engine.json 필드명 포함).
+    def _report_summary(payload: dict | None) -> dict | None:
+        if payload is None:
+            return None
+        return {
+            "candidates": _auto_watch_token_count(payload.get("auto_watch")),
+            "midterm": len(payload.get("midterm_watch") or []),
+            "agent_interpret": payload.get("agent_interpret"),
+            "missing": len(payload.get("missing") or []),
+        }
+
+    for market in ("KR", "US"):
+        today_summary = _report_summary(engine_payload_by_market[market])
+        trailing_summaries: list[dict] = []
+        # 직전 최대 10 캘린더일을 훑어 실제로 발행된 개장일 것만 모은다(주말
+        # ·휴장일은 engine.json 자체가 없어 자연히 빠진다) — flow_anomaly_
+        # findings 처럼 "그 날은 trailing 에서 뺀다"관례.
+        for i in range(1, 11):
+            d = today - timedelta(days=i)
+            payload = _engine_json(market, d)
+            if payload is not None:
+                trailing_summaries.append(_report_summary(payload))
+            if len(trailing_summaries) >= 7:
+                break
+        findings += H.report_quality_findings(market, today_summary, trailing_summaries)
+
+    # 필수 시크릿이 **앱이 실제로 쓰는 경로로** 읽히나. "파일에 있나"가 아니다 —
+    # 2026-08-14 에 그 차이가 사고를 만들었다(검증 도구는 자기 로더로 읽어 "완료",
+    # 앱은 DEFAULT_ENV 가 quant/ 를 봐서 전부 결측).
+    try:
+        from quant.adapters.env import load_env
+
+        app_env = load_env()
+    except Exception:  # noqa: BLE001
+        app_env = None
+    findings += H.secret_findings_for(app_env, required=args.required_secret or [])
+
+    # 백업 — 번들 생성과 **오프사이트로 당겨간 것**을 따로 본다.
+    bundles = sorted((root / "data" / "backups").glob("quant-*.tar.gz"))
+    bundle_stamp = None
+    if bundles:
+        bundle_stamp = datetime.fromtimestamp(
+            bundles[-1].stat().st_mtime, tz=timezone.utc).isoformat()
+    pull_raw = _read(root / "data" / "backups" / "LAST_PULL")
+    findings += H.backup_findings(bundle_stamp, pull_raw.strip() if pull_raw else None, now)
+
+    # LLM 호출 계측 — narrate()/chat_with_tools() (OpenRouter 무료 레인)가
+    # 기록한 최근 24시간 실패율. kv 는 위에서 이미 만든 것을 재사용한다.
+    stats_by_lane = {lane: llm_stats(kv, lane, now) for lane in ("narrate", "tool")}
+    findings += H.llm_health_findings(stats_by_lane)
+
+    # 국면(regime) 강등 지속 — 유효 지표 부족으로 neutral 강등된 상태가 오래
+    # (기본 2시간) 이어지면 ALERT. 2026-08-18~19 실측: US 국면이 지표 5개 중
+    # 2개만으로 aggressive를 유지한 하루가 있었는데, provider가 이미 알고 있던
+    # degraded 신호를 보는 사람이 없었다(H.regime_findings docstring).
+    findings += H.regime_findings(
+        _json_file(root / "data" / "state" / "regime.json"), now)
+
+    summary = H.summarize(findings)
+    summary["checked_at"] = now.isoformat(timespec="seconds")
+    print(_json.dumps(summary, ensure_ascii=False, indent=2))
+    raise SystemExit({"ok": 0, H.ALERT: 1, H.UNKNOWN: 2}[summary["verdict"]])
+
+
+def cmd_ops_judge(args: argparse.Namespace) -> None:
+    """판단하는 워치독 — `quant.control.health`(규칙) 위에 LLM 교차검증을 얹는다.
+
+    규칙 기반 점검은 대체하지 않는다 — 이 명령은 규칙 기반 결과(호출부가
+    `--rule-based-json`으로 넘긴다, 보통 `server/scripts/ops_judge.sh`가 먼저
+    `cli health`를 부른 결과)를 도구 중 하나로 그대로 노출하고, 그 위에 서로 다른
+    데이터 소스(포트폴리오·원장·전략 설정·리포트·지수 봉·운영 로그)를 대조하는
+    LLM 판단을 얹는다. 판정과 종료코드는 세 갈래다: `ok`=0, `review`(확인 필요)=2,
+    `alert`(이상)=1 — `health`의 0/1/2(ok/alert/unknown) 관례를 그대로 맞춘다.
+
+    이 명령 자체가 LLM 때문에 죽으면 안 된다 — `quant.control.ops_judge.
+    run_judgment`이 모든 LLM 실패(자격증명 없음/호출 실패/응답 없음/파싱 실패)를
+    `review`로 흡수하므로, 여기서는 그 결과를 그대로 출력할 뿐이다.
+    """
+    import functools
+    import json as _json
+    import sys
+    from datetime import timedelta, timezone
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT, get_key
+    from quant.adapters.kv import make_kv
+    from quant.adapters import olap as OLAP
+    from quant.adapters.narrate import TOOL_MODEL, chat_with_tools
+    from quant.control import ops_judge as J
+    from quant.control.ledger import load_trades
+    from quant.control.opstate import record_run
+    from quant.control.strategy_books import load_strategy_books
+
+    settings = load_settings()
+    root = Path(args.root) if args.root else REPO_ROOT
+    now = datetime.now(timezone.utc)
+
+    def _read(path: Path) -> str | None:
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+    def _json_file(path: Path) -> dict | None:
+        raw = _read(path)
+        if raw is None:
+            return None
+        try:
+            return _json.loads(raw)
+        except _json.JSONDecodeError:
+            return None
+
+    # 규칙 기반 결과 — 대체가 아니라 도구 중 하나로 그대로 넘긴다. 호출부(셸)가
+    # `cli health`를 먼저 부른 결과를 파일 또는 stdin으로 넘긴다. 안 넘기면
+    # rule_based=None(도구가 "읽지 못했다"로 정직하게 답한다) — 이 명령 혼자서도
+    # 죽지 않는다.
+    rule_based: dict | None = None
+    if args.rule_based_json:
+        raw = sys.stdin.read() if args.rule_based_json == "-" else _read(Path(args.rule_based_json))
+        if raw:
+            try:
+                rule_based = _json.loads(raw)
+            except _json.JSONDecodeError:
+                rule_based = None
+
+    portfolio = _json_file(root / "data" / "state" / "portfolio.json")
+    recent_trades = load_trades(root / "data" / "state" / "trades.jsonl")[-200:]
+    strategy_books = load_strategy_books(root / "data" / "state" / "strategy_books.json")
+    strategy_config = dict(settings.strategies)
+    control_state = _json_file(root / "data" / "state" / "control.json")
+    heartbeat = _json_file(root / "data" / "state" / "heartbeat.json")
+
+    # 리포트 — 아침(KR/US) + KR 오후 마감. 오늘 발행 안 됐으면 None(도구가 "읽지
+    # 못했다"로 정직하게 답한다 — cmd_health의 report_findings 관례와 동일).
+    _KST = timezone(timedelta(hours=9))
+    today = now.astimezone(_KST).date()
+
+    def _engine_json(market: str) -> dict | None:
+        return _json_file(root / "out" / f"{today:%Y/%m/%d}" / f"{market}_engine.json")
+
+    def _close_engine_json(market: str) -> dict | None:
+        return _json_file(root / "out" / f"{today:%Y/%m/%d}" / f"{market}_close_engine.json")
+
+    reports = {
+        "KR_am": _engine_json("KR"),
+        "US_am": _engine_json("US"),
+        "KR_close": _close_engine_json("KR"),
+    }
+
+    # 지수 봉 — cmd_health의 bar_sanity 조회와 같은 방식(olap.glob_for/query,
+    # 실패는 None). 리포트가 말하는 지수 등락률을 실제 값과 대조하는 근거.
+    def _last_bars(symbol: str, interval: str) -> list[dict] | None:
+        pattern = OLAP.glob_for(symbol, interval, root / "data" / "history")
+        rows = OLAP.query(
+            "SELECT ts, open, high, low, close FROM "
+            f"read_parquet('{pattern}', union_by_name=true) ORDER BY ts DESC LIMIT 5"
+        )
+        if rows is None:
+            return None
+        return [
+            {"ts": r[0].isoformat() if hasattr(r[0], "isoformat") else r[0],
+             "open": r[1], "high": r[2], "low": r[3], "close": r[4]}
+            for r in reversed(rows)
+        ]
+
+    bar_checks = {"QQQ 1d": _last_bars("QQQ", "1d"), "069500 1d": _last_bars("069500", "1d")}
+
+    # 운영 로그 근사치 — 그 문자열을 만든 빌드/스크립트 로그(전송 문자열 자체가
+    # 아니다 — sent_notifications 가 그쪽을 맡는다, 아래). 각 로그의 마지막
+    # 400줄만 잡아 도구가 다시 자르게 한다.
+    log_names = {
+        "ops_watch": "ops_watch.log", "report": "report.log",
+        "close_report": "close_report.log", "session_pnl": "session_pnl.log",
+        "brief": "brief.log", "watchdog": "watchdog.log", "backup": "backup.log",
+    }
+    log_tails = {}
+    for name, filename in log_names.items():
+        raw = _read(root / "data" / filename)
+        log_tails[name] = [ln for ln in raw.splitlines() if ln.strip()][-400:] if raw else []
+
+    # 텔레그램 발송 원장 — `quant.adapters.notify.telegram.TelegramNotifier.send()`
+    # 가 성공·실패 모두 실제 전송 문자열을 남긴다(2026-08-19). `_read()`가 `None`을
+    # 주는 경우(파일 없음/OSError)와 파일은 읽었는데 유효한 행이 하나도 없는
+    # 경우를 구분해서 넘긴다 — `None`="발송 기록을 모른다", `[]`="원장은 읽었는데
+    # 발송 이력이 없다"(AgentData.sent_notifications 문서와 ops_judge 모듈
+    # docstring "텔레그램 발송 원장" 절 — 둘을 합쳐 "없다"로 뭉개지 않는다).
+    # 최근 300건만 잡아 도구(get_sent_notifications, 상한 50건)가 다시 자르게
+    # 한다 — 원장 전체를 메모리에 올리지 않는다.
+    def _read_notifications(path: Path, max_rows: int = 300) -> list[dict] | None:
+        raw = _read(path)
+        if raw is None:
+            return None
+        rows: list[dict] = []
+        for ln in raw.splitlines():
+            if not ln.strip():
+                continue
+            try:
+                rows.append(_json.loads(ln))
+            except _json.JSONDecodeError:
+                continue
+        return rows[-max_rows:]
+
+    sent_notifications = _read_notifications(root / "data" / "ledger" / "notifications.jsonl")
+
+    data = J.AgentData(
+        rule_based=rule_based, portfolio=portfolio, recent_trades=recent_trades,
+        strategy_books=strategy_books, strategy_config=strategy_config,
+        control_state=control_state, heartbeat=heartbeat, reports=reports,
+        bar_checks=bar_checks, log_tails=log_tails,
+        sent_notifications=sent_notifications, label=args.label,
+    )
+
+    # LLM 백엔드 — chat_with_tools(OpenRouter 무료 레인, agent_interpret.py와 같은
+    # 툴콜링 루프). 크론은 .env.local 을 export 하지 않으므로 os.environ 우선,
+    # 없으면 get_key() 파일 직독 폴백(narrate.py `_make_openrouter_narrator`와
+    # 같은 이유 — 2026-08-16 실측: 이 폴백이 없어 크론 경로의 LLM 이 조용히 죽어
+    # 있었다).
+    key = os.environ.get("OPENROUTER_API_KEY", "").strip() or (get_key("OPENROUTER_API_KEY") or "")
+    narrator_name = "none"
+    chat = None
+    if key:
+        # 단일 HTTP 콜 타임아웃을 예산의 일부로 줄인다 — chat_with_tools는 라운드당
+        # (최대 5라운드 x 1순위/폴백 모델 = 최대 10콜) 재시도하므로, 콜 하나가
+        # 예산 전체를 먹으면 안 된다. 실제 벽시계 상한은 그래도 셸의 `timeout`이
+        # 진다(run_judgment 문서 — 이 함수는 단일 판단 호출이라 도중을 못 자른다).
+        budget = args.time_budget if args.time_budget else 240
+        timeout = max(10, min(60, int(budget / 4)))
+        chat = functools.partial(chat_with_tools, api_key=key, model=TOOL_MODEL, timeout=timeout)
+        narrator_name = f"openrouter:{TOOL_MODEL}"
+
+    result = J.run_judgment(data, chat, time_budget_seconds=args.time_budget)
+
+    out = dict(result)
+    out["narrator"] = narrator_name
+    out["label"] = args.label
+    out["checked_at"] = now.isoformat(timespec="seconds")
+    print(_json.dumps(out, ensure_ascii=False, indent=2))
+
+    try:
+        # ok=True는 "판정이 정상이었다"가 아니라 "이 잡이 죽지 않고 결과를 냈다"다
+        # (close-report의 record_run과 같은 의미) — level=review 도 정상 실행의
+        # 결과일 수 있으므로(자격증명 없음 등) 여기서 실패로 잘못 기록하면
+        # job_findings 가 "이 잡이 최근에 실패했다"는 거짓 경보를 낸다.
+        record_run(make_kv(), "ops-judge", ok=True,
+                  detail=f"level={result['level']} narrator={narrator_name}")
+    except Exception:  # noqa: BLE001 — 운영 상태 기록 실패가 판정 출력을 막으면 안 된다
+        pass
+
+    raise SystemExit({"ok": 0, "alert": 1, "review": 2}[result["level"]])
+
+
+def cmd_outcomes(args: argparse.Namespace) -> None:
+    """전방 수익률 채우기 + 결정론적 판단 기록 (Phase 7.2 / 7.3).
+
+    매일 장 마감 후 돈다. **그날 만기가 된 지평만** 채우므로 과거 시세 조회가 필요
+    없다 — 오늘 종가만 있으면 된다(자세한 근거는 `control/outcomes.py`).
+
+    `pending_outcomes()` 는 원래부터 있었지만 **부르는 코드가 없었다** — 실측으로
+    선정 원장 199행 중 outcome 이 0건이었다. 이 커맨드가 그 구멍이다.
+    """
+    import json as _json
+    from datetime import date as _date
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.control import outcomes as O
+    from quant.control import selections
+    from quant.control.judgment import HOLD_HORIZONS, selection_judgment
+
+    load_settings()
+    root = Path(args.root) if args.root else REPO_ROOT
+    sel_path = root / "data" / "ledger" / "selections.jsonl"
+    rows = selections.load(sel_path)
+    today = args.date or _date.today().isoformat()
+
+    need = O.pending_symbols(rows, today)
+    quotes: dict[str, float] = {}
+    quote_error = None
+    if need and not args.dry_run:
+        from quant.analyze.entities import load_market_map
+        from quant.collect.sources.market import fetch_symbol_quotes
+
+        us, kr = O.split_for_quotes(need)
+        try:
+            if us:
+                quotes.update(O.closes_from_quotes(fetch_symbol_quotes(sorted(us))))
+            if kr:
+                # KR 6자리 코드는 야후 심볼이 아니다 — 매핑 없이 부르면 조용히 빈
+                # 결과가 온다(report_cli._derive 와 같은 처리).
+                mmap = load_market_map(root / "data" / "cache")
+                rev = {v: k for k, v in mmap.items()}
+                ykr = [mmap[c] for c in sorted(kr) if c in mmap]
+                got = O.closes_from_quotes(fetch_symbol_quotes(ykr)) if ykr else {}
+                quotes.update({rev[y]: c for y, c in got.items() if y in rev})
+        except Exception as e:  # noqa: BLE001 — 시세 실패가 판단 기록을 막지 않는다
+            quote_error = f"{type(e).__name__}: {e}"
+            logger.warning("시세 조회 실패 — 이번 회차 수익률 채우기 생략: %s", e)
+
+    filled = 0
+    updated: list[dict] = []
+    for row in rows:
+        new = row
+        for h in O.due_horizons(str(row.get("date") or ""), today):
+            if new.get(f"outcome_d{h}_bps") is not None:
+                continue
+            before = new
+            new = O.apply_outcome(new, h, quotes.get(str(row.get("symbol"))), today)
+            if new is not before and new.get(f"outcome_d{h}_bps") is not None:
+                filled += 1
+        updated.append(new)
+
+    # 결정론적 베이스라인 판단 — 리더보드에서 LLM 이 이겨야 할 상대(7.3).
+    jpath = root / "data" / "ledger" / "judgments.jsonl"
+    existing = {
+        (r.get("producer"), r.get("producer_version"), r.get("input_hash"),
+         r.get("symbol"), r.get("session_date"))
+        for r in selections.load(jpath)
+    }
+    new_judgments = []
+    for row in rows:
+        j = selection_judgment(row, producer_version=str(args.scorer_version))
+        if j.natural_key() not in existing:
+            new_judgments.append(j)
+            existing.add(j.natural_key())
+
+    if not args.dry_run:
+        if filled:
+            selections.rewrite(updated, sel_path)
+        if new_judgments:
+            jpath.parent.mkdir(parents=True, exist_ok=True)
+            with jpath.open("a", encoding="utf-8") as f:
+                for j in new_judgments:
+                    f.write(_json.dumps(j.__dict__, ensure_ascii=False) + "\n")
+
+    print(_json.dumps({
+        "today": today, "selection_rows": len(rows),
+        "symbols_needing_quote": len(need), "quotes_fetched": len(quotes),
+        # **"0건"과 "실패"를 구분한다.** 앞 버전은 예외를 삼키고 0 만 남겨
+        # "채울 게 없었다"로 읽혔다(2026-08-14).
+        "quote_error": quote_error,
+        "quotes_missing": sorted(need - set(quotes))[:10] if need else [],
+        "horizons_filled": filled, "judgments_appended": len(new_judgments),
+        "horizons": list(HOLD_HORIZONS), "dry_run": bool(args.dry_run),
+    }, ensure_ascii=False, indent=2))
+
+
+def cmd_close_report(args: argparse.Namespace) -> None:
+    """장마감 결과 리포트 — 그날 만기가 채워진 선정 원장 outcome + 리더보드 판정 +
+    누적 스코어보드를 한 장으로 (§E-3). 매일 outcomes(16:00) 직후 크론.
+
+    narrate는 선택이다 — 서술기(`OPS_NARRATOR`)가 죽거나 없어도 결정론 요약은
+    그대로 나간다(ADR-0002: 발송이 서술기 때문에 죽으면 안 된다). 서술은 이미
+    조립된 결정론 요약을 프롬프트로 "2문장 코멘트"만 요청한다 — 판단을 새로
+    시키지 않는다.
+    """
+    import sys
+    from datetime import date as _date
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.adapters.kv import make_kv
+    from quant.adapters.narrate import make_narrator
+    from quant.control import selections
+    from quant.control.close_report import build_close_report, matured_today
+    from quant.control.ledger import load_trades, round_trips, scoreboard_text
+    from quant.control.leaderboard import verdicts_from_ledger
+    from quant.control.opstate import record_run
+
+    load_settings()
+    root = Path(args.root) if args.root else REPO_ROOT
+    today = args.date or _date.today().isoformat()
+
+    sel = selections.load(root / "data" / "ledger" / "selections.jsonl")
+    matured = matured_today(sel, today)
+
+    # 리더보드 판정 — cmd_leaderboard 와 같은 계산(생산자별 일별 순위 IC → 승격
+    # 판정, `leaderboard.verdicts_from_ledger` 로 추출됨). 판단 표본(judgments)이
+    # 아직 없으면 verdicts 는 빈 dict 로 떨어진다.
+    judgments = selections.load(root / "data" / "ledger" / "judgments.jsonl")
+    producer_verdicts = verdicts_from_ledger(sel, judgments, args.horizon, args.trials)
+    verdicts = {f"{who[0]}/{who[1]}": v for who, (v, _ic_by_day) in producer_verdicts.items()}
+
+    ledger_path = root / "data" / "state" / "trades.jsonl"
+    board = scoreboard_text(round_trips(load_trades(ledger_path)))
+
+    report = build_close_report(matured, verdicts, board)
+
+    # 결정론 요약을 **narrate 호출 전에** 찍고 flush 한다. narrate(로컬 Claude CLI
+    # 기본 180s / 서브프로세스)가 셸 래퍼의 timeout 보다 오래 걸려 SIGTERM 으로
+    # 죽어도, 명령 치환($())이 이미 flush 된 이 출력을 잡는다 — "서술기가 죽어도
+    # 결정론 요약은 나간다"는 계약이 여기서 실제로 성립한다(2026-08-15 리뷰:
+    # narrate 를 먼저 부르고 print 를 뒤에 두면 타임아웃 시 stdout 이 통째로
+    # 비어 "생성 실패"로 오보됐다).
+    print(report)
+    sys.stdout.flush()
+
+    # record_run 도 narrate **앞**에 둔다(2026-08-15 리뷰 M1) — narrate(로컬
+    # Claude CLI, 기본 timeout 180s)가 셸 래퍼의 timeout 보다 오래 걸려 SIGTERM
+    # 으로 죽으면, 뒤에 있던 record_run 이 실행되지 못해 opstate TTL 감시가
+    # "오늘 안 돌았다"는 오탐을 낸다 — 실제로는 결정론 요약이 이미 발송됐는데도.
+    try:
+        record_run(make_kv(), "close-report", ok=True,
+                  detail=f"만기 {len(matured)}건 · 판정 {len(verdicts)}건")
+    except Exception:  # noqa: BLE001 — 운영 상태 기록 실패가 리포트 발행을 막으면 안 된다
+        pass
+
+    # narrate — 이미 나간 요약에 짧은 코멘트만 덧붙인다. 실패/미설정이면 조용히 생략.
+    # 포트 계약(Narrator.narrate)은 "실패는 예외가 아니라 None"이지만, 여기서도
+    # try/except 로 한 번 더 막는다.
+    narrator = make_narrator()
+    comment = None
+    try:
+        comment = narrator.narrate(
+            "다음은 오늘의 장마감 결과 리포트다(결정론적으로 이미 조립됨). "
+            "불필요한 서두 없이 2문장으로만 코멘트해줘:\n\n" + report
+        )
+    except Exception as e:  # noqa: BLE001 — narrate 실패가 이미 나간 리포트를 갉아먹으면 안 된다
+        logger.warning("close-report narrate 실패(무시): %s: %s", type(e).__name__, e)
+    if comment:
+        print("\n💬 " + comment)
+
+
+def cmd_shadow_judge(args: argparse.Namespace) -> None:
+    """LLM 섀도우 판단 (Phase 7.4). **주문을 내지 않는다** — 판단만 기록한다.
+
+    같은 입력(`attributes`)을 결정론적 스코어러와 **동일하게** 보고, 같은 방식으로
+    `input_hash` 를 계산한다. 그래야 리더보드 비교가 실력 비교가 된다.
+
+    모델을 못 부르거나 출력이 형식을 어기면 **아무것도 쓰지 않는다** — 0점을 주면
+    "최하위로 평가했다"가 되어 IC 를 오염시킨다.
+    """
+    import json as _json
+    from datetime import datetime as _dt, timezone as _tz
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.adapters.narrate import make_narrator
+    from quant.control import selections
+    from quant.control.judgment import selection_attributes
+    from quant.control.shadow import build_prompt, parse_scores
+    from quant.core.models import Judgment, input_hash
+
+    load_settings()
+    root = Path(args.root) if args.root else REPO_ROOT
+    rows = [r for r in selections.load(root / "data" / "ledger" / "selections.jsonl")
+            if str(r.get("date")) == args.date and str(r.get("market")) == args.market]
+    if args.limit:
+        rows = rows[: args.limit]
+    if not rows:
+        print(_json.dumps({"ok": False, "reason": "그 날짜·시장의 선정 행이 없다",
+                           "date": args.date, "market": args.market}, ensure_ascii=False))
+        raise SystemExit(2)
+
+    narrator = make_narrator()
+    text = narrator.narrate(build_prompt(rows))
+    scores = parse_scores(text, allowed={str(r.get("symbol")) for r in rows})
+    if not scores:
+        # 모델이 죽었거나 형식을 어겼다. **판단을 지어내지 않는다.**
+        print(_json.dumps({"ok": False, "reason": "모델 출력에서 점수를 얻지 못했다",
+                           "producer": args.producer, "rows": len(rows)},
+                          ensure_ascii=False))
+        raise SystemExit(2)
+
+    now = _dt.now(_tz.utc).isoformat(timespec="seconds")
+    jpath = root / "data" / "ledger" / "judgments.jsonl"
+    existing = {
+        (r.get("producer"), r.get("producer_version"), r.get("input_hash"),
+         r.get("symbol"), r.get("session_date"))
+        for r in selections.load(jpath)
+    }
+    written = 0
+    jpath.parent.mkdir(parents=True, exist_ok=True)
+    with jpath.open("a", encoding="utf-8") as f:
+        for r in rows:
+            sym = str(r.get("symbol"))
+            if sym not in scores:
+                continue
+            attrs = selection_attributes(r)
+            j = Judgment(
+                producer=args.producer, producer_version=args.producer_version,
+                input_hash=input_hash(attrs), market=str(r.get("market")), symbol=sym,
+                session_date=str(r.get("date")), score=scores[sym],
+                # 척도가 달라도 순위로 비교하므로 판정 문턱은 중간값으로 둔다.
+                verdict="pass" if scores[sym] >= 50 else "reject",
+                rationale="shadow", ts=now,
+            )
+            if j.natural_key() in existing:
+                continue
+            f.write(_json.dumps(j.__dict__, ensure_ascii=False) + "\n")
+            existing.add(j.natural_key())
+            written += 1
+
+    print(_json.dumps({"ok": True, "producer": args.producer, "date": args.date,
+                       "market": args.market, "rows": len(rows),
+                       "scored": len(scores), "judgments_written": written},
+                      ensure_ascii=False, indent=2))
+
+
+def cmd_leaderboard(args: argparse.Namespace) -> None:
+    """생산자별 승격 판정 (Phase 7.5). **자동 적용하지 않는다** — 판정만 낸다.
+
+    표본 수는 **거래일 수**로 센다(판단 수가 아니다). 근거는
+    `control/leaderboard.py` docstring — 같은 날의 종목들은 같은 시장 움직임을 공유해
+    독립 관측이 아니다.
+    """
+    import json as _json
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.control import selections
+    from quant.control.leaderboard import verdicts_from_ledger
+
+    load_settings()
+    root = Path(args.root) if args.root else REPO_ROOT
+    sel = selections.load(root / "data" / "ledger" / "selections.jsonl")
+    judgments = selections.load(root / "data" / "ledger" / "judgments.jsonl")
+
+    producer_verdicts = verdicts_from_ledger(sel, judgments, args.horizon, args.trials)
+    out = []
+    for who in sorted(producer_verdicts):
+        v, ic_by_day = producer_verdicts[who]
+        out.append({"producer": who[0], "version": who[1], **v.__dict__,
+                    "ic_by_day": ic_by_day})
+
+    print(_json.dumps({"horizon_days": args.horizon, "producers": out},
+                      ensure_ascii=False, indent=2, default=str))
+    # 승격 후보가 없으면 종료코드 2 — "판단 불가"를 성공으로 읽지 않는다.
+    raise SystemExit(0 if any(p["promote"] for p in out) else 2)
+
+
+def cmd_narrate(args: argparse.Namespace) -> None:
+    """stdin 프롬프트 → 서술문을 stdout 으로. 서술하지 못하면 **출력 없이 종료코드 1**.
+
+    서술기 선택(`OPS_NARRATOR`)은 `adapters.narrate.make_narrator()` 한 곳에만 있다 —
+    셸에도 스위치를 두면 두 곳이 갈리고, 갈라진 쪽이 조용한 쪽이 된다.
+
+    빈 출력 + 1 을 내는 이유: 호출자(`ops_watch.sh`)가 결정론적 형식으로 떨어질지를
+    **문자열 내용이 아니라 종료코드로** 판단할 수 있어야 한다.
+    """
+    import sys
+
+    from quant.adapters.narrate import make_narrator
+
+    load_settings()
+    narrator = make_narrator()
+    text = narrator.narrate(sys.stdin.read())
+    if not text:
+        raise SystemExit(1)
+    print(text)
+
+
+def cmd_kiwoom_probe(args: argparse.Namespace) -> None:
+    """키움 실키가 등록된 환경에서 사람이 돌려보는 웹소켓 스모크.
+
+    토큰 발급 -> 웹소켓 접속/로그인 -> 종목 등록 -> N초간 수신 틱 출력 -> 종료.
+    주문 기능은 포함하지 않는다 (읽기 전용 조회만). 해외주식(TQQQ) 실시간시세가
+    이 경로로 실제 오는지는 미검증이라 기본 심볼은 국내 종목(005930)이다 —
+    docs/api/kiwoom/README.md 5.1 참고.
+    """
+    load_settings()  # .env/.env.local 로드
+    import contextlib
+
+    # 키움 웹소켓은 계정당 세션이 하나다 — 엔진이 떠 있는 상태에서 프로브를 붙이면
+    # **엔진의 실시간 시세가 끊긴다**(2026-08-11 실측: 엔진이 재접속 루프에 빠졌고
+    # 프로브 종료 후에야 회복). 장중에는 절대 돌리지 말 것.
+    logger.warning(
+        "kiwoom-probe: 계정당 웹소켓 세션은 1개다 — quant-engine이 실행 중이면 "
+        "그쪽 실시간 시세가 이 프로브 동안 끊긴다. 장중 실행 금지."
+    )
+
+    from quant.adapters.brokers.kiwoom.client import KiwoomClient
+    from quant.adapters.brokers.kiwoom.websocket import DEFAULT_WS_URL, KiwoomRealtimeFeed
+
+    app_key = os.environ.get("KIWOOM_APP_KEY", "")
+    secret_key = os.environ.get("KIWOOM_SECRET_KEY", "")
+    if not app_key or not secret_key:
+        raise SystemExit("KIWOOM_APP_KEY / KIWOOM_SECRET_KEY 미설정 — .env.local 확인")
+
+    client = KiwoomClient(app_key=app_key, secret_key=secret_key)
+    client.access_token()
+    print(f"토큰 발급 성공 (base_url={client.base_url})")
+
+    # WS 호스트는 **토큰이 발급된 서버와 짝이 맞아야 한다** — 실전 토큰을 모의 WS에
+    # 물리면 8031("투자구분(실전/모의)이 달라서 Token를 사용할수가 없습니다")로
+    # 끊긴다. assembly.build_kiwoom_realtime_route가 하던 치환이 여기엔 없어서,
+    # 실전 환경에서 프로브만 모의 호스트로 붙어 **진단 도구가 거짓 실패를 보고**했다
+    # (2026-08-11 실측). env 오버라이드는 그대로 최우선으로 남긴다.
+    base_url = os.environ.get("KIWOOM_BASE_URL", "")
+    _default_ws = (
+        DEFAULT_WS_URL.replace("mockapi.kiwoom.com", "api.kiwoom.com")
+        if "mockapi" not in base_url and "api.kiwoom.com" in base_url
+        else DEFAULT_WS_URL
+    )
+    ws_url = os.environ.get("KIWOOM_WS_URL", _default_ws)
+    feed = KiwoomRealtimeFeed(
+        access_token=client.access_token, symbols=[args.symbol], ws_url=ws_url,
+    )
+    print(f"ws_url={ws_url}")
+
+    async def _probe() -> None:
+        run_task = asyncio.create_task(feed.run())
+        try:
+            seen = None
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + args.seconds
+            print(f"웹소켓 접속/구독 중... ({args.symbol}, {args.seconds}초간 수신 대기)")
+            while loop.time() < deadline:
+                await asyncio.sleep(0.5)
+                q = feed.quote(args.symbol)
+                if q is not None and q != seen:
+                    print(f"tick: {q}")
+                    seen = q
+        finally:
+            await feed.close()
+            run_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await run_task
+
+        print(f"\n=== kiwoom-probe: {args.symbol} ({args.seconds}s) ===")
+        print(f"health: {feed.health()}")
+        print(f"last quote: {feed.quote(args.symbol)}")
+
+    asyncio.run(_probe())
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="quant")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_fit = sub.add_parser(
+        "fitness",
+        help="적합도 지표를 JSON 으로 (기계용). 사람이 읽을 표는 backtest 를 쓴다.",
+    )
+    p_fit.add_argument("--strategy", default="donchian")
+    p_fit.add_argument("--days", type=int, default=90)
+    p_fit.add_argument("--interval", default="15m")
+    p_fit.add_argument("--source", default="stub")
+    p_fit.add_argument("--symbols", default=None)
+    p_fit.add_argument(
+        "--allow-zero-cost", action="store_true",
+        help="비용 0 백테스트를 허용한다 — **비용 모델 자체를 시험할 때만**. "
+             "하네스 경로에서 쓰면 확실한 손실 전략이 최고점으로 나온다 "
+             "(실측 엣지 왕복 8~9bp vs 수수료 14bp).",
+    )
+    p_fit.set_defaults(func=cmd_fitness)
+
+    p_bt = sub.add_parser("backtest")
+    p_bt.add_argument("--strategy", default="donchian")
+    p_bt.add_argument("--days", type=int, default=90)
+    p_bt.add_argument("--interval", default="15m")
+    p_bt.add_argument("--source", default="stub")
+    p_bt.add_argument(
+        "--symbols", default=None,
+        help='공백 구분 심볼 목록(예: "TQQQ SQQQ") — settings.yaml의 symbols: []를 '
+             "덮어쓴다. 관심종목(watchlist) 전략(orb_scan/intraday_scan/cross_momentum/"
+             "confluence)은 이게 없으면 명확한 에러로 멈춘다.",
+    )
+    p_bt.set_defaults(func=cmd_backtest)
+
+    p_paper = sub.add_parser("paper")
+    p_paper.set_defaults(func=cmd_paper)
+
+    p_report = sub.add_parser("report")
+    p_report.set_defaults(func=cmd_report)
+
+    p_fetch = sub.add_parser("fetch")
+    p_fetch.add_argument("--symbol", required=True)
+    p_fetch.add_argument("--start", required=True)
+    p_fetch.add_argument("--end", default=None)
+    p_fetch.add_argument("--source", default="toss", choices=["toss", "yfinance", "alpaca"])
+    p_fetch.add_argument("--interval", default="1m")
+    p_fetch.set_defaults(func=cmd_fetch)
+
+    p_naver_fund = sub.add_parser(
+        "naver-fundamentals",
+        help="네이버 거래상위 펀더멘털(시가총액/PER/ROE) 스냅샷 적재 (매일, KR 마감 후)",
+    )
+    p_naver_fund.add_argument("--root", default=".", help="저장소 루트")
+    p_naver_fund.set_defaults(func=cmd_naver_fundamentals)
+
+    p_dart_fund = sub.add_parser(
+        "dart-fundamentals",
+        help="DART 재무제표(부채비율/ROE/BPS) 적재 (분기 단위 변동 — 주 1회면 충분)",
+    )
+    p_dart_fund.add_argument("--root", default=".", help="저장소 루트")
+    p_dart_fund.add_argument(
+        "--symbols", default=None,
+        help='공백 구분 종목코드 목록(예: "005930 000660") — 생략 시 watchlist.yaml의 KR 종목',
+    )
+    p_dart_fund.add_argument(
+        "--bsns-year", default=None,
+        help="사업연도(YYYY). 생략 시 4월 이후=작년도, 1~3월=재작년도로 추정",
+    )
+    p_dart_fund.add_argument(
+        "--reprt-code", default="11011",
+        help="DART 보고서 코드. 기본 11011=사업보고서(연간, 계정이 온전함)",
+    )
+    p_dart_fund.set_defaults(func=cmd_dart_fundamentals)
+
+    p_opt = sub.add_parser("optimize")
+    p_opt.add_argument("--strategy", default="donchian")
+    p_opt.add_argument("--start", required=True)
+    p_opt.add_argument("--end", required=True)
+    p_opt.add_argument("--train-days", type=int, default=60)
+    p_opt.add_argument("--test-days", type=int, default=20)
+    p_opt.add_argument("--step-days", type=int, default=None, help="기본값: --test-days와 동일")
+    p_opt.add_argument("--embargo-days", type=int, default=0)
+    p_opt.add_argument("--trials", type=int, default=50)
+    p_opt.add_argument("--source", default="stub", choices=["stub", "history"])
+    # interval을 넘기지 않으면 walk_forward가 기본 15m으로 리플레이한다. 5분봉
+    # 전략(orb)을 그 케이던스로 돌리면 진입 창 판정이 통째로 어긋나 에러 없이
+    # 엉뚱한 최적 파라미터가 나온다.
+    p_opt.add_argument("--interval", default="15m")
+    p_opt.add_argument("--seed", type=int, default=42)
+    p_opt.add_argument("--param-space", default=None, help="YAML 경로 (생략 시 전략별 기본 param space 사용)")
+    p_opt.set_defaults(func=cmd_optimize)
+
+    p_watch_score = sub.add_parser("watch-score", help="워치리스트 후보 종목 결정론적 채점 (리포팅 레이어, 08:40 cron 전용)")
+    p_watch_score.add_argument("--symbols", default="", help="공백 구분 심볼 목록 (예: \"TQQQ 005930\") — --discover-kr만으로도 실행 가능")
+    p_watch_score.add_argument(
+        "--discover-kr", action="store_true",
+        help="Toss 거래대금 랭킹 상위에서 KR 후보를 추가 발굴해 함께 채점 (TREND 태그)",
+    )
+    p_watch_score.add_argument(
+        "--discover-us", action="store_true",
+        help="Toss 거래대금 랭킹 상위에서 US 후보를 추가 발굴해 함께 채점 (TREND 태그)",
+    )
+    p_watch_score.add_argument(
+        "--threshold", type=int, default=None,
+        help="기본값: config universe.watchlist.auto_score.threshold (없으면 50)",
+    )
+    p_watch_score.set_defaults(func=cmd_watch_score)
+
+    p_scoreboard = sub.add_parser("scoreboard", help="누적 거래 원장 기반 전략별·종목별 성적표 (승률/payoff/bps)")
+    p_scoreboard.add_argument("--days", type=int, default=None, help="최근 N일만 (기본: 전체 누적)")
+    p_scoreboard.set_defaults(func=cmd_scoreboard)
+
+    p_experiments = sub.add_parser("experiments", help="자동 판정 — 파라미터 변경 감지 + 이중차분 효과 판정 + 전략 사망 경보 (판정 없으면 무출력)")
+    p_experiments.add_argument("--verbose", action="store_true", help="지문/대기 상태를 stderr 로")
+    p_experiments.set_defaults(func=cmd_experiments)
+
+    p_forensics = sub.add_parser("forensics", help="거래 부검 — MFE/MAE·청산 효율·진입 위치 대조군·청산 규칙 재생 (왜 졌나)")
+    p_forensics.add_argument("--days", type=int, default=None, help="최근 N일만 (기본: 전체 누적)")
+    p_forensics.add_argument("--strategy", default=None, help="특정 전략만")
+    p_forensics.set_defaults(func=cmd_forensics)
+
+    p_session_pnl = sub.add_parser("session-pnl", help="세션(정규장) 마감 후 실화폐 손익 리포트 (실현+미실현, 시장별 통화)")
+    p_session_pnl.add_argument("--market", required=True, choices=["KR", "US"], help="KR 또는 US")
+    p_session_pnl.add_argument("--date", default=None, help="YYYY-MM-DD (기본: 그 시장 기준 오늘)")
+    p_session_pnl.set_defaults(func=cmd_session_pnl)
+
+    p_strategy_pnl = sub.add_parser(
+        "strategy-pnl",
+        help="전략별 독립 명목계좌(각 1천만원) 성과 — 평가금액/수익률/실현·미실현손익/거래수·승률",
+    )
+    p_strategy_pnl.set_defaults(func=cmd_strategy_pnl)
+
+    p_backup = sub.add_parser(
+        "backup",
+        help="아티팩트 백업 번들 생성/대조 (JSON). 문제가 있으면 종료코드 1.",
+    )
+    p_backup.add_argument("--out", default="data/backups", help="번들을 둘 디렉토리")
+    p_backup.add_argument("--root", default=".", help="저장소 루트 (data/ 의 부모)")
+    p_backup.add_argument(
+        "--include", action="append", default=None,
+        help="data/ 밖의 파일을 함께 담는다 (MySQL 덤프). 여러 번 쓸 수 있다.",
+    )
+    p_backup.add_argument(
+        "--verify", default=None,
+        help="이 번들을 매니페스트와 대조만 하고 끝낸다 (생성하지 않음)",
+    )
+    p_backup.set_defaults(func=cmd_backup)
+
+    p_health = sub.add_parser(
+        "health",
+        help="운영 이상 점검 (JSON). 종료코드 0=정상 / 1=이상 / 2=모름.",
+    )
+    p_health.add_argument("--root", default=".", help="저장소 루트")
+    p_health.add_argument(
+        "--expect-timer", action="append", default=None,
+        help="있어야 하는 systemd 타이머 유닛. 여러 번 쓸 수 있다.",
+    )
+    p_health.add_argument(
+        "--required-source", action="append", default=None,
+        help="리포트에서 빠지면 안 되는 소스 이름(engine.json 의 missing 과 대조). "
+             "after_hours 처럼 시간대에 따라 정상적으로 빠지는 건 넣지 않는다.",
+    )
+    p_health.add_argument(
+        "--required-secret", action="append", default=None,
+        help="앱 경로로 읽혀야 하는 시크릿 키 이름. 값은 출력하지 않는다.",
+    )
+    p_health.set_defaults(func=cmd_health)
+
+    p_oj = sub.add_parser(
+        "ops-judge",
+        help="판단하는 워치독 — 규칙 기반 health 위에 LLM 교차검증(JSON). 종료코드 0=정상 / 1=이상 / 2=확인 필요.",
+    )
+    p_oj.add_argument("--root", default=None, help="기본: 저장소 루트")
+    p_oj.add_argument(
+        "--rule-based-json", default=None,
+        help="`cli health`의 JSON 출력 파일 경로, 또는 '-'(stdin). "
+             "생략하면 규칙 기반 결과 없이 판단한다(도구가 '읽지 못했다'로 정직하게 답한다).",
+    )
+    p_oj.add_argument(
+        "--label", default="manual",
+        help="호출 컨텍스트 라벨(예: kr-midday, us-midsession) — 프롬프트에 그대로 노출된다.",
+    )
+    p_oj.add_argument(
+        "--time-budget", type=float, default=240.0,
+        help="LLM 판단 벽시계 예산(초). 0 이하면 LLM 을 호출하지 않고 즉시 'review'로 떨어진다. "
+             "실제 강제 중단은 호출부(셸)의 timeout 이 진다 — 이 값은 시작 전 게이트 + HTTP 타임아웃 축소에만 쓰인다.",
+    )
+    p_oj.set_defaults(func=cmd_ops_judge)
+
+    p_out = sub.add_parser(
+        "outcomes",
+        help="전방 수익률 채우기 + 결정론적 판단 기록 (매일 장 마감 후). JSON 출력.",
+    )
+    p_out.add_argument("--root", default=None, help="기본: 저장소 루트")
+    p_out.add_argument("--date", default=None, help="오늘로 볼 날짜 (YYYY-MM-DD)")
+    p_out.add_argument("--scorer-version", default="3",
+                       help="결정론적 스코어러 버전 — 규칙을 바꾸면 올린다(표본이 섞이지 않게). "
+                            "기본값 3 = 선정 속성에 news_z 추가(H-2 Task 4, 2026-08-16). "
+                            "2 = baseline_score100 산식(§E-2, 2026-08-15 v1 상수 50 문제로 교체)")
+    p_out.add_argument("--dry-run", action="store_true")
+    p_out.set_defaults(func=cmd_outcomes)
+
+    p_cr = sub.add_parser(
+        "close-report",
+        help="장마감 결과 리포트 — 그날 만기된 outcome + 리더보드 판정 + 누적 스코어보드 (텍스트).",
+    )
+    p_cr.add_argument("--root", default=None, help="기본: 저장소 루트")
+    p_cr.add_argument("--date", default=None, help="오늘로 볼 날짜 (YYYY-MM-DD)")
+    p_cr.add_argument("--horizon", type=int, default=5, help="리더보드 판정에 쓸 지평(거래일). 기본 5")
+    p_cr.add_argument("--trials", type=int, default=1,
+                      help="리더보드 다중검정 보정 시행 횟수. 프롬프트·모델을 K개 시험했으면 K")
+    p_cr.set_defaults(func=cmd_close_report)
+
+    p_sj = sub.add_parser(
+        "shadow-judge",
+        help="LLM 섀도우 판단 기록 (주문 없음). 점수를 못 얻으면 종료코드 2.",
+    )
+    p_sj.add_argument("--root", default=None)
+    p_sj.add_argument("--date", required=True, help="선정 원장의 날짜 (YYYY-MM-DD)")
+    p_sj.add_argument("--market", required=True, choices=["KR", "US"])
+    p_sj.add_argument("--producer", default="nemotron-3-ultra",
+                      help="생산자 이름. 리더보드에서 이 이름으로 채점된다")
+    p_sj.add_argument("--producer-version", default="free",
+                      help="프롬프트를 바꾸면 올린다 — 안 올리면 변경 전후가 한 표본에 섞인다")
+    p_sj.add_argument("--limit", type=int, default=60,
+                      help="한 번에 채점할 종목 수 상한 (컨텍스트·비용 보호)")
+    p_sj.set_defaults(func=cmd_shadow_judge)
+
+    p_lb = sub.add_parser(
+        "leaderboard",
+        help="생산자별 승격 판정 (JSON). 승격 후보가 없으면 종료코드 2.",
+    )
+    p_lb.add_argument("--root", default=None)
+    p_lb.add_argument("--horizon", type=int, default=5, help="지평(거래일). 기본 5")
+    p_lb.add_argument("--trials", type=int, default=1,
+                      help="시행 횟수(다중검정 보정). 프롬프트·모델을 K개 시험했으면 K")
+    p_lb.set_defaults(func=cmd_leaderboard)
+
+    p_narrate = sub.add_parser(
+        "narrate",
+        help="stdin 을 사람이 읽을 문장으로 (OPS_NARRATOR). 서술 불가 시 출력 없이 종료코드 1.",
+    )
+    p_narrate.set_defaults(func=cmd_narrate)
+
+    p_kiwoom_probe = sub.add_parser("kiwoom-probe", help="키움 실키 등록 후 웹소켓 실시간시세 수동 스모크 (주문 없음)")
+    p_kiwoom_probe.add_argument("--symbol", default="005930", help="기본: 삼성전자 (해외주식 실시간 지원 여부는 미검증)")
+    p_kiwoom_probe.add_argument("--seconds", type=int, default=10)
+    p_kiwoom_probe.set_defaults(func=cmd_kiwoom_probe)
+
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

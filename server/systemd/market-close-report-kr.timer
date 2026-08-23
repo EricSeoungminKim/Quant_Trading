@@ -1,0 +1,22 @@
+# 마감 포지션 리포트(서브프로젝트 R) — 매일 13:40 KST 고정 빌드.
+#
+# 왜 13:40 인가 — 사용자 단타 실전 리듬: 08:00~10:30 첫 포지션 → 점심/마감
+# 무렵 재서치 → 14:00~15:30 마감 포지션. 13:40 빌드면 13:50 전후 발행돼
+# 14:00 진입 준비 시간이 확보된다(설계 스펙 §발행 시각). 아침판(market-report@.
+# service)과 달리 이동 목표(DST 등)가 없는 KST 고정 시각이라 타이머 자체가
+# 발행 시각이고, run_close_report.sh 는 별도 대기 없이 즉시 빌드한다.
+#
+# 매일 발행 이유(서브프로젝트 G 원칙과 동일): 휴장일 포함 매일 — 휴장일엔
+# 조용한 내용(신규 호재 없음·후보 없음)이 그대로 정직하게 나간다.
+#
+# KR 전용이다 — US 오후판은 없다(정규장 구조가 다르다).
+[Unit]
+Description=Market close report KR (daily 13:40 KST)
+
+[Timer]
+OnCalendar=*-*-* 13:40 Asia/Seoul
+Persistent=false
+Unit=market-close-report@KR.service
+
+[Install]
+WantedBy=timers.target

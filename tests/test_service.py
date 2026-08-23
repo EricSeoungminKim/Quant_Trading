@@ -1,0 +1,358 @@
+"""MarketDataService(Anti-Corruption Layer) 테스트. 페이크 소스만 사용 — 네트워크 없음.
+
+커버리지: 우선순위 라우팅, 실패 시 폴백+degraded 가시성, provenance, 심볼/interval
+불일치 소스 스킵, look-ahead 필터링(마지막 방어선), naive 타임스탬프 정규화,
+전체 실패 시 None/빈 프레임, health()의 소스별 실패 상태 반영."""
+from __future__ import annotations
+
+import time
+from datetime import datetime, timedelta, timezone
+
+import pandas as pd
+import pytest
+
+from quant.adapters.data.service import Capability, MarketDataService, SourceRoute
+from quant.core.models import Quote
+
+_OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
+
+
+# --------------------------------------------------------------------- helpers
+
+class FakeClock:
+    def __init__(self, now: datetime, cadence_minutes: float = 15.0):
+        self._now = now
+        self._cadence = cadence_minutes
+
+    def now(self) -> datetime:
+        return self._now
+
+    def is_market_open(self, market: str) -> bool:
+        return True
+
+    def minutes_to_close(self, market: str) -> float | None:
+        return 120.0
+
+    def cadence_minutes(self) -> float:
+        return self._cadence
+
+    def should_flatten(self, market: str, flatten_minutes: float) -> bool:
+        mtc = self.minutes_to_close(market)
+        return mtc is not None and mtc - self._cadence < flatten_minutes
+
+
+class FakeSource:
+    """quote()/history() 호출을 기록하고, 설정에 따라 값을 반환하거나 예외를 던진다."""
+
+    def __init__(
+        self,
+        quote_result: Quote | None = None,
+        quote_error: Exception | None = None,
+        history_df: pd.DataFrame | None = None,
+        history_error: Exception | None = None,
+    ):
+        self._quote_result = quote_result
+        self._quote_error = quote_error
+        self._history_df = history_df if history_df is not None else pd.DataFrame(columns=_OHLCV_COLUMNS)
+        self._history_error = history_error
+        self.quote_calls: list[str] = []
+        self.history_calls: list[tuple[str, str, int]] = []
+
+    def quote(self, symbol: str) -> Quote | None:
+        self.quote_calls.append(symbol)
+        if self._quote_error is not None:
+            raise self._quote_error
+        return self._quote_result
+
+    def history(self, symbol: str, interval: str, n: int) -> pd.DataFrame:
+        self.history_calls.append((symbol, interval, n))
+        if self._history_error is not None:
+            raise self._history_error
+        return self._history_df
+
+
+def _bars(start: str, periods: int, freq: str = "15min", tz: str | None = "UTC") -> pd.DataFrame:
+    idx = pd.date_range(start, periods=periods, freq=freq, tz=tz)
+    prices = [100.0 + i for i in range(periods)]
+    return pd.DataFrame({
+        "open": prices, "high": [p + 1 for p in prices], "low": [p - 1 for p in prices],
+        "close": prices, "volume": [10.0] * periods,
+    }, index=idx)
+
+
+# ------------------------------------------------------------------- routing
+
+def test_routing_picks_declared_priority_source():
+    primary = FakeSource(quote_result=Quote(symbol="TQQQ", ts=datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc), price=51.0))
+    secondary = FakeSource(quote_result=Quote(symbol="TQQQ", ts=datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc), price=99.0))
+    svc = MarketDataService(
+        routes=[
+            SourceRoute(name="primary", source=primary, capabilities=frozenset({Capability.QUOTE})),
+            SourceRoute(name="secondary", source=secondary, capabilities=frozenset({Capability.QUOTE})),
+        ],
+        clock=FakeClock(datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc)),
+    )
+
+    q = svc.quote("TQQQ")
+
+    assert q is not None
+    assert q.price == 51.0  # primary 응답이 사용됨
+    assert secondary.quote_calls == []  # fallback 없이 primary만 호출됨
+
+
+# ------------------------------------------------------------------- fallback
+
+def test_falls_back_when_primary_raises_and_records_degraded_state(caplog):
+    primary = FakeSource(quote_error=RuntimeError("network down"))
+    secondary = FakeSource(quote_result=Quote(symbol="TQQQ", ts=datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc), price=99.0))
+    svc = MarketDataService(
+        routes=[
+            SourceRoute(name="primary", source=primary, capabilities=frozenset({Capability.QUOTE})),
+            SourceRoute(name="secondary", source=secondary, capabilities=frozenset({Capability.QUOTE})),
+        ],
+        clock=FakeClock(datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc)),
+    )
+
+    with caplog.at_level("WARNING"):
+        q = svc.quote("TQQQ")
+
+    assert q is not None
+    assert q.price == 99.0  # secondary로 폴백됨
+    assert any("primary" in rec.message for rec in caplog.records)  # 경고 로그 남음
+
+    health = svc.health()
+    # degraded는 2026-08-12부터 "끝내 못 받았다"는 뜻이다 — 폴백이 성공했으므로 False.
+    # 소스별 실패는 아래처럼 그대로 관측 가능하다(관측 가능성은 유지, 알람 기준만 변경).
+    assert health.degraded is False
+    assert health.sources["primary"].healthy is False
+    assert health.sources["primary"].consecutive_failures == 1
+    assert health.sources["secondary"].healthy is True
+
+
+# ----------------------------------------------------------------- provenance
+
+def test_provenance_reports_actual_serving_source():
+    now = datetime(2024, 1, 2, 10, 30, tzinfo=timezone.utc)
+    quote_source = FakeSource(quote_result=Quote(symbol="TQQQ", ts=now, price=51.0))
+    bars_source = FakeSource(history_df=_bars("2024-01-02T09:30", 4))
+    svc = MarketDataService(
+        routes=[
+            SourceRoute(name="quotes", source=quote_source, capabilities=frozenset({Capability.QUOTE})),
+            SourceRoute(name="bars", source=bars_source, capabilities=frozenset({Capability.BARS})),
+        ],
+        clock=FakeClock(now),
+    )
+
+    svc.quote("TQQQ")
+    svc.history("TQQQ", "15m", 10)
+
+    assert svc.provenance("TQQQ", Capability.QUOTE) == "quotes"
+    assert svc.provenance("TQQQ", Capability.BARS) == "bars"
+    assert svc.provenance("TQQQ", Capability.STREAM) is None  # 서빙된 적 없음
+
+
+# ------------------------------------------------------ symbol/interval skip
+
+def test_source_not_supporting_symbol_or_interval_is_skipped():
+    wrong_symbol = FakeSource(history_df=_bars("2024-01-02T09:30", 4))
+    wrong_interval = FakeSource(history_df=_bars("2024-01-02T09:30", 4))
+    matching = FakeSource(history_df=_bars("2024-01-02T09:30", 4))
+    svc = MarketDataService(
+        routes=[
+            SourceRoute(name="wrong_symbol", source=wrong_symbol, capabilities=frozenset({Capability.BARS}), symbols=frozenset({"SQQQ"})),
+            SourceRoute(name="wrong_interval", source=wrong_interval, capabilities=frozenset({Capability.BARS}), intervals=frozenset({"1d"})),
+            SourceRoute(name="matching", source=matching, capabilities=frozenset({Capability.BARS})),
+        ],
+        clock=FakeClock(datetime(2024, 1, 3, 0, 0, tzinfo=timezone.utc)),
+    )
+
+    svc.history("TQQQ", "15m", 10)
+
+    assert wrong_symbol.history_calls == []
+    assert wrong_interval.history_calls == []
+    assert matching.history_calls == [("TQQQ", "15m", 10)]
+    assert svc.provenance("TQQQ", Capability.BARS) == "matching"
+
+
+# -------------------------------------------------------------- look-ahead
+
+def test_lookahead_bars_from_sloppy_source_are_filtered():
+    bars = _bars("2024-01-02T09:30", 6)  # 09:30, 09:45, 10:00, 10:15, 10:30, 10:45
+    now = bars.index[3]  # 10:15 — 09:30/09:45/10:00 bin만 마감됨(open+15m<=now)
+    sloppy = FakeSource(history_df=bars)  # 미래 봉(10:15~10:45)까지 그대로 반환하는 sloppy 소스
+    svc = MarketDataService(
+        routes=[SourceRoute(name="sloppy", source=sloppy, capabilities=frozenset({Capability.BARS}))],
+        clock=FakeClock(now),
+    )
+
+    out = svc.history("TQQQ", "15m", 10)
+
+    assert len(out) == 3
+    assert (out.index + pd.Timedelta(minutes=15) <= now).all()
+
+
+# ---------------------------------------------------------- tz normalization
+
+def test_naive_timestamps_get_normalized():
+    naive_bars = _bars("2024-01-02T09:30", 3, tz=None)  # naive index
+    now = datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc)
+    bars_source = FakeSource(history_df=naive_bars)
+    quote_source = FakeSource(quote_result=Quote(symbol="TQQQ", ts=datetime(2024, 1, 2, 9, 45), price=51.0))
+    svc = MarketDataService(
+        routes=[
+            SourceRoute(name="bars", source=bars_source, capabilities=frozenset({Capability.BARS})),
+            SourceRoute(name="quotes", source=quote_source, capabilities=frozenset({Capability.QUOTE})),
+        ],
+        clock=FakeClock(now),
+    )
+
+    out = svc.history("TQQQ", "15m", 10)
+    q = svc.quote("TQQQ")
+
+    assert out.index.tz is not None
+    assert str(out.index.tz) == "UTC"
+    assert q is not None
+    assert q.ts.tzinfo is not None
+    assert q.ts.utcoffset() == timedelta(0)
+
+
+# ----------------------------------------------------------- all sources fail
+
+def test_all_sources_fail_quote_returns_none_and_history_returns_empty_frame():
+    failing_quote = FakeSource(quote_error=RuntimeError("down"))
+    failing_bars = FakeSource(history_error=RuntimeError("down"))
+    svc = MarketDataService(
+        routes=[
+            SourceRoute(name="q", source=failing_quote, capabilities=frozenset({Capability.QUOTE})),
+            SourceRoute(name="b", source=failing_bars, capabilities=frozenset({Capability.BARS})),
+        ],
+        clock=FakeClock(datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc)),
+    )
+
+    assert svc.quote("TQQQ") is None
+
+    out = svc.history("TQQQ", "15m", 10)
+    assert out.empty
+    assert list(out.columns) == _OHLCV_COLUMNS
+
+    health = svc.health()
+    assert health.degraded is True
+    assert health.sources["q"].healthy is False
+    assert health.sources["b"].healthy is False
+
+
+# ------------------------------------------------------------- 사이클 내 quote 캐시
+
+
+class _CountingQuoteSource:
+    def __init__(self, price: float = 100.0):
+        self.calls = 0
+        self.price = price
+
+    def quote(self, symbol: str):
+        self.calls += 1
+        return Quote(symbol=symbol, ts=datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc),
+                     price=self.price)
+
+    def history(self, symbol: str, interval: str, n: int):
+        return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+
+def _svc(source, clock, **kw):
+    return MarketDataService(
+        routes=[SourceRoute(name="src", source=source,
+                            capabilities=frozenset({Capability.QUOTE, Capability.BARS}))],
+        clock=clock, **kw,
+    )
+
+
+def test_quote_cache_collapses_repeat_calls_within_a_cycle():
+    """한 사이클에서 quote()는 전략·리스크·체결이 각각 부른다(최소 3회).
+
+    캐시가 없으면 셋이 서로 다른 HTTP 응답을 본다 — 승인 시점 가격으로 수량을
+    계산해 놓고 다른 가격에 체결되므로 주문금액 상한 검증이 무의미해진다.
+    """
+    src = _CountingQuoteSource()
+    svc = _svc(src, FakeClock(datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)), quote_cache_seconds=5.0)
+
+    prices = [svc.quote("TQQQ").price for _ in range(3)]
+    assert src.calls == 1
+    assert prices == [100.0, 100.0, 100.0], "같은 사이클은 같은 스냅샷을 봐야 한다"
+
+
+def test_quote_cache_is_off_by_default():
+    src = _CountingQuoteSource()
+    svc = _svc(src, FakeClock(datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)))
+    for _ in range(3):
+        svc.quote("TQQQ")
+    assert src.calls == 3, "기본값은 캐시 없음 — 기존 동작이 바뀌면 안 된다"
+
+
+def test_quote_cache_expires_so_next_cycle_gets_fresh_data():
+    src = _CountingQuoteSource()
+    svc = _svc(src, FakeClock(datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)), quote_cache_seconds=0.01)
+    svc.quote("TQQQ")
+    time.sleep(0.02)
+    svc.quote("TQQQ")
+    assert src.calls == 2, "TTL이 지나면 반드시 새로 받아야 한다(시세가 굳으면 안 된다)"
+
+
+def test_quote_cache_is_per_symbol():
+    src = _CountingQuoteSource()
+    svc = _svc(src, FakeClock(datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)), quote_cache_seconds=5.0)
+    svc.quote("TQQQ")
+    svc.quote("SQQQ")
+    svc.quote("TQQQ")
+    assert src.calls == 2
+
+
+# ============ degraded 정의 (2026-08-12): 폴백 성공은 장애가 아니다
+# 배경: 예전 정의 any(not healthy)는 US 세션 내내 오보를 냈다. 키움 웹소켓은 해외
+# 틱을 구조적으로 못 주므로 US 심볼에 **항상** 실패 상태인데, Toss 폴백이 정상
+# 서빙해도 degraded=True가 되어 "시세 조회 연속 3회 실패"가 5분마다 떴다.
+# 항상 울리는 경고는 없는 경고보다 나쁘다 — 진짜 장애를 무시하게 만든다.
+
+_NOW = datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc)
+
+
+def test_all_sources_exhausted_is_degraded():
+    """전 소스 소진 = 진짜 데이터 손실 = 알람 대상."""
+    svc = MarketDataService(
+        routes=[
+            SourceRoute(name="a", source=FakeSource(quote_error=RuntimeError("down")),
+                        capabilities=frozenset({Capability.QUOTE})),
+            SourceRoute(name="b", source=FakeSource(quote_error=RuntimeError("down")),
+                        capabilities=frozenset({Capability.QUOTE})),
+        ],
+        clock=FakeClock(_NOW),
+    )
+    assert svc.quote("TQQQ") is None
+    assert svc.health().degraded is True
+
+
+def test_degraded_clears_once_data_flows_again():
+    """장애가 회복되면 알람도 내려가야 한다 — 안 내려가면 그것도 오보다."""
+    flaky = FakeSource(quote_error=RuntimeError("down"))
+    svc = MarketDataService(
+        routes=[SourceRoute(name="only", source=flaky,
+                            capabilities=frozenset({Capability.QUOTE}))],
+        clock=FakeClock(_NOW),
+        quote_cache_seconds=0,
+    )
+    svc.quote("TQQQ")
+    assert svc.health().degraded is True
+
+    flaky._quote_error = None
+    flaky._quote_result = Quote(symbol="TQQQ", ts=_NOW, price=1.0)
+    svc.quote("TQQQ")
+    assert svc.health().degraded is False
+
+
+def test_history_exhaustion_also_marks_degraded():
+    svc = MarketDataService(
+        routes=[SourceRoute(name="only", source=FakeSource(history_error=RuntimeError("down")),
+                            capabilities=frozenset({Capability.BARS}))],
+        clock=FakeClock(_NOW),
+    )
+    assert svc.history("TQQQ", "5m", 10).empty
+    assert svc.health().degraded is True

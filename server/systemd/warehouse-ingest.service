@@ -1,0 +1,39 @@
+# 분석 저장소 적재 — 아티팩트(JSONL/Parquet)를 MySQL 로 옮긴다.
+#
+# **거래 엔진과 완전히 별개 프로세스다.** 여기가 실패해도 매매·수집·리포트는
+# 계속 돈다 — 아티팩트가 진실이고 이건 색인이기 때문이다. DB 를 통째로 날려도
+# 재적재하면 복구된다.
+#
+# 장 마감 뒤에만 돈다(KR 16:10 / US 07:10 KST). 장중에 안 돌리는 이유는 성능이
+# 아니라 원칙이다 — 거래 시간대에 이 박스에서 도는 무거운 작업을 늘리지 않는다.
+[Unit]
+Description=Warehouse ingest (artifacts -> MySQL)
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/quant_trading_kiwoom
+Environment=TZ=Asia/Seoul
+EnvironmentFile=-/home/ubuntu/quant_trading_kiwoom/.env.local
+ExecStart=/home/ubuntu/quant_trading_kiwoom/.venv/bin/python -m quant.apps.warehouse_cli ingest --root /home/ubuntu/quant_trading_kiwoom
+
+# 1.8GB 박스에 MySQL 까지 얹혔다. 적재는 언제든 다시 돌릴 수 있으므로 가장 먼저
+# 양보한다 — 거래 엔진(OOMScoreAdjust=-500)이 마지막까지 살아남아야 한다.
+MemoryMax=250M
+CPUQuota=40%
+Nice=15
+IOSchedulingClass=idle
+OOMScoreAdjust=500
+
+TimeoutStartSec=900
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/quant_trading_kiwoom/data
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+{
+  "cash": 24782467.919077702,
+  "positions": {
+    "TQQQ": {
+      "symbol": "TQQQ",
+      "qty": 0.0,
+      "avg_cost": 0.0,
+      "opened_at": null,
+      "meta": {}
+    }
+  }
+}

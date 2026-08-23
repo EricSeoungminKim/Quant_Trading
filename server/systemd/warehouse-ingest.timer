@@ -1,0 +1,17 @@
+# 장 마감 후 적재. KR 16:10 / US 07:10 (KST).
+#
+# 리포트·수집 타이머와 시각을 겹치지 않게 뒀다 — 1.8GB 박스에서 무거운 작업 둘이
+# 동시에 뜨면 스왑을 타고, 그러면 다음 폴링 사이클이 늦어진다.
+[Unit]
+Description=Warehouse ingest schedule
+
+[Timer]
+OnCalendar=Mon..Fri 16:10 Asia/Seoul
+OnCalendar=Tue..Sat 07:10 Asia/Seoul
+# 박스가 꺼져 있던 사이 지나간 실행은 부팅 후 한 번 따라잡는다. 적재는 멱등이라
+# 두 번 돌아도 행이 늘지 않는다.
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

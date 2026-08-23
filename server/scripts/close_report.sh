@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# 장마감 결과 리포트 — outcomes(16:00) 뒤, 그날 채워진 outcome 을 요약해 텔레그램으로.
+# 사용법: server/scripts/close_report.sh
+# 크론: 16:20 KST (outcomes 16:00 직후 — 그날 채워진 값을 읽는다).
+set -u
+cd "$(dirname "$0")/../.."
+
+LOG="data/close_report.log"
+mkdir -p data
+
+_env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
+TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
+TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
+tg() {  # 실패해도 스크립트를 죽이지 않는다
+  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
+}
+
+# TZ 가드 — 크론 시각(16:20)은 호스트가 KST라는 전제다.
+if [ "$(date +%z)" != "+0900" ]; then
+  tg "⚠️ close_report: 호스트 TZ가 KST가 아님($(date +%z)) — 크론이 마감 직후가 아닐 수 있음"
+fi
+
+# timeout 200 — ops_watch.sh의 narrate 호출과 같은 창(로컬 Claude CLI 서술기
+# 기본 180s가 이 EC2에서 최악 실측 있었다 — deepdive 크론 주석 참고). close-report
+# 는 결정론 요약을 narrate 호출 **전에** flush 해서 찍으므로(cmd_close_report),
+# 이 timeout 을 넘겨 SIGTERM 이 나도 $OUT 에는 이미 flush 된 요약이 남는다 —
+# 아래 "$OUT 이 비었을 때만 실패로 본다"는 분기가 그 부분 출력을 성공으로 취급한다.
+OUT="$(timeout 200 .venv/bin/python -m quant.apps.cli close-report 2>>"$LOG")"
+if [ -n "$OUT" ]; then
+  tg "${OUT:0:3900}"
+else
+  tg "close-report 생성 실패 — ${LOG} 확인"
+fi

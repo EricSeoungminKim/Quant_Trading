@@ -1,0 +1,5 @@
+Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares
+CRWV|CoreWeave, Inc. - Class A Common Stock|Q|N|N|100|N|N
+NVDA|NVIDIA Corporation - Common Stock|Q|N|N|100|N|N
+ZTEST|Nasdaq Test Stock - Common Stock|Q|Y|N|100|N|N
+File Creation Time: 0813202606:00|||||||

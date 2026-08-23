@@ -1,0 +1,29 @@
+{
+  "rankedAt": "2026-08-12T16:59:03.980+09:00",
+  "rankings": [
+    {
+      "rank": 1,
+      "symbol": "000660",
+      "currency": "KRW",
+      "price": {
+        "lastPrice": "1516000",
+        "basePrice": "1425000",
+        "changeRate": "0.0638"
+      },
+      "tradingVolume": "69833",
+      "tradingAmount": "105702242000"
+    },
+    {
+      "rank": 2,
+      "symbol": "005930",
+      "currency": "KRW",
+      "price": {
+        "lastPrice": "89100",
+        "basePrice": "88200",
+        "changeRate": "0.0102"
+      },
+      "tradingVolume": "12345678",
+      "tradingAmount": "98765432100"
+    }
+  ]
+}

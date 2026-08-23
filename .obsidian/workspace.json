@@ -1,0 +1,214 @@
+{
+  "main": {
+    "id": "732ef6c7f15c5a9b",
+    "type": "split",
+    "children": [
+      {
+        "id": "5ce431d4aea58fea",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "1ccd84d12781e36a",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "CLAUDE.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "CLAUDE"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "520faed21f9ca227",
+    "type": "split",
+    "children": [
+      {
+        "id": "b89ff72abd86ea2f",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "19e62b3bf9f9a4a2",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "1b53fc0199dcb917",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "bede819aac1fdb4d",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "34f46d9f1204de23",
+    "type": "split",
+    "children": [
+      {
+        "id": "c79bde52704d798f",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "f2ed21502d5aa932",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "CLAUDE.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for CLAUDE"
+            }
+          },
+          {
+            "id": "feb4e8c38ef540ef",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "CLAUDE.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from CLAUDE"
+            }
+          },
+          {
+            "id": "9e03f9e124e4c343",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "28b5177b0aedf120",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "7992b0cb8e2e6a50",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "CLAUDE.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of CLAUDE"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "1ccd84d12781e36a",
+  "lastOpenFiles": [
+    "quant/adapters/__pycache__/narrate.cpython-314.pyc",
+    "tests/__pycache__/test_narrate.cpython-314-pytest-9.1.1.pyc",
+    "tests/test_narrate.py",
+    "quant/adapters/narrate.py",
+    "data/ops_watch.log",
+    "server/scripts/ops_watch.sh",
+    "quant/control/__pycache__/health.cpython-314.pyc",
+    "tests/__pycache__/test_health.cpython-314-pytest-9.1.1.pyc",
+    "tests/test_health.py",
+    "quant/control/health.py",
+    "data/backups/quant-20260813-200305.tar.gz",
+    "docs/plans/재설계-phase4-8.md",
+    "quant/adapters/data/CLAUDE.md",
+    "quant/adapters/brokers/CLAUDE.md",
+    "quant/trade/strategy/CLAUDE.md",
+    "quant/core/CLAUDE.md",
+    "docs/specs/2026-08-12-market-report-design.md",
+    "docs/plans/2026-08-12-phase1-collection-and-html.md",
+    "server/README-report.md",
+    "_incoming/market_report/docs/plans/2026-08-12-phase1-collection-and-html.md",
+    "_incoming/market_report/docs/specs/2026-08-12-market-report-design.md",
+    "_incoming/market_report/server/README.md",
+    "docs/vault/재설계-착수보고서.md",
+    "docs/vault/착수보고서.md",
+    "docs/vault/레버리지-ETF-유니버스.md"
+  ]
+}

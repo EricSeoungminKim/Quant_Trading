@@ -1,0 +1,62 @@
+# 뉴스 누적 수집 (템플릿 유닛). news-collect@KR / news-collect@US
+#
+# **왜 리포트 빌드와 분리했나.** RSS 는 "최신 N건" 창이라 하루 한 번 긁으면 그
+# 사이 밀려난 기사가 영구히 사라진다 — 2026-08-13 실측에서 9시간 뒤 재수집 시
+# investing.com·SeekingAlpha·Bloomberg·Yahoo 가 겹침 0(전량 교체)이었다.
+# 30분마다 긁어 쌓고, 리포트는 그 누적분을 읽는다.
+#
+# 부수 효과로 리포트 빌드가 빨라진다 — 빌드 시점에 HTTP 36회를 안 탄다.
+[Unit]
+Description=News collector (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/quant_trading_kiwoom
+Environment=TZ=Asia/Seoul
+# 2026-08-13: 운영 상태 기록(`opstate.record_run`)이 REDIS_URL 을 필요로 한다.
+# 이게 없으면 `make_kv()` 가 NullKeyValue 를 돌려주고 기록이 **조용히 사라진다** —
+# 감시를 붙였는데 타임스탬프가 안 움직여서 발견했다("적용했다고 믿기" 패턴).
+# `-` 접두는 파일이 없어도 유닛이 뜨게 한다. warehouse-ingest.service 와 같은 관례.
+EnvironmentFile=-/home/ubuntu/quant_trading_kiwoom/.env.local
+ExecStart=/home/ubuntu/quant_trading_kiwoom/.venv/bin/python -m quant.apps.report_cli collect --market %i
+
+# 리포트 본 빌드보다 더 조인다 — 30분마다 도는 가벼운 작업이고, 거래 엔진과
+# 리포트 빌드가 항상 우선이다.
+MemoryMax=300M
+CPUQuota=30%
+Nice=15
+IOSchedulingClass=idle
+
+# 피드 36개 병렬 수집이라 보통 1분 안쪽. 느린 피드가 물려도 5분이면 충분하다.
+# 2026-08-13: 300 → 900. **CPUQuota 와 앞뒤가 안 맞았다.**
+# 원래 주석은 "보통 1분 안쪽, 느린 피드가 물려도 5분이면 충분"이라고 했는데, 그건
+# 쿼터가 없을 때의 얘기다. 실측으로 이 작업은 CPU 1분29초를 쓰고 쿼터가 30% 라
+# **월클럭이 최소 5분** — 타임아웃 300 이 정확히 그 경계였다. 그리고 중복 판정이
+# 그날 JSONL 을 통째로 읽으므로 하루가 갈수록 느려진다. 그래서 오전엔 성공하고
+# 오후부터 실패했다(2026-08-13 KR: 성공 6회 / 타임아웃 실패 10회).
+#
+# 실패가 조용하지 않다는 게 중요하다 — SIGTERM 으로 죽으면 그 회차에 밀려난 RSS
+# 기사가 **영구히 사라진다**(이 유닛이 존재하는 이유가 바로 그거다). Phase 5 감시가
+# 이걸 처음 잡았다.
+#
+# CPUQuota 를 올리지 않는다 — 거래 엔진이 항상 우선이다. 타임아웃만 늘린다.
+# 900 인 이유: 타이머가 30분 주기라 그 안에 끝나야 겹치지 않는다(oneshot 은 이미
+# 돌고 있으면 다음 발화가 건너뛰어진다).
+# **근본 원인은 O(하루) 중복 판정 읽기다** — 그건 별도 변경으로 고쳐야 한다.
+TimeoutStartSec=900
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/quant_trading_kiwoom/data
+
+# 1.8GB 박스. 메모리가 마르면 이 작업이 먼저 양보한다 — 거래 엔진
+# (OOMScoreAdjust=-500)이 마지막까지 살아남아야 한다.
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

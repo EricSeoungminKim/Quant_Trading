@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# 매주 금요일 16:10 KST — 최근 7일 + 누적 스코어보드 + **거래 부검**을 텔레그램으로.
+# KR 마감(15:30) 후, 사용자가 주말에 자본 배분을 판단할 수 있는 시점.
+#
+# 부검(forensics)을 같이 보내는 이유(2026-08-22): 스코어보드는 "졌다"까지만
+# 말한다. 2026-08-21에 그 다음 질문("진입이 문제냐 청산이 문제냐")에 답한 건
+# 손으로 쓴 1회용 스크립트였다 — 1분봉에 체결을 얹어 MFE/MAE를 재니 이익
+# 구간(MFE 중앙 +113bp)에 들어갔다가 전부 반납(실현 -47bp)하고 있었고, 진입
+# 위치는 승패를 가르지 못했다(rho=+0.00). 그 분석이 1회용이면 다음에도 손으로
+# 다시 해야 한다. 매주 같은 자리에서 같은 방식으로 나오게 붙인다.
+set -u
+cd "$(dirname "$0")/../.."
+
+_env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
+TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
+TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
+tg() {
+  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
+}
+
+WEEK="$(timeout 60 .venv/bin/python -m quant.apps.cli scoreboard --days 7 2>/dev/null)"
+ALL="$(timeout 60 .venv/bin/python -m quant.apps.cli scoreboard 2>/dev/null)"
+tg "${WEEK:-주간 스코어보드 생성 실패}
+
+${ALL:-누적 스코어보드 생성 실패}"
+
+# 부검은 1분봉을 종결마다 읽어 스코어보드보다 오래 걸린다(실측 106건 ~10초).
+# 실패해도 스코어보드 발송은 이미 끝났으므로 영향이 없다 — 별도 메시지로 보낸다.
+FORENSICS="$(timeout 180 .venv/bin/python -m quant.apps.cli forensics 2>/dev/null)"
+tg "${FORENSICS:-거래 부검 생성 실패 — data/scoreboard.log 확인}"

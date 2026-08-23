@@ -1,0 +1,16 @@
+# KR 뉴스 30분마다 수집. 리포트 발행(KR 08:00 / US 20:00) 전까지 밤새 쌓인다.
+#
+# 30분 간격 근거(2026-08-13 실측): 가장 빨리 회전하는 investing.com 도 9시간에
+# 10건(≈시간당 1건)이라 창이 9시간은 버틴다. 30분이면 여유가 크고, 하루 48회는
+# 인증도 키도 없는 공개 RSS 에 부담이 되지 않는다.
+[Unit]
+Description=News collector timer (KR)
+
+[Timer]
+OnCalendar=*:00/30
+Persistent=false
+RandomizedDelaySec=120
+Unit=news-collect@KR.service
+
+[Install]
+WantedBy=timers.target
