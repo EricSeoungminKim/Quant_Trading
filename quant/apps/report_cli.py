@@ -85,7 +85,7 @@ from quant.report.collect.telegram import (
     _build_telegram_image_desc, _build_telegram_mentions, _build_telegram_prose,
     _usnews_headlines, _usnews_titles,
 )
-from quant.report.collect.uswrap import build_us_wrap, load_latest_us_wrap, write_us_wrap
+from quant.report.collect.uswrap import build_us_wrap, gather_kr_wrap, load_latest_us_wrap, write_us_wrap
 
 
 def _print_summary(market: str, root: Path, session: date, session_kind: str = "open") -> None:
@@ -267,8 +267,13 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
             f"원장 기록 건너뜀 — 마지막 개장일 데이터는 이미 기록됨 (last_open={last_open.isoformat()})",
             file=sys.stderr,
         )
+    # 전일 마감 종합(wrap)을 _derive 보다 먼저 읽는다 — KR 패턴 종목을 후보
+    # 유니버스(machine_payload volume_watch 합류)에 넣기 위해서다. 표시용
+    # 카드(us_wrap)도 같은 객체를 재사용한다.
+    us_wrap = load_latest_us_wrap(out_root, snap.session_date) if snap.market == "KR" else None
+    extra_watch = ((us_wrap or {}).get("kr") or {}).get("symbols") or None
     cont, delta, brief, payload, sym_quotes, details, view, scores = _derive(
-        snap, root, snap_root, record_ledger=record_ledger
+        snap, root, snap_root, record_ledger=record_ledger, extra_watch=extra_watch,
     )
     if record_ledger:
         _record_selections(payload, root)
@@ -297,17 +302,14 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         us_kr_bridge = build_us_kr_bridge(
             (_source_data(snap, "sectors") or {}).get("sectors"), sector_members,
         )
-        # 전일 미국장 마감 종합(uswrap, 2026-08-25) — 05:10 KST 에 이미 발행된
-        # US_wrap.json 을 그대로 읽어온다(여기서 재계산하지 않는다, 위
-        # us_kr_bridge 와 달리 이건 그 시각 값의 재활용이다). 없으면 카드 생략.
-        us_wrap = load_latest_us_wrap(out_root, snap.session_date)
+        # 전일 마감 종합(wrap)은 위(_derive 전)에서 이미 로드했다 — 후보 합류와
+        # 카드 표시가 같은 객체를 쓴다.
     else:
         sector_view, top_movers = [], {}
         foreign_view = None
         themes = None
         sector_map, sector_quotes = {}, []
         us_kr_bridge = None
-        us_wrap = None
     flow_rows = _load_flow_rows(root)
     youtube = _fetch_youtube_briefs()
     blog = _fetch_blog_briefs()
@@ -507,6 +509,21 @@ def _run_uswrap(session: date, root: Path, snap_root: Path, out_root: Path) -> N
     if payload is None:
         print("US wrap 생략 — sectors/market/vix_term 소스 전부 없음")
         return
+    # 전일 KR 세션 절반(2026-08-25 확장) — "미국장만이 아니라 한국장·미국장을
+    # 둘 다 고려한, 다음날 흐름을 파악하는 리포트". KR 전일 개장일 기준.
+    from quant.analyze.opendays import anchor_dir_for as _adf, last_open_day as _lod
+
+    try:
+        kr_day = _lod(_adf("KR", root), session)
+        kr = gather_kr_wrap(root, kr_day)
+    except Exception as e:  # noqa: BLE001 — KR 절반 실패가 US 절반 발행을 막지 않는다
+        print(f"KR 세션 종합 생략: {type(e).__name__}: {e}", file=sys.stderr)
+        kr = None
+    if kr:
+        payload["kr"] = kr
+        n_pat = sum(len(v) for v in (kr.get("patterns") or {}).values())
+        print(f"  전일 KR 세션: 패턴 종목 {n_pat}건"
+              + (f" · 외인 {kr['flow']['foreign_net_total']:+,.0f}" if kr.get("flow") else ""))
     path = write_us_wrap(payload, out_root, session)
     print(f"US wrap {path}")
     if "tone" in payload:

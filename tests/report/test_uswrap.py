@@ -238,3 +238,44 @@ def test_uswrap_cli_no_market_flag_needed():
     # --market 은 정의돼 있지 않으므로 argparse 가 에러(exit code 2)로 거부해야
     # 정상 — "US 전용이라 시장 인자가 없다"는 설계를 실측으로 고정한다.
     assert exc.value.code == 2
+
+
+# ── KR 절반 (2026-08-25 확장: "한국장과 미국장을 둘 다") ────────────────────
+
+def test_gather_kr_wrap_reads_local_partitions_and_flow(tmp_path):
+    """어제 KR 세션 1분봉(로컬 파케이) + frgn_flow 원장 → 패턴·흐름 조립."""
+    import pandas as pd
+    from datetime import datetime, time as dtime
+    from zoneinfo import ZoneInfo
+    from quant.report.collect.uswrap import gather_kr_wrap
+
+    kst = ZoneInfo("Asia/Seoul")
+    day = date(2026, 8, 25)
+    n = 381
+    closes = [100 + min(i, 60) * (2.0 / 60) for i in range(n)]  # 초반강세지속 모양
+    idx = pd.DatetimeIndex([datetime.combine(day, dtime(9, 0), tzinfo=kst)
+                            + pd.Timedelta(minutes=i) for i in range(n)]).tz_convert("UTC")
+    df = pd.DataFrame({"open": closes, "high": [c * 1.001 for c in closes],
+                       "low": [c * 0.999 for c in closes], "close": closes,
+                       "volume": [1000.0] * n}, index=idx)
+    part = tmp_path / "data" / "history" / "005930" / "2026"
+    part.mkdir(parents=True)
+    df.to_parquet(part / "08.parquet")
+
+    ledger = tmp_path / "data" / "ledger"
+    ledger.mkdir(parents=True)
+    (ledger / "frgn_flow.jsonl").write_text(
+        '{"date": "2026-08-25", "symbol": "005930", "foreign_net": 100.0, "inst_net": 10.0}\n',
+        encoding="utf-8")
+
+    kr = gather_kr_wrap(tmp_path, day)
+    assert kr is not None
+    assert "초반강세지속" in kr["patterns"]
+    assert kr["symbols"] == ["005930"]
+    assert kr["flow"]["foreign_net_total"] == 100.0
+
+
+def test_gather_kr_wrap_returns_none_on_empty_environment(tmp_path):
+    from quant.report.collect.uswrap import gather_kr_wrap
+
+    assert gather_kr_wrap(tmp_path, date(2026, 8, 25)) is None

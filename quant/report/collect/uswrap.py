@@ -1,4 +1,10 @@
-"""미국장 마감 직후 종합 리포트("uswrap", 2026-08-25 소유자 지시).
+"""마감 종합 리포트 — 미국장 + 전일 한국장 (2026-08-25 소유자 지시, 당일 확장).
+
+소유자: "단순 미국장만 끝난 리포트가 아니라 한국장과 미국장을 둘 다 고려한,
+다음날의 흐름을 파악할 수 있는 리포트" — US 절반은 섹터·지수·VIX,
+KR 절반은 전일 세션 패턴(초반강세지속/후반전고돌파/후반매수파동,
+quant.analyze.kr_wrap)과 외인·기관 흐름 종합이다. CLI 이름(uswrap)과
+파일명(US_wrap.json)은 호환을 위해 유지한다.
 
 미국 정규장 마감 직후(KST 새벽) 그날 미국장 흐름(지수·섹터 등락)을 정리해
 독립 리포트로 발행하고, **다음날 KR 아침 리포트가 참조하는 소스**가 된다 —
@@ -123,3 +129,59 @@ def load_latest_us_wrap(
         except (OSError, ValueError):
             continue
     return None
+
+
+def gather_kr_wrap(root: Path, kr_day: date) -> dict | None:
+    """전일 KR 세션 재료를 모아 kr_wrap 을 조립한다 (마감 종합의 KR 절반).
+
+    - 1분봉: `data/history/{6자리}/{YYYY}/{MM}.parquet` — 05:40 백필이 어제
+      세션까지 채운 뒤(크론 05:50)라 로컬 파케이만 읽는다(네트워크 0).
+      심볼은 디렉토리에서 자동 발견(그날 봉이 있는 KR 종목 전부 = 그날
+      워치리스트+보유 이력). Toss 1분봉은 4거래일 롤링이라 백필을 놓친 날은
+      여기서도 없다 — 없는 날은 없는 대로(지어내지 않는다).
+    - 이름: entities.load_name_map (KIND→DART 폴백 포함).
+    - 수급: frgn_flow 원장 → flow_day_summary(그날 행만).
+    재료가 전부 비면 None.
+    """
+    import pandas as pd
+
+    from quant.analyze.kr_wrap import build_kr_session_wrap, flow_day_summary
+    from quant.control import frgn_flow as frgn_flow_ledger
+
+    history = root / "data" / "history"
+    bars_by_symbol: dict[str, pd.DataFrame] = {}
+    if history.exists():
+        for sym_dir in sorted(history.iterdir()):
+            sym = sym_dir.name
+            if not (sym.isdigit() and len(sym) == 6):
+                continue
+            part = sym_dir / str(kr_day.year) / f"{kr_day.month:02d}.parquet"
+            if not part.exists():
+                continue
+            try:
+                df = pd.read_parquet(part)
+            except Exception:  # noqa: BLE001 — 파티션 하나가 KR 절반 전체를 막으면 안 된다
+                continue
+            if df.empty or not isinstance(df.index, pd.DatetimeIndex):
+                continue
+            idx = df.index.tz_convert("Asia/Seoul") if df.index.tz is not None else df.index
+            day = df[pd.Index(idx.date) == kr_day]
+            if len(day):
+                bars_by_symbol[sym] = day
+
+    names: dict[str, str] = {}
+    try:
+        from quant.analyze.entities import load_name_map
+
+        names = load_name_map(root / "data" / "cache", "KR")
+    except Exception:  # noqa: BLE001 — 이름은 표시용, 없으면 코드로 표기
+        pass
+
+    flow = None
+    try:
+        rows = frgn_flow_ledger._load(root / "data" / "ledger" / "frgn_flow.jsonl")
+        flow = flow_day_summary(rows, kr_day.isoformat())
+    except Exception:  # noqa: BLE001
+        pass
+
+    return build_kr_session_wrap(bars_by_symbol, names=names, flow_summary=flow)

@@ -24,7 +24,8 @@ from quant.report.paths import _load_artifact, _paths
 from quant.report.collect.ledger import _log_overlap, _record_flows, _record_frgn_flow
 
 
-def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True) -> tuple:
+def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
+            extra_watch: list[str] | None = None) -> tuple:
     """스냅샷에서 파생물 계산. 네트워크는 종목 사전 캐시가 없을 때만 탄다.
 
     `record_ledger=False`(G Task 4)면 `_log_overlap`/`_record_flows` 를
@@ -184,8 +185,11 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True) -> tu
             volume_watch = recurring_volume_symbols(snap_root, "KR", snap.session_date)
         except Exception as e:  # noqa: BLE001 — 감시 메모리 실패가 리포트를 막지 않는다
             print(f"거래량 감시 메모리 생략: {type(e).__name__}: {e}", file=sys.stderr)
+    # 전일 마감 종합의 KR 패턴 종목(extra_watch)도 후보 유니버스에 합류한다 —
+    # "다음날 프로그램이 전날 종목들을 보고 진입각을 본다"(2026-08-25 소유자).
+    merged_watch = list(dict.fromkeys((volume_watch or []) + (extra_watch or []))) or None
     payload = machine_payload(
         snap, cont, delta, brief, sym_quotes, details, view, scores, trending,
-        relations, sectors, baselines, volume_watch=volume_watch,
+        relations, sectors, baselines, volume_watch=merged_watch,
     )
     return cont, delta, brief, payload, sym_quotes, details, view, scores

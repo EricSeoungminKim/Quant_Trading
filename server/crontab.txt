@@ -241,14 +241,16 @@
 0 5  * * * cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 .venv/bin/python -m quant.apps.report_cli deepdive --market KR >> data/deepdive.log 2>&1
 30 17 * * * cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 .venv/bin/python -m quant.apps.report_cli deepdive --market US >> data/deepdive.log 2>&1
 
-# --- 미국장 마감 직후 종합 리포트 (uswrap, 2026-08-25 소유자 지시) ---
+# --- 마감 종합 리포트: 미국장 + 전일 한국장 (uswrap, 2026-08-25) ---
+# 05:50 인 이유: 1분봉 백필(05:40, 실측 ~40초)이 어제 KR 세션을 로컬 파케이에
+# 채운 **뒤**에 돌아야 KR 절반(세션 패턴 분류)이 네트워크 없이 선다.
 #
 # 05:10 KST 화~토 — 미국 정규장 마감 직후(서머타임 05:00 KST 마감 기준). 그날
 # 미국장 흐름(지수·섹터 등락)을 종합해 US_wrap.json 으로 저장한다. 다음날 KR
 # 아침 리포트(07:30 빌드)가 이 산출물을 읽어 카드 하나로 보여준다(리포트
 # 순환) — 완전히 결정론(LLM 호출 없음). 텔레그램 발송은 여기서 하지 않는다
 # (uswrap 서브커맨드는 stdout 요약만 낸다 — deepdive 와 달리 별도 알림 없음).
-10 5 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.report_cli uswrap >> data/uswrap.log 2>&1
+50 5 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.report_cli uswrap >> data/uswrap.log 2>&1
 
 # --- 판단하는 워치독 (2026-08-19, 사용자 지시) ---
 #
