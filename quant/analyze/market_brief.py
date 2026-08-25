@@ -222,9 +222,14 @@ def engine_tokens(payload: dict, market: str) -> list[str]:
 
 
 def intraday_scalp_tokens(payload: dict) -> list[str]:
-    """close_engine.json의 `intraday_view`(당일 단타 후보 top-N, intraday_scorer v4)
-    에서 EVENT_SCALP 토큰을 뽑는다. 이미 top-N으로 잘려 있으므로(rank_intraday) 여기서
-    추가로 자르지 않는다. `intraday_view` 키가 없는 payload(아침판)는 빈 리스트."""
+    """[2026-08-25 존치 결정] EVENT_SCALP 태그의 유일 소비 전략(news_scalp)은
+    4종 체제에서 비활성이지만 이 발행은 **일부러 유지한다** — 토큰의 효과가
+    태그 소비만이 아니기 때문이다: watch-score 를 통과한 종목은 워치리스트
+    유니버스에 **편입**되고, 유니버스 기반 전략(scalp_1m 등)의 진입 대상이 된다.
+    발행을 지우면 단타 스코어러가 고른 종목들이 유니버스에서 조용히 사라진다.
+    news_scalp 재활성 시에도 이 경로가 그대로 산다."""
+    # (원 설명) close_engine.json의 `intraday_view`(당일 단타 후보 top-N, intraday_scorer v4)
+
     out: list[str] = []
     for item in payload.get("intraday_view") or []:
         sym = item.get("symbol") if isinstance(item, dict) else None

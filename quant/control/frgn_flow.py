@@ -16,9 +16,23 @@ import json
 from pathlib import Path
 
 
+# 프로세스 내 파싱 캐시(2026-08-25, Phase 3 데이터 효율) — {절대경로: (mtime, rows)}.
+# 한 리포트 빌드가 4곳(agent_interpret/intraday/sector/close_bet)에서 심볼마다
+# load_series 를 불러, 심볼 수십 개면 같은 원장(실측 1,905줄)을 수백 번 전체
+# 파싱했다. **정확성이 우선**: mtime 이 바뀌면 반드시 다시 읽는다 — 낡은 캐시로
+# 수급 라벨을 내는 것은 빠르게 틀리는 것이다. 원장 쓰기(append_daily)는 tmp+
+# replace 라 mtime 변경이 보장된다.
+_PARSE_CACHE: dict[str, tuple[float, list[dict]]] = {}
+
+
 def _load(path: Path) -> list[dict]:
     if not path.exists():
         return []
+    key = str(path.resolve())
+    mtime = path.stat().st_mtime
+    cached = _PARSE_CACHE.get(key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
     rows: list[dict] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -30,6 +44,7 @@ def _load(path: Path) -> list[dict]:
             continue
         if isinstance(row, dict) and row.get("date") and row.get("symbol"):
             rows.append(row)
+    _PARSE_CACHE[key] = (mtime, rows)
     return rows
 
 

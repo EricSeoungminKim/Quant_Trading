@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from quant.control.frgn_flow import append_daily, load_series
 
 
@@ -115,3 +117,45 @@ def test_load_series_missing_ledger_returns_empty_list(tmp_path):
     path = tmp_path / "frgn_flow.jsonl"
 
     assert load_series(path, "005930") == []
+
+
+# ── 프로세스 내 캐시 (2026-08-25 데이터 효율, Phase 3) ──────────────────────
+# 한 리포트 빌드가 4곳(agent_interpret/intraday/sector/close_bet)에서 심볼마다
+# load_series 를 부른다 — 심볼 수십 개면 같은 1,900줄 원장을 수백 번 전체
+# 파싱한다. mtime 키 캐시로 파일이 안 바뀐 동안 파싱을 1회로 줄인다.
+# **정확성 계약이 우선**: 파일이 바뀌면(mtime 변경) 반드시 다시 읽는다 —
+# 낡은 캐시로 수급 라벨을 내는 것은 빠르게 틀리는 것이다.
+
+def test_load_series_reuses_parse_until_file_changes(tmp_path, monkeypatch):
+    import quant.control.frgn_flow as ff
+
+    path = tmp_path / "frgn_flow.jsonl"
+    append_daily([{"date": "2026-08-20", "symbol": "005930", "foreign_net": 1, "inst_net": 1}], path)
+
+    calls = {"n": 0}
+    real_read = Path.read_text
+
+    def counting_read(self, *a, **kw):
+        if self == path:
+            calls["n"] += 1
+        return real_read(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", counting_read)
+    ff.load_series(path, "005930")
+    ff.load_series(path, "005930")
+    ff.load_series(path, "000660")  # 다른 심볼도 같은 파싱 결과를 공유해야 한다
+    assert calls["n"] == 1, "파일이 안 바뀌었는데 매 호출 전체 재파싱하면 안 된다"
+
+
+def test_load_series_rereads_after_file_change(tmp_path):
+    import os
+    import quant.control.frgn_flow as ff
+
+    path = tmp_path / "frgn_flow.jsonl"
+    append_daily([{"date": "2026-08-20", "symbol": "005930", "foreign_net": 1, "inst_net": 1}], path)
+    assert len(ff.load_series(path, "005930")) == 1
+
+    append_daily([{"date": "2026-08-21", "symbol": "005930", "foreign_net": 2, "inst_net": 2}], path)
+    # mtime 해상도가 낮은 파일시스템 대비 — 확실히 다르게
+    os.utime(path, (path.stat().st_atime, path.stat().st_mtime + 2))
+    assert len(ff.load_series(path, "005930")) == 2, "파일이 바뀌면 반드시 다시 읽는다"
