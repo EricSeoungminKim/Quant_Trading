@@ -27,7 +27,12 @@ Nice=15
 IOSchedulingClass=idle
 OOMScoreAdjust=500
 
-TimeoutStartSec=900
+# 900 → 2700 (2026-08-26). MYSQL_PASSWORD/DATABASE 가 이관 때 비워져 이 잡이
+# 이틀간 1초 만에 실패했고(judgment 적재 0건), 자격증명을 복구하자 **밀린 이틀치
+# 때문에** 900초 안에 못 끝내고 타임아웃으로 죽었다 — "고쳤는데 여전히 실패"로
+# 보이는 자리다. Nice=15 + IOSchedulingClass=idle + CPUQuota=40% 라 길어져도
+# 거래 경로를 밀지 않는다. 백로그가 빠지면 평상시 증분 적재는 몇 분이면 끝난다.
+TimeoutStartSec=2700
 
 NoNewPrivileges=true
 PrivateTmp=true
