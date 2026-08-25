@@ -53,6 +53,7 @@ def write_close_report(model: CloseReportModel, snap: Snapshot, out_root: Path) 
         telegram_view_kr=model.telegram_view_kr, telegram_view_us=model.telegram_view_us,
         agent_interpret_view=model.agent_interpret_view,
         midterm_view=model.midterm_view, us_news_kr_view=model.us_news_kr_view,
+        close_bet_view=model.close_bet_view,
         usnews_headlines=model.usnews_headlines,
     )
     jp = _render.write_close_machine(model.payload, snap, out_root)

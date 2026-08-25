@@ -196,11 +196,34 @@ def _prose_prompt(candidate: dict) -> str:
         lines.append(f"- {snippet}")
     lines.append("")
     lines.append(
-        "위 자료를 바탕으로 이 종목의 앞으로의 전망/흐름을 2~3문장 한국어로, "
-        "전문가가 개미 투자자에게 조언하듯 서술하라. 새 사실을 지어내지 말고, "
-        "매수/매도를 단정 지시하지 마라."
+        "위 자료로 이 종목 전망을 **정확히 두 줄**로 써라(2026-08-25 소유자 지시:"
+        " 리포트가 길어 핵심만). 형식 외 텍스트·마크다운(별표 등) 금지:\n"
+        "핵심: <상승/하락 동인 한 문장, 50자 이내>\n"
+        "주의: <지켜볼 조건·리스크 한 문장, 50자 이내>\n"
+        "새 사실을 지어내지 말고, 매수/매도를 단정 지시하지 마라."
     )
     return "\n".join(lines)
+
+
+# 산문 길이 상한 — LLM 이 형식을 어겨도 카드가 길어지지 않게 하는 결정론
+# 안전선(안전 문구를 narrator 응답에 의존하지 않는 section_advice 와 같은 원칙).
+PROSE_MAX_CHARS = 140
+
+
+def tighten_prose(text: str) -> str:
+    """산문을 카드용으로 조인다: 마크다운 강조 제거 + 빈 줄 접기 + 길이 상한.
+
+    상한 초과 시 문장 경계에서 자른다 — 중간에서 뚝 끊긴 "다만 자료에 나온 삼"
+    같은 꼬리를 리포트에 싣지 않는다(2026-08-25 실측 560자 산문)."""
+    t = text.replace("**", "").replace("\n\n", "\n").strip()
+    if len(t) <= PROSE_MAX_CHARS:
+        return t
+    cut = t[:PROSE_MAX_CHARS]
+    for sep in ("다.", ".", "\n"):
+        idx = cut.rfind(sep)
+        if idx > 40:
+            return cut[: idx + len(sep)].strip()
+    return cut.strip()
 
 
 def narrate_prose(candidates: list[dict], narrator, budget: int = PROSE_BUDGET) -> dict[str, str]:
@@ -214,5 +237,5 @@ def narrate_prose(candidates: list[dict], narrator, budget: int = PROSE_BUDGET) 
     for candidate in candidates[:budget]:
         text = narrator.narrate(_prose_prompt(candidate))
         if text:
-            out[candidate["symbol"]] = text.strip()
+            out[candidate["symbol"]] = tighten_prose(text).strip()
     return out

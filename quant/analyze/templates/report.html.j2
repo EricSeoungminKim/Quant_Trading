@@ -1208,10 +1208,11 @@ a{color:inherit}
     {% if it.prose %}
     <p class="watch-prose">{{ it.prose }}</p>
     {% endif %}
+    {# 스니펫은 1개·90자만 — 채널 원문은 노이즈가 커서 카드가 길어진다
+       (2026-08-25 소유자: "간결하지만 핵심만"). 원문 전체는 텔레그램 인사이트
+       섹션에 이미 있다. #}
     {% if it.telegram_snippets %}
-    <div class="idx-sub" style="grid-column:1/-1">
-      {% for s in it.telegram_snippets %}“{{ s }}”{% if not loop.last %} · {% endif %}{% endfor %}
-    </div>
+    <div class="idx-sub" style="grid-column:1/-1">“{{ it.telegram_snippets[0]|truncate(90, True, '…') }}”</div>
     {% endif %}
   </div>
   {% endfor %}

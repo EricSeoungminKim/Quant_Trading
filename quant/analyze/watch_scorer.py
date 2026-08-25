@@ -32,7 +32,7 @@ _MIN_ROWS = 30
 # 만들지 않고 기존 프로필을 재사용한다(아래 `_PROFILE_SCORERS` 별칭). FRGN_EXIT는
 # 여기 오지 않는다 — own_brief.sh가 watch-score를 완전히 우회해 이미 등록된 종목의
 # 태그만 갱신한다(신규 등록 판정이 필요 없는 이탈 신호이므로).
-_VALID_TAGS = ("TREND", "REBOUND", "EVENT", "EVENT_SCALP", "FRGN")
+_VALID_TAGS = ("TREND", "REBOUND", "EVENT", "EVENT_SCALP", "FRGN", "CLOSE_BET")
 _ETF_NAME_MARKERS = (
     "KODEX", "TIGER", "PLUS", "SOL", "ACE", "RISE", "KOSEF", "HANARO", "KIWOOM", "ETF",
 )
@@ -417,6 +417,11 @@ _PROFILE_SCORERS = {
     # 없다. 적립 전략은 오버나이트 추세 추종이 본질이라 TREND(가격·거래량 지속성)
     # 프로필이 세 개 중 가장 가까운 물리적 근사다.
     "FRGN": lambda daily, report_date: _trend_score(daily),
+    # CLOSE_BET(종가배팅, 2026-08-25 전략 4종 체제 ③) — 장중 리포트가 이미 수급·
+    # 거래대금·등락으로 결정론 채점한 뒤 준 태그라, 여기서는 "당일 강세의 지속성"
+    # 확인만 하면 된다. 당일 관성(가격·거래량 지속)이 판단축인 TREND 프로필이
+    # 가장 가까운 물리적 근사다 — FRGN 과 같은 논리로 별칭한다.
+    "CLOSE_BET": lambda daily, report_date: _trend_score(daily),
 }
 
 

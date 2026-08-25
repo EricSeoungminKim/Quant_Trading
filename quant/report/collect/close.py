@@ -71,3 +71,69 @@ def _build_close_ranking_view(snap, top: int = 8) -> dict[str, list[dict]]:
         if items:
             out[name] = items[:top]
     return out
+
+
+# 종가배팅 후보 상한 — 후보가 많으면 근거가 옅은 것까지 태그된다. 소유자 실전
+# 감각(15:00~15:20 에 "몇 개"를 고르는 기법)과 맞춘 값.
+CLOSE_BET_TOP = 5
+# 당일 등락 하한 — 종가배팅은 "이미 강한 종목의 관성"을 사는 기법이다(웹 리서치:
+# 풍부한 거래대금 + 주도 테마 + 고가 근처 양봉). 약한 종목에 들어가면 기관·외인
+# 단타에 물리는 개미가 된다(소유자 지시 그대로).
+CLOSE_BET_MIN_CHANGE_PCT = 3.0
+
+
+def _build_close_bet_view(snap, root, cont: dict, top: int = CLOSE_BET_TOP) -> list[dict]:
+    """종가배팅 후보(2026-08-25, 전략 4종 체제 ③) — **결정론 채점**.
+
+    재료는 전부 이미 수집된 것: 거래대금 랭킹(toss_rankings, 하루 종일 상위권
+    = 수급이 도는 종목), 당일 등락(같은 보드), 외국인 수급 추세(frgn_flow.jsonl,
+    agent_interpret 와 같은 로더), 뉴스 지속성(cont — 오늘 언급 종목). 새 크롤
+    없음.
+
+    채점(각 축 가중치는 근거의 질 순서 — 수급 > 등락 > 뉴스):
+      +3 외국인 추세 라벨이 매수 계열
+      +2 당일 등락 >= {CLOSE_BET_MIN_CHANGE_PCT}% (하한 미달은 아예 제외)
+      +1 오늘 뉴스 언급 있음
+    거래대금 보드 밖 종목은 후보가 아니다(1차 필터가 곧 "수급전광판 상위").
+
+    마감 강도·양봉 정밀 확인은 여기서 **하지 않는다** — 그건 1분봉을 보는
+    전략(close_bet)의 몫이다(역할 분담: 리포트=수급·뉴스, 전략=차트·시각).
+    소유자도 이 카드를 보고 실계좌에서 직접 판단한다 — 프로그램과 같은 근거.
+    """
+    ranking = snap.results.get("toss_rankings")
+    if ranking is None or not ranking.ok or not ranking.data:
+        return []
+    board = (ranking.data.get("boards") or {}).get("거래대금") or []
+    if not board:
+        return []
+
+    from quant.analyze.foreign_trend import classify
+    from quant.control import frgn_flow as frgn_flow_ledger
+
+    flow_path = root / "data" / "ledger" / "frgn_flow.jsonl"
+    out: list[dict] = []
+    for item in board:
+        sym = item.get("symbol")
+        change = item.get("change_pct")
+        if not sym or change is None or change < CLOSE_BET_MIN_CHANGE_PCT:
+            continue
+        score = 2
+        reasons = [f"당일 +{change:.1f}%", f"거래대금 {item.get('rank')}위"]
+        try:
+            series = frgn_flow_ledger.load_series(flow_path, sym, days=20)
+            label = (classify(series) or {}).get("label") or ""
+        except Exception:  # noqa: BLE001 — 수급 원장 문제로 후보 전체를 버리지 않는다
+            label = ""
+        if "매수" in label:
+            score += 3
+            reasons.append(f"외국인 {label}")
+        if sym in cont:
+            score += 1
+            reasons.append("오늘 뉴스 언급")
+        out.append({
+            "symbol": sym, "name": item.get("name") or sym,
+            "change_pct": change, "trading_amount": item.get("trading_amount"),
+            "score": score, "reasons": reasons,
+        })
+    out.sort(key=lambda x: (-x["score"], -(x["change_pct"] or 0)))
+    return out[:top]

@@ -860,6 +860,7 @@ def render_close(
     us_news_kr_view: list[dict] | None = None,
     usnews_headlines: list[dict] | None = None,
     telegram_view_us: list[dict] | None = None,
+    close_bet_view: list[dict] | None = None,
 ) -> str:
     market_name = {"KR": "한국", "US": "미국"}.get(snap.market, snap.market)
     return _env().get_template("close_report.html.j2").render(
@@ -884,6 +885,7 @@ def render_close(
         midterm_view=midterm_view or [],
         us_news_kr_view=us_news_kr_view or [],
         usnews_headlines=usnews_headlines or [],
+        close_bet_view=close_bet_view or [],
     )
 
 
@@ -899,13 +901,14 @@ def write_close_html(
     us_news_kr_view: list[dict] | None = None,
     usnews_headlines: list[dict] | None = None,
     telegram_view_us: list[dict] | None = None,
+    close_bet_view: list[dict] | None = None,
 ) -> Path:
     path = _dated_dir(root, snap) / f"{snap.market}_close_report.html"
     path.write_text(
         render_close(snap, news_view, flow_view, ranking_view, intraday_view, telegram_view_kr,
                      agent_interpret_view, midterm_view=midterm_view,
                      us_news_kr_view=us_news_kr_view, usnews_headlines=usnews_headlines,
-                     telegram_view_us=telegram_view_us),
+                     telegram_view_us=telegram_view_us, close_bet_view=close_bet_view),
         encoding="utf-8",
     )
     return path

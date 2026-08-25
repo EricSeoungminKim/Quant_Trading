@@ -92,19 +92,19 @@ def test_close_deadline_is_zero_padded_four_digits():
     assert len(_close_deadline()) == 4
 
 
-@pytest.mark.parametrize("hhmm", ["0000", "1200", "1357"])
+@pytest.mark.parametrize("hhmm", ["0000", "1200", "1451"])
 def test_kr_close_before_deadline_proceeds(hhmm):
-    """13:58 데드라인 전에는 오후 편입이 진행돼야 한다 — 13:55 크론이 여기 걸린다."""
+    """14:52 데드라인 전에는 편입이 진행돼야 한다 — 14:52 크론이 여기 걸린다(2026-08-25 종가배팅 체인)."""
     assert not _exceeded(hhmm, _close_deadline())
 
 
-@pytest.mark.parametrize("hhmm", ["1358", "1400", "1530", "2359"])
+@pytest.mark.parametrize("hhmm", ["1452", "1453", "1530", "2359"])
 def test_kr_close_at_or_after_deadline_skips(hhmm):
-    """14:00 유니버스 롤에 못 태우면 등록해봐야 그날 오후 세션엔 안 잡힌다."""
+    """14:53 유니버스 롤에 못 태우면 등록해봐야 그날 종가배팅 창엔 안 잡힌다."""
     assert _exceeded(hhmm, _close_deadline())
 
 
-def test_close_deadline_precedes_the_1400_universe_roll():
+def test_close_deadline_precedes_the_1453_universe_roll():
     from quant.trade.loop import _universe_roll_bucket
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -112,4 +112,4 @@ def test_close_deadline_precedes_the_1400_universe_roll():
     kst = ZoneInfo("Asia/Seoul")
     dl = _close_deadline()
     at_close = datetime(2026, 8, 13, int(dl[:2]), int(dl[2:]), tzinfo=kst)
-    assert not _universe_roll_bucket(at_close).endswith("+1400")
+    assert not _universe_roll_bucket(at_close).endswith("+1453")

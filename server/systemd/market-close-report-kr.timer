@@ -1,4 +1,4 @@
-# 마감 포지션 리포트(서브프로젝트 R) — 매일 13:40 KST 고정 빌드.
+# 마감 포지션 리포트(서브프로젝트 R) — 매일 14:35 KST 고정 빌드(2026-08-25 종가배팅 체인 — 14:50 발행).
 #
 # 왜 13:40 인가 — 사용자 단타 실전 리듬: 08:00~10:30 첫 포지션 → 점심/마감
 # 무렵 재서치 → 14:00~15:30 마감 포지션. 13:40 빌드면 13:50 전후 발행돼
@@ -14,7 +14,7 @@
 Description=Market close report KR (daily 13:40 KST)
 
 [Timer]
-OnCalendar=*-*-* 13:40 Asia/Seoul
+OnCalendar=*-*-* 14:35 Asia/Seoul
 Persistent=false
 Unit=market-close-report@KR.service
 

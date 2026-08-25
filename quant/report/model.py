@@ -75,3 +75,5 @@ class CloseReportModel:
     midterm_view: list = field(default_factory=list)
     us_news_kr_view: list = field(default_factory=list)
     usnews_headlines: list = field(default_factory=list)
+    # 종가배팅 후보(2026-08-25) — close 전용, 결정론 채점 top-5.
+    close_bet_view: list = field(default_factory=list)

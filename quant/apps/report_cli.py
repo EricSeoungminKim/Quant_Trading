@@ -51,7 +51,8 @@ from quant.report.collect.agent_interpret import (
 from quant.report.collect.briefs import _fetch_blog_briefs, _fetch_telegram_briefs, _fetch_youtube_briefs
 from quant.report.collect.carryover import _apply_carryover
 from quant.report.collect.close import (
-    _build_close_flow_view, _build_close_news_view, _build_close_ranking_view,
+    _build_close_bet_view, _build_close_flow_view, _build_close_news_view,
+    _build_close_ranking_view,
 )
 from quant.report.collect.core import _derive
 from quant.report.collect.intraday import (
@@ -210,6 +211,16 @@ def _emit_close(snap, root: Path, out_root: Path, snap_root: Path) -> None:
     )
     usnews_headlines = _usnews_headlines(telegram_result) if snap.market == "US" else []
 
+    # 종가배팅 후보(2026-08-25) — KR 전용. 토큰 체인: 이 뷰 → close_bet_tokens
+    # (SYM:CLOSE) → own_brief 14:52 → watch-score → 태그 CLOSE_BET → 유니버스 롤
+    # 14:53 → close_bet 전략 진입 창 14:55~15:19. 소유자도 같은 카드로 실계좌 판단.
+    close_bet_view = (
+        _build_close_bet_view(snap, root, cont) if snap.market == "KR" else []
+    )
+    if close_bet_view:
+        print(f"종가배팅 후보 {len(close_bet_view)}건: "
+              + ", ".join(i["symbol"] for i in close_bet_view))
+
     close_payload = {
         "schema": 1,
         "market": snap.market,
@@ -226,6 +237,7 @@ def _emit_close(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         "midterm_watch": midterm_view,
         "us_news_kr_map": us_news_kr_view,
         "usnews_headlines": usnews_headlines,
+        "close_bet_view": close_bet_view,
     }
 
     intraday_display = _visible_intraday(intraday_view)

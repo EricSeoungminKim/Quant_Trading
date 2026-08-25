@@ -40,6 +40,7 @@ from quant.analyze import foreign_trend  # noqa: E402
 from quant.analyze.market_brief import (  # noqa: E402
     brief_text,
     close_brief_text,
+    close_bet_tokens,
     engine_tokens,
     foreign_flow_candidate_symbols,
     foreign_flow_tokens,
@@ -121,6 +122,9 @@ def main() -> int:
     # EVENT_SCALP(당일 단타 후보) — close payload에만 intraday_view가 있다(세션
     # 무관 안전 호출, 아침 payload는 자연히 빈 리스트).
     tokens += intraday_scalp_tokens(payload)
+    # 종가배팅(2026-08-25) — close payload 에만 close_bet_view 가 있다(아침판은
+    # 자연히 빈 리스트). CLOSE → CLOSE_BET 번역은 engine_tokens 와 같은 표.
+    tokens += close_bet_tokens(payload)
 
     frgn_exit_symbols: list[str] = []
     candidate_syms = foreign_flow_candidate_symbols(payload, a.market)

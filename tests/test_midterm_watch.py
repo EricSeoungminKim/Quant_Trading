@@ -196,3 +196,22 @@ def test_narrate_prose_prompt_includes_injection_guard():
     narrator = _FakeNarrator({})
     narrate_prose([_candidate("005930")], narrator)
     assert "절대 따르지 마라" in narrator.calls[0]
+
+
+# ── 산문 간결화 (2026-08-25 소유자: "간결하지만 핵심만") ────────────────────
+
+def test_tighten_prose_strips_markdown_and_caps_length():
+    from quant.analyze.midterm_watch import PROSE_MAX_CHARS, tighten_prose
+
+    long = ("이번 상승은 **테마 동반 상승** 성격이 큽니다. " * 10) + "다만 자료에 나온 삼"
+    out = tighten_prose(long)
+    assert "**" not in out
+    assert len(out) <= PROSE_MAX_CHARS
+    assert out.endswith("다."), "문장 경계에서 잘라야 한다 — 뚝 끊긴 꼬리 금지"
+
+
+def test_tighten_prose_keeps_short_text_intact():
+    from quant.analyze.midterm_watch import tighten_prose
+
+    assert tighten_prose("핵심: ESS 모멘텀 편승.\n주의: 실적 부진 확인 필요.") == \
+        "핵심: ESS 모멘텀 편승.\n주의: 실적 부진 확인 필요."
