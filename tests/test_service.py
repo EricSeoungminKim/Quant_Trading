@@ -170,7 +170,8 @@ def test_source_not_supporting_symbol_or_interval_is_skipped():
 
     assert wrong_symbol.history_calls == []
     assert wrong_interval.history_calls == []
-    assert matching.history_calls == [("TQQQ", "15m", 10)]
+    # 서비스는 형성봉 보정을 위해 소스에 n+1을 요청한다(2026-08-24 결함 수리).
+    assert matching.history_calls == [("TQQQ", "15m", 11)]
     assert svc.provenance("TQQQ", Capability.BARS) == "matching"
 
 
@@ -356,3 +357,46 @@ def test_history_exhaustion_also_marks_degraded():
     )
     assert svc.history("TQQQ", "5m", 10).empty
     assert svc.health().degraded is True
+
+
+# ---------------------------------------------------- 형성봉 보정 (2026-08-24)
+
+class _TailingSource(FakeSource):
+    """실제 어댑터처럼 요청 n개로 잘라 반환한다 — 이 tail 이 결함의 절반이다."""
+
+    def history(self, symbol: str, interval: str, n: int) -> pd.DataFrame:
+        super().history(symbol, interval, n)
+        return self._history_df.tail(n)
+
+
+def test_history_compensates_for_forming_bar_dropped_by_lookahead_filter():
+    """실측 결함(2026-08-24): 어댑터는 요청 n개로 잘라 주고, 서비스의 완성봉
+    필터가 형성 중인 마지막 봉을 버리면 소비자는 n-1개를 받는다. cross_momentum
+    (월요일 **장중** 리밸런스)은 일봉 21개를 요구하는데 항상 20개를 받아
+    '랭킹봉부족: 21' — 태어나서 한 번도 랭킹하지 못했다. 서비스는 소스에
+    여유분을 요청해 필터 후에도 n개를 채운다. 형성봉 제외 자체(look-ahead
+    계약)는 불변이다."""
+    df = _bars("2024-01-01", 30, freq="1D")
+    src = _TailingSource(history_df=df)
+    now = (df.index[-1] + timedelta(hours=2)).to_pydatetime()  # 마지막 일봉 형성 중
+    svc = MarketDataService(
+        routes=[SourceRoute(name="s", source=src, capabilities=frozenset({Capability.BARS}))],
+        clock=FakeClock(now),
+    )
+    out = svc.history("A", "1d", 21)
+    assert len(out) == 21, "형성봉이 잘려도 요청한 개수는 채워져야 한다"
+    assert out.index[-1] == df.index[-2], "형성 중인 봉은 여전히 제외(look-ahead 불변)"
+
+
+def test_history_when_market_closed_still_returns_n():
+    """장 마감 후(형성봉 없음)에는 보정 여유분이 결과를 부풀리면 안 된다."""
+    df = _bars("2024-01-01", 30, freq="1D")
+    src = _TailingSource(history_df=df)
+    now = (df.index[-1] + timedelta(days=2)).to_pydatetime()  # 전부 완성
+    svc = MarketDataService(
+        routes=[SourceRoute(name="s", source=src, capabilities=frozenset({Capability.BARS}))],
+        clock=FakeClock(now),
+    )
+    out = svc.history("A", "1d", 21)
+    assert len(out) == 21
+    assert out.index[-1] == df.index[-1]

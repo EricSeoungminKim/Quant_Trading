@@ -248,3 +248,108 @@ def test_non_zero_ending_codes_are_left_alone():
     """2우선주(끝자리 7)·신형우선주(문자 포함)는 규약이 갈려 손대지 않는다."""
     out = _preferred_share_names({"002997": "어떤2우B", "0193L0": "무언가"})
     assert out == {}
+
+
+# ── KRX KIND 차단 대응 (2026-08-25 실측 장애) ──────────────────────────────
+# KIND(kind.krx.co.kr)가 8-23부터 EC2 IP 에 403 Access Denied 를 주기 시작했다.
+# 결함이 셋 겹쳐 **아침 리포트가 사흘간 통째로 실패**했다:
+#   ① fetch_kind_corp_list 만 raise_for_status() 가 없어 408바이트 오류 HTML 을
+#      정상 캐시로 저장했다.
+#   ② 캐시는 "있으면 재다운로드 안 함"이라 오류 페이지가 영구히 박혔다(자가회복 불가).
+#   ③ 소비처 4곳은 예외를 삼켰는데 load_name_map 한 곳만 전파해 HTML 생성 직전에
+#      리포트를 죽였다 — 이름 사전은 **표시용 보조 데이터**지 리포트의 전제가 아니다.
+
+def test_fetch_rejects_error_page_and_does_not_cache_it(tmp_path, monkeypatch):
+    """403 오류 페이지를 캐시로 굳히면 안 된다 — 다음 실행이 자가회복해야 한다."""
+    from quant.collect import listed_companies as lc
+
+    class _Resp:
+        status_code = 403
+        content = b"<HTML><HEAD><TITLE>Access Denied</TITLE></HEAD></HTML>"
+
+        def raise_for_status(self):
+            raise RuntimeError("403 Access Denied")
+
+    class _Client:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, url): return _Resp()
+
+    monkeypatch.setattr(lc, "client", lambda **kw: _Client())
+    cache = tmp_path / "kind_corplist.html"
+    with pytest.raises(Exception):
+        lc.fetch_kind_corp_list(cache)
+    assert not cache.exists(), "오류 응답이 캐시로 남으면 영원히 자가회복하지 못한다"
+
+
+def test_fetch_rejects_body_without_table_rows(tmp_path, monkeypatch):
+    """200 인데 표가 없는 응답(소프트 차단)도 캐시하지 않는다."""
+    from quant.collect import listed_companies as lc
+
+    class _Resp:
+        status_code = 200
+        content = b"<html><body>maintenance</body></html>"
+
+        def raise_for_status(self): return None
+
+    class _Client:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, url): return _Resp()
+
+    monkeypatch.setattr(lc, "client", lambda **kw: _Client())
+    cache = tmp_path / "kind_corplist.html"
+    with pytest.raises(ValueError):
+        lc.fetch_kind_corp_list(cache)
+    assert not cache.exists()
+
+
+def _dart_cache(tmp_path, rows):
+    import json
+    (tmp_path / "dart_corp_codes.json").write_text(
+        json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+
+
+def test_name_map_falls_back_to_dart_when_kind_unavailable(tmp_path):
+    """KIND 가 죽어도 이름 사전은 DART 공시 법인목록으로 계속 나와야 한다 —
+    이미 매일 갱신되는 캐시라 새 네트워크 의존이 생기지 않는다."""
+    from quant.analyze.entities import load_name_map
+
+    _dart_cache(tmp_path, [
+        {"corp_code": "001", "corp_name": "삼성전자", "stock_code": "005930"},
+        {"corp_code": "002", "corp_name": "카카오", "stock_code": "035720"},
+        {"corp_code": "003", "corp_name": "비상장사", "stock_code": ""},
+    ])
+    out = load_name_map(tmp_path, "KR")  # KIND 캐시 없음 → 폴백
+    assert out["005930"] == "삼성전자"
+    assert out["035720"] == "카카오"
+    assert "" not in out, "종목코드 없는 비상장사는 넣지 않는다"
+
+
+def test_name_map_returns_empty_when_both_sources_unavailable(tmp_path, monkeypatch):
+    """둘 다 없으면 빈 사전 — 리포트를 죽이지 않는다(이름은 표시용 보조 데이터).
+
+    KIND fetch 를 명시적으로 막는다: 막지 않으면 개발 머신처럼 KIND 가 살아 있는
+    환경에서 테스트가 실제 네트워크를 타 폴백 경로를 전혀 검증하지 못한다
+    (차단은 EC2 IP 한정이라 로컬에서는 정상 응답한다)."""
+    from quant.analyze import entities
+
+    monkeypatch.setattr(
+        entities, "fetch_kind_corp_list",
+        lambda cache: (_ for _ in ()).throw(RuntimeError("403 Access Denied")),
+    )
+    assert entities.load_name_map(tmp_path, "KR") == {}
+
+
+def test_name_map_prefers_kind_when_available(tmp_path, monkeypatch):
+    """폴백은 KIND 가 죽었을 때만 — 살아 있으면 시장구분까지 있는 KIND 가 이긴다."""
+    from quant.analyze import entities
+
+    monkeypatch.setattr(
+        entities, "fetch_kind_corp_list",
+        lambda cache: '<table><tr><td>h</td></tr>'
+                      '<tr><td>킨드전자</td><td>유가</td><td>005930</td></tr>'
+                      '</table>'.encode("euc-kr"),
+    )
+    _dart_cache(tmp_path, [{"corp_code": "1", "corp_name": "다트전자", "stock_code": "005930"}])
+    assert entities.load_name_map(tmp_path, "KR")["005930"] == "킨드전자"

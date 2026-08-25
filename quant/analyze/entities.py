@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import logging
 import html
 import io
 import re
@@ -20,6 +21,8 @@ from quant.collect.listed_companies import (
     fetch_sp500_list,
     fetch_symbol_dir,
 )
+
+logger = logging.getLogger(__name__)
 
 MIN_NAME_LEN = 3
 TRADABLE = ("유가", "코스닥")  # 코넥스 제외
@@ -376,8 +379,46 @@ def load_name_map(cache_dir: Path, market: str) -> dict[str, str]:
     """
     if market == "US":
         return {sym: name for name, sym in build_us_table(_load_us_records(cache_dir))}
-    out = {code: name for name, code, _ in _load_records(cache_dir)}
+    try:
+        out = {code: name for name, code, _ in _load_records(cache_dir)}
+    except Exception as e:  # noqa: BLE001
+        # KIND 가 죽어도 리포트는 나와야 한다(2026-08-25 실측: KRX 403 차단으로
+        # 아침 리포트가 사흘간 전멸). **이름 사전은 표시용 보조 데이터**지
+        # 리포트의 전제가 아니다 — 다른 소비처 4곳은 이미 예외를 삼키고
+        # "생략"으로 넘어가는데, 이 함수만 전파해 HTML 생성 직전에 죽였다.
+        logger.warning("KIND 이름 사전 실패 — DART 공시 법인목록으로 폴백: %s: %s",
+                       type(e).__name__, e)
+        out = _dart_name_map(cache_dir)
     out.update(_preferred_share_names(out))
+    return out
+
+
+def _dart_name_map(cache_dir: Path) -> dict[str, str]:
+    """DART 공시 법인목록 캐시(`dart_corp_codes.json`) → {종목코드: 회사명}.
+
+    KIND 폴백 전용이다. 이 캐시는 `collect/sources/dart_financials.py` 가 이미
+    매일 갱신하므로 **새 네트워크 의존이 생기지 않는다** — 있는 데이터를 재사용할
+    뿐이다. 시장구분(유가/코스닥)은 DART 에 없어 못 채운다; 시장구분이 필요한
+    `load_market_map` 은 이 폴백을 쓰지 않고 기존대로 실패한다(모르는 것을
+    아는 척하지 않는다).
+
+    캐시가 없거나 깨졌으면 **빈 사전**을 돌려준다 — 이름이 없으면 호출부가
+    종목코드를 그대로 보여주면 되고, 그게 리포트가 죽는 것보다 낫다."""
+    import json
+
+    path = cache_dir / "dart_corp_codes.json"
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        logger.warning("DART 폴백도 불가 — 이름 없이 진행(종목코드 표시): %s", e)
+        return {}
+    out: dict[str, str] = {}
+    for r in rows if isinstance(rows, list) else []:
+        code = (r.get("stock_code") or "").strip()
+        name = (r.get("corp_name") or "").strip()
+        if _CODE.match(code) and name:
+            out.setdefault(code, name)
+    logger.info("DART 폴백 이름 사전 %d건", len(out))
     return out
 
 

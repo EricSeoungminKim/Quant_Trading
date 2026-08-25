@@ -173,9 +173,16 @@ class MarketDataService:
         return None
 
     def history(self, symbol: str, interval: str, n: int) -> pd.DataFrame:
+        # 소스에는 n+1을 요청한다(2026-08-24). 어댑터들은 요청 개수로 잘라
+        # 반환하는데, 아래 완성봉 필터가 형성 중인 마지막 봉을 버리면 소비자는
+        # n-1개를 받는다 — cross_momentum(월요일 **장중** 리밸런스)이 일봉
+        # 21개를 요구하며 항상 20개를 받아 '랭킹봉부족: 21'로 태어나서 한 번도
+        # 랭킹하지 못했다(전 종목, 전 회차). 형성 중일 수 있는 봉은 어느
+        # interval이든 마지막 1개뿐이므로 여유분은 +1이면 충분하고, 마지막
+        # tail(n)이 초과분을 잘라 장 마감 후에도 결과는 정확히 n개다.
         for route in self._candidates(Capability.BARS, symbol, interval):
             try:
-                result = route.source.history(symbol, interval, n)
+                result = route.source.history(symbol, interval, n + 1)
             except Exception as e:
                 self._record_failure(route.name, e)
                 logger.warning(
