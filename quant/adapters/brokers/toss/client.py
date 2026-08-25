@@ -244,6 +244,18 @@ class TossClient:
             return resp.json()["result"]
 
     def _require_live(self) -> None:
+        """**계좌 상태를 바꾸는 호출**에만 붙인다 — 주문 생성·정정·취소.
+
+        읽기 전용 조회(holdings/buying_power/order/orders/conditional_orders)에는
+        붙이지 않는다. 2026-08-26 실측: 그전엔 읽기까지 막아 **읽기 전용 진단
+        레이어인 Private Banker 가 이 박스에서 영영 돌 수 없었다**(MODE=paper 가
+        정상 운영 상태다). 매일 07:00 크론이 18일 연속 죽어 일일 리스크 리포트가
+        한 번도 발송되지 않았고, 로그에만 남아 아무도 보지 않았다. 잔고를 읽는
+        것으로는 돈을 잃지 않는다 — 이 게이트가 막아야 할 것은 주문이다.
+
+        주문 차단은 이 게이트 하나에 기대지 않는다: `TossBroker.place_order` 가
+        MODE!=live 를 독립적으로 다시 확인한다(이중 방어).
+        """
         if self.mode != "live":
             raise RuntimeError("live trading disabled in paper mode")
 
@@ -373,14 +385,12 @@ class TossClient:
 
     # --------------------------------------------------- account / orders
     def holdings(self, symbol: str | None = None) -> dict:
-        self._require_live()
         params = {"symbol": symbol} if symbol else None
         return self._request("GET", "/api/v1/holdings", "ASSET",
                               params=params, account_scoped=True)
 
     def buying_power(self, currency: str = "KRW") -> dict:
         """{currency, cashBuyingPower} — cash-only (excludes margin)."""
-        self._require_live()
         return self._request("GET", "/api/v1/buying-power", "ORDER_INFO",
                               params={"currency": currency}, account_scoped=True)
 
@@ -440,7 +450,6 @@ class TossClient:
         tax, filledAt, settlementDate}, ...}. status enum: PENDING, PENDING_CANCEL,
         PENDING_REPLACE, PARTIAL_FILLED, FILLED, CANCELED, REJECTED,
         CANCEL_REJECTED, REPLACE_REJECTED, REPLACED."""
-        self._require_live()
         return self._request("GET", f"/api/v1/orders/{order_id}", "ORDER_HISTORY",
                               account_scoped=True)
 
@@ -455,7 +464,6 @@ class TossClient:
         스키마 확인). 따라서 "내가 방금 보낸 clientOrderId의 주문이 이미 나갔는가"를
         이 목록으로 매칭할 수 없다 — 멱등성은 서버측 clientOrderId 키에 의존한다
         (broker.place_order 참고). 이 메서드는 사람이 하는 사후 확인/대사용이다."""
-        self._require_live()
         params: dict = {"status": status}
         if symbol:
             params["symbol"] = symbol
@@ -509,7 +517,6 @@ class TossClient:
     def conditional_orders(self, status: str = "OPEN", *, symbol: str | None = None) -> dict:
         """조건주문 목록. GET /api/v1/conditional-orders?status=OPEN|CLOSED.
         Response `result`: {conditionalOrders: [...], nextCursor, hasNext}. [미검증]"""
-        self._require_live()
         params: dict = {"status": status}
         if symbol:
             params["symbol"] = symbol

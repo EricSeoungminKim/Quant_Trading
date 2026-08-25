@@ -418,7 +418,7 @@ def cmd_report(args: argparse.Namespace) -> None:
 
     mode = os.environ.get("MODE", "paper")
     if mode != "live":
-        logger.warning("banker report는 실계좌(holdings) 조회가 필요 — MODE=live로 실행해야 함")
+        logger.info("banker report: MODE=%s — 읽기 전용 조회로 실행한다(주문은 어느 모드에서도 내지 않는다)", mode)
     client = TossClient(
         client_id=os.environ.get("TOSS_CLIENT_ID", ""),
         client_secret=os.environ.get("TOSS_CLIENT_SECRET", ""),

@@ -153,19 +153,51 @@ def test_401_retry_is_bounded_not_infinite(tmp_path):
 
 
 # ------------------------------------------------------------------- mode guard
+#
+# paper 모드 게이트는 **계좌 상태를 바꾸는 호출**만 막는다(2026-08-26 수리).
+#
+# 그전엔 읽기 전용 조회(holdings/buying_power/order/orders/conditional_orders)도
+# 같이 막았는데, 그래서 **읽기 전용 진단 레이어인 Private Banker 가 이 박스에서
+# 영영 돌 수 없었다** — MODE=paper 가 정상 운영 상태이기 때문이다. 실측: 매일
+# 07:00 크론이 18일 연속 "live trading disabled in paper mode" 로 죽어 일일 리스크
+# 리포트가 한 번도 발송되지 않았다. 잔고를 **읽는 것**으로는 돈을 잃을 수 없다.
+#
+# 주문 차단은 이 게이트 하나에 기대지 않는다 — `TossBroker.place_order` 가
+# MODE!=live 를 독립적으로 다시 확인한다(이중 방어).
 
-def test_holdings_refuses_outside_live_mode(tmp_path):
-    client = _make_client(tmp_path, httpx.MockTransport(lambda r: httpx.Response(200)), mode="paper")
-    with pytest.raises(RuntimeError):
-        client.holdings()
+
+def _paper(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/oauth2/token":
+            return httpx.Response(200, json={"access_token": "tok", "expires_in": 86400})
+        return httpx.Response(200, json={"result": {"ok": request.url.path}})
+
+    return _make_client(tmp_path, httpx.MockTransport(handler), mode="paper")
 
 
-# --------------------------------------------------------------- order status
+def test_read_only_account_queries_work_in_paper_mode(tmp_path):
+    """읽기 전용 조회는 paper 에서도 된다 — Private Banker(읽기 전용 진단)가
+    이것 없이는 존재할 수 없다."""
+    client = _paper(tmp_path)
+    # 반환값은 각 엔드포인트가 실제로 호출됐다는 증거다(게이트에 막히면 예외).
+    assert client.holdings()["ok"] == "/api/v1/holdings"
+    assert client.buying_power()["ok"] == "/api/v1/buying-power"
+    assert client.order("order-123")["ok"] == "/api/v1/orders/order-123"
+    assert client.orders()["ok"] == "/api/v1/orders"
+    assert client.conditional_orders()["ok"] == "/api/v1/conditional-orders"
 
-def test_order_status_refuses_outside_live_mode(tmp_path):
-    client = _make_client(tmp_path, httpx.MockTransport(lambda r: httpx.Response(200)), mode="paper")
-    with pytest.raises(RuntimeError):
-        client.order("order-123")
+
+def test_state_changing_calls_still_refuse_in_paper_mode(tmp_path):
+    """돈이 움직이는 호출은 그대로 막힌다 — 이 게이트의 진짜 목적."""
+    client = _paper(tmp_path)
+    for call in (
+        lambda: client.place_order("005930", "BUY", "MARKET", quantity=1),
+        lambda: client.modify_order("order-1", "MARKET", quantity=2),
+        lambda: client.cancel_order("order-1"),
+        lambda: client.cancel_conditional_order("cond-1"),
+    ):
+        with pytest.raises(RuntimeError, match="paper mode"):
+            call()
 
 
 # ------------------------------------------------------------------- rankings
