@@ -123,7 +123,7 @@ def main() -> int:
     # 무관 안전 호출, 아침 payload는 자연히 빈 리스트).
     tokens += intraday_scalp_tokens(payload)
     # 종가배팅(2026-08-25) — close payload 에만 close_bet_view 가 있다(아침판은
-    # 자연히 빈 리스트). CLOSE → CLOSE_BET 번역은 engine_tokens 와 같은 표.
+    # 자연히 빈 리스트). close_bet_tokens 는 엔진 어휘(CLOSE_BET)를 직접 발행한다 — 이 줄은 번역을 거치지 않는다.
     tokens += close_bet_tokens(payload)
 
     frgn_exit_symbols: list[str] = []

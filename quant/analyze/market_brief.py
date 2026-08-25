@@ -72,7 +72,7 @@ _TAG_MAP = {
     # REBOUND 는 리포트에 대응 개념이 없다.
 }
 # _VALID_TAGS 순서를 따른다 — 토큰이 결정론적이어야 로그 비교가 가능하다.
-_ENGINE_TAG_ORDER = ("TREND", "REBOUND", "EVENT")
+_ENGINE_TAG_ORDER = ("TREND", "REBOUND", "EVENT", "CLOSE_BET")
 
 _MARKET_LABEL = {"KR": "🇰🇷 한국장", "US": "🇺🇸 미국장"}
 
@@ -241,7 +241,13 @@ def close_bet_tokens(payload: dict) -> list[str]:
     for item in payload.get("close_bet_view") or []:
         sym = item.get("symbol") if isinstance(item, dict) else None
         if sym:
-            out.append(f"{sym}:CLOSE")
+            # 엔진 어휘(CLOSE_BET)를 **직접** 발행한다. 처음엔 리포트 어휘
+            # "CLOSE"를 내고 번역표를 거치게 했는데, 이 함수의 출력은
+            # engine_tokens 를 지나지 않고 TOKENS 줄에 바로 붙어 번역이
+            # 일어나지 않았다 — watch_scorer 가 '알 수 없는 태그'로 강등해
+            # close_bet 전략이 태그를 영영 못 받는 조용한 실패였다
+            # (2026-08-25, 배포 전 서브에이전트 테스트가 적발).
+            out.append(f"{sym}:CLOSE_BET")
     return out
 
 
