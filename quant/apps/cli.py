@@ -75,6 +75,44 @@ def cmd_fitness(args: argparse.Namespace) -> None:
     print(_json.dumps(out, ensure_ascii=False))
 
 
+def cmd_walkforward(args: argparse.Namespace) -> None:
+    """롤링 OOS 안정성 하네스 — 같은 설정(settings.yaml)을 여러 시간 창에서 돌려
+    성과가 구간마다 안정적인지 본다. **파라미터 자동 탐색은 하지 않는다**
+    (`optimize` 서브커맨드와는 목적이 다르다 — 거버너 층 0, 사이징·파라미터
+    자동화 금지)."""
+    import json as _json
+
+    from quant.backtest.walkforward import run_walkforward, stability_summary
+
+    symbols = args.symbols.split() if args.symbols else None
+    folds = run_walkforward(
+        strategy_id=args.strategy, total_days=args.days, window_days=args.window,
+        step_days=args.step, interval=args.interval, source=args.source, symbols=symbols,
+    )
+    out = {
+        "strategy": args.strategy, "source": args.source, "interval": args.interval,
+        "folds": folds, "summary": stability_summary(folds),
+    }
+    print(_json.dumps(out, ensure_ascii=False, indent=2))
+
+
+def cmd_kelly(args: argparse.Namespace) -> None:
+    """원장 기반 부분 켈리 자문 — 승률·payoff로 켈리 비율을 **표시만** 한다.
+
+    자본 배분에 자동 반영되지 않는다(거버너 층 0). settings.yaml의 capital_fraction
+    변경은 사람이 이 출력을 보고 직접 한다.
+    """
+    import json as _json
+
+    from quant.control.kelly import advisory
+    from quant.control.ledger import load_trades, round_trips
+
+    trips = round_trips(load_trades(ledger_state_path()))
+    result = advisory(trips)
+    print(_json.dumps(result, ensure_ascii=False, indent=2))
+    print("※ 자문일 뿐 자동 반영되지 않는다 — 사이징 변경은 사람이 settings.yaml 로 한다(거버너 층 0).")
+
+
 def cmd_backtest(args: argparse.Namespace) -> None:
     # --symbols "TQQQ SQQQ": 관심종목(watchlist) 전략(symbols: [])은 이게 없으면
     # settings.yaml의 빈 symbols로 돌아 symbols[0] 접근에서 IndexError로 죽는다 —
@@ -841,6 +879,8 @@ def cmd_weekly_review(args: argparse.Namespace) -> None:
     from quant.adapters.env import REPO_ROOT
     from quant.control.ledger import load_trades, round_trips
     from quant.control.symbol_log import accuracy_join, load_scores
+    from quant.control.tca import join_intents_fills, slippage_bps, tca_summary
+    from quant.control.warehouse import read_jsonl
     from quant.control.weekly_review import (
         loss_patterns, week_range, weekly_index_flow, weekly_review_text,
         weekly_strategy_stats,
@@ -850,9 +890,16 @@ def cmd_weekly_review(args: argparse.Namespace) -> None:
     today = _date.today()
     start, end = week_range(today - timedelta(days=1))  # 토요일 실행 → 막 끝난 주
 
-    trips = round_trips(load_trades(ledger_state_path()))
+    raw_trades = load_trades(ledger_state_path())
+    trips = round_trips(raw_trades)
     stats = weekly_strategy_stats(trips, start, end)
     losses = loss_patterns(trips, start, end)
+
+    # 슬리피지 TCA — 주문 의도(신호 시점 가격) vs 실제 체결가. intent 로그가
+    # 오늘 가격을 안 남기므로 join_intents_fills가 표본 0을 내고 tca_summary가
+    # None을 반환하는 게 정상(quant/control/tca.py 모듈 docstring 참고).
+    intents = read_jsonl(root / "data" / "state" / "order_intents.jsonl")
+    tca = tca_summary(slippage_bps(join_intents_fills(intents, raw_trades)), start, end)
 
     # 주간 지수 흐름 — 로컬 1d 파케이(069500=KOSPI200 프록시, QQQ).
     def _week_closes(symbol: str) -> list[float]:
@@ -918,7 +965,7 @@ def cmd_weekly_review(args: argparse.Namespace) -> None:
                 equity_delta = {"start": a, "end": b, "pct": (b / a - 1) * 100}
 
     print(weekly_review_text(start, end, index_flow, stats, losses,
-                             score_accuracy, equity_delta))
+                             score_accuracy, equity_delta, tca))
 
     try:
         from quant.adapters.kv import make_kv
@@ -2255,6 +2302,24 @@ def main() -> None:
              "(실측 엣지 왕복 8~9bp vs 수수료 14bp).",
     )
     p_fit.set_defaults(func=cmd_fitness)
+
+    p_wf = sub.add_parser(
+        "walkforward",
+        help="롤링 OOS 안정성 하네스 — 같은 설정을 여러 시간 창에서 반복 실행(파라미터 탐색 없음)",
+    )
+    p_wf.add_argument("--strategy", default="donchian")
+    p_wf.add_argument("--days", type=int, default=360, help="전체 관찰 기간(달력일)")
+    p_wf.add_argument("--window", type=int, default=90, help="창 크기(거래일)")
+    p_wf.add_argument("--step", type=int, default=45, help="창 간격(달력일)")
+    p_wf.add_argument("--interval", default="15m")
+    p_wf.add_argument("--source", default="stub")
+    p_wf.add_argument("--symbols", default=None)
+    p_wf.set_defaults(func=cmd_walkforward)
+
+    p_kelly = sub.add_parser(
+        "kelly", help="원장 기반 부분 켈리 자문(표시만, 자동 반영 없음)",
+    )
+    p_kelly.set_defaults(func=cmd_kelly)
 
     p_bt = sub.add_parser("backtest")
     p_bt.add_argument("--strategy", default="donchian")

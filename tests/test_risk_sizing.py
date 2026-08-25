@@ -88,6 +88,15 @@ def _expected_qty(cash_krw: float, weight: float, multiplier: float = 1.0) -> fl
     return math.floor((cash_krw * weight * multiplier) / FX_RATE / PRICE)
 
 
+def test_approved_order_carries_decision_price_for_tca(fake_clock_cls):
+    """승인된 주문은 사이징에 쓴 결정 시점 시세를 ref_price로 싣는다 — 브로커
+    의도 저널이 이 값을 남겨야 TCA(의도가 vs 체결가)가 표본을 얻는다 (2026-08-26)."""
+    risk = _risk()
+    order = risk.approve(_entry(0.5), _ctx(15_000_000.0, fake_clock_cls=fake_clock_cls))
+    assert order is not None
+    assert order.ref_price == PRICE
+
+
 # ------------------------------------------------- cash_pct가 가용 현금을 따라간다
 
 def test_cash_pct_budget_tracks_available_cash(fake_clock_cls):

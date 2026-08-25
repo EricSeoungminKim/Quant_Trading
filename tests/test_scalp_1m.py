@@ -271,6 +271,90 @@ def test_no_entry_outside_entry_window():
     assert late == []
 
 
+def test_entry_window_zero_waits_all_session():
+    """소유자 지시(2026-08-26): "단타 스캘핑은 언제든 해도 좋아 — 언제든 시그널을
+    계속 대기하는 거야". 0 = 진입창 없음(전 세션 대기) — 개장 95분 뒤에도
+    패턴이 서면 진입한다."""
+    strat = Scalp1mStrategy(["AAA"], _params(entry_window_minutes_after_open=0))
+    bars = {"AAA": _pattern_a_bars(surge=True)}
+    late = strat.on_cycle(_ctx({"AAA": 102.4}, _now_within_window(95.0), bars=bars))
+    assert len(late) == 1 and late[0].action == SignalAction.ENTER_LONG
+
+
+def test_entry_window_zero_still_blocks_before_open():
+    """전-세션 모드여도 개장 전(경과 음수)은 정규장 진입 경로가 아니다 —
+    07:00 NY는 프리마켓 창(08:00~)보다도 앞이라 관찰 자체가 없어야 한다."""
+    strat = Scalp1mStrategy(["AAA"], _params(entry_window_minutes_after_open=0))
+    bars = {"AAA": _pattern_a_bars(surge=True)}
+    early = strat.on_cycle(_ctx({"AAA": 102.4}, _now_within_window(-150.0), bars=bars))
+    assert early == []
+
+
+def test_entry_window_zero_lookback_covers_full_session():
+    """전-세션 모드는 조회 봉 수도 세션 전체(390분)를 덮어야 한다 — 90분 기준
+    그대로면 오후 패턴 판정에 필요한 봉이 잘린다."""
+    strat = Scalp1mStrategy(["AAA"], _params(entry_window_minutes_after_open=0, lookback_bars=1))
+    assert strat._lookback_bars >= 60 + 20 + 390
+
+
+# ============================================================ 구조층 (2026-08-26 재작업)
+
+def test_structure_stop_mode_uses_swing_support():
+    """stop_mode=structure — 손절이 패턴 기준가(L1)가 아니라 최근 스윙 저점
+    (지지) 아래에 놓인다. _pattern_a_bars 의 지지는 워밍업 저가 99.9 (L1 저가
+    100.5 는 마지막 wing 3봉이라 미확정 — 스윙 판정 제외)."""
+    strat = Scalp1mStrategy(["AAA"], _params(stop_mode="structure", stop_buffer_pct=0.3))
+    bars = {"AAA": _pattern_a_bars(surge=True)}
+    [sig] = strat.on_cycle(_ctx({"AAA": 102.4}, _now_within_window(3.0), bars=bars))
+    assert sig.action == SignalAction.ENTER_LONG
+    assert sig.stop == pytest.approx(99.9 * (1 - 0.3 / 100))
+    assert "구조손절" in sig.reason
+
+
+def test_structure_stop_mode_rejects_when_no_support_below():
+    """지지(스윙 저점)가 전부 진입가 위 — "손절선을 정할 수 없는 자리"는
+    진입하지 않는다(structure.py 손절 철학)."""
+    strat = Scalp1mStrategy(["AAA"], _params(stop_mode="structure"))
+    open_ts = datetime.combine(DAY1, US_OPEN, tzinfo=NY)
+    idx, rows = _warmup(NY, open_ts, 25, close=110.0)  # 워밍업 저가 109.9 > 진입가
+    session_rows = [
+        {"open": 100.0, "high": 102.0, "low": 99.9, "close": 101.8, "volume": 3500.0},
+        {"open": 101.8, "high": 101.9, "low": 100.5, "close": 100.6, "volume": 1000.0},
+        {"open": 100.6, "high": 102.5, "low": 100.5, "close": 102.3, "volume": 1200.0},
+    ]
+    idx += [open_ts + timedelta(minutes=i) for i in range(3)]
+    rows += session_rows
+    bars_df = pd.DataFrame(rows, index=pd.DatetimeIndex(idx, tz=NY))
+    signals = strat.on_cycle(_ctx({"AAA": 102.4}, _now_within_window(3.0), bars={"AAA": bars_df}))
+    assert signals == []
+    assert "구조 지지 없음" in strat.last_reject["AAA"]
+
+
+def test_williams_gate_shadow_notes_overbought_but_enters():
+    """shadow — 재돌파 직후는 정의상 과매수 부근(W%R≈-8): 진입은 막지 않고
+    사유에 차단 후보 노트만 싣는다(표본 축적 → block 승격 판단, trend_gate 관례)."""
+    strat = Scalp1mStrategy(["AAA"], _params(williams_gate_mode="shadow"))
+    bars = {"AAA": _pattern_a_bars(surge=True)}
+    [sig] = strat.on_cycle(_ctx({"AAA": 102.4}, _now_within_window(3.0), bars=bars))
+    assert sig.action == SignalAction.ENTER_LONG
+    assert "W%R" in sig.reason and "차단후보" in sig.reason
+
+
+def test_williams_gate_block_rejects_overbought_entry():
+    strat = Scalp1mStrategy(["AAA"], _params(williams_gate_mode="block"))
+    bars = {"AAA": _pattern_a_bars(surge=True)}
+    signals = strat.on_cycle(_ctx({"AAA": 102.4}, _now_within_window(3.0), bars=bars))
+    assert signals == []
+    assert "과매수" in strat.last_reject["AAA"]
+
+
+def test_williams_gate_off_by_default_keeps_reason_clean():
+    strat = Scalp1mStrategy(["AAA"], _params())
+    bars = {"AAA": _pattern_a_bars(surge=True)}
+    [sig] = strat.on_cycle(_ctx({"AAA": 102.4}, _now_within_window(3.0), bars=bars))
+    assert "W%R" not in sig.reason
+
+
 # ============================================================ 5초 루프 상호작용
 
 def test_repeated_cycles_on_same_completed_bar_do_not_duplicate_entry():
@@ -370,8 +454,9 @@ def test_holds_above_ma60_with_no_other_exit_trigger():
 # ============================================================ 생성자 검증
 
 def test_invalid_entry_window_raises():
+    # 0은 2026-08-26부터 "전 세션 대기"라는 유효한 값이다 — 음수만 거부한다.
     with pytest.raises(ValueError):
-        Scalp1mStrategy(["AAA"], _params(entry_window_minutes_after_open=0))
+        Scalp1mStrategy(["AAA"], _params(entry_window_minutes_after_open=-1))
 
 
 def test_invalid_volume_surge_mult_raises():

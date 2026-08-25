@@ -407,6 +407,27 @@ def test_order_intent_is_journaled_before_the_request_goes_out(monkeypatch, owne
     assert records[0]["client_order_id"]
 
 
+def test_order_intent_journals_ref_price_for_tca(monkeypatch, ownership, tmp_path):
+    """의도 시점 가격(ref_price)이 저널에 남아야 TCA(의도가 vs 체결가)가 표본을
+    얻는다 — 2026-08-26 감사: 가격 없는 의도 행은 슬리피지를 영영 못 잰다.
+    없으면 키 자체를 생략한다(없는 값을 지어내지 않는다)."""
+    monkeypatch.setenv("MODE", "live")
+    intents = tmp_path / "intents.jsonl"
+    client = MagicMock()
+    client.place_order.side_effect = httpx.TimeoutException("boom")
+    broker = TossBroker(client, poll_max_attempts=1, poll_interval=0,
+                        ownership=ownership, intents_path=intents)
+
+    order = Order(symbol="005930", side=Side.BUY, qty=10, strategy_id="s1",
+                  reason="test", ref_price=71_200.0)
+    broker.place_order(order)
+    broker.place_order(_order(qty=5))  # ref_price 없는 주문 — 키 생략
+
+    records = [json.loads(line) for line in intents.read_text(encoding="utf-8").splitlines()]
+    assert records[0]["price"] == 71_200.0
+    assert "price" not in records[1]
+
+
 def test_no_journal_entry_and_no_http_when_mode_is_not_live(monkeypatch, ownership, tmp_path):
     monkeypatch.setenv("MODE", "paper")
     intents = tmp_path / "intents.jsonl"

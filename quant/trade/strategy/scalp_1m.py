@@ -180,6 +180,7 @@ from quant.core.models import Position, Signal, SignalAction, market_of_symbol
 from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
 from quant.trade.indicators import sma
 from quant.trade.indicators.trend_gate import adx_di, atr_ratio
+from quant.trade.structure import structure_bracket, williams_r
 from quant.trade.strategy.orb_scan import _SESSION_OPEN
 from quant.trade.strategy.shell import PureStrategyShell
 
@@ -199,6 +200,10 @@ _PREMARKET_WINDOWS: dict[str, tuple[dtime, dtime]] = {
     "US": (dtime(8, 0), dtime(9, 25)),
 }
 
+# 정규장 길이(분) — KR 09:00~15:30, US 09:30~16:00 둘 다 390분. 전-세션 진입
+# 모드(entry_window_minutes=0)의 lookback 산정에 쓴다.
+_FULL_SESSION_MINUTES = 390
+
 
 class Scalp1mStrategy:
     def __init__(self, symbols: list[str], params: dict, market: str = "US", id: str = "scalp_1m"):
@@ -206,8 +211,11 @@ class Scalp1mStrategy:
         self.symbols = list(symbols)
         self.market = market  # Strategy Protocol 호환용 — 실제 판정은 심볼별 시장 추론
 
-        # 개장 후 이 시간(분) 안에만 신규 진입 판정 — 스펙 "진입" 절: 사용자
-        # 단타 리듬(첫 포지션 08~10:30)과 일치. 창 밖은 관리만 계속한다.
+        # 개장 후 이 시간(분) 안에만 신규 진입 판정. **0 = 진입창 없음(전 세션
+        # 대기)** — 2026-08-26 소유자 지시: "단타 스캘핑은 언제든 해도 좋아,
+        # 꼭 장 시작 90분이 아니더라도 언제든 시그널을 계속 대기". 양수면 기존
+        # 의미(개장 후 N분) 그대로 — 미설정 시 동작 보존을 위해 기본값은 90 유지,
+        # 전-세션은 settings.yaml 에서 0을 명시한다. 창 밖은 관리만 계속한다.
         self.entry_window_minutes: int = params.get("entry_window_minutes_after_open", 90)
         # 패턴 A — 거래량 서지 배수/lookback(스펙: "직전 20봉 평균의 3배 이상").
         self.volume_surge_mult: float = params.get("volume_surge_mult", 3.0)
@@ -232,6 +240,26 @@ class Scalp1mStrategy:
         # 없으므로 별도 경로를 둔다.
         self.take_profit_bps: float = params.get("take_profit_bps", 0)
         self.partial_fraction: float = params.get("partial_fraction", 0.5)
+        # 손절 모드(2026-08-26 구조층 재작업 — quant/trade/structure.py):
+        #   "basis"     — 기존: 패턴 기준가(L1/MA60) × (1-buffer), 하드캡 바닥.
+        #   "structure" — 최근 스윙 저점(지지) × (1-buffer). 지지가 안 보이면
+        #                 **진입하지 않는다** — "손절선을 정할 수 없는 자리"는
+        #                 그 자체가 위험 정보다(structure.py 손절 철학).
+        # 근거: 2026-08-24 원장 재생 — ±100bp 고정 브래킷은 세션 내 67%가 양쪽
+        # 다 터치(노이즈 안). 구조 손절도 stop_hard_cap_pct 로 잘리므로 최대
+        # 손실 폭은 기존과 같다. 기본 basis(미설정 시 무동작 보존) — 전환은
+        # settings.yaml 에서 명시한다.
+        smode = str(params.get("stop_mode", "basis")).strip().lower()
+        self.stop_mode: str = smode if smode in ("basis", "structure") else "basis"
+        self.structure_wing: int = int(params.get("structure_wing", 3))
+        # Williams %R 과열 게이트(구조층 재작업 ②) — trend_gate 와 같은 3모드.
+        # shadow 는 판정만 계산해 신호 사유에 싣는다(표본이 모이면 "차단 후보
+        # 진입들의 실제 성적"으로 block 승격 판단 — trend_gate 관례 그대로).
+        # 기본 off — 미설정 시 신호 문자열까지 100% 동일 보존.
+        wmode = str(params.get("williams_gate_mode", "off")).strip().lower()
+        self.williams_gate_mode: str = wmode if wmode in ("off", "shadow", "block") else "off"
+        self.williams_period: int = int(params.get("williams_period", 14))
+        self.williams_overbought: float = float(params.get("williams_overbought", -20.0))
         self.flatten_minutes: float = params.get("flatten_before_close_minutes", 1)
         # 프리마켓 직접 진입(모듈 docstring "프리마켓" 절 2번). 기본 켜짐(사용자
         # 찬성) — 유동성 가드가 실질 방어선이다.
@@ -267,15 +295,17 @@ class Scalp1mStrategy:
         self.adx_min: float = params.get("adx_min", 25.0)
         self.max_atr_ratio: float = params.get("max_atr_ratio", 0.10)
         # 진입 판정용 봉 조회 개수 — MA60 워밍업 + 거래량 20봉 평균 + 진입창
-        # 전체(90분)를 넉넉히 덮는다. 세션 경계를 넘는 연속 1분봉이 필요하다
-        # (모듈 docstring "진입" 절).
+        # 전체를 넉넉히 덮는다. 전-세션 모드(0)면 진입창이 곧 세션 전체이므로
+        # 정규장 길이(KR 09:00~15:30 = US 09:30~16:00 = 390분)를 쓴다. 세션
+        # 경계를 넘는 연속 1분봉이 필요하다(모듈 docstring "진입" 절).
         self._lookback_bars = max(
             int(params.get("lookback_bars", 400)),
-            self.ma_period + self.volume_surge_lookback + self.entry_window_minutes,
+            self.ma_period + self.volume_surge_lookback
+            + (self.entry_window_minutes or _FULL_SESSION_MINUTES),
         )
 
-        if self.entry_window_minutes <= 0:
-            raise ValueError("entry_window_minutes_after_open은 양수여야 합니다.")
+        if self.entry_window_minutes < 0:
+            raise ValueError("entry_window_minutes_after_open은 0(전 세션) 이상이어야 합니다.")
         if self.volume_surge_mult <= 0:
             raise ValueError("volume_surge_mult는 양수여야 합니다.")
         if self.volume_surge_lookback <= 0:
@@ -292,6 +322,10 @@ class Scalp1mStrategy:
             raise ValueError("partial_fraction은 0과 1 사이여야 합니다.")
         if self.premarket_min_volume_krw < 0:
             raise ValueError("premarket_min_volume_krw는 0 이상이어야 합니다.")
+        if self.structure_wing < 1:
+            raise ValueError("structure_wing은 1 이상이어야 합니다.")
+        if self.williams_period < 2:
+            raise ValueError("williams_period는 2 이상이어야 합니다.")
         if self.premarket_min_volume_usd < 0:
             raise ValueError("premarket_min_volume_usd는 0 이상이어야 합니다.")
         if self.adx_min < 0:
@@ -411,8 +445,12 @@ class Scalp1mStrategy:
 
             session_open_dt = datetime.combine(today, session_open, tzinfo=tz)
             minutes_since_open = (now_local - session_open_dt).total_seconds() / 60
-            if not 0 <= minutes_since_open <= self.entry_window_minutes:
-                continue  # 진입창 밖 — 위 1)단계 관리는 계속되지만 신규 진입은 없다.
+            # 진입창 밖 — 위 1)단계 관리는 계속되지만 신규 진입은 없다.
+            # entry_window_minutes=0 이면 상한 없음(전 세션 대기), 개장 전만 차단.
+            if minutes_since_open < 0 or (
+                self.entry_window_minutes and minutes_since_open > self.entry_window_minutes
+            ):
+                continue
 
             for symbol in sorted(s for s in self.symbols if market_of_symbol(s) == market):
                 pos = positions.get(symbol)
@@ -577,11 +615,48 @@ class Scalp1mStrategy:
         if basis is None:
             return None
         pattern, basis_price = basis
-        return self._build_entry(symbol, pattern, basis_price, today, ctx)
+        return self._build_entry(symbol, pattern, basis_price, today, ctx, bars=bars)
+
+    def _entry_stop(
+        self, entry_price: float, basis_price: float, bars: pd.DataFrame | None
+    ) -> tuple[float | None, str, str]:
+        """손절 계산 — (손절가|None, 거부 사유, 사유 노트). 상태를 건드리지
+        않는다(순수 쌍둥이가 그대로 공유 — 동치의 원천을 한 벌로).
+
+        structure 모드는 지지(스윙 저점)가 안 보이면 None — 임의의 선을 그어
+        주지 않는다. 하드캡(stop_hard_cap_pct)은 두 모드 공통 바닥이다."""
+        if self.stop_mode == "structure":
+            if bars is None or bars.empty:
+                return None, "구조 손절 계산 불가(1분봉 없음)", ""
+            bracket = structure_bracket(
+                entry_price, bars, wing=self.structure_wing,
+                stop_buffer_pct=self.stop_buffer_pct, hard_cap_pct=self.stop_hard_cap_pct,
+            )
+            if bracket is None:
+                return None, "구조 지지 없음 — 손절선을 정할 수 없는 자리(진입 금지)", ""
+            return bracket.stop, "", f" [구조손절:{bracket.stop_basis}]"
+        raw_stop = basis_price * (1 - self.stop_buffer_pct / 100)
+        floor_stop = entry_price * (1 - self.stop_hard_cap_pct / 100)
+        stop = max(raw_stop, floor_stop)
+        if stop >= entry_price:
+            return None, "손절가 계산 불가(진입가 이상)", ""
+        return stop, "", ""
+
+    def _williams_verdict(self, bars: pd.DataFrame | None) -> str | None:
+        """과열(과매수) 판정 — 차단 후보면 사유 문자열, 아니면 None. 상태 없음.
+
+        W%R 이 계산 불가(봉 부족·레인지 0)면 None — 모르는 것을 차단 근거로
+        쓰지 않는다(trend_gate 의 "게이트 부재=통과" 원칙과 동일)."""
+        if self.williams_gate_mode == "off" or bars is None or bars.empty:
+            return None
+        wr = williams_r(bars, self.williams_period)
+        if wr is None or wr <= self.williams_overbought:
+            return None
+        return f"W%R 과매수({wr:.0f})"
 
     def _build_entry(
         self, symbol: str, pattern: str, basis_price: float, today: dtdate, ctx: Context,
-        *, premarket: bool = False,
+        *, premarket: bool = False, bars: pd.DataFrame | None = None,
     ) -> Signal | None:
         """패턴 판정 이후 공통 경로 — 손절 계산·상태 마킹·Signal 생성. 정규장
         진입(`_check_entry_for`)과 프리마켓 직접 진입(`_observe_premarket`)이
@@ -591,11 +666,15 @@ class Scalp1mStrategy:
             self.last_reject[symbol] = "현재가 없음"
             return None
         entry_price = quote.price
-        raw_stop = basis_price * (1 - self.stop_buffer_pct / 100)
-        floor_stop = entry_price * (1 - self.stop_hard_cap_pct / 100)
-        stop = max(raw_stop, floor_stop)
-        if stop >= entry_price:
-            self.last_reject[symbol] = "손절가 계산 불가(진입가 이상)"
+
+        w_verdict = self._williams_verdict(bars)
+        if self.williams_gate_mode == "block" and w_verdict is not None:
+            self.last_reject[symbol] = w_verdict
+            return None
+
+        stop, reject, stop_note = self._entry_stop(entry_price, basis_price, bars)
+        if stop is None:
+            self.last_reject[symbol] = reject
             return None
 
         # 세션당 최대 2회 진입(A 1회 + B 1회, 프리마켓+정규장 합산) — 균등
@@ -620,6 +699,10 @@ class Scalp1mStrategy:
         if self.trend_gate_mode != "off":
             verdict = self.gate_verdict.get(symbol)
             gate_note = (f" [게이트:차단후보 {verdict}]" if verdict else " [게이트:통과]")
+        # W%R shadow 표본도 trend_gate 와 같은 방식으로 저널 문자열에 쌓는다.
+        w_note = ""
+        if self.williams_gate_mode != "off":
+            w_note = f" [W%R:차단후보 {w_verdict}]" if w_verdict else " [W%R:통과]"
         return Signal(
             strategy_id=self.id,
             symbol=symbol,
@@ -627,7 +710,7 @@ class Scalp1mStrategy:
             target_weight=target_weight,
             reason=(
                 f"1분봉 스캘프 {tag}패턴{pattern} 진입: {symbol} w={target_weight:.2f} "
-                f"손절={stop:.4g} (기준={basis_price:.4g}){gate_note}"
+                f"손절={stop:.4g} (기준={basis_price:.4g}){stop_note}{gate_note}{w_note}"
             ),
             stop=stop,
         )
@@ -809,7 +892,7 @@ class Scalp1mStrategy:
             )
             return None
 
-        return self._build_entry(symbol, "A", l1, today, ctx, premarket=True)
+        return self._build_entry(symbol, "A", l1, today, ctx, premarket=True, bars=bars)
 
     # ------------------------------------------------------------------ 관리
 
@@ -994,6 +1077,11 @@ class Scalp1mPureStrategy:
         self.premarket_min_volume_krw = self._legacy.premarket_min_volume_krw
         self.premarket_min_volume_usd = self._legacy.premarket_min_volume_usd
         self.trend_gate_mode = self._legacy.trend_gate_mode
+        self.stop_mode = self._legacy.stop_mode
+        self.structure_wing = self._legacy.structure_wing
+        self.williams_gate_mode = self._legacy.williams_gate_mode
+        self.williams_period = self._legacy.williams_period
+        self.williams_overbought = self._legacy.williams_overbought
         self.adx_min = self._legacy.adx_min
         self.max_atr_ratio = self._legacy.max_atr_ratio
         self.ma_period = self._legacy.ma_period
@@ -1085,7 +1173,10 @@ class Scalp1mPureStrategy:
 
             session_open_dt = datetime.combine(today, session_open_t, tzinfo=tz)
             minutes_since_open = (now_local - session_open_dt).total_seconds() / 60
-            if not 0 <= minutes_since_open <= self.entry_window_minutes:
+            # 레거시와 동일: 0 = 상한 없음(전 세션 대기), 개장 전만 차단.
+            if minutes_since_open < 0 or (
+                self.entry_window_minutes and minutes_since_open > self.entry_window_minutes
+            ):
                 continue
 
             for symbol in sorted(s for s in self.symbols if market_of_symbol(s) == market):
@@ -1200,21 +1291,27 @@ class Scalp1mPureStrategy:
         return self._build_entry(
             symbol, pattern, basis_price, today, snap, verdict, premarket=False,
             pending=pending, pattern_a_used=pattern_a_used, pattern_b_used=pattern_b_used,
+            bars=bars,
         )
 
     def _build_entry(
         self, symbol: str, pattern: str, basis_price: float, today: dtdate,
         snap: StrategySnapshot, gate_verdict: str | None, *, premarket: bool,
         pending: dict[str, dict], pattern_a_used: dict[str, bool], pattern_b_used: dict[str, bool],
+        bars: pd.DataFrame | None = None,
     ) -> Signal | None:
         quote = snap.quotes.get(symbol)
         if quote is None or quote.price <= 0:
             return None
         entry_price = quote.price
-        raw_stop = basis_price * (1 - self.stop_buffer_pct / 100)
-        floor_stop = entry_price * (1 - self.stop_hard_cap_pct / 100)
-        stop = max(raw_stop, floor_stop)
-        if stop >= entry_price:
+
+        # 손절/과열 판정은 레거시의 상태 없는 헬퍼를 그대로 공유한다(동치의
+        # 원천을 한 벌로 — 클래스 docstring "왜 self._legacy" 절).
+        w_verdict = self._legacy._williams_verdict(bars)
+        if self.williams_gate_mode == "block" and w_verdict is not None:
+            return None
+        stop, _reject, stop_note = self._legacy._entry_stop(entry_price, basis_price, bars)
+        if stop is None:
             return None
 
         target_weight = 0.5
@@ -1231,6 +1328,9 @@ class Scalp1mPureStrategy:
         gate_note = ""
         if self.trend_gate_mode != "off":
             gate_note = f" [게이트:차단후보 {gate_verdict}]" if gate_verdict else " [게이트:통과]"
+        w_note = ""
+        if self.williams_gate_mode != "off":
+            w_note = f" [W%R:차단후보 {w_verdict}]" if w_verdict else " [W%R:통과]"
         return Signal(
             strategy_id=self.id,
             symbol=symbol,
@@ -1238,7 +1338,7 @@ class Scalp1mPureStrategy:
             target_weight=target_weight,
             reason=(
                 f"1분봉 스캘프 {tag}패턴{pattern} 진입: {symbol} w={target_weight:.2f} "
-                f"손절={stop:.4g} (기준={basis_price:.4g}){gate_note}"
+                f"손절={stop:.4g} (기준={basis_price:.4g}){stop_note}{gate_note}{w_note}"
             ),
             stop=stop,
         )
@@ -1295,6 +1395,7 @@ class Scalp1mPureStrategy:
         return self._build_entry(
             symbol, "A", l1, today, snap, verdict, premarket=True,
             pending=pending, pattern_a_used=pattern_a_used, pattern_b_used=pattern_b_used,
+            bars=bars,
         )
 
     # ------------------------------------------------------------------ 관리

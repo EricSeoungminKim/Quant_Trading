@@ -170,7 +170,7 @@ class TossBroker:
         # 내에서 발생하는 모호한 네트워크 실패 재시도는 그래서 안전하다: 이전 요청이 실제로
         # 서버에 닿았어도 중복 주문이 되지 않는다.
         client_order_id = uuid.uuid4().hex
-        self._append_intent({
+        intent_record = {
             "event": "intent",
             "ts": datetime.now(timezone.utc).isoformat(),
             "client_order_id": client_order_id,
@@ -180,7 +180,12 @@ class TossBroker:
             "order_amount": order_amount,
             "strategy_id": order.strategy_id,
             "reason": order.reason,
-        })
+        }
+        # 결정 시점 시세 — TCA(quant/control/tca.py)가 의도가 vs 체결가로
+        # 슬리피지를 재는 기준. 없으면 키 생략(값을 지어내지 않는다).
+        if order.ref_price is not None:
+            intent_record["price"] = order.ref_price
+        self._append_intent(intent_record)
 
         result = None
         for attempt in range(1, 3):  # 원 시도 + 모호한 네트워크 실패 시 1회 재시도

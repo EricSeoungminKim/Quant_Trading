@@ -112,6 +112,7 @@ def weekly_review_text(
     losses: dict,
     score_accuracy: dict | None,
     equity_delta: dict | None,
+    tca: dict | None = None,
 ) -> str:
     lines = [f"🗓 주간 재검토 — {start.isoformat()} ~ {end.isoformat()}"]
 
@@ -150,6 +151,17 @@ def weekly_review_text(
         lines.append("  ※ 점수가 높을수록 다음날이 좋아야 시스템이 장을 읽고 있는 것")
     else:
         lines.append("  표본 부족 — 점수 원장이 쌓이면 여기서 적중률이 나온다")
+
+    lines.append("\n[슬리피지 TCA — 의도 가격 vs 실제 체결가]")
+    if tca:
+        o = tca["overall"]
+        lines.append(f"  전체 {o['n']}건 평균 {o['avg_bps']:+.1f}bp (p90 {o['p90_bps']:+.1f}bp)")
+        for mkt, v in tca.get("by_market", {}).items():
+            lines.append(f"  {mkt}: {v['n']}건 평균 {v['avg_bps']:+.1f}bp (p90 {v['p90_bps']:+.1f}bp)")
+        lines.append("  ※ paper 체결가는 브로커 모델값 — 지금은 모델 슬리피지 가정 검증, "
+                     "실거래 전환 시 실측 대조가 진가")
+    else:
+        lines.append("  표본 없음")
 
     lines.append("\n※ 결론은 내지 않는다 — 개선/악화/사망 판정은 매일 16:30 "
                  "자동 판정 루프가, 전략 교체 결정은 사람이 한다.")

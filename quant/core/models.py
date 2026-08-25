@@ -278,6 +278,11 @@ class Order:
     # None이면 조건주문을 걸지 않는다(어댑터가 값을 지어내지 않는다).
     stop: float | None = None
     target: float | None = None
+    # 결정(사이징) 시점의 시세 — 리스크 레이어가 수량 계산에 쓴 가격 그대로.
+    # 브로커 의도 저널이 이 값을 남겨야 TCA(의도가 vs 체결가 슬리피지)가
+    # 표본을 얻는다(2026-08-26 감사: 가격 없는 의도 행은 슬리피지를 못 잰다).
+    # None = 모른다 — 저널은 키를 생략한다(값을 지어내지 않는다).
+    ref_price: float | None = None
 
 
 @dataclass(frozen=True)

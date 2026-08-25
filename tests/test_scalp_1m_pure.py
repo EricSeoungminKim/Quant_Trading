@@ -379,6 +379,40 @@ def test_no_entry_outside_window_equivalence():
     assert sig_legacy == [] and sig_pure == []
 
 
+def test_entry_window_zero_all_session_equivalence():
+    """0 = 전 세션 대기(2026-08-26 소유자 지시) — 개장 95분 뒤 진입도 두 구현이
+    같아야 한다."""
+    legacy, pure = _strats(["AAA"], _params(entry_window_minutes_after_open=0))
+    bars = {"AAA": _pattern_a_bars(surge=True)}
+    now = _now_within_window(95.0)
+    sig_legacy = legacy.on_cycle(_ctx({"AAA": 102.4}, now, bars=bars))
+    sig_pure = pure.on_cycle(_ctx({"AAA": 102.4}, now, bars=bars))
+    assert _keys(sig_legacy) == _keys(sig_pure)
+    assert len(sig_legacy) == 1 and sig_legacy[0].action == SignalAction.ENTER_LONG
+
+
+def test_structure_stop_mode_equivalence():
+    """stop_mode=structure(2026-08-26 구조층 재작업) — 구조 손절도 두 구현이
+    같아야 한다."""
+    legacy, pure = _strats(["AAA"], _params(stop_mode="structure"))
+    bars = {"AAA": _pattern_a_bars(surge=True)}
+    now = _now_within_window(3.0)
+    sig_legacy = legacy.on_cycle(_ctx({"AAA": 102.4}, now, bars=bars))
+    sig_pure = pure.on_cycle(_ctx({"AAA": 102.4}, now, bars=bars))
+    assert _keys(sig_legacy) == _keys(sig_pure)
+    assert len(sig_legacy) == 1
+    assert sig_legacy[0].stop == sig_pure[0].stop
+
+
+def test_williams_gate_block_equivalence():
+    legacy, pure = _strats(["AAA"], _params(williams_gate_mode="block"))
+    bars = {"AAA": _pattern_a_bars(surge=True)}
+    now = _now_within_window(3.0)
+    sig_legacy = legacy.on_cycle(_ctx({"AAA": 102.4}, now, bars=bars))
+    sig_pure = pure.on_cycle(_ctx({"AAA": 102.4}, now, bars=bars))
+    assert sig_legacy == [] and sig_pure == []
+
+
 def test_repeated_same_bar_cycles_do_not_duplicate_equivalence():
     legacy, pure = _strats(["AAA"], _params())
     bars = {"AAA": _pattern_a_bars(surge=True)}

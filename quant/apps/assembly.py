@@ -42,6 +42,7 @@ from quant.adapters.execution.paper import PaperBroker
 from quant.control.ledger import TradeLedgerSink
 from quant.adapters.persistence.sink import ConsoleSink, JsonlSink, MultiSink
 from quant.core.portfolio.portfolio import Portfolio
+from quant.adapters.regime_indicators import TossIndicatorClient, UpbitBitcoinAdapter
 from quant.trade.regime import RegimeProvider
 from quant.trade.risk.books import StrategyBooks
 from quant.trade.risk.manager import RiskManagerImpl
@@ -848,11 +849,19 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
         "킬 스위치 상태 — halted=%s%s",
         control.is_halted(), f" (사유: {control.halt_reason()})" if control.is_halted() else "",
     )
-    # 국면(regime) 프로바이더. US는 로컬 QQQ 일봉(추세/변동성), KR은 flow_client
+    # 국면(regime) 프로바이더. US는 로컬 QQQ 일봉(추세/변동성) + 국채/코스피/비트코인
+    # (2026-08-24 — 그전까지 이 셋은 구현체가 없어 태어나서 한 번도 값을 준 적이
+    # 없었다: TossIndicatorClient는 국채는 아직 미구현(None 유지)이고 코스피는 ETF
+    # 프록시로 산다, UpbitBitcoinAdapter는 Upbit 공개 API), KR은 flow_client
     # (Toss candles 069500 + investor_trading 수급)로 시장별 국면을 나눠 계산한다
     # (2026-08-10 — KR 세션을 미국 지수로 판단하던 문제 해소). refresh()는 여기서
     # 부르지 않는다 — 네트워크/디스크 I/O는 run_paper_loop의 거래일 경계에서 1회.
-    regime = RegimeProvider(settings=cfg, flow_client=client)
+    regime = RegimeProvider(
+        settings=cfg,
+        flow_client=client,
+        indicator_client=TossIndicatorClient(client),
+        bitcoin_adapter=UpbitBitcoinAdapter(),
+    )
     logger.info("국면 모듈 준비 — 현재 캐시: %s",
                 (regime.current_state().label if regime.current_state() else "없음(첫 세션에 계산)"))
 

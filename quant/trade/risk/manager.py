@@ -1108,4 +1108,6 @@ class RiskManagerImpl:
             # 의미가 있으므로 청산 주문에는 싣지 않는다.
             stop=signal.stop if side is Side.BUY else None,
             target=signal.target if side is Side.BUY else None,
+            # 결정 시점 시세 — 브로커 의도 저널 → TCA(슬리피지 측정)의 기준가.
+            ref_price=price,
         )
