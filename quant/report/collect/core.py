@@ -171,8 +171,21 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True) -> tu
     brief = build_brief(snap, cont, delta)
     view = stance(snap, cont, delta)
     scores = score_all(cont, details)
+    # 최근 거래량 몰림 감시(2026-08-25 소유자 지시: "최근 거래량이 몰렸던 종목들도
+    # 계속 감시 리스트로") — 최근 5일 거래대금 보드 상위에 2회 이상 등장한 KR
+    # 종목을 AUTO_WATCH 에 RANK 태그로 합류시킨다(새 태그 없음 — RANK→TREND
+    # 번역 기존 경로 그대로). KR 전용: 이 축의 근거 데이터(toss_rankings 보드
+    # 누적)가 KR 스냅샷에만 안정적으로 쌓인다.
+    volume_watch = None
+    if snap.market == "KR":
+        from quant.analyze.volume_watch import recurring_volume_symbols
+
+        try:
+            volume_watch = recurring_volume_symbols(snap_root, "KR", snap.session_date)
+        except Exception as e:  # noqa: BLE001 — 감시 메모리 실패가 리포트를 막지 않는다
+            print(f"거래량 감시 메모리 생략: {type(e).__name__}: {e}", file=sys.stderr)
     payload = machine_payload(
         snap, cont, delta, brief, sym_quotes, details, view, scores, trending,
-        relations, sectors, baselines,
+        relations, sectors, baselines, volume_watch=volume_watch,
     )
     return cont, delta, brief, payload, sym_quotes, details, view, scores

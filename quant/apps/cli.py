@@ -762,6 +762,16 @@ def cmd_equity_snapshot(args: argparse.Namespace) -> None:
     print(f"자본 곡선 기록: {today} {market} 총 {total_krw:,.0f}원 "
           f"(마크 {len(quotes)} / 저하 {len(degraded)}) 전략 장부 {len(books_equity)}개")
 
+    # 하트비트 — cmd_experiments 와 같은 관례(job_findings 가 조용한 죽음을 잡게 함).
+    try:
+        from quant.adapters.kv import make_kv
+        from quant.control.opstate import record_run
+
+        record_run(make_kv(), "equity-snapshot", ok=True,
+                  detail=f"{market} total_krw={total_krw:.0f} degraded={len(degraded)}")
+    except Exception:  # noqa: BLE001 — 상태 기록 실패가 자본 곡선 기록을 막으면 안 된다
+        pass
+
 
 def cmd_performance(args: argparse.Namespace) -> None:
     """자본 곡선 → 성과 요약 (gs-quant 의 econometrics 상당, `core/timeseries`).
@@ -1201,7 +1211,7 @@ def cmd_health(args: argparse.Namespace) -> None:
     # 지키지 못하므로 밑단 규칙이 대신 지킨다).
     jobs = ["collect:KR", "collect:US", "report:KR", "report:US", "ingest", "backup",
             "deepdive:KR", "deepdive:US", "close-report", "report_close:KR", "ops-judge",
-            "experiments"]
+            "experiments", "equity-snapshot"]
     findings += H.job_findings(snapshot(kv, jobs))
     # 현재 설정된 피드 이름을 주입한다 — 없으면 개편으로 사라진 옛 이름이 영구히
     # "죽은 피드"로 경보된다(2026-08-13 실측: 연합뉴스·한경). 로스터를 못 구하면

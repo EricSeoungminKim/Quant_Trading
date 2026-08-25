@@ -57,6 +57,10 @@ class ReportModel:
     # 어젯밤 미국장→오늘 한국장 브리지(2026-08-21, KR 아침판 전용) — None 이면
     # 렌더가 섹션을 생략한다. analyze/us_kr_bridge.build_us_kr_bridge 결과.
     us_kr_bridge: dict | None = None
+    # 전일 미국장 마감 종합 리포트(uswrap, 2026-08-25, KR 아침판 전용) — 전날
+    # 새벽에 발행된 US_wrap.json 을 그대로 읽어온 것. None 이면 렌더가 카드를
+    # 생략한다. report.collect.uswrap.load_latest_us_wrap 결과.
+    us_wrap: dict | None = None
 
 
 @dataclass

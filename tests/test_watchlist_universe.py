@@ -360,8 +360,8 @@ def test_universe_roll_bucket_adds_preopen_boundary_at_0827_kst():
     assert _universe_roll_bucket(datetime(2026, 8, 10, 13, 59, tzinfo=kst)) == after
     # 14:00: 오후 마감 포지션 리포트(EVENT_SCALP) 흡수 경계(서브프로젝트 T Task 2) —
     # 08:27 버킷과는 달라야 하고, KR 세션 마감(15:30)과 그 뒤 22:10 전까지 유지된다.
-    afternoon = _universe_roll_bucket(datetime(2026, 8, 10, 14, 0, tzinfo=kst))
-    assert afternoon != after, "14:00에 세 번째 리로드 경계가 지나야 한다"
+    afternoon = _universe_roll_bucket(datetime(2026, 8, 10, 14, 53, tzinfo=kst))
+    assert afternoon != after, "14:53에 세 번째 리로드 경계가 지나야 한다(2026-08-25 종가배팅 체인)"
     assert _universe_roll_bucket(datetime(2026, 8, 10, 15, 30, tzinfo=kst)) == afternoon
     assert _universe_roll_bucket(datetime(2026, 8, 10, 22, 9, tzinfo=kst)) == afternoon
     # 2026-08-11: US 개장 직전(22:10) 경계 추가 — 21:50 US 자동 편입분이 그날 US

@@ -1225,6 +1225,51 @@ a{color:inherit}
 </section>
 {% endif %}
 
+{# ── 🌆 전일 미국장 마감 요약(uswrap, KR 아침판 전용, 2026-08-25) ──
+   05:10 KST 에 발행된 US_wrap.json(전날 새벽 미국장 마감 직후 종합)을 그대로
+   읽어와 보여준다 — 아래 us_kr_bridge 카드와 달리 이 카드는 그 시점에 이미
+   계산된 값을 재활용할 뿐 이 자리에서 다시 계산하지 않는다. #}
+{% if us_wrap %}
+<section class="mod">
+  <h2>🌆 전일 미국장 마감 요약<span class="sub">{{ us_wrap.date }}{% if us_wrap.tone %} · {{ us_wrap.tone }}{% endif %}{% if us_wrap.up_count is defined %} · {{ '%d' % us_wrap.up_count }}↑ {{ '%d' % us_wrap.down_count }}↓{% endif %}</span></h2>
+  {% if us_wrap.indices %}
+  <div class="brief">
+  {% for idx in us_wrap.indices %}
+    <div class="bi"><span class="idx-sub">{{ idx.symbol }}</span> {{ idx.label }}
+      <b style="color:var(--{{ 'up' if idx.change_pct > 0 else ('down' if idx.change_pct < 0 else 'muted') }})">{{ '%+.2f' % idx.change_pct }}%</b></div>
+  {% endfor %}
+  </div>
+  {% endif %}
+  {% if us_wrap.us_sectors %}
+  <div class="tw">
+  <table>
+    <tr><th>상위 섹터</th><th class="num">등락</th><th>하위 섹터</th><th class="num">등락</th></tr>
+    {% for i in range(3) %}
+    {% set top = us_wrap.us_sectors[i] if i < us_wrap.us_sectors|length else None %}
+    {% set bot = us_wrap.us_sectors[-(i + 1)] if i < us_wrap.us_sectors|length else None %}
+    <tr>
+      <td>{{ top.name if top else '' }}</td>
+      <td class="num {{ 'up' if top and top.change_pct > 0 else ('down' if top and top.change_pct < 0 else '') }}">{{ '%+.2f%%' % top.change_pct if top else '' }}</td>
+      <td>{{ bot.name if bot else '' }}</td>
+      <td class="num {{ 'up' if bot and bot.change_pct > 0 else ('down' if bot and bot.change_pct < 0 else '') }}">{{ '%+.2f%%' % bot.change_pct if bot else '' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% endif %}
+  {% if us_wrap.kr_focus %}
+  <p class="idx-sub">
+    국내 연결 업종: {% for f in us_wrap.kr_focus %}{{ f.us_name }}({{ '%+.2f' % f.us_change_pct }}%) → {{ f.kr_sectors|join('/') }}{% if not loop.last %} · {% endif %}{% endfor %}
+  </p>
+  {% endif %}
+  {% if us_wrap.vix %}
+  <p class="foot">
+    VIX <b>{{ '%.2f' % us_wrap.vix.value }}</b>{% if us_wrap.vix.change_pct is not none %} ({{ '%+.2f' % us_wrap.vix.change_pct }}%){% endif %}{% if us_wrap.vix.structure %} · {{ us_wrap.vix.structure }}{% endif %}
+  </p>
+  {% endif %}
+</section>
+{% endif %}
+
 {# ── 🌙 어젯밤 미국장 → 오늘 한국장(KR 아침판 전용, 2026-08-21) ──
    미국 정규장은 KST 새벽에 끝나고 같은 날 아침 한국장이 열린다. 방금 끝난
    미국 세션의 섹터 등락(S&P 섹터 ETF 11종)과, GICS 섹터→산업 매핑으로 연결된

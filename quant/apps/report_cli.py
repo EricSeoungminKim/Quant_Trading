@@ -72,7 +72,7 @@ from quant.report.collect.midterm import (
 from quant.report.collect.news import (
     _build_digest, _build_digest_prose, _build_exec_summary, _build_news_flow,
     _build_section_advice, _build_stance_prose, _load_disclosures, _load_research,
-    _research_badges,
+    _research_badges, _source_data,
 )
 from quant.report.collect.sector import (
     _build_foreign_view, _build_sector_view, _build_top_movers, _load_sector_data,
@@ -85,6 +85,7 @@ from quant.report.collect.telegram import (
     _build_telegram_image_desc, _build_telegram_mentions, _build_telegram_prose,
     _usnews_headlines, _usnews_titles,
 )
+from quant.report.collect.uswrap import build_us_wrap, load_latest_us_wrap, write_us_wrap
 
 
 def _print_summary(market: str, root: Path, session: date, session_kind: str = "open") -> None:
@@ -296,12 +297,17 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         us_kr_bridge = build_us_kr_bridge(
             (_source_data(snap, "sectors") or {}).get("sectors"), sector_members,
         )
+        # 전일 미국장 마감 종합(uswrap, 2026-08-25) — 05:10 KST 에 이미 발행된
+        # US_wrap.json 을 그대로 읽어온다(여기서 재계산하지 않는다, 위
+        # us_kr_bridge 와 달리 이건 그 시각 값의 재활용이다). 없으면 카드 생략.
+        us_wrap = load_latest_us_wrap(out_root, snap.session_date)
     else:
         sector_view, top_movers = [], {}
         foreign_view = None
         themes = None
         sector_map, sector_quotes = {}, []
         us_kr_bridge = None
+        us_wrap = None
     flow_rows = _load_flow_rows(root)
     youtube = _fetch_youtube_briefs()
     blog = _fetch_blog_briefs()
@@ -464,11 +470,55 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         telegram_image_desc=telegram_image_desc, agent_interpret_view=agent_interpret_view,
         midterm_view=midterm_view, us_news_kr_view=us_news_kr_view,
         usnews_headlines=usnews_headlines, us_kr_bridge=us_kr_bridge,
+        us_wrap=us_wrap,
     )
     hp, jp, cp = write_open_report(model, snap, out_root)
     print(f"HTML   {hp}\n엔진   {jp}\n후보   {cp}")
     if snap.missing():
         print(f"결측 {len(snap.missing())}건: {', '.join(snap.missing())}", file=sys.stderr)
+
+
+def _run_uswrap(session: date, root: Path, snap_root: Path, out_root: Path) -> None:
+    """`uswrap` 서브커맨드 몸통 — 미국장 마감 직후 종합 리포트(2026-08-25).
+
+    `session`(=그날 US 세션 날짜)의 스냅샷이 이미 저장돼 있으면(`data/
+    snapshots/US/{session}.json` — 수동 재실행 등) 새로 수집하지 않고
+    재사용한다. 정상 크론 경로(05:10 KST)에서는 그 시각에 아직 그날의 US
+    스냅샷이 없으므로(아침판은 저녁에 만들어진다) sectors/market/vix_term
+    3개 소스만 최소 수집한다. 텔레그램 발송은 하지 않는다(부가 발송은 셸
+    몫 — crontab.txt 참고), stdout 에 한국어 요약만 낸다.
+    """
+    snap_path = snap_root / "US" / f"{session.isoformat()}.json"
+    if snap_path.exists():
+        snap = load_snapshot(snap_path)
+        print(f"기존 US 스냅샷 재사용: {snap_path}")
+    else:
+        sources = build_sources("US", session)
+        sources = {k: v for k, v in sources.items() if k in ("sectors", "market", "vix_term")}
+        snap = collect("US", session, sources)
+        if snap.missing():
+            print(f"결측 {len(snap.missing())}건: {', '.join(snap.missing())}", file=sys.stderr)
+
+    sector_members = _load_artifact(root / "data" / "ledger" / "sector_members.json")
+    payload = build_us_wrap(
+        _source_data(snap, "sectors"), _source_data(snap, "market"),
+        _source_data(snap, "vix_term"), sector_members,
+    )
+    if payload is None:
+        print("US wrap 생략 — sectors/market/vix_term 소스 전부 없음")
+        return
+    path = write_us_wrap(payload, out_root, session)
+    print(f"US wrap {path}")
+    if "tone" in payload:
+        print(f"  {payload['tone']} · {payload.get('up_count')}↑ {payload.get('down_count')}↓")
+    if payload.get("indices"):
+        idx_line = " · ".join(f"{i['label']} {i['change_pct']:+.2f}%" for i in payload["indices"])
+        print(f"  지수: {idx_line}")
+    if payload.get("kr_focus"):
+        kr_line = " · ".join(
+            f"{f['us_name']}→{'/'.join(f['kr_sectors'])}" for f in payload["kr_focus"]
+        )
+        print(f"  국내 연결: {kr_line}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -486,9 +536,19 @@ def main(argv: list[str] | None = None) -> int:
         # 시각 계산이 open 세션 고정이라 무관).
         if name in ("build", "summary"):
             s.add_argument("--session", choices=["open", "close"], default="open")
+    # uswrap(2026-08-25) — US 전용이라 다른 서브커맨드와 달리 --market 이 없다.
+    su = sub.add_parser("uswrap")
+    su.add_argument("--date", default=date.today().isoformat())
+    su.add_argument("--root", default=".")
     a = p.parse_args(argv)
     session = date.fromisoformat(a.date)
     session_kind = getattr(a, "session", "open")
+
+    if a.cmd == "uswrap":
+        root = Path(a.root)
+        snap_root, out_root, _, _ = _paths(root)
+        _run_uswrap(session, root, snap_root, out_root)
+        return 0
 
     if a.cmd == "when":
         print(f"{a.market} {session} 발행: {publish_at(a.market, session):%Y-%m-%d %H:%M %Z}")

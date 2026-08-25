@@ -36,7 +36,7 @@ def write_open_report(model: ReportModel, snap: Snapshot, out_root: Path) -> tup
         telegram_image_desc=model.telegram_image_desc,
         agent_interpret_view=model.agent_interpret_view, midterm_view=model.midterm_view,
         us_news_kr_view=model.us_news_kr_view, usnews_headlines=model.usnews_headlines,
-        us_kr_bridge=model.us_kr_bridge,
+        us_kr_bridge=model.us_kr_bridge, us_wrap=model.us_wrap,
     )
     jp = _render.write_machine(model.payload, snap, out_root)
     cp = _render.write_candidates(model.payload["auto_watch"], snap, out_root)

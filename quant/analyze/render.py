@@ -75,7 +75,10 @@ def is_candidate(c: dict) -> bool:
     )
 
 
-def candidates_line(cont: dict[str, dict], anchors: dict[str, dict]) -> str:
+def candidates_line(
+    cont: dict[str, dict], anchors: dict[str, dict],
+    volume_watch: list[str] | None = None,
+) -> str:
     """기존 파이프라인 호환 한 줄: `AUTO_WATCH: SYMBOL[:TAG[+TAG]] ...`
 
     태그가 근거를 담는다 — NEWS(오늘 언급), STREAK(2일 이상 연속), NEW(원장 최초),
@@ -84,6 +87,12 @@ def candidates_line(cont: dict[str, dict], anchors: dict[str, dict]) -> str:
 
     **근거가 얕은 종목은 넣지 않는다** — 확신도 엔진이 어차피 걸러내겠지만,
     잡음을 넘기면 그쪽 임계도 흐려지고 리포트를 읽는 사람도 헷갈린다.
+
+    volume_watch(`quant.analyze.volume_watch.recurring_volume_symbols`의 결과,
+    2026-08-25)는 오늘 뉴스·랭킹 근거는 없지만 최근 며칠 거래대금 상위에 반복
+    등장한 종목이다 — 새 태그를 만들지 않고 기존 RANK 를 재사용한다(RANK→TREND
+    번역이 이미 있다). cont/anchors 에 이미 토큰이 있는 심볼은 건너뛴다(중복 방지).
+    기본 None 이면 동작이 완전히 그대로다.
     """
     tokens: list[str] = []
     for symbol, c in sorted(
@@ -113,6 +122,9 @@ def candidates_line(cont: dict[str, dict], anchors: dict[str, dict]) -> str:
         code = a.get("symbol")
         if code and not any(t.startswith(f"{code}:") for t in tokens):
             tokens.append(f"{code}:ANCHOR")
+    for symbol in volume_watch or []:
+        if not any(t.startswith(f"{symbol}:") for t in tokens):
+            tokens.append(f"{symbol}:RANK")
     return "AUTO_WATCH: " + (" ".join(tokens) if tokens else "없음")
 
 
@@ -129,6 +141,7 @@ def machine_payload(
     relations: dict[str, list[dict]] | None = None,
     sectors: dict[str, str] | None = None,
     baselines: dict[str, int] | None = None,
+    volume_watch: list[str] | None = None,
 ) -> dict:
     """엔진이 파싱할 정규화 피처. 산문 없음 — 숫자와 열거값만.
 
@@ -155,6 +168,10 @@ def machine_payload(
     HTML 은 naver_theme(네이버 테마 편입사유, 팩트)를 임계 우회로 노출하지만
     engine.json 은 임계를 유지한다 — 자동편입에 저점수 관계를 흘리지 않기
     위해서다. 소비자는 각 관계의 `source` 키로 스스로 판단한다.
+
+    volume_watch 는 `candidates_line` 에 그대로 전달된다(§candidates_line 참고).
+    없으면(호출부 하위호환) auto_watch 에 최근 거래대금 반복 종목이 안 붙는다 —
+    이 함수는 snap_root(스냅샷 디렉터리)에 접근하지 못하므로 계산은 호출부 몫이다.
     """
     market = _ok(snap, "market") or {}
     quotes = market.get("quotes", {})
@@ -280,7 +297,7 @@ def machine_payload(
         "missing": snap.missing(),
         "features": features,
         "symbols": symbols,
-        "auto_watch": candidates_line(cont, anchors),
+        "auto_watch": candidates_line(cont, anchors, volume_watch),
         "stance": view or {},
         "news_diversity": outlet_diversity(news_data) if news_data else None,
     }
@@ -644,6 +661,7 @@ def render(
     us_news_kr_view: list[dict] | None = None,
     usnews_headlines: list[dict] | None = None,
     us_kr_bridge: dict | None = None,
+    us_wrap: dict | None = None,
 ) -> str:
     from quant.analyze.indicators import describe
 
@@ -769,6 +787,9 @@ def render(
         # 어젯밤 미국장→오늘 한국장 브리지(2026-08-21) — KR 아침판 전용.
         # None 이면 템플릿이 섹션을 생략한다(us_news_kr_view 와 같은 관례).
         us_kr_bridge=us_kr_bridge,
+        # 전일 미국장 마감 종합(uswrap, 2026-08-25) — KR 아침판 전용, 전날
+        # 새벽 US_wrap.json 을 그대로 읽어온 것. None 이면 카드 생략(같은 관례).
+        us_wrap=us_wrap,
         r=lambda k: snap.results.get(k),
         d=lambda k: _ok(snap, k),
     )
@@ -791,7 +812,7 @@ def write_html(
     intraday_view=None, exec_summary=None, section_advice=None,
     telegram_view_kr=None, telegram_view_us=None, telegram_prose=None, telegram_image_desc=None,
     agent_interpret_view=None, midterm_view=None, us_news_kr_view=None,
-    usnews_headlines=None, us_kr_bridge=None,
+    usnews_headlines=None, us_kr_bridge=None, us_wrap=None,
 ) -> Path:
     path = _dated_dir(root, snap) / f"{snap.market}_report.html"
     path.write_text(
@@ -809,7 +830,7 @@ def write_html(
                telegram_prose=telegram_prose, telegram_image_desc=telegram_image_desc,
                agent_interpret_view=agent_interpret_view, midterm_view=midterm_view,
                us_news_kr_view=us_news_kr_view, usnews_headlines=usnews_headlines,
-               us_kr_bridge=us_kr_bridge),
+               us_kr_bridge=us_kr_bridge, us_wrap=us_wrap),
         encoding="utf-8",
     )
     return path
