@@ -218,4 +218,14 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
         snap, cont, delta, brief, sym_quotes, details, view, scores, trending,
         relations, sectors, baselines, volume_watch=merged_watch,
     )
+    # 합류 종목(뉴스 언급 없이 감시 축으로만 들어온)도 선정 원장에 남긴다 —
+    # payload["symbols"] 는 cont 에서만 만들어져 이 종목들이 채점 표본에서
+    # 통째로 빠져 있었다(2026-08-26 감사). ledger.py 의 함수가 사유를 설명한다.
+    if record_ledger and merged_watch:
+        from quant.report.collect.ledger import _record_watch_join_selections
+
+        _record_watch_join_selections(
+            payload, root, cache_dir,
+            {"volume": volume_watch or [], "wrap": extra_watch or [], "streak": streak_watch},
+        )
     return cont, delta, brief, payload, sym_quotes, details, view, scores

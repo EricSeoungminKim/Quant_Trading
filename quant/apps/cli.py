@@ -2021,7 +2021,7 @@ def cmd_ai_trader(args: argparse.Namespace) -> None:
     from quant.analyze import ai_trader
     from quant.control import selections
 
-    load_settings()
+    settings = load_settings()
     root = Path(args.root) if args.root else REPO_ROOT
     today = args.date or _date.today().isoformat()
     market = args.market
@@ -2043,8 +2043,10 @@ def cmd_ai_trader(args: argparse.Namespace) -> None:
     for r in selections.load(root / "data" / "ledger" / "selections.jsonl"):
         if str(r.get("date")) != today or str(r.get("market")) != market:
             continue
-        if "producer" in r:
-            continue  # 본선 리포트 행만 — 다른 생산자(단타 스코어러 등) 행은 별도 서류다
+        # 본선 리포트 행 + 감시 축 합류 행(watch_join)만 서류로 본다. 단타
+        # 스코어러 등 다른 생산자 행은 속성 모양이 달라 별도 서류다.
+        if r.get("producer") not in (None, selections.WATCH_JOIN_PRODUCER):
+            continue
         sym = str(r.get("symbol") or "")
         if not sym or sym in seen:
             continue
@@ -2077,10 +2079,95 @@ def cmd_ai_trader(args: argparse.Namespace) -> None:
 
     logger.info("ai-trader: %s %s — 행 %d, 판단 %d(신규 %d)",
                 today, market, len(rows), len(judgments), added)
+
+    # 2단계(태그 소스 승격, 2026-08-26): 리더보드 promote 판정 후 **사람이**
+    # settings 로 켠다. 켜지면 픽을 마커 줄로 내보내고, ai_trader.sh 가
+    # watch-score 확신도 게이트(무태그 best-of)를 거쳐 편입한다 — own_brief 와
+    # 같은 이중 게이트. 여기서는 워치리스트에 직접 쓰지 않는다.
+    if (settings.raw.get("ai_trader") or {}).get("tag_source_enabled", False):
+        wl = ai_trader.watch_line(result["final"])
+        if wl:
+            print(wl)
+
     names = {str(r.get("symbol")): r.get("name") for r in rows if r.get("name")}
     note = ai_trader.daily_note(result["final"], market, names)
     if note:
         print(note)
+
+
+def cmd_param_propose(args: argparse.Namespace) -> None:
+    """전략 파라미터 제안 — AI 트레이더 3단계 (토 06:40 크론, 2026-08-26).
+
+    주간 원장 요약 + 현재 파라미터를 LLM 에게 주고 변경 가설(최대 3건)을 받아
+    **제안만** 기록·출력한다. stdout = 텔레그램 노트(무제안/결근이면 무출력).
+    반영은 사람이 settings.yaml 로, 판정은 experiments 루프(16:30)가 한다.
+
+    LLM 정책(소유자 2026-08-26): 논리가 중요한 작업 — Claude Code CLI 1순위,
+    실패 시 OpenRouter 무료 레인 폴백.
+    """
+    import json as _json
+    import os as _os
+    from datetime import date as _date
+    from pathlib import Path
+
+    import yaml as _yaml
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.adapters.narrate import make_json_narrator, make_narrator
+    from quant.analyze import param_proposer
+    from quant.control.ledger import load_trades, round_trips
+    from quant.control.weekly_review import (
+        loss_patterns, week_range, weekly_review_text, weekly_strategy_stats,
+    )
+
+    settings = load_settings()
+    root = Path(args.root) if args.root else REPO_ROOT
+    today = _date.fromisoformat(args.date) if args.date else _date.today()
+    start, end = week_range(today)
+    week = f"{start.isocalendar().year}-W{start.isocalendar().week:02d}"
+
+    trades = load_trades(root / "data" / "state" / "trades.jsonl")
+    trips = round_trips(trades)
+    stats = weekly_strategy_stats(trips, start, end)
+    losses = loss_patterns(trips, start, end)
+    review_text = weekly_review_text(start, end, index_flow=[], strategy_stats=stats,
+                                     losses=losses, score_accuracy=None, equity_delta=None)
+
+    active = {sid for sid, s in (settings.strategies or {}).items()
+              if isinstance(s, dict) and s.get("enabled")}
+    if not active:
+        logger.info("param-propose: 활성 전략 없음 — 침묵")
+        return
+    params_yaml = _yaml.safe_dump(
+        {sid: (settings.strategies[sid] or {}).get("params", {}) for sid in sorted(active)},
+        allow_unicode=True, sort_keys=False)
+
+    # Claude CLI 1순위(논리 중요) → OpenRouter 무료 폴백. 폴백 사용 여부를
+    # 제안 원장에 남긴다(어느 모델의 제안이었는지가 나중의 메타 데이터다).
+    claude = make_narrator(env={**_os.environ, "OPS_NARRATOR": "claude"})
+    used = "claude-cli"
+
+    def narrate(prompt: str) -> str | None:
+        nonlocal used
+        out = claude.narrate(prompt)
+        if out is not None:
+            return out
+        used = "openrouter-free"
+        logger.warning("param-propose: claude CLI 실패 — OpenRouter 무료 레인 폴백")
+        return make_json_narrator(max_tokens=4000).narrate(prompt)
+
+    result = param_proposer.propose(review_text, params_yaml, active, narrate)
+    if result is None:
+        logger.info("param-propose: %s 제안 없음/결근 — 침묵", week)
+        return
+
+    for p in result["proposals"]:
+        p["llm"] = used
+    added = param_proposer.append_proposals(
+        result["proposals"], root / param_proposer.PROPOSALS_LEDGER, week)
+    logger.info("param-propose: %s 제안 %d건(신규 %d, llm=%s)",
+                week, len(result["proposals"]), added, used)
+    print(result["note"])
 
 
 def cmd_close_report(args: argparse.Namespace) -> None:
@@ -2601,6 +2688,15 @@ def main() -> None:
     p_ai.add_argument("--root", default=None, help="기본: 저장소 루트")
     p_ai.add_argument("--date", default=None, help="오늘로 볼 날짜 (YYYY-MM-DD)")
     p_ai.set_defaults(func=cmd_ai_trader)
+
+    p_pp = sub.add_parser(
+        "param-propose",
+        help="전략 파라미터 제안(AI 리뷰, 주간) — 제안만 기록·출력, 반영은 사람이 "
+             "settings.yaml 로(판정은 experiments 루프). stdout = 텔레그램 노트.",
+    )
+    p_pp.add_argument("--root", default=None, help="기본: 저장소 루트")
+    p_pp.add_argument("--date", default=None, help="이 날짜가 속한 주를 리뷰 (YYYY-MM-DD)")
+    p_pp.set_defaults(func=cmd_param_propose)
 
     p_cr = sub.add_parser(
         "close-report",

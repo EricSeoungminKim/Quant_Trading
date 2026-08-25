@@ -9,7 +9,9 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 
+from quant.analyze.entities import load_market_map, load_name_map
 from quant.analyze.opendays import anchor_dir_for, last_open_day
+from quant.collect.sources.market import fetch_symbol_quotes
 from quant.control import flows as flows_ledger
 from quant.control import frgn_flow as frgn_flow_ledger
 from quant.control import selections
@@ -158,6 +160,100 @@ def _record_selections(payload: dict, root: Path) -> None:
         print(f"선정 원장 {added}건 추가 (후보 {len(candidates)}개 / 전체 {len(rows)}종목)")
     except Exception as e:  # noqa: BLE001
         print(f"선정 원장 기록 건너뜀: {type(e).__name__}: {e}", file=sys.stderr)
+
+
+def _record_watch_join_selections(
+    payload: dict, root: Path, cache_dir: Path, origins: dict[str, list[str]],
+) -> None:
+    """뉴스 언급 없이 **감시 축으로만** 유니버스에 합류한 종목을 선정 원장에 남긴다
+    (2026-08-26 감사 수리).
+
+    ## 왜 필요한가
+
+    `payload["symbols"]` 는 `cont`(오늘 뉴스에 언급된 종목)에서만 만들어진다.
+    그런데 거래량 반복 감시·전일 KR 세션 패턴·점수 연속 강세로 합류한 종목은
+    `AUTO_WATCH` 줄에 실려 **확신도 엔진을 거쳐 실제 매매 유니버스에 들어간다**.
+    그 종목들이 원장에 없으면 전방 수익률(outcomes)·리더보드·ai_trader 가 영원히
+    보지 못한다 — "매매는 했는데 채점 표본에는 없는" 종목이 생긴다.
+
+    본선 행과 **별도 producer**(`WATCH_JOIN_PRODUCER`)로 남긴다: 속성 벡터의
+    모양이 다르기 때문이다(뉴스·트렌딩 축이 통째로 없다). `selections.append`
+    의 자연키가 producer 를 포함하므로 같은 (날짜,시장,종목)의 본선 행과 섞이지
+    않고, 채점 경로(`pending_outcomes`/리더보드)는 producer 구분 없이 그대로
+    재사용된다 — `_record_intraday_selections` 와 같은 관례다.
+
+    기준가(`close`)를 함께 남기는 이유: 없으면 `forward_returns_bps` 가 전 지평을
+    None 으로 돌려줘 이 종목은 영영 채점 불가가 된다. 못 구하면 **키를 생략**한다
+    (0 으로 위장하면 조회 실패가 "본전"으로 굳는다 — outcomes.apply_outcome 과
+    같은 원칙).
+
+    실패해도 리포트를 막지 않는다 — 원장은 부가 산출물이다.
+    """
+    try:
+        market = str(payload.get("market") or "")
+        session_date = payload.get("session_date")
+        already = {s.get("symbol") for s in payload.get("symbols") or []}
+
+        # 먼저 잡은 축이 사유가 된다(같은 종목이 여러 축에 걸려도 행은 하나).
+        reason_of: dict[str, str] = {}
+        for reason, symbols in origins.items():
+            for sym in symbols or []:
+                if sym and sym not in already and sym not in reason_of:
+                    reason_of[sym] = reason
+        if not reason_of:
+            return
+
+        joined = list(reason_of)
+        quotes: dict[str, dict] = {}
+        names: dict[str, str] = {}
+        try:
+            names = load_name_map(cache_dir, market) or {}
+        except Exception:  # noqa: BLE001 — 이름은 장식이다
+            names = {}
+        try:
+            if market == "US":
+                quotes = {
+                    sym: q for sym, q in (fetch_symbol_quotes(joined) or {}).items()
+                }
+            else:
+                mmap = load_market_map(cache_dir) or {}
+                yahoo_of = {s: mmap[s] for s in joined if s in mmap}
+                raw = fetch_symbol_quotes(sorted(yahoo_of.values())) if yahoo_of else {}
+                by_yahoo = {v: k for k, v in yahoo_of.items()}
+                quotes = {by_yahoo[y]: q for y, q in (raw or {}).items() if y in by_yahoo}
+        except Exception as e:  # noqa: BLE001 — 시세 실패가 기록을 막지 않는다
+            print(f"합류 종목 시세 조회 건너뜀: {type(e).__name__}: {e}", file=sys.stderr)
+
+        rows = []
+        for sym in joined:
+            row = {
+                "schema": selections.SCHEMA,
+                "date": session_date,
+                "market": market,
+                "producer": selections.WATCH_JOIN_PRODUCER,
+                "symbol": sym,
+                # AUTO_WATCH 줄에 실렸다 = 그날의 후보였다. 확신도 엔진이 뒤에서
+                # 한 번 더 거르지만, 이 원장이 답하는 질문은 "무엇을 후보로 올렸나"다.
+                "is_candidate": True,
+                "join_reason": reason_of[sym],
+                "outcome_filled": False,
+            }
+            name = names.get(sym)
+            if name:
+                row["name"] = name
+            q = quotes.get(sym) or {}
+            for key in ("close", "change_pct"):
+                if q.get(key) is not None:
+                    row[key] = q[key]
+            rows.append(row)
+
+        path = root / "data" / "ledger" / "selections.jsonl"
+        added = selections.append(rows, path)
+        priced = sum(1 for r in rows if "close" in r)
+        print(f"합류 종목 원장 {added}건 추가 "
+              f"(producer={selections.WATCH_JOIN_PRODUCER} · 기준가 {priced}/{len(rows)})")
+    except Exception as e:  # noqa: BLE001
+        print(f"합류 종목 원장 기록 건너뜀: {type(e).__name__}: {e}", file=sys.stderr)
 
 
 def _load_flow_rows(root: Path) -> list[dict]:

@@ -35,6 +35,12 @@ from pathlib import Path
 # 행이 못 읽히면 그날 데이터를 통째로 잃는다. 추가는 자유롭다(없는 필드는 None).
 SCHEMA = 1
 
+# 뉴스 언급 없이 감시 축(거래량 반복·전일 KR 패턴·점수 연속 강세)으로만 유니버스에
+# 합류한 종목의 producer (2026-08-26 감사 수리). 본선 행(producer 없음)과 자연키가
+# 겹치지 않으면서, 전방 수익률·리더보드·ai_trader 가 같은 규칙으로 읽는다 —
+# 이 행이 없으면 "실제로 매매 대상이었는데 채점 표본에는 없는" 종목이 생긴다.
+WATCH_JOIN_PRODUCER = "watch_join_v1"
+
 
 def _attributes(sym: dict) -> dict:
     """엔진 페이로드의 종목 항목 → 학습용 속성 벡터.

@@ -38,10 +38,39 @@ if [ -z "$OUT" ]; then
   exit 0
 fi
 
+# --- 2단계(태그 소스 승격) 마커 처리 — settings ai_trader.tag_source_enabled
+# 가 켜졌을 때만 CLI 가 "AI_WATCH: ..." 줄을 낸다. own_brief.sh §4 와 같은
+# 관문: watch-score 확신도 게이트(무태그 best-of) → 형태 검증 → watch-add.
+AI_WATCH="$(printf '%s\n' "$OUT" | grep -E '^AI_WATCH:' | head -1 | sed 's/^AI_WATCH:[[:space:]]*//')"
+CARD="$(printf '%s\n' "$OUT" | grep -v '^AI_WATCH:')"
+
+if [ -n "$AI_WATCH" ]; then
+  case "$MARKET" in
+    KR) SHAPE='^[0-9]{6}$' ;;
+    US) SHAPE='^[A-Za-z][A-Za-z.]{0,5}$' ;;
+  esac
+  CANDS="$(printf '%s' "$AI_WATCH" | tr ' ' '\n' | grep -E "$SHAPE" | head -5 | tr '\n' ' ' | sed 's/ $//')"
+  if [ -n "$CANDS" ]; then
+    SCORE_OUT="$(timeout 180 .venv/bin/python -m quant.apps.cli watch-score --symbols "$CANDS" 2>>data/ai_trader.log)"
+    PASS="$(printf '%s\n' "$SCORE_OUT" | grep -E '^PASS:' | tail -1 | sed 's/^PASS:[[:space:]]*//')"
+    PASS="$(printf '%s' "$PASS" | tr ' ' '\n' | awk -F: '{print $1}' | grep -E "$SHAPE" | tr '\n' ' ' | sed 's/ $//')"
+    if [ -n "$PASS" ] && [ "$PASS" != "없음" ]; then
+      # shellcheck disable=SC2086
+      timeout 60 .venv/bin/python server/scripts/tg_bridge.py watch-add --source auto $PASS \
+        >>data/ai_trader.log 2>&1 || true
+      echo "[$(date '+%F %T')] $MARKET 승격 편입(확신도 통과): $PASS"
+      CARD="${CARD}
+→ 확신도 게이트 통과 → 워치리스트 편입: ${PASS}"
+    else
+      echo "[$(date '+%F %T')] $MARKET 승격 후보 전원 확신도 게이트 탈락"
+    fi
+  fi
+fi
+
 echo "[$(date '+%F %T')] $MARKET 픽 발생:"
-echo "$OUT"
+echo "$CARD"
 
 if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
   curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=${OUT}" >/dev/null 2>&1 || true
+    -d "chat_id=${TG_CHAT}" --data-urlencode "text=${CARD}" >/dev/null 2>&1 || true
 fi

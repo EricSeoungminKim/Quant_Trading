@@ -19,7 +19,7 @@ I/O 없음), `write_us_wrap`이 `out/YYYY/MM/DD/US_wrap.json`에 저장하고,
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date, time as dtime, timedelta
 from pathlib import Path
 
 from quant.analyze.us_kr_bridge import build_us_kr_bridge
@@ -131,6 +131,13 @@ def load_latest_us_wrap(
     return None
 
 
+# KR 정규장 경계(KST). 파티션에는 장전(08:00~)·시간외(~20:00) 봉이 함께 들어 있다.
+_KR_SESSION_OPEN = dtime(9, 0)
+_KR_SESSION_CLOSE = dtime(15, 30)
+# 패턴 판정 하한(classify_session 과 같은 값) — 이보다 적으면 넘기지 않는다.
+_MIN_SESSION_BARS = 120
+
+
 def gather_kr_wrap(root: Path, kr_day: date) -> dict | None:
     """전일 KR 세션 재료를 모아 kr_wrap 을 조립한다 (마감 종합의 KR 절반).
 
@@ -165,8 +172,21 @@ def gather_kr_wrap(root: Path, kr_day: date) -> dict | None:
             if df.empty or not isinstance(df.index, pd.DatetimeIndex):
                 continue
             idx = df.index.tz_convert("Asia/Seoul") if df.index.tz is not None else df.index
-            day = df[pd.Index(idx.date) == kr_day]
-            if len(day):
+            # **정규장만** 넘긴다(09:00~15:30). Toss 1분봉 파티션의 하루는 실제로
+            # 08:01~20:00(720봉, 장전+시간외 포함)이고, kr_wrap.classify_session 은
+            # docstring 이 못 박은 대로 "정규장 381분" 프레임을 전제한다 — 날짜로만
+            # 거르면 "초반 60분"이 프리마켓, "마지막 60분"이 시간외가 돼 세 패턴이
+            # 전부 엉뚱한 창에서 계산된다(2026-08-26 실데이터 확인: 8/25 세션 패턴
+            # 0건 → wrap 의 KR 절반 통째 누락 → 아침 리포트 합류 0건).
+            mask = (
+                (pd.Index(idx.date) == kr_day)
+                & (idx.time >= _KR_SESSION_OPEN)
+                & (idx.time <= _KR_SESSION_CLOSE)
+            )
+            day = df[mask]
+            # 반나절 데이터로 패턴을 지어내지 않는다(classify_session 의 120봉
+            # 하한과 같은 원칙) — 정규장 봉이 없으면 그 심볼은 없는 것이다.
+            if len(day) >= _MIN_SESSION_BARS:
                 bars_by_symbol[sym] = day
 
     names: dict[str, str] = {}

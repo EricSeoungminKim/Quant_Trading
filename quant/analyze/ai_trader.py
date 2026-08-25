@@ -287,6 +287,23 @@ def append_judgments(judgments: list[Judgment], path: Path | str) -> int:
     return added
 
 
+# ------------------------------------------------------------------ 2단계: 태그 소스 승격
+
+def watch_line(final: list[dict]) -> str | None:
+    """승격 스위치(settings `ai_trader.tag_source_enabled`)가 켜졌을 때
+    ai_trader.sh 가 파싱할 마커 줄 — "AI_WATCH: SYM1 SYM2".
+
+    **무태그**로 낸다: 픽은 확신도 엔진(watch-score)의 3프로필 best-of 관문을
+    그대로 통과해야 워치리스트에 편입된다 — own_brief 와 같은 이중 게이트.
+    근거 없는 새 태그 프로필을 지어내지 않는다. 편입은 유니버스 합류일 뿐,
+    진입은 여전히 전략이 가격으로 판단한다(회사 불변식). 픽 없으면 None."""
+    passes = sorted((p for p in final if p["verdict"] == "pass"),
+                    key=lambda p: p["score"], reverse=True)
+    if not passes:
+        return None
+    return "AI_WATCH: " + " ".join(p["symbol"] for p in passes)
+
+
 # ------------------------------------------------------------------ 텔레그램 카드
 
 def daily_note(final: list[dict], market: str, names: dict[str, str]) -> str | None:

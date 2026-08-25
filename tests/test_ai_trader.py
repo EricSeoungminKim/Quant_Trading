@@ -184,3 +184,20 @@ def test_daily_note_shows_picks_and_probation_disclaimer():
 def test_daily_note_none_when_no_picks():
     assert daily_note([{"symbol": "A", "score": 1, "verdict": "reject", "thesis": "t"}],
                       market="KR", names={}) is None
+
+
+# ---------------------------------------------------------------- 2단계: 태그 소스 승격
+
+def test_watch_line_lists_passes_for_promotion():
+    """승격 스위치가 켜졌을 때 셸(ai_trader.sh)이 파싱할 마커 줄 — pass 픽만,
+    무태그(확신도 엔진 best-of 관문을 그대로 통과해야 편입된다 — own_brief 와
+    같은 이중 게이트)."""
+    from quant.analyze.ai_trader import watch_line
+
+    final = [
+        {"symbol": "005930", "score": 85, "verdict": "pass", "thesis": "t"},
+        {"symbol": "000660", "score": 70, "verdict": "pass", "thesis": "t"},
+        {"symbol": "042700", "score": 30, "verdict": "reject", "thesis": "t"},
+    ]
+    assert watch_line(final) == "AI_WATCH: 005930 000660"
+    assert watch_line([{"symbol": "A", "score": 1, "verdict": "reject", "thesis": "t"}]) is None
