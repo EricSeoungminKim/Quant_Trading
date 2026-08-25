@@ -955,7 +955,8 @@ def _persist_position_meta(ctx: Context, last_signature: str) -> str:
 # 보유"라고 해 소유자가 버그로 의심했다 — 동작은 정상, 문구가 틀렸다).
 # 이 집합이 낡지 않도록 tests/test_position_report_wording.py 가 실제 소스에서
 # should_flatten 호출 여부를 세어 대조한다.
-_OVERNIGHT_STRATEGIES = frozenset({"cross_momentum", "frgn_accumulate", "mean_reversion"})
+# close_bet(2026-08-25): 수익 원천이 오버나이트 갭 그 자체 — EoD 청산에서 제외.
+_OVERNIGHT_STRATEGIES = frozenset({"cross_momentum", "frgn_accumulate", "mean_reversion", "close_bet"})
 
 
 def _position_report_text(ctx: Context, marks: dict[str, float], risk: RiskManager | None = None) -> str | None:
@@ -1462,6 +1463,13 @@ async def run_paper_loop(
     ) * 60
     max_stale = int(engine_cfg.get("max_consecutive_stale_data", _DEFAULT_MAX_CONSECUTIVE_STALE))
     heartbeat_sec = float(engine_cfg.get("heartbeat_minutes", _DEFAULT_HEARTBEAT_MINUTES)) * 60
+    # 텔레그램 소음 다이어트(2026-08-25 소유자 지시: "보기가 어지러울 정도로 길어").
+    # 주기 발송(엔진 하트비트·포지션 현황)은 기본 **off** — 채팅에는 리포트 발행과
+    # 체결(무슨 전략인지)만 남긴다. 현재가·보유상태가 궁금하면 /status /balance
+    # (tg_bridge, 온디맨드)로 물어본다. 하트비트 **파일**(외부 워치독용)과 로그는
+    # 이 스위치와 무관하게 계속 쓴다 — 끄는 건 "채팅으로의 발송"뿐이다.
+    telegram_heartbeat = bool(engine_cfg.get("telegram_heartbeat", False))
+    telegram_position_report = bool(engine_cfg.get("telegram_position_report", False))
     slow_cycle_warn_ms = float(engine_cfg.get("slow_cycle_warn_ms", _DEFAULT_SLOW_CYCLE_WARN_MS))
 
     cycle_count = 0
@@ -1737,7 +1745,8 @@ async def run_paper_loop(
             stale_alerted = False
 
         # 하트비트 — 장중에만, cadence는 engine.heartbeat_minutes.
-        if market_open and notifier is not None and now_mono - last_heartbeat >= heartbeat_sec:
+        # 기본은 채팅 발송 off(위 telegram_heartbeat) — 파일/로그 하트비트는 별도.
+        if telegram_heartbeat and market_open and notifier is not None and now_mono - last_heartbeat >= heartbeat_sec:
             last_heartbeat = now_mono
             last_cycle_ms = cycle_latencies_ms[-1] if cycle_latencies_ms else None
             recent_max_cycle_ms = max(cycle_latencies_ms) if cycle_latencies_ms else None
@@ -1756,7 +1765,7 @@ async def run_paper_loop(
         # 포지션 현황 — 보유 중일 때만, 하트비트와 별도 주기(기본 1분). 진입 직후가
         # 가장 궁금한 구간이라 "엔진 생존"(하트비트)과 "내 돈의 위치"를 분리했다.
         # 전송 실패가 사이클을 죽이면 안 된다 — 리포팅은 거래보다 아래다.
-        if market_open and notifier is not None and now_mono - last_position_report >= position_report_sec:
+        if telegram_position_report and market_open and notifier is not None and now_mono - last_position_report >= position_report_sec:
             try:
                 report = _position_report_text(ctx, marks, risk)
             except Exception:

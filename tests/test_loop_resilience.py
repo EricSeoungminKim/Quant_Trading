@@ -402,7 +402,7 @@ def test_heartbeat_emits_at_cadence_and_includes_halted_state(tmp_path):
     risk = FakeRisk()
     sinks = FakeSink()
     strat = FakeStrategy()
-    settings = make_settings(tmp_path, {"heartbeat_minutes": 0})  # 매 사이클 발생하도록
+    settings = make_settings(tmp_path, {"heartbeat_minutes": 0, "telegram_heartbeat": True})  # 매 사이클 발생하도록
     notifier = FakeNotifier()
     market_data = FakeMarketData(degraded=False)
 
@@ -422,7 +422,7 @@ def test_heartbeat_silent_when_market_closed(tmp_path):
     risk = FakeRisk()
     sinks = FakeSink()
     strat = FakeStrategy()
-    settings = make_settings(tmp_path, {"heartbeat_minutes": 0})
+    settings = make_settings(tmp_path, {"heartbeat_minutes": 0, "telegram_heartbeat": True})
     notifier = FakeNotifier()
 
     asyncio.run(_drive_n_cycles(
@@ -539,7 +539,7 @@ def test_heartbeat_includes_cycle_latency_line(tmp_path):
     risk = FakeRisk()
     sinks = FakeSink()
     strat = FakeStrategy()
-    settings = make_settings(tmp_path, {"heartbeat_minutes": 0})
+    settings = make_settings(tmp_path, {"heartbeat_minutes": 0, "telegram_heartbeat": True})
     notifier = FakeNotifier()
 
     asyncio.run(_drive_n_cycles(
@@ -560,7 +560,7 @@ def test_heartbeat_includes_breaker_line(tmp_path):
     risk = FakeRisk(day_pnl_pct=-0.05)  # FakeRisk.breaker_state()가 tripped=False로 굳어있어도 라인 자체는 찍혀야 한다
     sinks = FakeSink()
     strat = FakeStrategy()
-    settings = make_settings(tmp_path, {"heartbeat_minutes": 0})
+    settings = make_settings(tmp_path, {"heartbeat_minutes": 0, "telegram_heartbeat": True})
     notifier = FakeNotifier()
 
     asyncio.run(_drive_n_cycles(
@@ -1304,3 +1304,24 @@ def test_heartbeat_omits_uptime_when_unknown():
 
     assert "12번째 사이클" in text
     assert "가동" not in text
+
+
+def test_heartbeat_and_position_report_default_to_telegram_silent(tmp_path):
+    """텔레그램 소음 다이어트(2026-08-25 소유자 지시) — 주기 발송은 기본 off.
+
+    채팅에는 리포트 발행·체결만 남기고, 현재가/보유상태는 /status /balance
+    (온디맨드)로 뺐다. 하트비트 **파일**(워치독)과 로그는 이 기본값과 무관하게
+    계속 쓴다 — 여기서 검증하는 것은 '채팅으로의 발송'이 없다는 것뿐이다."""
+    control = TradingControl(state_path=tmp_path / "control.json")
+    ctx = Context(clock=FakeClock(), data=FakeDataFeed(), broker=FakeBroker())
+    settings = make_settings(tmp_path, {"heartbeat_minutes": 0, "position_report_minutes": 0})
+    notifier = FakeNotifier()
+
+    asyncio.run(_drive_n_cycles(
+        3, strategies=[FakeStrategy()], ctx=ctx, risk=FakeRisk(), sinks=FakeSink(),
+        settings=settings, notifier=notifier, control=control,
+        market_data=FakeMarketData(degraded=False),
+    ))
+
+    assert not any("엔진 상태 점검" in m for m in notifier.messages), "하트비트가 기본으로 채팅에 가면 안 된다"
+    assert not any("보유 종목 현황" in m for m in notifier.messages), "포지션 현황이 기본으로 채팅에 가면 안 된다"

@@ -116,7 +116,11 @@ validation_gate:
 strategies:
   donchian:
     class: donchian
-    enabled: true
+    # 2026-08-25 소유자 지시(전략 4종 체제): 한국장 중심 재편 — ①뉴스·미국섹터
+    # 개장 단타(news_momentum) ②1분봉 스캘핑(scalp_1m) ③종가배팅(close_bet, 신규)
+    # ④외국인 추세(frgn_accumulate). 이 4종과 겹치지 않는 전략은 오늘 미국장부터
+    # **비활성** — 코드·원장은 남긴다(측정 기준점 + 추후 복원).
+    enabled: false
     # 2026-08-12 시장별 분리(파일 상단 표 참고): KR은 TQQQ/SQQQ 자체가 거래 불가라
     # 구조적으로 0 — 성과 판단이 아니다. US는 기존 0.4에서 0.3으로(다른 전략에
     # KR 자본을 내주기 위한 재배분, donchian 자체 성과 저하가 아니다).
@@ -214,7 +218,11 @@ strategies:
     # 2026-08-10 사용자 지시로 paper 번인 시작 — 세션 신고가 돌파 + 거래량 게이트.
     # orb_scan(개장 5분)이 놓치는 장중 움직임 담당. 백테스트 미검증 [미검증] —
     # 수익성 주장 없음, 번인 성적(스코어보드 bps)이 판단 근거가 된다.
-    enabled: true
+    # 2026-08-25 소유자 지시(전략 4종 체제): 한국장 중심 재편 — ①뉴스·미국섹터
+    # 개장 단타(news_momentum) ②1분봉 스캘핑(scalp_1m) ③종가배팅(close_bet, 신규)
+    # ④외국인 추세(frgn_accumulate). 이 4종과 겹치지 않는 전략은 오늘 미국장부터
+    # **비활성** — 코드·원장은 남긴다(측정 기준점 + 추후 복원).
+    enabled: false
     # 2026-08-12(1차): 활성 전략이 6개가 되며 합계가 1.10으로 100%를 넘었다(감사
     # 지적). intraday_scan은 다른 burn_in 전략과 같은 미검증 상태인데 혼자 2배
     # 배분을 갖고 있을 근거가 없어 0.2 → 0.1로 낮췄다. 이후 news_momentum 추가로
@@ -277,7 +285,11 @@ strategies:
     class: orb_scan
     # paper 검증 가동 (2026-08-09). 수익성 주장은 여전히 없음(orb_scan.py docstring) —
     # 번인 데이터(세션 성적표의 거래당 bps)가 쌓여야 실전 판단 근거가 된다.
-    enabled: true
+    # 2026-08-25 소유자 지시(전략 4종 체제): 한국장 중심 재편 — ①뉴스·미국섹터
+    # 개장 단타(news_momentum) ②1분봉 스캘핑(scalp_1m) ③종가배팅(close_bet, 신규)
+    # ④외국인 추세(frgn_accumulate). 이 4종과 겹치지 않는 전략은 오늘 미국장부터
+    # **비활성** — 코드·원장은 남긴다(측정 기준점 + 추후 복원).
+    enabled: false
     # 2026-08-12: news_momentum 추가로 활성 burn_in 전략이 6→7개가 됐다. orb_scan은
     # declared 0.4가 burn_in 상한(0.2)에 캡핑돼 다른 burn_in 전략(각 0.1)의 2배를
     # 받고 있었다 — 승격도 안 된 전략이 형평 없이 더 큰 배분을 갖고 있을 근거가
@@ -327,7 +339,11 @@ strategies:
     # 2026-08-11 신호 다양화: 기존 3전략이 전부 돌파·모멘텀 계열이라 평균회귀 축이
     # 비어 있었다. NYU Stern 백테스트 서베이(2025)에서 평균회귀 계열(PAMR/CWMR/
     # OLMAR)이 리스크 조정 수익 상위권으로 보고됨 — paper 번인 시작, 백테스트 미검증.
-    enabled: true
+    # 2026-08-25 소유자 지시(전략 4종 체제): 한국장 중심 재편 — ①뉴스·미국섹터
+    # 개장 단타(news_momentum) ②1분봉 스캘핑(scalp_1m) ③종가배팅(close_bet, 신규)
+    # ④외국인 추세(frgn_accumulate). 이 4종과 겹치지 않는 전략은 오늘 미국장부터
+    # **비활성** — 코드·원장은 남긴다(측정 기준점 + 추후 복원).
+    enabled: false
     # 2026-08-12 시장별 분리(파일 상단 표 참고).
     # US 0.0인 이유는 성과가 아니라 **구조**다: symbols가 069500/229200 고정이라
     # 이 전략은 US 신호를 애초에 낼 수 없다. 배분을 줘도 donchian의 KR 0.4와
@@ -358,7 +374,11 @@ strategies:
     # 2026-08-11 신호 다양화: 횡단면(상대) 모멘텀 로테이션 — 관심종목 유니버스에서
     # 최근 강세 상위를 롱. 문헌(Jegadeesh & Titman 계열 상대강도 로테이션) 근거,
     # 백테스트 미검증. 모멘텀 크래시 위험은 cross_momentum.py 상단 docstring 참고.
-    enabled: true
+    # 2026-08-25 소유자 지시(전략 4종 체제): 한국장 중심 재편 — ①뉴스·미국섹터
+    # 개장 단타(news_momentum) ②1분봉 스캘핑(scalp_1m) ③종가배팅(close_bet, 신규)
+    # ④외국인 추세(frgn_accumulate). 이 4종과 겹치지 않는 전략은 오늘 미국장부터
+    # **비활성** — 코드·원장은 남긴다(측정 기준점 + 추후 복원).
+    enabled: false
     # 2026-08-12 시장별 분리(파일 상단 표 참고).
     # 2026-08-17: KR 0.1 → 0.05 — 갈래 A/B(spec §5)에 KR 50%를 내주려 갈래 C
     # 기존 비중을 균등 x0.5(파일 상단 "3갈래 자본 배분" 표 참고). US는 불변.
@@ -383,7 +403,11 @@ strategies:
     # 돌파 계열이라 보조지표 축이 비어 있었다. 파라미터는 전부 문헌 표준값
     # (RSI14/MACD 12·26·9/볼린저 20·2σ/SMA 20·50) 그대로 — 여러 조합을 시도해
     # 고른 값이 아니다. 백테스트 미검증 [미검증], paper 번인 시작.
-    enabled: true
+    # 2026-08-25 소유자 지시(전략 4종 체제): 한국장 중심 재편 — ①뉴스·미국섹터
+    # 개장 단타(news_momentum) ②1분봉 스캘핑(scalp_1m) ③종가배팅(close_bet, 신규)
+    # ④외국인 추세(frgn_accumulate). 이 4종과 겹치지 않는 전략은 오늘 미국장부터
+    # **비활성** — 코드·원장은 남긴다(측정 기준점 + 추후 복원).
+    enabled: false
     # 2026-08-12 시장별 분리(파일 상단 표 참고).
     # US 0.15 → 0.2 (3차): mean_reversion US 회수분 배분. 지표 합류는 KR/US 양쪽
     # 관심종목에 동일하게 적용되므로 시장별로 다르게 둘 근거가 없다.
@@ -436,7 +460,7 @@ strategies:
     # 2026-08-17: KR 0.2 → 0.1 — 갈래 A/B(spec §5)에 KR 50%를 내주려 갈래 C
     # 기존 비중을 균등 x0.5(파일 상단 "3갈래 자본 배분" 표 참고).
     capital_fraction:
-      KR: 0.1
+      KR: 0.2
       US: 0.0
     validation:
       status: burn_in # 백테스트 미검증 — 스코어보드 30건 + 유의(양) 전까지 승격 금지
@@ -483,7 +507,11 @@ strategies:
     # brief_from_report TOKENS → watch-score(EVENT 프로필 별칭) → watch-add. 태그가
     # 실제로 안 붙으면(리포트 미발행 등) tags_of에 EVENT_SCALP가 없어 여전히 조용히
     # 아무 것도 하지 않는다 — 그 경우는 paper 표본이 안 쌓일 뿐 위험하지 않다.
-    enabled: true
+    # 2026-08-25 소유자 지시(전략 4종 체제): 한국장 중심 재편 — ①뉴스·미국섹터
+    # 개장 단타(news_momentum) ②1분봉 스캘핑(scalp_1m) ③종가배팅(close_bet, 신규)
+    # ④외국인 추세(frgn_accumulate). 이 4종과 겹치지 않는 전략은 오늘 미국장부터
+    # **비활성** — 코드·원장은 남긴다(측정 기준점 + 추후 복원).
+    enabled: false
     # 2026-08-18: KR 0.2 → 0.1 — scalp_1m KR에 0.1 이관(2026-08-18-scalp-1m-design
     # 스펙 §배분: 같은 유니버스에서 개장 진입(news_scalp) vs 1분봉 조기 진입
     # (scalp_1m)을 나란히 채점).
@@ -532,6 +560,30 @@ strategies:
       eval_after_minutes_after_open: 60
       exit_fraction_first: 0.5
 
+  close_bet:
+    class: close_bet
+    # 종가배팅(2026-08-25, 전략 4종 체제 ③) — 장중 리포트(14:50)가 수급·거래대금·
+    # 뉴스 지속성으로 채점해 CLOSE_BET 태그를 준 종목만, 14:55~15:19 에 차트 확인
+    # (양봉 + 마감강도>=0.7) 후 종가 부근 매수 → 다음날 시초 갭 매도.
+    # 손절 -1% < 익절 +2% (잃을 땐 적게, 벌 땐 많이) + 시초 30분 데드라인.
+    # 규칙 근거(웹 리서치)는 quant/trade/strategy/close_bet.py docstring.
+    enabled: true
+    capital_fraction:
+      KR: 0.2
+      US: 0.0
+    validation:
+      status: burn_in # 백테스트 [미검증] — 표본은 experiments 루프가 판정
+    universe: watchlist
+    symbols: []
+    params:
+      entry_start_hhmm: [14, 55]
+      entry_end_hhmm: [15, 19]
+      min_close_strength: 0.7
+      target_weight: 0.1
+      stop_pct: 1.0
+      take_profit_pct: 2.0
+      exit_deadline_minutes_after_open: 30
+
   scalp_1m:
     class: scalp_1m
     # 2026-08-18 스펙(docs/superpowers/specs/2026-08-18-scalp-1m-design.md) —
@@ -541,8 +593,8 @@ strategies:
     # 대상 — news_scalp/frgn_accumulate와 달리 EVENT_SCALP/FRGN 태그를 읽지 않는다).
     enabled: true
     capital_fraction:
-      KR: 0.1 # news_scalp KR 0.2→0.1에서 이관
-      US: 0.1 # intraday_scan US 0.2→0.1에서 이관
+      KR: 0.3
+      US: 1.0
     validation:
       status: burn_in # 신규 전략 — 백테스트 표본 없음(Toss 1m 4거래일 롤링). paper 번인이 유일한 검증 경로(스펙 "데이터" 절)
     universe: watchlist

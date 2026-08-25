@@ -573,7 +573,7 @@ def test_heartbeat_reports_pending_approvals(tmp_path):
 
     asyncio.run(_drive(
         2, strategies=[strat], ctx=r["ctx"], risk=r["risk"], sinks=r["sinks"],
-        settings=make_settings(tmp_path, {"heartbeat_minutes": 0}), notifier=r["notifier"],
+        settings=make_settings(tmp_path, {"heartbeat_minutes": 0, "telegram_heartbeat": True}), notifier=r["notifier"],
         control=r["control"], approval=r["gate"], approval_notifier=bot,
         approval_cfg=_APPROVAL_CFG,
     ))

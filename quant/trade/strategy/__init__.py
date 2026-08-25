@@ -5,6 +5,7 @@ from quant.core.models import market_of
 from quant.trade.strategy.confluence import ConfluenceStrategy
 from quant.trade.strategy.cross_momentum import CrossMomentumStrategy
 from quant.trade.strategy.donchian import DonchianStrategy, DonchianPureShell
+from quant.trade.strategy.close_bet import CloseBetStrategy
 from quant.trade.strategy.frgn_accumulate import FrgnAccumulateStrategy
 from quant.trade.strategy.intraday_scan import IntradayScanStrategy
 from quant.trade.strategy.mean_reversion import MeanReversionStrategy
@@ -36,6 +37,9 @@ STRATEGY_REGISTRY = {
     # donchian_pure와 동일하게 별도 이름으로 등록만 하고 settings.yaml은 아직
     # 건드리지 않는다(비활성).
     "scalp_1m_pure": Scalp1mPureShell,
+    # 종가배팅(2026-08-25, 전략 4종 체제 ③) — 마감 강한 종목을 종가에 사서
+    # 다음날 시초 갭에 판다. CLOSE_BET 태그(장중 리포트 채점)만 소비.
+    "close_bet": CloseBetStrategy,
 }
 
 
@@ -52,7 +56,7 @@ def build_strategies(
     무조건 넘기면 TypeError가 난다."""
     markets = market_of(cfg.get("universe", {}))
     strategies = []
-    _TAGS_OF_CONSUMERS = (NewsMomentumStrategy, NewsScalpStrategy, FrgnAccumulateStrategy)
+    _TAGS_OF_CONSUMERS = (NewsMomentumStrategy, NewsScalpStrategy, FrgnAccumulateStrategy, CloseBetStrategy)
     for strat_id, strat_cfg in cfg.get("strategies", {}).items():
         if not strat_cfg.get("enabled", True):
             continue

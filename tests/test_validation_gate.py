@@ -91,80 +91,41 @@ def test_custom_gate_limit_is_honored():
 
 
 def test_production_settings_yaml_passes_the_gate_as_intended():
-    """실제 설정 파일 회귀 가드: donchian만 verified, 나머지는 burn_in으로 형평.
+    """실제 설정 파일 회귀 가드 — 2026-08-25 전략 4종 체제(소유자 지시) 기준.
 
-    2026-08-12(3차) 재기준: capital_fraction이 시장별 dict가 되며 검증 게이트의
-    출력도 시장별이 됐다. donchian은 KR 배분이 0(TQQQ/SQQQ 고정이라 KR에서 거래
-    불가)이고 US는 verified 선언값(0.3) 그대로다. 나머지 burn_in 전략은 시장별
-    선언값이 캡(0.2) 아래면 그대로 통과한다.
+    활성 4종: ①news_momentum(뉴스·미국섹터 개장 단타) ②scalp_1m(1분봉 스캘핑)
+    ③close_bet(종가배팅, 신규) ④frgn_accumulate(외국인 추세, 유일한 장기).
+    나머지 7종은 비활성(코드·원장 보존) — 이전 배분표 단언은 그 체제와 함께
+    내려갔다(git 히스토리 2026-08-18 판 참고).
 
-    2026-08-17: 갈래 A/B(spec §5) 신설로 기존 7전략의 KR 선언값을 균등 x0.5
-    했다(config/settings.yaml 상단 "3갈래 자본 배분" 표) — 아래 기대값이 그
-    결과다. US는 A/B가 배분 0이라 불변. A(news_scalp)/B(frgn_accumulate)는
-    같은 날 태그 배선(서브프로젝트 T Task 1~2)이 끝나 `enabled: true`로 올라
-    시장별 합계(아래)에도 포함된다 — B의 declared 0.3이 burn_in 캡 0.2로
-    눌리는 것은 활성화 여부와 무관하게 그대로다(게이트는 비활성 상태에서도
-    같은 캡을 적용했었다).
+    검산 두 개:
+    - 활성 declared 합계가 시장별로 정확히 1.00 (설계표가 100%로 맞아떨어지는가)
+    - 캡 적용 후(런타임) 합계가 1.00 이하 (over-allocation 금지 — 진짜 안전 invariant)
 
-    2026-08-18: scalp_1m(1분봉 조기 진입, docs/superpowers/specs/
-    2026-08-18-scalp-1m-design.md) 신설 — news_scalp KR 0.2→0.1, intraday_scan
-    US 0.2→0.1을 각각 이관해 KR/US 0.1씩 배정한다(같은 유니버스에서 진입
-    방식만 달리해 나란히 채점). 시장별 합계는 이관이라 불변이다.
+    전부 burn_in 이므로 캡 0.2가 실효 상한이다: KR 0.2+0.2+0.2+0.2=0.8,
+    US 는 scalp_1m 만(0.2). declared 를 캡보다 크게 두는 이유는 frgn(0.3)·
+    scalp US(1.0)가 승격 시 도달할 목표 선언이기 때문 — 승격 전까지 안전 캡이
+    우선한다(이 저장소 기존 관례).
     """
     import yaml
 
     cfg = yaml.safe_load(open("config/settings.yaml", encoding="utf-8"))
-    fractions = validated_capital_fractions(cfg)
-    assert fractions["donchian"] == {"KR": 0.0, "US": 0.3}, "검증된 donchian은 시장별 선언값 유지"
-    assert fractions["orb_scan"] == {"KR": 0.1, "US": 0.2}
-    assert fractions["intraday_scan"] == {"KR": 0.1, "US": 0.1}, "US 0.2→0.1: scalp_1m US에 0.1 이관"
-    assert fractions["news_momentum"] == {"KR": 0.1, "US": 0.0}, "US는 EVENT 태그 소스가 없어 0"
-    assert fractions["confluence"] == {"KR": 0.075, "US": 0.2}
-    # mean_reversion US 0.0: symbols가 069500/229200 고정이라 US 신호를 낼 수 없다.
-    # 배분을 주면 donchian의 KR 0.4와 똑같은 죽은 자본이 된다(시장별 분리로 없애려던
-    # 바로 그 문제). 회수한 0.1은 US에서 실제 거래 가능한 orb_scan/confluence로 갔다.
-    assert fractions["mean_reversion"] == {"KR": 0.075, "US": 0.0}
-    assert fractions["cross_momentum"] == {"KR": 0.05, "US": 0.1}
-    # 갈래 A — declared 0.1(2026-08-18: 0.2→0.1, scalp_1m KR에 0.1 이관)이
-    # burn_in 캡(0.2) 아래라 그대로 통과.
-    assert fractions["news_scalp"] == {"KR": 0.1, "US": 0.0}
-    # 갈래 B — declared 0.3(spec §5 목표치)이 burn_in 캡(0.2)에 눌린다. paper
-    # 번인 동안은 안전 캡이 실제 목표보다 우선한다 — 이 저장소 전체의 기존 관례.
-    assert fractions["frgn_accumulate"] == {"KR": 0.2, "US": 0.0}
-    # scalp_1m(신규, 2026-08-18) — declared 0.1이 캡 아래라 그대로 통과.
-    assert fractions["scalp_1m"] == {"KR": 0.1, "US": 0.1}
+    active = ("news_momentum", "scalp_1m", "close_bet", "frgn_accumulate")
 
-    # declared(캡 적용 전) 목표 합계는 시장별로 정확히 1.00이어야 한다 — 3갈래
-    # 전체(기존 7전략 + A + B + scalp_1m)를 합친 arithmetic sanity check. burn_in
-    # 캡이나 enabled 여부와 무관하게, "설계한 숫자가 실제로 100%로 맞아떨어지는가"를
-    # 여기서 검산한다(전략 추가·재배분 때마다 값 갱신을 잊으면 여기서 걸린다).
-    branch_c_and_ab = (
-        "donchian", "orb_scan", "intraday_scan", "mean_reversion", "cross_momentum",
-        "confluence", "news_momentum", "news_scalp", "frgn_accumulate", "scalp_1m",
-    )
     for market in ("KR", "US"):
-        declared_total = sum(
-            cfg["strategies"][sid]["capital_fraction"][market] for sid in branch_c_and_ab
-        )
-        assert abs(declared_total - 1.0) < 1e-9, (
-            f"{market} 3갈래 declared 목표 합계 {declared_total} != 1.00 (spec §5 A20/B30/C50)"
-        )
+        declared = sum(cfg["strategies"][sid]["capital_fraction"][market] for sid in active)
+        assert abs(declared - 1.0) < 1e-9, f"{market} 활성 declared 합계 {declared} != 1.00"
 
-    # 런타임(활성 전략만, burn_in 캡 적용 후) 합계 — **절대 1.00을 넘으면 안 된다**
-    # (over-allocation 방지가 진짜 안전 invariant, assembly.py의 비례축소 안전망과
-    # 같은 경계). KR은 갈래 C 0.5 + A(0.1) + B(0.2, 캡에 눌림) + scalp_1m(0.1) = 0.9
-    # — declared 목표(1.00)보다 낮은 것은 버그가 아니라 B의 burn_in 캡이 declared
-    # 0.3 중 0.1을 못 쓰게 막은 결과다(안전이 목표치보다 우선). scalp_1m 신설은
-    # news_scalp에서 0.1을 그대로 이관했을 뿐이라 KR 합계 자체는 불변이다.
-    active = {k: v for k, v in fractions.items() if cfg["strategies"][k].get("enabled", True)}
-    kr_total = sum(v.get("KR", 0.0) for v in active.values())
-    us_total = sum(v.get("US", 0.0) for v in active.values())
-    assert kr_total == pytest.approx(0.9), f"KR 활성 합계는 0.9여야 한다(B가 캡에 눌림): {kr_total}"
-    assert kr_total < 1.0 + 1e-9, "over-allocation 금지 — 활성 합계가 1.00을 넘으면 안 된다"
-    assert us_total == pytest.approx(1.0), f"US는 scalp_1m 이관이 intraday_scan에서 그대로 온 것이라 1.00 그대로여야 한다: {us_total}"
+    fractions = validated_capital_fractions(cfg)
+    assert fractions["news_momentum"] == {"KR": 0.2, "US": 0.0}
+    assert fractions["close_bet"] == {"KR": 0.2, "US": 0.0}
+    # declared 0.3/1.0 이 burn_in 캡 0.2 에 눌린다 — 승격 전 안전 캡 우선.
+    assert fractions["frgn_accumulate"] == {"KR": 0.2, "US": 0.0}
+    assert fractions["scalp_1m"] == {"KR": 0.2, "US": 0.2}
 
-
-# ========== 시장별 dict 선언 — 해석 + 빠진 시장 처리
+    for market in ("KR", "US"):
+        runtime = sum(fractions[sid][market] for sid in active)
+        assert runtime <= 1.0 + 1e-9, f"{market} 런타임 합계 {runtime} > 1.00 — over-allocation"
 
 def test_market_dict_declaration_is_used_as_is_when_verified():
     cfg = _cfg({

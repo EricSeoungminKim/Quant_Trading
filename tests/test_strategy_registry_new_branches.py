@@ -62,9 +62,14 @@ def test_enabled_in_real_config_now_that_tag_wiring_is_done():
 
     settings = load_settings()
     strat_cfg = settings.raw["strategies"]
-    assert strat_cfg["news_scalp"]["enabled"] is True
+    # 2026-08-25 전략 4종 체제(소유자 지시): ①news_momentum ②scalp_1m
+    # ③close_bet(신규) ④frgn_accumulate. news_scalp 은 ①과 겹쳐 비활성으로
+    # 내려갔다(코드·원장은 보존 — 측정 기준점).
+    assert strat_cfg["news_scalp"]["enabled"] is False
     assert strat_cfg["frgn_accumulate"]["enabled"] is True
+    assert strat_cfg["close_bet"]["enabled"] is True
     built = build_strategies(settings.raw)
     ids = {s.id for s in built}
-    assert "news_scalp" in ids
-    assert "frgn_accumulate" in ids
+    assert ids == {"news_momentum", "scalp_1m", "close_bet", "frgn_accumulate"}, (
+        "활성 전략은 정확히 4종 체제여야 한다 — 늘리려면 소유자 결정"
+    )
