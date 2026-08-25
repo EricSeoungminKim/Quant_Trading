@@ -75,7 +75,8 @@ REPORT="$("$PY" -m quant.apps.cli health \
   --required-secret FRED_API_KEY \
   --required-secret TOSS_CLIENT_ID \
   --required-secret TOSS_CLIENT_SECRET \
-  --required-secret TELEGRAM_BOT_TOKEN 2>>"$LOG")"
+  --required-secret TELEGRAM_BOT_TOKEN \
+  --required-secret TELEGRAM_CHAT_ID 2>>"$LOG")"
 RC=$?
 printf '%s\n' "$REPORT" >> "$LOG"
 

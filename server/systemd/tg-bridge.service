@@ -19,6 +19,11 @@ WorkingDirectory=/home/ubuntu/quant_trading_kiwoom
 # claude CLI가 ~/.local/bin에 있음 — systemd 기본 PATH에는 없으므로 명시 필수
 Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=TZ=Asia/Seoul
+# 2026-08-26: `.env.local` 을 유닛 환경에도 싣는다(이중 방어). 지금은 각 모듈이
+# `get_key()`(파일 직독 폴백)를 써서 없어도 돌지만, 그 일관성은 모듈 작성자의
+# 개별 판단에 기대고 있다 — 새 모듈이 무심코 `os.environ.get()` 만 쓰면 그날부터
+# 조용히 깨진다(REDIS_URL 사고와 같은 종). `-` 접두는 파일이 없어도 유닛이 뜨게 한다.
+EnvironmentFile=-/home/ubuntu/quant_trading_kiwoom/.env.local
 ExecStart=/home/ubuntu/quant_trading_kiwoom/.venv/bin/python server/scripts/tg_bridge.py
 Restart=on-failure
 RestartSec=10

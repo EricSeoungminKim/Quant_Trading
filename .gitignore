@@ -11,8 +11,11 @@ __pycache__/
 .ipynb_checkpoints/
 
 # runtime state & caches (never commit market data or positions)
-# 루트 한정 — quant_engine/data/ 는 소스 코드다
+# 루트 한정 — quant/adapters/data/ 는 소스 코드다(옛 이름 quant_engine/data/)
 /data/
+# 노트북 실험이 만드는 런타임 상태. 루트 앵커(/data/)가 이 경로를 못 덮어
+# backtest/data/state/portfolio.json 이 실제로 커밋돼 있었다(2026-08-26 정리).
+backtest/data/
 
 # os / editor
 .DS_Store

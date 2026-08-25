@@ -12,6 +12,11 @@ Type=oneshot
 User=ubuntu
 WorkingDirectory=/home/ubuntu/quant_trading_kiwoom
 Environment=TZ=Asia/Seoul
+# 2026-08-26: `.env.local` 을 유닛 환경에도 싣는다(이중 방어). 지금은 각 모듈이
+# `get_key()`(파일 직독 폴백)를 써서 없어도 돌지만, 그 일관성은 모듈 작성자의
+# 개별 판단에 기대고 있다 — 새 모듈이 무심코 `os.environ.get()` 만 쓰면 그날부터
+# 조용히 깨진다(REDIS_URL 사고와 같은 종). `-` 접두는 파일이 없어도 유닛이 뜨게 한다.
+EnvironmentFile=-/home/ubuntu/quant_trading_kiwoom/.env.local
 ExecStart=/home/ubuntu/quant_trading_kiwoom/server/scripts/run_close_report.sh %i
 
 # 자원 격리 — 아침판(market-report@.service)과 동일 상한
