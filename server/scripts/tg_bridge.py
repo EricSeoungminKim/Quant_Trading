@@ -964,6 +964,24 @@ def _handle_sigterm(signum, frame) -> None:
     _shutdown = True
 
 
+def _command_name(text: str) -> str:
+    """사용자 실패 메시지에 쓸 명령 이름 — 첫 토큰만 취한다 (인자 제외)."""
+    return text.strip().split(None, 1)[0] if text.strip() else "명령"
+
+
+def _notify_command_failure(tg: TelegramClient, chat_id: int, command: str, exc: Exception) -> None:
+    """명령 처리 실패를 사용자에게 알린다. 발송 자체가 실패할 수 있으므로 감싼다
+    (무한 재귀 방지 — 실패 알림의 실패까지 사용자에게 알리려 들지 않는다)."""
+    try:
+        tg.send_message(
+            chat_id,
+            f"⚠️ {command} 처리 실패({type(exc).__name__}) — 서버 로그 확인. "
+            "상태가 불확실하니 /status 로 확인하세요.",
+        )
+    except Exception as send_exc:  # noqa: BLE001 — 최후 방어선, 로그만 남기고 삼킨다
+        log(f"실패 응답 발송도 실패({command}): {send_exc}")
+
+
 def process_update(
     tg: TelegramClient,
     chat_id: int,
@@ -983,12 +1001,29 @@ def process_update(
 
     # 제어 명령/관심종목 명령은 분당 한도(RateLimiter)를 우회한다 — 클로드 호출
     # 과금/부하를 막기 위한 한도이지, 즉시 반영돼야 하는 로컬 명령까지 묶으면 안 된다.
-    control_reply = handle_control_command(text, control, toss_client)
+    #
+    # 아래 두 핸들러 호출은 개별적으로 try/except로 감싼다 — /halt /resume /flatten
+    # (거래 제어)과 /watch /unwatch /watchlist-reset(파일 잠금·저장 I/O)에서 예외가
+    # 나면 바깥 메인 루프의 광역 try/except(main())가 로그만 남기고 사용자는 완전한
+    # 침묵을 받는 문제가 있었다(2026-08-26 감사 발견). 원 예외는 기존 로그 경로와
+    # 같은 형식으로 여기서도 남기고, 사용자에게는 실패를 알려 상태 불확실성을
+    # /status로 직접 확인하게 한다.
+    try:
+        control_reply = handle_control_command(text, control, toss_client)
+    except Exception as exc:  # noqa: BLE001 — 사용자 알림을 위한 좁은 캐치, 삼키지 않고 로그+응답
+        log(f"제어 명령 처리 실패({text!r}): {exc}")
+        _notify_command_failure(tg, chat_id, _command_name(text), exc)
+        return
     if control_reply is not None:
         tg.send_message(chat_id, control_reply)
         return
 
-    watchlist_reply = handle_watchlist_command(text, toss_client)
+    try:
+        watchlist_reply = handle_watchlist_command(text, toss_client)
+    except Exception as exc:  # noqa: BLE001 — 사용자 알림을 위한 좁은 캐치, 삼키지 않고 로그+응답
+        log(f"관심종목 명령 처리 실패({text!r}): {exc}")
+        _notify_command_failure(tg, chat_id, _command_name(text), exc)
+        return
     if watchlist_reply is not None:
         tg.send_message(chat_id, watchlist_reply)
         return

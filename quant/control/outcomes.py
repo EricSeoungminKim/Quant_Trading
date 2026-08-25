@@ -48,8 +48,22 @@ def _business_days_between(start: date, end: date) -> int | None:
     return n if end.weekday() < 5 else None
 
 
-def due_horizons(selection_date: str, today: str) -> list[int]:
-    """오늘이 만기인 지평 목록. 보통 0개나 1개다."""
+def due_horizons(selection_date: str, today: str, grace_days: int = 2) -> list[int]:
+    """오늘이 만기이거나, 만기를 놓친 지 `grace_days` 이내인 지평 목록. 보통
+    0개나 1개다.
+
+    **왜 정확 일치가 아니라 유예(grace)인가** (2026-08-26 감사 재현): 예전엔
+    `h == age` 정확 일치였다 — D+1 당일 시세 조회가 실패하면(야후 매핑 실패 등)
+    다음날엔 age=2가 돼 버려 어느 지평에도 안 걸리고, `outcome_d1_bps`가 영원히
+    None 으로 굳었다. 재시도 메커니즘이 없었다. `h <= age <= h + grace_days`로
+    넓혀 늦게라도 채울 기회를 준다.
+
+    이미 채워진 지평은 이 함수가 아니라 호출부(`pending_symbols`,
+    `cmd_outcomes`)가 `outcome_dN_bps is not None`으로 걸러 재기록하지 않는다.
+    grace 밖(`age > h + grace_days`)은 여전히 반환하지 않는다 — 사흘 넘게 지난
+    종가를 "D+1"이라 적는 건 근사가 아니라 오염이다. 늦게 채워도 `apply_outcome`이
+    `outcome_dN_asof`에 실제 기준일을 정직하게 남긴다("거래일 근사와 그 한계" 참고).
+    """
     try:
         sel = date.fromisoformat(selection_date)
         now = date.fromisoformat(today)
@@ -58,7 +72,7 @@ def due_horizons(selection_date: str, today: str) -> list[int]:
     age = _business_days_between(sel, now)
     if age is None:
         return []
-    return [h for h in HOLD_HORIZONS if h == age]
+    return [h for h in HOLD_HORIZONS if h <= age <= h + grace_days]
 
 
 def _key(horizon: int) -> str:

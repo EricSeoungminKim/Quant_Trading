@@ -47,7 +47,22 @@ def test_five_business_days_later_is_horizon_five():
 
 
 def test_no_horizon_due_returns_empty():
-    assert due_horizons("2026-08-14", "2026-08-18") == []
+    """grace 범위(기본 2영업일) 밖(age=4)이면 여전히 빈 목록 — grace_days 는
+    무제한 재시도가 아니다."""
+    assert due_horizons("2026-08-14", "2026-08-20") == []
+
+
+def test_due_horizons_grace_covers_the_day_after_a_missed_horizon():
+    """2026-08-26 감사 재현: D+1 시세 조회가 그날 실패해 다음날(age=2)이 됐어도
+    grace_days=2 안이면 여전히 지평 1이 반환된다 — 그렇지 않으면 그 행의 D+1은
+    영구히 못 채운다."""
+    assert due_horizons("2026-08-14", "2026-08-18") == [1]
+
+
+def test_due_horizons_grace_expires_after_configured_days():
+    """grace_days=2 를 넘기면(age=4) 더 이상 지평 1을 반환하지 않는다 — 나흘
+    지난 종가를 "D+1"이라 적는 건 근사가 아니라 오염이다."""
+    assert due_horizons("2026-08-14", "2026-08-20") == []
 
 
 def test_selection_day_itself_is_not_a_horizon():
@@ -61,14 +76,27 @@ def test_past_dates_never_produce_horizons():
 
 # ── 어떤 종목의 시세가 필요한가 ───────────────────────────────────────────
 
-def test_only_symbols_with_a_due_horizon_are_fetched():
-    """시세 조회는 네트워크다 — 필요 없는 종목까지 부르면 레이트 리밋에 걸린다."""
+def test_only_symbols_with_a_due_or_recently_missed_horizon_are_fetched():
+    """시세 조회는 네트워크다 — 필요 없는 종목까지 부르면 레이트 리밋에 걸린다.
+
+    2026-08-26: 유예(grace) 도입으로 "오늘이 정확히 만기"뿐 아니라 **최근에 놓친
+    지평**도 대상이 된다 — D+1 당일 조회가 실패하면 예전엔 그 행의 D+1 이 영원히
+    비었다(due_horizons docstring 참고). 8-11 선정분(D+3, 유예 안)은 다시 시도되고,
+    유예를 넘긴 것(D+4 이상)은 대상이 아니다."""
     rows = [
         {"date": "2026-08-13", "symbol": "005930", "attributes": {"close": 71000.0}},
         {"date": "2026-08-11", "symbol": "000660", "attributes": {"close": 200000.0}},
     ]
 
-    assert pending_symbols(rows, today="2026-08-14") == {"005930"}
+    # 005930 = D+1(오늘 만기), 000660 = D+3(D+1 을 놓친 지 이틀 — 유예 안)
+    assert pending_symbols(rows, today="2026-08-14") == {"005930", "000660"}
+
+
+def test_horizon_missed_beyond_grace_is_not_refetched():
+    """유예를 넘기면 포기한다 — 사흘 넘게 지난 종가를 D+1 이라 적는 건 오염이다."""
+    rows = [{"date": "2026-08-10", "symbol": "000660", "attributes": {"close": 200000.0}}]
+
+    assert pending_symbols(rows, today="2026-08-14") == set()
 
 
 def test_rows_already_filled_for_that_horizon_are_not_refetched():

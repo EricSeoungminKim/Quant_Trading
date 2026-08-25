@@ -47,9 +47,13 @@ _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 tg() {
+  # 성공 여부를 반환한다 — 실패를 삼키면(구 `|| true`) 첫 알림이 유실돼도 상태가
+  # 기록돼 영원히 재시도하지 않는 결함이 났다. 텔레그램 응답의 "ok":true 로 판정.
   if [ "${DRY_RUN:-0}" = "1" ]; then printf '[DRY_RUN][TG]\n%s\n' "$1"; return 0; fi
-  curl -s -m 15 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
+  RESP="$(curl -s -m 15 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" 2>/dev/null)"
+  case "$RESP" in *'"ok":true'*) return 0 ;; esac
+  return 1
 }
 
 # --- 1. 감지 (결정론적) ---
@@ -99,7 +103,10 @@ except json.JSONDecodeError:
 key = json.dumps(sorted(f["detail"] for f in body.get("findings", [])), ensure_ascii=False)
 print(hashlib.sha256(key.encode()).hexdigest()[:16])
 ')"
-if [ -f "$STATE" ] && [ "$(cat "$STATE")" = "$HASH" ] && [ "${DRY_RUN:-0}" != "1" ]; then
+# mtime 하트비트: 같은 발견 집합이라도 12시간 넘게 지속 중이면 다시 알린다 —
+# "아직도 안 고쳐졌다"는 그 자체로 새 정보다.
+if [ -f "$STATE" ] && [ "$(cat "$STATE")" = "$HASH" ] \
+   && [ -z "$(find "$STATE" -mmin +720 2>/dev/null)" ] && [ "${DRY_RUN:-0}" != "1" ]; then
   log "같은 발견 집합($HASH) — 알림 생략"
   exit "$RC"
 fi
@@ -147,12 +154,17 @@ $(printf '%s' "$REPORT" | head -c 2500)"
 fi
 
 HEAD="$([ "$RC" -eq 1 ] && echo '🚨 운영 감시: 이상' || echo '❔ 운영 감시: 확인 못 한 항목')"
-tg "${HEAD}
+if tg "${HEAD}
 
 ${BODY}
 
-전체: data/ops_watch.log"
-
-[ "${DRY_RUN:-0}" != "1" ] && printf '%s' "$HASH" > "$STATE"
-log "알림 전송 (verdict rc=$RC, 해시 $HASH, 서술기 $NARRATOR)"
+전체: data/ops_watch.log"; then
+  # **발송에 성공했을 때만** 상태를 기록한다. 예전엔 무조건 기록해서, 첫 알림이
+  # 마침 네트워크 문제로 유실되면 "이미 알렸다"로 남아 그 문제에 대해 영원히
+  # 아무 알림도 못 받았다 — 문제가 사라졌다 재발할 때만 새 사건으로 잡혔다.
+  [ "${DRY_RUN:-0}" != "1" ] && printf '%s' "$HASH" > "$STATE"
+  log "알림 전송 (verdict rc=$RC, 해시 $HASH, 서술기 $NARRATOR)"
+else
+  log "알림 전송 실패 — 상태 미기록(다음 주기에 재시도) (verdict rc=$RC, 해시 $HASH)"
+fi
 exit "$RC"
