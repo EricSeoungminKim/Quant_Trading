@@ -185,9 +185,35 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
             volume_watch = recurring_volume_symbols(snap_root, "KR", snap.session_date)
         except Exception as e:  # noqa: BLE001 — 감시 메모리 실패가 리포트를 막지 않는다
             print(f"거래량 감시 메모리 생략: {type(e).__name__}: {e}", file=sys.stderr)
-    # 전일 마감 종합의 KR 패턴 종목(extra_watch)도 후보 유니버스에 합류한다 —
-    # "다음날 프로그램이 전날 종목들을 보고 진입각을 본다"(2026-08-25 소유자).
-    merged_watch = list(dict.fromkeys((volume_watch or []) + (extra_watch or []))) or None
+    # ── 종목 점수 일일 원장 (2026-08-26 소유자: "조사한 것을 버리지 않는다") ──
+    # 그날 조사된 전 종목(cont)의 수치를 기록하고, 최근 이틀+ 강세를 이어온
+    # 종목(hot streak)을 오늘 후보 유니버스에 합류시킨다. 기록 실패는 리포트를
+    # 막지 않는다.
+    streak_watch: list[str] = []
+    try:
+        from quant.control.symbol_log import (
+            append_scores, build_score_rows, hot_streak_symbols, load_scores,
+        )
+
+        log_path = root / "data" / "ledger" / "symbol_scores.jsonl"
+        prior = load_scores(log_path, days=5, today=snap.session_date)
+        streak_watch = hot_streak_symbols(prior, snap.session_date, market=snap.market)
+        if record_ledger:
+            added = append_scores(
+                build_score_rows(snap.session_date, snap.market, cont, scores,
+                                 sym_quotes=sym_quotes), log_path)
+            print(f"종목 점수 원장 {added}건 추가 (producer=symbol_scores_v1)")
+        if streak_watch:
+            print(f"점수 연속 강세 {len(streak_watch)}종목 후보 합류: "
+                  + ", ".join(streak_watch[:8]))
+    except Exception as e:  # noqa: BLE001
+        print(f"종목 점수 원장 생략: {type(e).__name__}: {e}", file=sys.stderr)
+
+    # 전일 마감 종합의 KR 패턴 종목(extra_watch)·점수 연속 강세(streak_watch)도
+    # 후보 유니버스에 합류한다 — "다음날 프로그램이 전날 종목들을 보고 진입각을
+    # 본다"(2026-08-25) + "좋은 흐름을 이어오던 주식 참고"(2026-08-26).
+    merged_watch = list(dict.fromkeys(
+        (volume_watch or []) + (extra_watch or []) + streak_watch)) or None
     payload = machine_payload(
         snap, cont, delta, brief, sym_quotes, details, view, scores, trending,
         relations, sectors, baselines, volume_watch=merged_watch,

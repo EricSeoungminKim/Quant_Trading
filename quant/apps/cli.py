@@ -824,6 +824,112 @@ def cmd_performance(args: argparse.Namespace) -> None:
     print("\n※ 샤프는 무위험 이자율 0 가정 — 과대평가 방향. MDD 를 수익률보다 먼저 보라.")
 
 
+def cmd_weekly_review(args: argparse.Namespace) -> None:
+    """주간 재검토 세션(2026-08-26 소유자 지시) — 토요일 아침, 양시장 마감 후.
+
+    한 주의 종결 매매·손해 패턴·주간 장 흐름·점수 적중률(기록 vs 실제)·자본
+    변화를 결정론으로 재계산해 출력한다. 발송은 쉘(weekly_review.sh) 몫.
+
+    점수 적중률의 '다음 거래일 등락'은 로컬 일봉 파케이에서만 읽는다 —
+    표본이 안 되는 종목은 정직하게 빠진다."""
+    import json as _json
+    from datetime import date as _date, timedelta
+    from pathlib import Path
+
+    import pandas as pd
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.control.ledger import load_trades, round_trips
+    from quant.control.symbol_log import accuracy_join, load_scores
+    from quant.control.weekly_review import (
+        loss_patterns, week_range, weekly_index_flow, weekly_review_text,
+        weekly_strategy_stats,
+    )
+
+    root = REPO_ROOT
+    today = _date.today()
+    start, end = week_range(today - timedelta(days=1))  # 토요일 실행 → 막 끝난 주
+
+    trips = round_trips(load_trades(ledger_state_path()))
+    stats = weekly_strategy_stats(trips, start, end)
+    losses = loss_patterns(trips, start, end)
+
+    # 주간 지수 흐름 — 로컬 1d 파케이(069500=KOSPI200 프록시, QQQ).
+    def _week_closes(symbol: str) -> list[float]:
+        base = root / "data" / "history" / symbol / "1d"
+        closes: list[float] = []
+        for part in sorted(base.glob("*/*.parquet")) if base.exists() else []:
+            try:
+                df = pd.read_parquet(part)
+            except Exception:  # noqa: BLE001
+                continue
+            for ts, row in df.iterrows():
+                d = ts.date() if hasattr(ts, "date") else None
+                if d and start <= d <= end:
+                    closes.append(float(row["close"]))
+        return closes
+
+    index_flow = weekly_index_flow({
+        "KOSPI200(069500)": _week_closes("069500"),
+        "QQQ": _week_closes("QQQ"),
+    })
+
+    # 점수 적중률 — 지난주 기록 × 다음 거래일 등락(로컬 1d).
+    score_rows = [r for r in load_scores(root / "data" / "ledger" / "symbol_scores.jsonl")
+                  if start.isoformat() <= (r.get("date") or "") <= end.isoformat()]
+    nxt: dict[tuple, float] = {}
+    by_symbol: dict[str, list] = {}
+    for r in score_rows:
+        by_symbol.setdefault(r["symbol"], [])
+    for symbol in by_symbol:
+        base = root / "data" / "history" / symbol / "1d"
+        seq: list[tuple[str, float]] = []
+        for part in sorted(base.glob("*/*.parquet")) if base.exists() else []:
+            try:
+                df = pd.read_parquet(part)
+            except Exception:  # noqa: BLE001
+                continue
+            for ts, row in df.iterrows():
+                seq.append((str(ts)[:10], float(row["close"])))
+        seq.sort()
+        for i in range(1, len(seq)):
+            prev_d, prev_c = seq[i - 1]
+            d, c = seq[i]
+            if prev_c > 0:
+                nxt[(prev_d, symbol)] = (c / prev_c - 1) * 100
+    score_accuracy = accuracy_join(score_rows, nxt)
+
+    # 자본 주간 변화 — equity_curve 원장.
+    equity_delta = None
+    eq_path = root / "data" / "ledger" / "equity_curve.jsonl"
+    if eq_path.exists():
+        pts = []
+        for line in eq_path.read_text(encoding="utf-8").splitlines():
+            try:
+                r = _json.loads(line)
+            except ValueError:
+                continue
+            if start.isoformat() <= (r.get("date") or "") <= end.isoformat():
+                pts.append(r)
+        pts.sort(key=lambda r: (r["date"], r.get("recorded_at") or ""))
+        if len(pts) >= 2:
+            a, b = float(pts[0]["total_krw"]), float(pts[-1]["total_krw"])
+            if a > 0:
+                equity_delta = {"start": a, "end": b, "pct": (b / a - 1) * 100}
+
+    print(weekly_review_text(start, end, index_flow, stats, losses,
+                             score_accuracy, equity_delta))
+
+    try:
+        from quant.adapters.kv import make_kv
+        from quant.control.opstate import record_run
+
+        record_run(make_kv(), "weekly-review", ok=True,
+                  detail=f"trips={losses.get('n_week', 0)}")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def cmd_experiments(args: argparse.Namespace) -> None:
     """자동 판정 — "바꿨다 → 쌓인다 → 판정이 온다"의 마지막 칸 (2026-08-24).
 
@@ -2247,6 +2353,9 @@ def main() -> None:
 
     p_perf = sub.add_parser("performance", help="자본 곡선 성과 — CAGR/변동성/샤프(rf=0)/MDD (gs-quant econometrics 상당)")
     p_perf.set_defaults(func=cmd_performance)
+
+    p_weekly = sub.add_parser("weekly-review", help="주간 재검토 — 전략별 성적·손해 패턴·주간 장 흐름·점수 적중률 (토 06:25)")
+    p_weekly.set_defaults(func=cmd_weekly_review)
 
     p_experiments = sub.add_parser("experiments", help="자동 판정 — 파라미터 변경 감지 + 이중차분 효과 판정 + 전략 사망 경보 (판정 없으면 무출력)")
     p_experiments.add_argument("--verbose", action="store_true", help="지문/대기 상태를 stderr 로")

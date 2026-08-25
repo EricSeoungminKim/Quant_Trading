@@ -158,6 +158,8 @@
 # 매일 도는 이유: 판정은 표본이 차는 순간 나와야지 주 단위로 미루면 최대 6일
 # 늦는다. 16:30 = KR 마감 후이고 마감 리포트(13:50)·스코어보드(금 16:10)와 안 겹침.
 30 16 * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/experiments_daily.sh >> data/experiments.log 2>&1
+# 주간 재검토(2026-08-26) — 토 06:25, 그 주 양시장 종결 후(06:10/06:15 US 로그 뒤).
+25 6 * * 6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/weekly_review.sh >> data/weekly_review.log 2>&1
 
 # --- Phase 5: 백업 + 운영 감시 (2026-08-13 신규) ---
 #
