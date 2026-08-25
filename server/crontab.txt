@@ -48,6 +48,13 @@
 # daily_brief.sh는 삭제하지 않고 남겨둔다 — 회사 리포트로 되돌릴 때 쓴다.
 12 8 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/own_brief.sh KR >> data/brief.log 2>&1
 
+# 평일 08:20 KST — 신입사원 AI 트레이더(수습) KR 토론 (2026-08-26 소유자 지시).
+# 아침 리포트(08:00)가 selections 원장에 남긴 서류를 읽고 3역할 LLM 토론으로
+# 판단만 기록한다(producer="ai_trader") — 주문·워치리스트에 닿지 않고, 성적은
+# outcomes(16:00)→리더보드(16:20 장마감 리포트)가 watch_scorer 와 같은 입력
+# (input_hash)에서 매긴다. 승격은 promote 판정 + 사람. 픽 있을 때만 텔레그램.
+20 8 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/ai_trader.sh KR >> data/ai_trader.log 2>&1
+
 # (2026-08-10 09:05 검증 통과로 제거됨 — 실전 서버 실시간 틱 수신 확인 후
 #  kiwoom.realtime.enabled: true. 스크립트는 재검증용으로 남겨둔다:
 #  ./server/scripts/kiwoom_ws_check.sh)
@@ -66,6 +73,10 @@
 # 편입분은 22:10 유니버스 롤(_universe_roll_bucket)에서 흡수돼 개장부터 거래된다.
 # us_watch_discover.sh는 남겨둔다 — 리포트 없이 랭킹만으로 돌릴 때의 폴백.
 50 21 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/own_brief.sh US >> data/us_discover.log 2>&1
+
+# 평일 20:10 KST — 신입사원 AI 트레이더(수습) US 토론. US 개장전 리포트(20:00)
+# 발행 직후 — 서류(선정 원장)가 그때 준비된다. 나머지는 08:20 KR 항목과 동일.
+10 20 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/ai_trader.sh US >> data/ai_trader.log 2>&1
 
 # 평일 13:25 KST — DART 공시 오후 재수집 (2026-08-17 감사, P2). 07:20 스냅샷만
 # 있으면 13:40 마감 포지션 리포트(run_close_report.sh)가 읽는

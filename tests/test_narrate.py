@@ -753,3 +753,27 @@ def test_make_quality_narrator_honours_model_override_for_fallback():
         model="google/gemma-4-31b-it:free",
     )
     assert got._fallback._model == "google/gemma-4-31b-it:free"
+
+
+# ── JSON 계약용 변형 (2026-08-26, ai_trader) ─────────────────────────────
+
+def test_json_mode_does_not_discard_ascii_heavy_json():
+    """JSON 응답은 키가 전부 영문이라 한글 비중 휴리스틱이 오탐한다(2026-08-26
+    ai_trader 실 E2E에서 리스크 단계가 이 가드에 폐기돼 결근). json_mode 는
+    산문 가드를 끄고, 방어는 소비자의 엄격한 JSON 파싱이 맡는다."""
+    # 실제 사고 형태: 추론 모델이 영어 사고 서두를 붙인 채 JSON 을 내놓는다 —
+    # 산문 가드는 서두를 보고 전체를 폐기하지만, JSON 소비자는 뒤의 {...} 만
+    # 뽑아 쓰면 된다(엄격한 파싱이 방어선).
+    payload = ('Looking at the dossier, here is my verdict:\n'
+               '{"picks": [{"symbol": "005930", "score": 80, "verdict": "pass", "thesis": "ok"}]}')
+    out = OpenRouterNarrator("k", poster=lambda *a: _reply(payload), json_mode=True).narrate("x")
+    assert out == payload
+    # 같은 응답이 산문 모드에서는 폐기된다 — 가드 자체는 살아 있다.
+    assert OpenRouterNarrator("k", poster=lambda *a: _reply(payload)).narrate("x") is None
+
+
+def test_make_json_narrator_never_raises_without_key():
+    from quant.adapters.narrate import make_json_narrator
+
+    n = make_json_narrator(env={})  # 키 없음 → Null (make_narrator 와 같은 계약)
+    assert n.narrate("x") is None

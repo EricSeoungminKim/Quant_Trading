@@ -2003,6 +2003,84 @@ def cmd_outcomes(args: argparse.Namespace) -> None:
     }, ensure_ascii=False, indent=2))
 
 
+def cmd_ai_trader(args: argparse.Namespace) -> None:
+    """신입사원 AI 트레이더(수습) — 오늘 selections 행(기존 직원과 같은 서류)을
+    읽고 3역할 토론(애널리스트→리스크→트레이더)으로 판단을 남긴다 (2026-08-26).
+
+    stdout = 텔레그램 카드 텍스트(experiments_daily.sh 관례 — 스크립트가 그대로
+    발송). 픽 없음/결근/이미 기록됨이면 stdout 무출력 = 침묵. 판단은
+    judgments.jsonl(producer="ai_trader")로 들어가 outcomes→리더보드가 채점한다.
+    주문·워치리스트에는 닿지 않는다.
+    """
+    import json as _json
+    from datetime import date as _date, datetime as _dt, timezone as _tz
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.adapters.narrate import make_json_narrator
+    from quant.analyze import ai_trader
+    from quant.control import selections
+
+    load_settings()
+    root = Path(args.root) if args.root else REPO_ROOT
+    today = args.date or _date.today().isoformat()
+    market = args.market
+
+    # 재실행 가드 — 같은 (날짜, 시장) 토론은 하루 한 번(LLM 호출 중복 방지).
+    dpath = root / ai_trader.DEBATE_LEDGER
+    if dpath.exists():
+        for line in dpath.read_text(encoding="utf-8").splitlines():
+            try:
+                rec = _json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("date") == today and rec.get("market") == market:
+                logger.info("ai-trader: %s %s 토론 기록이 이미 있다 — 건너뜀", today, market)
+                return
+
+    rows = []
+    seen: set[str] = set()
+    for r in selections.load(root / "data" / "ledger" / "selections.jsonl"):
+        if str(r.get("date")) != today or str(r.get("market")) != market:
+            continue
+        if "producer" in r:
+            continue  # 본선 리포트 행만 — 다른 생산자(단타 스코어러 등) 행은 별도 서류다
+        sym = str(r.get("symbol") or "")
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        rows.append(r)
+    if not rows:
+        logger.info("ai-trader: %s %s 선정 원장 행 없음 — 서류가 없어 결근", today, market)
+        return
+
+    # 산문 서술기가 아니라 JSON 계약 변형 — 산문 가드(사고과정 유출 폐기)가
+    # JSON 을 오탐하고 700 토큰 상한이 verdict 목록을 자른다(2026-08-26 실 E2E).
+    narrator = make_json_narrator()
+    result = ai_trader.run_debate(rows, narrator.narrate)
+    if result is None:
+        logger.warning("ai-trader: 토론 실패(LLM) — 오늘 결근 (판단 미기록)")
+        return
+
+    judgments = ai_trader.to_judgments(result["final"], rows)
+    added = ai_trader.append_judgments(judgments, root / "data" / "ledger" / "judgments.jsonl")
+
+    dpath.parent.mkdir(parents=True, exist_ok=True)
+    with dpath.open("a", encoding="utf-8") as f:
+        f.write(_json.dumps({
+            "date": today, "market": market, "final": result["final"],
+            "transcript": [{"role": role, "raw": raw} for role, raw in result["transcript"]],
+            "recorded_at": _dt.now(_tz.utc).isoformat(timespec="seconds"),
+        }, ensure_ascii=False) + "\n")
+
+    logger.info("ai-trader: %s %s — 행 %d, 판단 %d(신규 %d)",
+                today, market, len(rows), len(judgments), added)
+    names = {str(r.get("symbol")): r.get("name") for r in rows if r.get("name")}
+    note = ai_trader.daily_note(result["final"], market, names)
+    if note:
+        print(note)
+
+
 def cmd_close_report(args: argparse.Namespace) -> None:
     """장마감 결과 리포트 — 그날 만기가 채워진 선정 원장 outcome + 리더보드 판정 +
     누적 스코어보드를 한 장으로 (§E-3). 매일 outcomes(16:00) 직후 크론.
@@ -2511,6 +2589,16 @@ def main() -> None:
                             "2 = baseline_score100 산식(§E-2, 2026-08-15 v1 상수 50 문제로 교체)")
     p_out.add_argument("--dry-run", action="store_true")
     p_out.set_defaults(func=cmd_outcomes)
+
+    p_ai = sub.add_parser(
+        "ai-trader",
+        help="신입사원 AI 트레이더(수습) — 오늘 선정 원장으로 3역할 토론, 판단만 기록(주문 없음). "
+             "stdout = 텔레그램 카드(픽 없으면 무출력).",
+    )
+    p_ai.add_argument("--market", required=True, choices=["KR", "US"])
+    p_ai.add_argument("--root", default=None, help="기본: 저장소 루트")
+    p_ai.add_argument("--date", default=None, help="오늘로 볼 날짜 (YYYY-MM-DD)")
+    p_ai.set_defaults(func=cmd_ai_trader)
 
     p_cr = sub.add_parser(
         "close-report",

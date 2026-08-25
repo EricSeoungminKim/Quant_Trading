@@ -186,12 +186,18 @@ class OpenRouterNarrator:
     name = "openrouter"
 
     def __init__(self, api_key: str, model: str = DEFAULT_OPENROUTER_MODEL,
-                 timeout: int = 60, poster=None, max_tokens: int = 700):
+                 timeout: int = 60, poster=None, max_tokens: int = 700,
+                 json_mode: bool = False):
         self._key = api_key
         self._model = model
         self._timeout = timeout
         self._poster = poster or self._httpx_poster
         self._max_tokens = max_tokens
+        # JSON 계약 소비자(ai_trader 토론)용 — 산문 가드(사고과정 유출 폐기)를
+        # 끈다. JSON 은 키가 전부 영문이라 한글 비중 휴리스틱이 구조적으로
+        # 오탐한다(2026-08-26 실 E2E에서 확인). 방어는 소비자의 엄격한 JSON
+        # 파싱이 맡는다 — 쓰레기는 거기서 None(결근)이 된다.
+        self._json_mode = json_mode
 
     @staticmethod
     def _httpx_poster(url: str, headers: dict, payload: dict, timeout: int) -> dict | None:
@@ -248,7 +254,7 @@ class OpenRouterNarrator:
             log.warning("OpenRouter 응답 형태가 예상과 다르다")
             return None
         text = (text or "").strip() or None
-        if text is not None and looks_like_reasoning_leak(text):
+        if text is not None and not self._json_mode and looks_like_reasoning_leak(text):
             # 실패로 취급 → narrate() 의 재시도 1회를 그대로 탄다. 두 번째도
             # 유출이면 None — 빈 섹션이 오염된 섹션보다 낫다.
             log.warning("OpenRouter 서술에 사고과정 유출 감지 — 폐기")
@@ -503,6 +509,33 @@ def make_narrator(env: dict[str, str] | None = None, model: str | None = None):
 
     log.warning("알 수 없는 OPS_NARRATOR=%r — 서술 없이 동작한다", choice)
     return NullNarrator()
+
+
+def make_json_narrator(env: dict[str, str] | None = None, model: str | None = None,
+                       max_tokens: int = 4000, timeout: int = 120):
+    """JSON 계약용 좁은 팩토리 (2026-08-26, ai_trader 토론) — `make_narrator` 와
+    같은 절대-예외-없음 계약. OpenRouter 전용이다(claude CLI 경로는 산문 계약).
+
+    산문용 기본값과 다른 이유:
+    - `json_mode=True` — 사고과정 유출 가드가 JSON(영문 키 위주)을 오탐한다.
+    - `max_tokens=4000` — 종목 30개 verdict JSON 은 700 토큰에 잘린다(추론
+      모델은 "생각"에도 토큰을 쓴다 — `_narrate_once` 주석 참고).
+    - `timeout=120` — 긴 출력 + 무료 레인 지연.
+
+    키가 없으면 NullNarrator — 호출부(ai_trader)는 결근 처리로 떨어진다.
+    """
+    e = os.environ if env is None else env
+    # env 를 명시하면 그 dict 만 본다(테스트 결정성) — 미지정이면 get_key 가
+    # os.environ + .env.local 파일 폴백까지 본다(크론은 export 를 안 한다).
+    key = (e.get("OPENROUTER_API_KEY") or "").strip()
+    if not key and env is None:
+        key = (get_key("OPENROUTER_API_KEY") or "").strip()
+    if not key:
+        log.warning("OPENROUTER_API_KEY 없음 — JSON 서술 없이 동작한다(ai_trader 결근)")
+        return NullNarrator()
+    chosen = (model or e.get("OPENROUTER_MODEL") or "").strip() or DEFAULT_OPENROUTER_MODEL
+    return OpenRouterNarrator(key, model=chosen, timeout=timeout,
+                              max_tokens=max_tokens, json_mode=True)
 
 
 class QualityFallbackNarrator:
