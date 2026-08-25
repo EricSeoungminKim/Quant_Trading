@@ -149,21 +149,28 @@ def parse_stage_json(text: str | None, allowed: set[str]) -> list[dict] | None:
 
 # ------------------------------------------------------------------ 3역할 토론
 
+# 토론 대상 숏리스트 상한 — 실측(2026-08-26 EC2 첫 출근): 서류 81종목에 전
+# 종목 verdict 를 요구하니 출력 상한 안에서 완주하지 못해 결근했다. 실무
+# 워크플로우대로 애널리스트가 주목 종목만 추리고, 숏리스트 밖 행은 결정론
+# 규칙(to_judgments)이 reject 로 기록한다 — 전 행 기록 계약은 불변.
+MAX_DISCUSS = 15
+
 _ROLE_COMMON = (
     "당신은 한국/미국 주식 자동매매 회사의 수습 트레이딩 팀이다. 아래 서류의 "
     "종목만 다룬다 — 서류에 없는 종목·외부 지식의 미래 가격 언급 금지. "
     "반드시 JSON 하나만 출력한다: "
     '{"picks": [{"symbol": "...", "score": 0-100, "verdict": "pass|reject", '
-    '"thesis": "한 문장"}]}. 모든 종목에 대해 항목을 낸다.\n\n[서류]\n'
+    '"thesis": "한 문장"}]}. thesis 는 짧게.\n\n[서류]\n'
 )
 
 
 def _analyst_prompt(lines: list[str]) -> str:
     return (
         _ROLE_COMMON + "\n".join(lines)
-        + "\n\n[역할: 애널리스트] 각 종목의 강세 논거를 찾아라 — 뉴스 흐름·수급"
-          "(외인/기관)·거래대금 쏠림이 겹치는 종목에 높은 점수를. thesis 에 "
-          "가장 강한 근거 하나를 적는다."
+        + f"\n\n[역할: 애널리스트] 주목할 가치가 있는 종목 **최대 {MAX_DISCUSS}개만** "
+          "골라 항목을 내라 — 뉴스 흐름·수급(외인/기관)·거래대금 쏠림이 겹치는 "
+          "종목에 높은 점수를. 나머지 종목은 항목을 내지 않는다(자동 탈락 처리). "
+          "thesis 에 가장 강한 근거 하나."
     )
 
 
@@ -171,9 +178,9 @@ def _risk_prompt(lines: list[str], analyst_json: str) -> str:
     return (
         _ROLE_COMMON + "\n".join(lines)
         + "\n\n[애널리스트의 초안]\n" + analyst_json
-        + "\n\n[역할: 리스크 매니저] 초안을 반박하라 — 이미 급등해 추격이 되는 "
-          "자리, 뉴스만 있고 수급이 비는 종목, 하루짜리 이벤트성 재료를 감점하고 "
-          "verdict 를 낮춰라. thesis 에 가장 큰 위험 하나를 적는다."
+        + "\n\n[역할: 리스크 매니저] **초안에 있는 종목만** 다뤄 반박하라 — 이미 "
+          "급등해 추격이 되는 자리, 뉴스만 있고 수급이 비는 종목, 하루짜리 "
+          "이벤트성 재료를 감점하고 verdict 를 낮춰라. thesis 에 가장 큰 위험 하나."
     )
 
 
@@ -182,9 +189,9 @@ def _trader_prompt(lines: list[str], analyst_json: str, risk_json: str) -> str:
         _ROLE_COMMON + "\n".join(lines)
         + "\n\n[애널리스트]\n" + analyst_json
         + "\n\n[리스크 매니저]\n" + risk_json
-        + f"\n\n[역할: 트레이더] 두 의견을 종합해 최종 판단하라. pass 는 최대 "
-          f"{MAX_PICKS}개 — 강세 논거와 위험을 저울질해 확신 있는 것만. thesis 는 "
-          "판단 근거 한 문장(강세론과 위험을 모두 반영)."
+        + f"\n\n[역할: 트레이더] 두 의견을 종합해 **초안에 있는 종목만** 최종 "
+          f"판단하라. pass 는 최대 {MAX_PICKS}개 — 강세 논거와 위험을 저울질해 "
+          "확신 있는 것만. thesis 는 판단 근거 한 문장(강세론과 위험을 모두 반영)."
     )
 
 

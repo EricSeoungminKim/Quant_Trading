@@ -2056,7 +2056,9 @@ def cmd_ai_trader(args: argparse.Namespace) -> None:
 
     # 산문 서술기가 아니라 JSON 계약 변형 — 산문 가드(사고과정 유출 폐기)가
     # JSON 을 오탐하고 700 토큰 상한이 verdict 목록을 자른다(2026-08-26 실 E2E).
-    narrator = make_json_narrator()
+    # 8000: 추론 모델은 "생각"에도 max_tokens 를 쓴다 — 서류 80행 급에서 4000이
+    # 완주하지 못해 결근한 실측(같은 날 EC2)의 여유분.
+    narrator = make_json_narrator(max_tokens=8000)
     result = ai_trader.run_debate(rows, narrator.narrate)
     if result is None:
         logger.warning("ai-trader: 토론 실패(LLM) — 오늘 결근 (판단 미기록)")
