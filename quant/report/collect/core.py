@@ -111,26 +111,33 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
             # 시세 대상은 cont 전체 — HTML 카드 노출(rank 상위 10)과는 별개다.
             # rank()로 자르면 채점 교집합이 노출 상위 10으로 묶여버린다(§E-1).
             codes = list(cont.keys())
+            route = "US 티커 직행"
             if snap.market == "US":
-                matched = codes  # US: 티커 자체가 야후 심볼 — 매핑 실패가 없다
                 quotes = fetch_symbol_quotes(codes)
                 sym_quotes = dict(quotes)
             else:
-                market_map = load_market_map(cache_dir)
-                matched = [c for c in codes if c in market_map]
-                yahoo_syms = [market_map[c] for c in matched]
-                quotes = fetch_symbol_quotes(yahoo_syms)
-                by_yahoo = {v: k for k, v in market_map.items()}
-                sym_quotes = {
-                    by_yahoo[sym]: q for sym, q in quotes.items() if sym in by_yahoo
-                }
-            mapping_failed = len(codes) - len(matched)
-            lookup_failed = len(matched) - len(quotes)
-            if mapping_failed or lookup_failed:
-                print(
-                    f"시세 매핑실패 {mapping_failed}건 / 조회실패 {lookup_failed}건",
-                    file=sys.stderr,
+                # KIND(시장구분)가 죽어도 시세를 포기하지 않는다 — quotes.py 참고.
+                # 2026-08-26 실사고: KIND 403 으로 매핑이 통째로 실패해 KR 리포트가
+                # 기준가를 하나도 못 받았고, 그러면 전방 수익률·리더보드 채점이 멈춘다.
+                from quant.report.collect.quotes import fetch_kr_quotes
+
+                # 이 모듈의 두 함수를 그대로 넘긴다 — 조회 로직만 옮기고 seam 은
+                # 여기 남겨 둔다(quotes.fetch_kr_quotes docstring 참고).
+                sym_quotes, route = fetch_kr_quotes(
+                    codes, cache_dir,
+                    map_loader=load_market_map, quote_fetcher=fetch_symbol_quotes,
                 )
+            # **미확보 건수는 조사 대상 전체 기준으로 센다**(상위 10 이 아니라 —
+            # 2026-08-15 회귀). 예전엔 "매핑실패/조회실패"로 나눠 셌지만, KIND
+            # 폴백(.KS/.KQ 양쪽 조회) 도입으로 '매핑' 단계 자체가 사라져 지금
+            # 정직한 숫자는 "시세를 못 받은 종목 수" 하나다. 경로를 함께 찍는다 —
+            # 폴백으로 받았는지 정상 경로였는지가 조용한 강등을 드러낸다.
+            missing = len(codes) - len(sym_quotes)
+            if missing:
+                print(f"시세 미확보 {missing}건 / 조사 {len(codes)}건 (경로: {route})",
+                      file=sys.stderr)
+            else:
+                print(f"시세 {len(sym_quotes)}건 확보 (경로: {route})")
         except Exception as e:  # 시세 조회 실패가 리포트를 막지 않는다
             print(f"종목 시세 조회 건너뜀: {type(e).__name__}: {e}", file=sys.stderr)
 

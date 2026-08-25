@@ -2095,6 +2095,50 @@ def cmd_ai_trader(args: argparse.Namespace) -> None:
         print(note)
 
 
+def cmd_kr_flow(args: argparse.Namespace) -> None:
+    """KR 마감 후 외국인·기관 수급 스냅샷 (2026-08-26 감사 수리, 크론 15:50).
+
+    ## 왜 별도 잡인가 — 순서 결함
+
+    수급 원장(`frgn_flow.jsonl`)은 그동안 **아침 리포트(07:30)만** 채웠다. 그런데
+    아침 리포트가 보는 네이버 값은 전 거래일 종가 기준이라, D-1 세션의 수급은
+    D일 07:30 에야 원장에 들어온다. 마감 종합(uswrap)은 D일 **05:50** 에 D-1
+    수급을 읽으므로 **구조적으로 항상 비어 있었다**(2026-08-26 확인: 원장 최신
+    날짜가 8/24 인데 8/26 05:50 wrap 이 8/25 수급을 찾고 있었다).
+
+    이 잡은 KR 마감(15:30) 뒤에 돌아 **그날** 수급을 원장에 넣는다. 네이버
+    `flow_daily` 행은 저마다 자기 날짜를 갖고 있으므로(리포트 날짜가 아니라)
+    마감 후 실행이면 당일 행이 그대로 들어온다. 원장 append 는 멱등이라
+    다음날 아침 리포트가 같은 행을 다시 넣어도 불어나지 않는다.
+
+    실패해도 아무것도 막지 않는다 — 다음날 아침 리포트가 여전히 채운다(늦게).
+    """
+    from datetime import date as _date
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.collect.sources.stock_detail import fetch_many
+    from quant.report.collect.ledger import _record_flows, _record_frgn_flow
+    from quant.trade.universe import FileWatchlistUniverse
+
+    load_settings()
+    root = Path(args.root) if args.root else REPO_ROOT
+    watch = FileWatchlistUniverse(root / "data" / "watchlist.yaml")
+    symbols = [s for s in watch.refresh() if s.isdigit() and len(s) == 6]
+    if not symbols:
+        logger.info("kr-flow: 워치리스트에 KR 종목이 없다 — 건너뜀")
+        return
+    symbols = symbols[: args.limit]
+    try:
+        details = fetch_many(symbols, limit=args.limit)
+    except Exception as e:  # noqa: BLE001 — 수집 실패가 다른 잡을 막지 않는다
+        logger.warning("kr-flow: 종목 상세 조회 실패 — %s: %s", type(e).__name__, e)
+        return
+    logger.info("kr-flow: 종목 상세 %d건 수집", len(details))
+    _record_frgn_flow(details, root)
+    _record_flows(details, root, args.date or _date.today().isoformat())
+
+
 def cmd_param_propose(args: argparse.Namespace) -> None:
     """전략 파라미터 제안 — AI 트레이더 3단계 (토 06:40 크론, 2026-08-26).
 
@@ -2688,6 +2732,17 @@ def main() -> None:
     p_ai.add_argument("--root", default=None, help="기본: 저장소 루트")
     p_ai.add_argument("--date", default=None, help="오늘로 볼 날짜 (YYYY-MM-DD)")
     p_ai.set_defaults(func=cmd_ai_trader)
+
+    p_kf = sub.add_parser(
+        "kr-flow",
+        help="KR 마감 후 외국인·기관 수급 스냅샷 (크론 15:50) — 마감 종합(05:50)이 "
+             "전일 수급을 읽을 수 있게 그날 안에 원장을 채운다.",
+    )
+    p_kf.add_argument("--root", default=None, help="기본: 저장소 루트")
+    p_kf.add_argument("--date", default=None, help="수급 스냅샷 날짜 (YYYY-MM-DD)")
+    p_kf.add_argument("--limit", type=int, default=20,
+                      help="조회 종목 수 상한 — 네이버 요청 예산(기본 20, 아침 리포트와 동일)")
+    p_kf.set_defaults(func=cmd_kr_flow)
 
     p_pp = sub.add_parser(
         "param-propose",

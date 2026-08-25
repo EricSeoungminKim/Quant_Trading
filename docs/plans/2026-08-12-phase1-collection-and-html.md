@@ -1,5 +1,14 @@
 # Phase 1 — 수집 툴킷 + HTML 발행 구현 계획
 
+> ⚠️ **[대체됨 — 2026-08-26 감사]** 이 문서는 4평면 재설계(`docs/ARCHITECTURE.md`)
+> **이전**에 쓰였고, 여기 적힌 **파일 경로는 더 이상 유효하지 않다**: 예를 들어
+> `quant/apps/report_config.py`(실제: `quant/apps/config.py`),
+> `quant/analyze/clock.py`, `quant/collect/sources/commodity.py` 는 존재하지 않고,
+> `tests/test_*.py` 대부분은 `tests/report/` 아래로 옮겨졌다. **설계 의도와 이유
+> (스냅샷→렌더 결정론, 소스 실패 격리)는 여전히 유효하므로 이력 문서로 남긴다** —
+> 경로를 그대로 따라가지 말 것. 현재 구조는 `docs/CODE-TOUR.md` 와 각 디렉토리의
+> `CLAUDE.md` 를 보라.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** LLM 호출 없이, KR/US 두 시장의 시황 데이터를 결정론적으로 수집해 스냅샷 JSON으로 남기고, 그 스냅샷에서 HTML 리포트를 생성한다.

@@ -216,11 +216,15 @@ def _record_watch_join_selections(
                     sym: q for sym, q in (fetch_symbol_quotes(joined) or {}).items()
                 }
             else:
-                mmap = load_market_map(cache_dir) or {}
-                yahoo_of = {s: mmap[s] for s in joined if s in mmap}
-                raw = fetch_symbol_quotes(sorted(yahoo_of.values())) if yahoo_of else {}
-                by_yahoo = {v: k for k, v in yahoo_of.items()}
-                quotes = {by_yahoo[y]: q for y, q in (raw or {}).items() if y in by_yahoo}
+                # 본선 시세와 같은 경로(quotes.py) — KIND 가 죽어도 기준가를 잃지
+                # 않는다. 기준가가 없으면 이 행은 영영 채점 불가가 된다.
+                from quant.report.collect.quotes import fetch_kr_quotes
+
+                quotes, route = fetch_kr_quotes(
+                    joined, cache_dir,
+                    map_loader=load_market_map, quote_fetcher=fetch_symbol_quotes,
+                )
+                print(f"합류 종목 시세 경로: {route}")
         except Exception as e:  # noqa: BLE001 — 시세 실패가 기록을 막지 않는다
             print(f"합류 종목 시세 조회 건너뜀: {type(e).__name__}: {e}", file=sys.stderr)
 

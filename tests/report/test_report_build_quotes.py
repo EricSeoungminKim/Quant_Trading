@@ -83,20 +83,25 @@ def test_derive_requests_quotes_for_the_entire_universe_not_just_top_10(
 def test_derive_mapping_and_lookup_failure_counts_cover_the_full_expanded_list(
     monkeypatch, tmp_path, capsys
 ):
-    """Task 1 이 넣은 매핑/조회 실패 카운트 로그 회귀 — KR 은 코드→야후심볼 매핑을
-    거친다. 확대된 12개 목록 기준으로 실패 건수가 옳게 집계돼야 한다(예전처럼
-    상위 10 만 셌다면 실패 건수가 실제보다 적게 잡힌다)."""
+    """시세 미확보 카운트 로그 회귀 — **조사 대상 전체(12개) 기준**으로 세야 한다
+    (예전처럼 상위 10 만 셌다면 미확보가 실제보다 적게 잡힌다).
+
+    2026-08-26: 문구가 "매핑실패 N / 조회실패 M"에서 "시세 미확보 K"로 바뀌었다 —
+    KIND 403 폴백(.KS/.KQ 양쪽 조회, `quant/report/collect/quotes.py`)이 들어오면서
+    '매핑' 단계 자체가 사라졌기 때문이다. 매핑에서 빠진 2개도 이제는 폴백으로
+    조회를 시도하므로, 여기서는 **끝내 시세가 없는 종목 수**(12-8=4)를 센다.
+    이 테스트가 지키는 성질(전체 목록 기준 집계)은 그대로다."""
     codes = [f"KR{i:02d}" for i in range(12)]
     cont = {c: _cont_entry(i) for i, c in enumerate(codes)}
     _wire_cont(monkeypatch, cont)
 
-    # 12개 중 10개만 야후 심볼 매핑 존재 → 매핑실패 2건
+    # 12개 중 10개만 KIND 매핑 존재 — 나머지 2개는 .KS/.KQ 폴백으로 조회 시도된다
     mapped = codes[:10]
     market_map = {c: f"{c}.KS" for c in mapped}
     monkeypatch.setattr(report_core, "load_market_map", lambda cache_dir: market_map)
     monkeypatch.setattr(report_core, "fetch_many", lambda codes, limit=6: {})
 
-    # 매핑된 10개 중 8개만 시세 조회 성공 → 조회실패 2건
+    # 요청분 중 앞 8개만 시세가 온다 → 끝내 미확보 4건(12-8)
     def fake_fetch(symbols):
         ok = symbols[:8]
         return {s: {"close": 1.0, "change_pct": 0.0} for s in ok}
@@ -107,7 +112,7 @@ def test_derive_mapping_and_lookup_failure_counts_cover_the_full_expanded_list(
     report_cli._derive(snap, tmp_path, tmp_path / "snapshots")
 
     err = capsys.readouterr().err
-    assert "시세 매핑실패 2건 / 조회실패 2건" in err
+    assert "시세 미확보 4건 / 조사 12건" in err
 
 
 # ── §E-2 실배선: _derive → baselines → machine_payload (2026-08-15 리뷰 M3) ──
