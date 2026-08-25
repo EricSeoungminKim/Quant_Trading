@@ -353,3 +353,40 @@ def test_name_map_prefers_kind_when_available(tmp_path, monkeypatch):
     )
     _dart_cache(tmp_path, [{"corp_code": "1", "corp_name": "다트전자", "stock_code": "005930"}])
     assert entities.load_name_map(tmp_path, "KR")["005930"] == "킨드전자"
+
+
+def test_load_table_falls_back_to_dart_so_news_matching_survives(tmp_path, monkeypatch):
+    """뉴스→종목 매칭 사전도 KIND 가 죽으면 DART 로 이어져야 한다.
+
+    이름 사전(load_name_map)만 고치면 리포트는 나오지만 **뉴스에서 종목을 하나도
+    못 잡는다** — '오늘 등장 종목 0개'가 되어 후보 퍼널 전체가 빈다(2026-08-25
+    실측: 후보 2개, 평소 50~130개). 같은 폴백을 여기에도 준다.
+
+    min_len 필터(짧은 이름 오탐 방지)는 그대로 통과시킨다 — 폴백이라고 해서
+    매칭 규율을 느슨하게 하지 않는다."""
+    from quant.analyze import entities
+
+    monkeypatch.setattr(
+        entities, "fetch_kind_corp_list",
+        lambda cache: (_ for _ in ()).throw(RuntimeError("403 Access Denied")),
+    )
+    _dart_cache(tmp_path, [
+        {"corp_code": "1", "corp_name": "삼성전자", "stock_code": "005930"},
+        {"corp_code": "2", "corp_name": "SK", "stock_code": "034730"},  # 2글자 → 필터
+    ])
+    table = entities.load_table(tmp_path)
+    assert ("삼성전자", "005930") in table
+    assert all(len(n) >= entities.MIN_NAME_LEN for n, _ in table), "짧은 이름 필터 유지"
+
+
+def test_load_market_map_does_not_fake_market_classification(tmp_path, monkeypatch):
+    """DART 에는 유가/코스닥 구분이 없다 — 폴백으로 지어내지 않는다."""
+    from quant.analyze import entities
+
+    monkeypatch.setattr(
+        entities, "fetch_kind_corp_list",
+        lambda cache: (_ for _ in ()).throw(RuntimeError("403 Access Denied")),
+    )
+    _dart_cache(tmp_path, [{"corp_code": "1", "corp_name": "삼성전자", "stock_code": "005930"}])
+    with pytest.raises(Exception):
+        entities.load_market_map(tmp_path)

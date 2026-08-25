@@ -87,8 +87,21 @@ def _load_records(cache_dir: Path) -> list[tuple[str, str, str]]:
 
 
 def load_table(cache_dir: Path) -> list[tuple[str, str]]:
-    """하루 1회 받아 캐시한다. 상장사 목록은 자주 바뀌지 않는다."""
-    return build_table(_load_records(cache_dir))
+    """뉴스→종목 매칭 사전. 하루 1회 받아 캐시한다(상장사 목록은 자주 안 바뀐다).
+
+    KIND 가 죽으면 DART 로 폴백한다(2026-08-25). 이름 사전만 고치면 리포트는
+    나오지만 **뉴스에서 종목을 하나도 못 잡아** 후보 퍼널이 통째로 빈다
+    (실측: 후보 2개, 평소 50~130개). `build_table` 의 `min_len` 필터는 그대로
+    통과시킨다 — 폴백이라고 매칭 규율을 느슨하게 하지 않는다."""
+    try:
+        recs = _load_records(cache_dir)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("KIND 매칭 사전 실패 — DART 공시 법인목록으로 폴백: %s: %s",
+                       type(e).__name__, e)
+        # 시장구분은 DART 에 없다. 이 함수는 (이름, 코드)만 쓰므로 빈 문자열로
+        # 채우되, 시장구분이 필요한 `load_market_map` 은 이 폴백을 쓰지 않는다.
+        recs = [(name, code, "") for code, name in _dart_name_map(cache_dir).items()]
+    return build_table(recs)
 
 
 _YAHOO_SUFFIX = {"유가": ".KS", "코스닥": ".KQ"}
