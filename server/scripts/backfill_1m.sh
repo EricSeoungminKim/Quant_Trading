@@ -72,7 +72,32 @@ print(" ".join(out))
 PYEOF
 )"
 
-SYMBOLS="$(printf '%s\n' $ANCHORS $WATCH_SYMBOLS | awk '!seen[$0]++')"  # 중복 제거, 순서 유지
+# 최근 체결 심볼(2026-08-26, 조직도 역할 5) — 일일 피드백·부검이 재생할 봉은
+# "그날 거래한 종목"인데, 아침에 워치리스트에서 빠진 종목(보유만 유지 등)은
+# 위 두 목록에 없어 봉이 안 모였다(실측: 000500 진입이 '1분봉 없어 판정 제외').
+# Toss 1m은 4거래일 롤링이라 지금 안 당기면 **영구 유실**이다 — 거래 원장에서
+# 롤링 창 안의 체결 심볼을 뽑아 합류시킨다. 원장 없음/파싱 실패는 빈 목록.
+TRADED_SYMBOLS="$("$PY" - <<'PYEOF2' 2>>"$LOG"
+import json
+from datetime import datetime, timedelta, timezone
+cutoff = (datetime.now(timezone.utc) - timedelta(days=6)).isoformat()
+out = []
+try:
+    with open("data/state/trades.jsonl", encoding="utf-8") as f:
+        for line in f:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if (r.get("ts") or "") >= cutoff and r.get("symbol"):
+                out.append(str(r["symbol"]))
+except FileNotFoundError:
+    pass
+print(" ".join(dict.fromkeys(out)))
+PYEOF2
+)"
+
+SYMBOLS="$(printf '%s\n' $ANCHORS $WATCH_SYMBOLS $TRADED_SYMBOLS | awk '!seen[$0]++')"  # 중복 제거, 순서 유지
 
 if [ "${DRY_RUN:-0}" = "1" ]; then
   echo "[DRY_RUN] symbols: $SYMBOLS"
