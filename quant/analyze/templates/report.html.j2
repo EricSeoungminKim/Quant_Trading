@@ -1272,7 +1272,10 @@ a{color:inherit}
   {% set kr = us_wrap.kr %}
   <h3 style="margin-top:18px">🇰🇷 전일 한국장 세션</h3>
   {% if kr.flow %}
-  <p class="idx-sub">외국인 {{ '%+,.0f'|format(kr.flow.foreign_net_total) }} · 기관 {{ '%+,.0f'|format(kr.flow.inst_net_total) }} ({{ kr.flow.n_symbols }}종목 원장 합)</p>
+  {# '%+,.0f'|format() 은 %-포맷이라 ',' 천단위가 불법 — 2026-08-27 07:35 빌드를
+     통째로 죽였다. 이 분기는 wrap 에 수급이 실린 첫날(전일 kr-flow 신설) 처음
+     실행됐다 — 죽은 경로의 버그는 살아나는 날 문다. str.format 스타일로. #}
+  <p class="idx-sub">외국인 {{ '{:+,.0f}'.format(kr.flow.foreign_net_total) }} · 기관 {{ '{:+,.0f}'.format(kr.flow.inst_net_total) }} ({{ kr.flow.n_symbols }}종목 원장 합)</p>
   {% endif %}
   {% for label, items in kr.patterns.items() %}
   <div class="sym-meta" style="margin:4px 0">
