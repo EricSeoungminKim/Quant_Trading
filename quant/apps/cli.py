@@ -1938,22 +1938,32 @@ def cmd_outcomes(args: argparse.Namespace) -> None:
     if need and not args.dry_run:
         from quant.analyze.entities import load_market_map
         from quant.collect.sources.market import fetch_symbol_quotes
+        from quant.report.collect.quotes import fetch_kr_quotes
 
         us, kr = O.split_for_quotes(need)
+        # US/KR 을 각자 try 로 격리한다 — 2026-08-26 실사고: KIND 403 이 KR 매핑
+        # 에서 터지자 한 try 가 통째로 죽어 "US 83건만" 남았고, KR 322개 심볼의
+        # D+1 채움이 그날 전부 밀렸다(유예 2거래일 안에 회복해야 하는 상태).
         try:
             if us:
                 quotes.update(O.closes_from_quotes(fetch_symbol_quotes(sorted(us))))
-            if kr:
-                # KR 6자리 코드는 야후 심볼이 아니다 — 매핑 없이 부르면 조용히 빈
-                # 결과가 온다(report_cli._derive 와 같은 처리).
-                mmap = load_market_map(root / "data" / "cache")
-                rev = {v: k for k, v in mmap.items()}
-                ykr = [mmap[c] for c in sorted(kr) if c in mmap]
-                got = O.closes_from_quotes(fetch_symbol_quotes(ykr)) if ykr else {}
-                quotes.update({rev[y]: c for y, c in got.items() if y in rev})
         except Exception as e:  # noqa: BLE001 — 시세 실패가 판단 기록을 막지 않는다
-            quote_error = f"{type(e).__name__}: {e}"
-            logger.warning("시세 조회 실패 — 이번 회차 수익률 채우기 생략: %s", e)
+            quote_error = f"US {type(e).__name__}: {e}"
+            logger.warning("US 시세 조회 실패 — 이번 회차 US 채움 생략: %s", e)
+        try:
+            if kr:
+                # KIND(시장구분)가 죽어도 KR 시세를 포기하지 않는다 — 리포트
+                # 본선과 같은 .KS/.KQ 폴백 경로(quant/report/collect/quotes.py,
+                # 같은 날 아침 리포트 수리와 동일 결함·동일 수리).
+                kr_quotes, route = fetch_kr_quotes(
+                    sorted(kr), root / "data" / "cache",
+                    map_loader=load_market_map, quote_fetcher=fetch_symbol_quotes,
+                )
+                logger.info("KR 시세 경로: %s", route)
+                quotes.update(O.closes_from_quotes(kr_quotes))
+        except Exception as e:  # noqa: BLE001
+            quote_error = (quote_error + " · " if quote_error else "") + f"KR {type(e).__name__}: {e}"
+            logger.warning("KR 시세 조회 실패 — 이번 회차 KR 채움 생략: %s", e)
 
     filled = 0
     updated: list[dict] = []
