@@ -449,10 +449,16 @@ def test_auth_failure_is_distinguishable_from_network_drop_and_backs_off_further
                 auth_reconnect_max_delay=0.5,
             )
             task = asyncio.create_task(feed.run())
-            for _ in range(250):
-                await asyncio.sleep(0.02)
+            # 조건 기반 대기 — 고정 반복(250×0.02s≈5초 예산)은 전체 스위트가
+            # 병렬로 돌 때 CPU 경합으로 백오프 수면·스케줄링이 늘어지면 임계
+            # 도달 전에 소진돼 간헐 실패했다(2026-08-25~26 3회 관측, 격리 실행은
+            # 항상 통과). 벽시계 데드라인을 넉넉히 두되 조건이 차면 즉시 빠지므로
+            # 정상 실행 시간은 그대로다(~2초).
+            deadline = asyncio.get_running_loop().time() + 30.0
+            while asyncio.get_running_loop().time() < deadline:
                 if feed.health().consecutive_auth_failures >= AUTH_ALERT_THRESHOLD:
                     break
+                await asyncio.sleep(0.02)
             await feed.close()
             await _drain(task)
             return feed
