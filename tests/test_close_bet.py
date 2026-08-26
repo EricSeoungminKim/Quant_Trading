@@ -191,3 +191,17 @@ def test_asymmetry_lose_small_win_big():
     """방어 계약: 손절폭 < 익절폭 이 기본값에서 성립해야 한다."""
     s = _strat()
     assert s.stop_pct < s.take_profit_pct
+
+
+def test_afternoon_entry_works_well_before_the_close():
+    """진입 창은 **오후장**이지 종가 근접이 아니다 (2026-08-26 소유자 정정:
+    "종가 단타가 아니라 오후장에 구매해서 다음날 아침 상승갭을 미리 예상하고
+    판단해서 진입하는거야. 즉 다음날 아침에 팔아야해"). 15:05 — 창 초입 —
+    에도 조건이 서면 진입한다. 같은 날 15:15 로 좁혔던 것은 "종가 단일가에
+    최대한 가깝게"라는 잘못 읽은 의도의 과최적화였다 — 소유자 원 스펙은
+    "15:00~15:20 선정"이다."""
+    s = _strat()
+    t = datetime.combine(DAY1, dtime(15, 5), tzinfo=KST)
+    sigs = s.on_cycle(_ctx(t, {"005930": _strong_close_bars()}, {"005930": 109.0}))
+    assert len(sigs) == 1
+    assert sigs[0].action == SignalAction.ENTER_LONG
