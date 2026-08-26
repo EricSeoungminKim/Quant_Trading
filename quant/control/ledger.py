@@ -110,6 +110,12 @@ class TradeLedgerSink:
                 # 체결 직후 현금 스냅샷 — 원장↔현금 갭의 발생 지점을 기록으로 특정
                 # (2026-08-11 160,974원 미설명 갭의 교훈). 구버전 Fill엔 없다.
                 "cash_after": getattr(fill, "cash_after", None),
+                # 트레이더의 시그널 기록(2026-08-26 소유자 조직도 역할 4·5) —
+                # "진입 당시 시그널이 어디서 나온건지 트레이더가 기록해줘야,
+                # 장 종료 후 5번 직원이 그걸 보고 피드백을 준다." 패턴A/B·구조
+                # 손절 근거·게이트/W%R 판정이 전부 이 문자열에 실린다. 그전엔
+                # 엔진 로그에만 있어 로테이션과 함께 사라졌다.
+                "reason": getattr(fill, "reason", "") or "",
                 "market": _market_of(fill.symbol),
             }, ensure_ascii=False)
             with open(self._path, "a", encoding="utf-8") as f:

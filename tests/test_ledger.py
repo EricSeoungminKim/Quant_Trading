@@ -372,3 +372,41 @@ def test_news_scalp_promotion_verdict_missing_avg_bp_is_not_promoted():
     v = news_scalp_promotion_verdict({"n_symbol_days": 40, "avg_open_close_bp": None},
                                       round_trip_fee_bps=18.0, min_n_symbol_days=30)
     assert v["promote"] is False
+
+
+def test_fill_row_persists_the_traders_entry_reason(tmp_path):
+    """트레이더의 시그널 기록(reason)이 원장에 남는다 (2026-08-26 소유자 조직도
+    역할 4·5): "당시 들어갈때 트레이더가 남겨둔 진입 시그널이 어디에서 나온건지
+    당시 상황을 트레이더가 기록해줘야 하고, 그걸 보면서 장이 종료됐을 때 5번
+    직원이 피드백을 준다." 그전엔 reason 이 엔진 로그(journalctl)에만 있어
+    로그 로테이션과 함께 사라졌다 — 패턴A/B·구조손절 근거·게이트 판정이 전부
+    이 문자열에 실려 있는데도."""
+    import json
+
+    from quant.control.ledger import TradeLedgerSink
+
+    path = tmp_path / "trades.jsonl"
+    sink = TradeLedgerSink(_InnerSink(), path)
+    f = _fill("005930", Side.BUY, 10, 81300.0)
+    f = Fill(symbol=f.symbol, side=f.side, qty=f.qty, price=f.price, ts=f.ts,
+             strategy_id=f.strategy_id, fee=f.fee, realized_pnl=f.realized_pnl,
+             reason="1분봉 스캘프 패턴A 진입: 005930 w=0.50 손절=81,000 [구조손절:swing_low]")
+    sink.on_fill(f)
+
+    row = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert "구조손절" in row["reason"]
+
+
+def test_fill_row_without_reason_writes_empty_string(tmp_path):
+    """reason 이 빈 체결(구버전 Fill·수동 조정)도 행 구조는 같다 — 스키마 계약
+    (필드 추가는 자유, 과거 행과 섞여도 읽기가 안 죽는다)."""
+    import json
+
+    from quant.control.ledger import TradeLedgerSink
+
+    path = tmp_path / "trades.jsonl"
+    sink = TradeLedgerSink(_InnerSink(), path)
+    sink.on_fill(_fill("005930", Side.SELL, 10, 81300.0))
+
+    row = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert row["reason"] == ""
