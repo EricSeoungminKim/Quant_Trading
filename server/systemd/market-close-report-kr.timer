@@ -11,10 +11,16 @@
 #
 # KR 전용이다 — US 오후판은 없다(정규장 구조가 다르다).
 [Unit]
-Description=Market close report KR (daily 13:40 KST)
+Description=Market close report KR (daily 14:10 KST)
 
 [Timer]
-OnCalendar=*-*-* 14:35 Asia/Seoul
+# 14:35 → 14:10 (2026-08-26). 빌드 소요가 379초(8/24)→765초(8/25)→19분+(8/26)로
+# 늘며 — 주범은 무료 LLM 레인의 지연 변동(재시도·폴백) — 14:35 시작이 own_brief
+# 마감(14:52 데드라인)을 넘겼고, 그날 종가배팅 후보가 통째로 비었다(own_brief 는
+# 정직하게 '데드라인 초과 — 편입 생략'을 남겼다). 25분 헤드룸 확보. 후보 채점
+# 데이터가 그만큼 이른 것은 close_bet 이 15:15~15:19 에 실시간 차트(양봉·마감
+# 강도)로 재검증하므로 수용한다 — 후보가 아예 없는 날보다 낫다.
+OnCalendar=*-*-* 14:10 Asia/Seoul
 Persistent=false
 Unit=market-close-report@KR.service
 
