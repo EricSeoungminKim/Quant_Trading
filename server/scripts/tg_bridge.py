@@ -220,7 +220,12 @@ def handle_control_command(
         if portfolio is not None:
             lines.append(f"현금: {portfolio.get('cash', 0):,.0f}원")
             open_syms = [s for s, p in portfolio.get("positions", {}).items() if p.get("qty", 0) > 0]
-            lines.append(f"포지션: {', '.join(open_syms) if open_syms else '없음'}")
+            # 종목명 표시 — /balance·/daily_record와 같은 패턴(관심종목 파일에
+            # 등록 시점에 적어둔 이름 재사용). 이름이 없으면 코드만(_display_symbol).
+            names = _watchlist_names()
+            lines.append(
+                f"포지션: {', '.join(_display_symbol(s, names) for s in open_syms) if open_syms else '없음'}"
+            )
         if toss_client is not None:
             lines.append("")
             lines.append(handle_daily_record(toss_client))

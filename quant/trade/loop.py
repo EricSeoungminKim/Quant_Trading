@@ -426,6 +426,28 @@ def _execute_signal(
                 f"💵 체결가  {_price(fill.price, fill.symbol)}",
                 f"💰 총 금액 {_amount(fill.qty * fill.price, fill.symbol)}",
             ]
+            if is_buy:
+                # 손절/익절 가격 — 체결 직후 lot에는 아직 반영 전인 경우가 많으므로
+                # (state_update는 이 블록보다 먼저 적용되지만 대부분의 전략은 진입
+                # Signal에 state_update를 싣지 않고 다음 사이클에 lot을 채운다),
+                # signal.stop/target(전략이 진입 시 직접 실어보낸 값)으로 폴백한다.
+                # 둘 다 없으면 줄 자체를 만들지 않는다(0/"없음"으로 위장 금지).
+                lot = None
+                pos = ctx.broker.positions().get(fill.symbol)
+                if pos is not None:
+                    lot = pos.lot(fill.strategy_id)
+                stop = (lot or {}).get("stop")
+                if stop is None:
+                    stop = signal.stop
+                target = (lot or {}).get("target")
+                if target is None:
+                    target = signal.target
+                if stop is not None:
+                    pct = (float(stop) / fill.price - 1) * 100
+                    lines.append(f"🛡 손절    {_price(float(stop), fill.symbol)} ({pct:+.2f}%)")
+                if target is not None:
+                    pct = (float(target) / fill.price - 1) * 100
+                    lines.append(f"🎯 익절    {_price(float(target), fill.symbol)} ({pct:+.2f}%)")
             if not is_buy:
                 # 매도는 결과가 곧 성적이다 — 실현 손익(수수료 차감 후)을 바로 보여준다.
                 if fill.realized_pnl is not None:

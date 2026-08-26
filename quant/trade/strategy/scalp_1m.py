@@ -178,6 +178,7 @@ import pandas as pd
 from quant.core.ports import Context
 from quant.core.models import Position, Signal, SignalAction, market_of_symbol
 from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
+from quant.trade.fmt import fmt_price
 from quant.trade.indicators import sma
 from quant.trade.indicators.trend_gate import adx_di, atr_ratio
 from quant.trade.structure import structure_bracket, williams_r
@@ -710,7 +711,8 @@ class Scalp1mStrategy:
             target_weight=target_weight,
             reason=(
                 f"1분봉 스캘프 {tag}패턴{pattern} 진입: {symbol} w={target_weight:.2f} "
-                f"손절={stop:.4g} (기준={basis_price:.4g}){stop_note}{gate_note}{w_note}"
+                f"손절={fmt_price(stop, symbol)} (기준={fmt_price(basis_price, symbol)})"
+                f"{stop_note}{gate_note}{w_note}"
             ),
             stop=stop,
         )
@@ -928,19 +930,22 @@ class Scalp1mStrategy:
             return Signal(
                 strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
                 target_weight=0.0, exit_fraction=1.0,
-                reason=f"세션 롤 강제청산(오버나잇 금지): 진입 {entry_session} 현재={price:.4g}",
+                reason=f"세션 롤 강제청산(오버나잇 금지): 진입 {entry_session} 현재={fmt_price(price, symbol)}",
             )
         if ctx.clock.should_flatten(market, self.flatten_minutes):
             return Signal(
                 strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
                 target_weight=0.0, exit_fraction=1.0,
-                reason=f"EoD 청산: entry={entry:.4g} 현재={price:.4g}",
+                reason=f"EoD 청산: entry={fmt_price(entry, symbol)} 현재={fmt_price(price, symbol)}",
             )
         if price <= stop:
             return Signal(
                 strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
                 target_weight=0.0, exit_fraction=1.0,
-                reason=f"손절: entry={entry:.4g} stop={stop:.4g} 현재={price:.4g}",
+                reason=(
+                    f"손절: entry={fmt_price(entry, symbol)} stop={fmt_price(stop, symbol)} "
+                    f"현재={fmt_price(price, symbol)}"
+                ),
             )
         # 전량 익절 — 하드 손절 바로 다음, MA60 잔량 트레일보다 **앞**. 익절가는
         # 하드 목표라 트레일 판정보다 우선한다. 0(기본)이면 이 블록은 없는 것과
@@ -951,8 +956,8 @@ class Scalp1mStrategy:
                 return Signal(
                     strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
                     target_weight=0.0, exit_fraction=1.0,
-                    reason=(f"전량 익절(+{self.take_profit_bps:g}bp): entry={entry:.4g} "
-                            f"목표={take:.4g} 현재={price:.4g}"),
+                    reason=(f"전량 익절(+{self.take_profit_bps:g}bp): entry={fmt_price(entry, symbol)} "
+                            f"목표={fmt_price(take, symbol)} 현재={fmt_price(price, symbol)}"),
                 )
 
         # 잔량 트레일 — 최근 완성 1분봉 종가가 MA60 아래로 마감하면 전량 청산
@@ -967,7 +972,10 @@ class Scalp1mStrategy:
                 return Signal(
                     strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
                     target_weight=0.0, exit_fraction=1.0,
-                    reason=f"60선 이탈(잔량 트레일): 종가={last_close:.4g} MA60={ma_last:.4g}",
+                    reason=(
+                        f"60선 이탈(잔량 트레일): 종가={fmt_price(last_close, symbol)} "
+                        f"MA60={fmt_price(float(ma_last), symbol)}"
+                    ),
                 )
 
         if not lot.get("partial_taken"):
@@ -979,8 +987,8 @@ class Scalp1mStrategy:
                         strategy_id=self.id, symbol=symbol, action=SignalAction.SCALE_OUT,
                         target_weight=0.0, exit_fraction=self.partial_fraction,
                         reason=(
-                            f"절반 익절(+{self.partial_take_r:g}R): entry={entry:.4g} "
-                            f"목표={target:.4g} 현재={price:.4g} "
+                            f"절반 익절(+{self.partial_take_r:g}R): entry={fmt_price(entry, symbol)} "
+                            f"목표={fmt_price(target, symbol)} 현재={fmt_price(price, symbol)} "
                             f"{self.partial_fraction * 100:.0f}% 청산"
                         ),
                         state_update={"partial_taken": True},
@@ -1338,7 +1346,8 @@ class Scalp1mPureStrategy:
             target_weight=target_weight,
             reason=(
                 f"1분봉 스캘프 {tag}패턴{pattern} 진입: {symbol} w={target_weight:.2f} "
-                f"손절={stop:.4g} (기준={basis_price:.4g}){stop_note}{gate_note}{w_note}"
+                f"손절={fmt_price(stop, symbol)} (기준={fmt_price(basis_price, symbol)})"
+                f"{stop_note}{gate_note}{w_note}"
             ),
             stop=stop,
         )
@@ -1416,19 +1425,22 @@ class Scalp1mPureStrategy:
             return Signal(
                 strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
                 target_weight=0.0, exit_fraction=1.0,
-                reason=f"세션 롤 강제청산(오버나잇 금지): 진입 {entry_session} 현재={price:.4g}",
+                reason=f"세션 롤 강제청산(오버나잇 금지): 진입 {entry_session} 현재={fmt_price(price, symbol)}",
             )
         if self._should_flatten(market, snap):
             return Signal(
                 strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
                 target_weight=0.0, exit_fraction=1.0,
-                reason=f"EoD 청산: entry={entry:.4g} 현재={price:.4g}",
+                reason=f"EoD 청산: entry={fmt_price(entry, symbol)} 현재={fmt_price(price, symbol)}",
             )
         if price <= stop:
             return Signal(
                 strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
                 target_weight=0.0, exit_fraction=1.0,
-                reason=f"손절: entry={entry:.4g} stop={stop:.4g} 현재={price:.4g}",
+                reason=(
+                    f"손절: entry={fmt_price(entry, symbol)} stop={fmt_price(stop, symbol)} "
+                    f"현재={fmt_price(price, symbol)}"
+                ),
             )
         # 전량 익절 — 하드 손절 바로 다음, MA60 잔량 트레일보다 **앞**. 익절가는
         # 하드 목표라 트레일 판정보다 우선한다. 0(기본)이면 이 블록은 없는 것과
@@ -1439,8 +1451,8 @@ class Scalp1mPureStrategy:
                 return Signal(
                     strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
                     target_weight=0.0, exit_fraction=1.0,
-                    reason=(f"전량 익절(+{self.take_profit_bps:g}bp): entry={entry:.4g} "
-                            f"목표={take:.4g} 현재={price:.4g}"),
+                    reason=(f"전량 익절(+{self.take_profit_bps:g}bp): entry={fmt_price(entry, symbol)} "
+                            f"목표={fmt_price(take, symbol)} 현재={fmt_price(price, symbol)}"),
                 )
 
         ma_bars = snap.bars.get((symbol, _INTERVAL))
@@ -1451,7 +1463,10 @@ class Scalp1mPureStrategy:
                 return Signal(
                     strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
                     target_weight=0.0, exit_fraction=1.0,
-                    reason=f"60선 이탈(잔량 트레일): 종가={last_close:.4g} MA60={ma_last:.4g}",
+                    reason=(
+                        f"60선 이탈(잔량 트레일): 종가={fmt_price(last_close, symbol)} "
+                        f"MA60={fmt_price(float(ma_last), symbol)}"
+                    ),
                 )
 
         if not lot.get("partial_taken"):
@@ -1464,8 +1479,8 @@ class Scalp1mPureStrategy:
                         strategy_id=self.id, symbol=symbol, action=SignalAction.SCALE_OUT,
                         target_weight=0.0, exit_fraction=self.partial_fraction,
                         reason=(
-                            f"절반 익절(+{self.partial_take_r:g}R): entry={entry:.4g} "
-                            f"목표={target:.4g} 현재={price:.4g} "
+                            f"절반 익절(+{self.partial_take_r:g}R): entry={fmt_price(entry, symbol)} "
+                            f"목표={fmt_price(target, symbol)} 현재={fmt_price(price, symbol)} "
                             f"{self.partial_fraction * 100:.0f}% 청산"
                         ),
                         state_update={"partial_taken": True},
