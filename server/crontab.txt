@@ -143,6 +143,12 @@
 # 백필(16:35) 뒤로 10분 띄웠다 — 그날 1분봉이 확실히 잡힌 뒤라야 진입 타이밍
 # 판정(고점매수/거래 소강 진입/늦은 진입)이 실제 봉으로 재생된다. 나머지는
 # 06:25 US 항목과 동일 — LLM 없음, 픽 없으면 무출력.
+# 평일 16:38 KST — 1분봉 백필 추가 회차(2026-08-26). 일일 피드백(16:45)이 당일
+# KR 세션 1분봉을 재생해야 하는데, 기존 백필은 다음날 05:40 뿐이라 피드백
+# 시점엔 봉이 항상 없었다(리허설에서 '1분봉 없어 판정 제외'로 실측). 백필은
+# gap-only 멱등이라 하루 2회가 안전하고, 05:40 회차는 US 마감분을 마저 채운다.
+38 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backfill_1m.sh >> data/backfill.log 2>&1
+
 45 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/daily_feedback.sh KR >> data/daily_feedback.log 2>&1
 
 # 매일 05:40 KST — 1분봉 적재 (scalp_1m, 2026-08-18). Toss 1m API는 **과거
