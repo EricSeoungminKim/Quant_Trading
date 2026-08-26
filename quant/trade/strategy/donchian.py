@@ -351,6 +351,10 @@ class DonchianPureStrategy:
         mtc = snap.minutes_to_close.get(self.market)
         if mtc is None:
             return False
+        # mtc <= 0 = 연속 거래 종료(동시호가 구간) — 원본과 동일하게 False
+        # (2026-08-26, clock._should_flatten 의 remaining<=0 게이트 재현).
+        if mtc <= 0:
+            return False
         return mtc - snap.cadence_minutes < self.flatten_minutes
 
     def _check_entry(

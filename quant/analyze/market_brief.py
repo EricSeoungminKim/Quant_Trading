@@ -65,7 +65,7 @@ MAX_CANDIDATES = {"KR": 15, "US": 5}
 _TAG_MAP = {
     "NEWS": "EVENT",   # 뉴스 다발 = 신선한 촉매 — news_momentum이 찾는 바로 그것
     # 종가배팅(2026-08-25): 장중 리포트가 수급·거래대금·마감강도로 채점한 후보.
-    # close_bet 전략만 이 태그를 소비한다(14:55~15:19 진입 창).
+    # close_bet 전략만 이 태그를 소비한다(진입 창 15:15~15:19 — 연속 거래 마지막 구간).
     "CLOSE": "CLOSE_BET",
     "RANK": "TREND",   # 랭킹(거래대금/상승률) 편입 = watch_scorer의 --discover-*와 같은 축
     # STREAK/NEW/ANCHOR 는 증거이지 채점 프로필이 아니다 — 매핑하지 않는다.
@@ -240,8 +240,9 @@ def intraday_scalp_tokens(payload: dict) -> list[str]:
 
 def close_bet_tokens(payload: dict) -> list[str]:
     """close_engine.json 의 `close_bet_view`(종가배팅 후보, 결정론 채점 top-5)에서
-    CLOSE 토큰을 뽑는다 — 번역표(CLOSE→CLOSE_BET)를 거쳐 close_bet 전략의 진입
-    창(14:55~15:19)에 닿는다. 키가 없는 payload(아침판)는 빈 리스트."""
+    CLOSE 토큰을 뽑는다 — 번역표(CLOSE→CLOSE_BET)를 거쳐 close_bet 전략의 판정
+    창(15:15~15:19 — 연속 거래 마지막 구간)에 닿는다. 키가 없는
+    payload(아침판)는 빈 리스트."""
     out: list[str] = []
     for item in payload.get("close_bet_view") or []:
         sym = item.get("symbol") if isinstance(item, dict) else None

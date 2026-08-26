@@ -563,8 +563,12 @@ strategies:
   close_bet:
     class: close_bet
     # 종가배팅(2026-08-25, 전략 4종 체제 ③) — 장중 리포트(14:50)가 수급·거래대금·
-    # 뉴스 지속성으로 채점해 CLOSE_BET 태그를 준 종목만, 14:55~15:19 에 차트 확인
-    # (양봉 + 마감강도>=0.7) 후 종가 부근 매수 → 다음날 시초 갭 매도.
+    # 뉴스 지속성으로 채점해 CLOSE_BET 태그를 준 종목만, 15:15~15:19(연속 거래가
+    # 끝나는 동시호가 15:20 직전)에 차트 확인(양봉 + 마감강도>=0.7) 후 그 자리에서
+    # 진입 → 다음날 시초 갭 매도. 2026-08-26: 창을 14:55→15:15로 당겨 마감에 더
+    # 가까운 실제 체결가를 쓴다 — 동시호가 구간(15:20~15:30) 자체로 체결을 밀어
+    # 넣지 않는 이유는 quant/trade/strategy/close_bet.py docstring 참고
+    # ("마감 동시호가 구조를 반영한다" 절, in_continuous_session과 같은 원칙).
     # 손절 -1% < 익절 +2% (잃을 땐 적게, 벌 땐 많이) + 시초 30분 데드라인.
     # 규칙 근거(웹 리서치)는 quant/trade/strategy/close_bet.py docstring.
     enabled: true
@@ -576,7 +580,7 @@ strategies:
     universe: watchlist
     symbols: []
     params:
-      entry_start_hhmm: [14, 55]
+      entry_start_hhmm: [15, 15]
       entry_end_hhmm: [15, 19]
       min_close_strength: 0.7
       target_weight: 0.1

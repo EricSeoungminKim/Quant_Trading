@@ -152,3 +152,58 @@ def test_buy_fill_formats_kr_price_without_decimals(fake_clock_cls):
     msg = notifier.messages[0]
     assert "🛡 손절    95,000원 (-5.00%)" in msg
     assert "🎯 익절    110,000원 (+10.00%)" in msg
+
+
+# ---------------------------------------------------------------- 매도 체결
+
+def _exit_signal(symbol: str = SYMBOL) -> Signal:
+    return Signal(
+        strategy_id="a", symbol=symbol, action=SignalAction.EXIT_LONG,
+        target_weight=0.0, exit_fraction=0.5, reason="테스트 청산",
+    )
+
+
+def test_sell_fill_shows_entry_and_stop(fake_clock_cls):
+    """매도 메시지에도 진입가·손절선이 보인다(소유자: "매수랑 매도 메세지에서
+    해결해줘"). 청산가만 보면 "얼마에 사서 어디서 끊기로 했었나"를 사유 문자열에서
+    눈으로 파내야 한다."""
+    data = _Data(price=PRICE)
+    broker = _broker(data)
+    ctx = _ctx(fake_clock_cls, broker, data)
+
+    # 먼저 진입해 lot(entry/stop)을 만든다. 실제 전략은 진입 Signal 의
+    # state_update 로 lot 에 진입가·손절선을 심는다(scalp_1m._build_entry 등).
+    entry_sig = _entry(stop=95.0)
+    entry_sig = Signal(
+        strategy_id=entry_sig.strategy_id, symbol=entry_sig.symbol,
+        action=entry_sig.action, target_weight=entry_sig.target_weight,
+        reason=entry_sig.reason, stop=entry_sig.stop,
+        state_update={"entry": PRICE, "stop": 95.0},
+    )
+    _execute_signal(entry_sig, ctx, _risk(), _Sink(), notifier=None)
+
+    notifier = _Notifier()
+    data._price = 97.0  # 청산가는 진입가보다 아래
+    _execute_signal(_exit_signal(), ctx, _risk(), _Sink(), notifier=notifier)
+
+    assert len(notifier.messages) == 1
+    msg = notifier.messages[0]
+    assert "🔴 매도 체결" in msg
+    assert "💵 진입가" in msg and "100.00" in msg
+    assert "97.00" in msg and "-3.00%" in msg
+    assert "🛡 손절선" in msg and "95.00" in msg
+
+
+def test_sell_fill_without_lot_omits_entry_line(fake_clock_cls):
+    """lot 정보가 없으면(전량 청산으로 비었거나 레거시 경로) 줄을 만들지 않는다 —
+    없는 값을 지어내지 않는다."""
+    data = _Data(price=PRICE)
+    broker = _broker(data)
+    ctx = _ctx(fake_clock_cls, broker, data)
+    _execute_signal(_entry(), ctx, _risk(), _Sink(), notifier=None)  # stop 없음
+
+    notifier = _Notifier()
+    _execute_signal(_exit_signal(), ctx, _risk(), _Sink(), notifier=notifier)
+
+    msg = notifier.messages[0]
+    assert "🛡 손절선" not in msg

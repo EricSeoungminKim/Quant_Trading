@@ -247,6 +247,26 @@ def _kr_premarket_entry_bars(*, surge=True, l1_breach_open=False, notional_ok=Tr
     return pd.DataFrame(rows, index=pd.DatetimeIndex(idx, tz=KST))
 
 
+def _us_premarket_entry_bars(*, surge=True, notional_ok=True, warmup_n=25, day=DAY1):
+    """US 프리마켓 직접 진입용 봉(KR 헬퍼와 동일 구조, 달러 단위).
+
+    2026-08-26: 프리마켓 직접 진입 동치 검증을 KR → US 로 옮기면서 추가했다.
+    한국장에는 연속 프리마켓이 없어(08:30~09:00 동시호가는 09:00 일괄 체결)
+    KR 경로로는 진입 자체가 일어나지 않는다."""
+    pre_open_ts = _us_now(dtime(8, 0), day)
+    idx, rows = _warmup(pre_open_ts, warmup_n)
+    p1_vol = 3500.0 if surge else 1000.0
+    last_vol = 200_000.0 if notional_ok else 1.0
+    session_rows = [
+        {"open": 100.0, "high": 101.0, "low": 99.9, "close": 100.8, "volume": p1_vol},
+        {"open": 100.8, "high": 100.9, "low": 100.5, "close": 100.6, "volume": 1000.0},
+        {"open": 100.6, "high": 101.5, "low": 100.5, "close": 101.3, "volume": last_vol},
+    ]
+    idx += [pre_open_ts + timedelta(minutes=i) for i in range(3)]
+    rows += session_rows
+    return pd.DataFrame(rows, index=pd.DatetimeIndex(idx, tz=NY))
+
+
 def _kr_premarket_confirm_bars(*, surge=True, breach_after=False, warmup_n=25, day=DAY1):
     pre_open_ts = _kr_now(KR_PRE_OPEN, day)
     idx, rows = _warmup(pre_open_ts, warmup_n)
@@ -539,14 +559,27 @@ def test_premarket_confirmation_marks_symbol_equivalence():
 
 
 def test_premarket_direct_entry_equivalence():
+    """2026-08-26: KR → US. 한국장은 연속 프리마켓이 없어 직접 진입이 구조적으로
+    불가하다 — 동치 검증은 실제로 진입이 일어나는 US 에서 한다."""
+    legacy, pure = _strats([US_PRE_SYMBOL], _params(premarket_min_volume_usd=50_000))
+    bars = {US_PRE_SYMBOL: _us_premarket_entry_bars(surge=True, notional_ok=True)}
+    now = _us_now(dtime(8, 2, 30))
+
+    sig_legacy = legacy.on_cycle(_ctx({US_PRE_SYMBOL: 101.3}, now, bars=bars, open_markets=frozenset()))
+    sig_pure = pure.on_cycle(_ctx({US_PRE_SYMBOL: 101.3}, now, bars=bars, open_markets=frozenset()))
+    assert _keys(sig_legacy) == _keys(sig_pure)
+    assert len(sig_legacy) == 1 and "프리마켓" in sig_legacy[0].reason
+
+
+def test_kr_premarket_no_direct_entry_equivalence():
+    """KR 프리마켓은 두 구현 모두 침묵해야 한다(체결될 수 없는 주문은 안 낸다)."""
     legacy, pure = _strats([KR_SYMBOL], _params(premarket_min_volume_krw=50_000_000))
     bars = {KR_SYMBOL: _kr_premarket_entry_bars(surge=True, notional_ok=True)}
     now = _kr_now(dtime(8, 2, 30))
 
     sig_legacy = legacy.on_cycle(_ctx({KR_SYMBOL: 81300.0}, now, bars=bars, open_markets=frozenset()))
     sig_pure = pure.on_cycle(_ctx({KR_SYMBOL: 81300.0}, now, bars=bars, open_markets=frozenset()))
-    assert _keys(sig_legacy) == _keys(sig_pure)
-    assert len(sig_legacy) == 1 and "프리마켓" in sig_legacy[0].reason
+    assert sig_legacy == [] and sig_pure == []
 
 
 def test_premarket_direct_entry_rejected_below_liquidity_guard_equivalence():

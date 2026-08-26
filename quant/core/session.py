@@ -44,6 +44,49 @@ _STATIC_SESSIONS: dict[str, tuple[ZoneInfo, dtime, dtime]] = {
 
 _MARKET_TZ: dict[str, ZoneInfo] = {m: tz for m, (tz, _, _) in _STATIC_SESSIONS.items()}
 
+# **가격이 발견되는 연속 거래 구간**. 위 `_STATIC_SESSIONS`(정규장 전체)와 다르다
+# — 그 차이가 2026-08-26 에 실제로 돈을 잃게 만들었다.
+#
+# 한국장 구조(소유자 교정):
+#   08:30~09:00  장 시작 동시호가 — 주문만 모으고 **체결하지 않는다**. 09:00 정각에
+#                하나의 시가로 일괄 체결.
+#   08:30~08:40  장전 시간외 종가 — 전일 종가 고정가. 가격 발견 없음.
+#   09:00~15:20  **연속 거래** — 여기서만 호가가 실시간으로 체결된다.
+#   15:20~15:30  장 마감 동시호가 — 주문을 모아 15:30 종가로 일괄 체결.
+#
+# 그동안 엔진은 KR 을 09:00~15:30 연속으로 봤고, 프리마켓 창(08:00~08:50)에서
+# 직접 진입까지 했다. 그래서 08:27·08:46 에 **실재할 수 없는 체결**이 기록됐고,
+# 09:00 시가 갭이 손절선을 2.8% 지나쳐 의도한 -1% 손실이 -3.8% 가 됐다.
+# 페이퍼 브로커는 데이터피드가 준 가격이면 무엇이든 체결시키므로 이 구조적
+# 오류를 스스로 잡지 못한다 — 세션 모델이 잡아야 한다.
+#
+# US 는 정규장 전체가 연속 거래다(프리/애프터는 별도 세션이고, 우리 US 프리마켓
+# 진입은 실제로 체결 가능한 연속 호가창을 쓴다 — KR 과 성격이 다르다).
+_CONTINUOUS: dict[str, tuple[dtime, dtime]] = {
+    "US": (dtime(9, 30), dtime(16, 0)),
+    "KR": (dtime(9, 0), dtime(15, 20)),
+}
+
+
+def continuous_window(market: str) -> tuple[dtime, dtime]:
+    """그 시장의 연속 거래 (시작, 끝) 로컬 시각. 위 표 참고."""
+    return _CONTINUOUS[market]
+
+
+def in_continuous_session(market: str, now: datetime) -> bool:
+    """지금이 **호가가 실시간으로 체결되는** 구간인가.
+
+    동시호가·시간외는 False 다. 진입/청산 판단이 이걸 봐야 "낼 수 없는 주문"을
+    내지 않는다. 휴장일은 모른다(주말만 거른다) — 캘린더 판정은 `SessionCalendar`
+    구현체가 하고, 이 함수는 **하루 안에서의 구간**만 답한다.
+    """
+    tz = _MARKET_TZ[market]
+    local = now.astimezone(tz)
+    if local.weekday() >= 5:
+        return False
+    start, end = _CONTINUOUS[market]
+    return start <= local.time() < end
+
 
 @dataclass(frozen=True)
 class Session:

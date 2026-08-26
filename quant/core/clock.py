@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from quant.core.session import StaticSessionCalendar
+from quant.core.session import StaticSessionCalendar, continuous_window, market_tz
 
 
 def _is_open(calendar, market: str, now: datetime) -> bool:
@@ -18,11 +18,35 @@ def _is_open(calendar, market: str, now: datetime) -> bool:
     return session is not None and session.open <= now < session.close
 
 
+def _effective_close(session, market: str) -> datetime:
+    """체결 가능한 마지막 시각 — 명목 마감과 연속 거래 끝 중 이른 쪽.
+
+    KR 은 15:20~15:30 이 장 마감 동시호가다(주문만 모아 15:30 종가로 일괄 체결)
+    — 명목 마감(15:30) 기준으로 재면 마감 청산이 15:29, 동시호가 한복판에 걸려
+    그 시각의 '현재가'(예상체결가)로 **실재하지 않는 체결**이 만들어진다
+    (2026-08-26 소유자 교정, quant/core/session.py 의 _CONTINUOUS 참고).
+
+    이 시각 이후 잔여시간을 원하는 소비처(EoD 강제청산·마감 임박 신규진입
+    금지)는 전부 "연속으로 체결 가능한 남은 시간"이 필요하다 — 명목 마감이
+    필요한 소비처는 없다(전수 확인). US 는 정규장 전체가 연속이라 min() 이
+    명목 마감을 그대로 돌려주고, 조기폐장일(캘린더가 13:00 을 주는 날)은
+    조기폐장 쪽이 더 이르므로 역시 그대로다.
+    """
+    try:
+        _, cont_end = continuous_window(market)
+    except KeyError:
+        return session.close  # 연속 구간 정의가 없는 시장 — 명목 마감 그대로
+    local_close = session.close.astimezone(market_tz(market))
+    cont_close = local_close.replace(hour=cont_end.hour, minute=cont_end.minute,
+                                     second=0, microsecond=0)
+    return min(session.close, cont_close)
+
+
 def _minutes_to_close(calendar, market: str, now: datetime) -> float | None:
     session = calendar.session(market, now)
     if session is None or not (session.open <= now < session.close):
         return None
-    return (session.close - now).total_seconds() / 60
+    return (_effective_close(session, market) - now).total_seconds() / 60
 
 
 def _should_flatten(calendar, market: str, now: datetime, flatten_minutes: float, cadence: float) -> bool:
@@ -49,7 +73,13 @@ def _should_flatten(calendar, market: str, now: datetime, flatten_minutes: float
     session = calendar.session(market, now)
     if session is None or not (session.open <= now < session.close):
         return False
-    return (session.close - now).total_seconds() / 60 - cadence < flatten_minutes
+    # 연속 거래가 이미 끝났으면(동시호가 구간) False — 여기서 청산 신호를 내면
+    # 예상체결가로 실재하지 않는 체결이 만들어진다(2026-08-26, _effective_close
+    # 참고). 청산은 연속 거래의 마지막 판단 시점에 이미 걸렸어야 한다.
+    remaining = (_effective_close(session, market) - now).total_seconds() / 60
+    if remaining <= 0:
+        return False
+    return remaining - cadence < flatten_minutes
 
 
 class SimClock:

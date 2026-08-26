@@ -449,6 +449,25 @@ def _execute_signal(
                     pct = (float(target) / fill.price - 1) * 100
                     lines.append(f"🎯 익절    {_price(float(target), fill.symbol)} ({pct:+.2f}%)")
             if not is_buy:
+                # 매도에도 **진입가와 그때 걸어둔 손절선**을 보여준다(2026-08-26
+                # 소유자: "매수랑 매도 메세지에서 해결해줘"). 청산가만 보면
+                # "얼마에 샀고 어디서 끊기로 했었나"를 사유 문자열에서 눈으로
+                # 파내야 한다. 전량 청산이면 lot 이 이미 비었을 수 있으므로
+                # 없으면 그 줄을 만들지 않는다(지어내지 않는다).
+                exit_lot = None
+                exit_pos = ctx.broker.positions().get(fill.symbol)
+                if exit_pos is not None:
+                    exit_lot = exit_pos.lot(fill.strategy_id)
+                entry_px = (exit_lot or {}).get("entry")
+                exit_stop = (exit_lot or {}).get("stop")
+                if entry_px:
+                    gap = (fill.price / float(entry_px) - 1) * 100
+                    lines.append(
+                        f"💵 진입가  {_price(float(entry_px), fill.symbol)} "
+                        f"→ 청산 {_price(fill.price, fill.symbol)} ({gap:+.2f}%)"
+                    )
+                if exit_stop:
+                    lines.append(f"🛡 손절선  {_price(float(exit_stop), fill.symbol)}")
                 # 매도는 결과가 곧 성적이다 — 실현 손익(수수료 차감 후)을 바로 보여준다.
                 if fill.realized_pnl is not None:
                     net = fill.realized_pnl - fill.fee
@@ -1285,7 +1304,9 @@ def _universe_roll_bucket(now: datetime | None = None) -> str:
     - **14:53 (KR, 2026-08-25 종가배팅 체인)**: 장중 리포트(14:35 빌드 → 14:50
       발행, `KR_close_engine.json`)의 종가배팅 후보(CLOSE_BET)가 14:52
       `own_brief.sh KR close` → 14:52 데드라인 직전 등록 → 이 경계로 흡수돼
-      close_bet 의 진입 창(14:55~15:19)에 매매 대상이 된다. 원래 14:00 경계
+      close_bet 의 진입 창(15:15~15:19)에 매매 대상이 된다(2026-08-26: 연속
+      거래 마지막 구간으로 당겼다 — 15:20 부터는 동시호가라 '현재가'로 체결할 수
+      없다, quant/trade/strategy/close_bet.py 참고). 원래 14:00 경계
       (13:50 리포트 → 14:00~15:30 마감 구간 매매)였는데, 그 소비자(intraday_scan
       마감 매매)가 전략 4종 체제에서 비활성이 되고 리포트가 종가배팅용 14:50
       발행으로 옮겨가며 경계도 함께 왔다.

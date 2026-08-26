@@ -15,9 +15,50 @@
 외인/기관 수급·거래대금·뉴스 지속성은 **장중 리포트(14:50)** 가 채점해
 `CLOSE_BET` 태그로 넘긴다(뉴스→유니버스 경로, 평면 규칙 그대로 — 전략은
 수급 데이터를 직접 만지지 않는다). 이 전략은 태그된 종목에 대해 **차트 확인**
-(양봉 + 고가 근처 마감)과 **시각 게이트**(14:55~15:19)만 결정론으로 판정한다.
+(양봉 + 고가 근처 마감)만 결정론으로 판정한다.
 소유자도 같은 리포트를 보고 실계좌에서 직접 종가배팅을 할 수 있다 — 프로그램과
 사람이 같은 근거를 쓴다.
+
+## 마감 동시호가 구조를 반영한다 (2026-08-26)
+
+소유자 정정: KRX는 09:00~15:20만 연속 거래고, **15:20~15:30은 동시호가**다
+(주문만 모았다가 15:30 정각 단일가로 일괄 체결 — Toss `GET
+/api/v1/market-calendar/KR` 응답의 `regularMarket.singlePriceAuctionStartTime`도
+15:20, `endTime`도 15:30로 이 구조와 일치한다. 실측: 2026-08-26 조사).
+"종가배팅"의 의도는 그 15:30 단일가로 사는 것이지, 아직 움직이는 연속 거래가로
+사는 게 아니다 — 예전 진입 창(14:55~15:19)이 15:00 근처 가격으로 진입한 건 그
+의도와 거리가 있었다.
+
+**같은 날 세션에서 진행 중인 다른 수리와 결이 같다.** `quant/core/session.py`의
+`in_continuous_session`(2026-08-26, scalp_1m 프리마켓 오사고 수리)이 세운 원칙을
+그대로 따른다: **가격이 실시간으로 발견되지 않는 구간의 "현재가"로 체결을
+모델링하면 실재하지 않는 손익이 생긴다.** KR 동시호가(15:20~15:30)는 정확히 그
+구간이다 — 우리 데이터 모델도 실거래도 그 30분 동안은 새로운 체결가가 없다
+(있다면 15:30 딱 한 번). 그래서 이 전략은 **판정과 체결을 시간상 분리하지
+않는다** — 그러면 체결을 동시호가 구간 안으로 밀어 넣게 되고, 그 시점의
+`DataFeed.quote()`는 (프리마켓 사례와 똑같이) 우리 엔진 안에서 실재할 수 없는
+값이 된다. 대신 **진입 창 자체를 연속 거래가 끝나는 순간(15:20 직전)에 바짝
+붙인다** — 마감강도·양봉 판정과 진입 체결이 여전히 같은 사이클에서 일어나지만,
+그 사이클이 이제 14:55가 아니라 15:15~15:19다. 연속 거래 구간(`continuous_window
+("KR") == (09:00, 15:20)`) 안에서 잡을 수 있는 가장 마감에 가까운 실제 체결가를
+쓰는 것이, 존재하지 않는 15:30 단일가를 그전에 흉내 내는 것보다 정직하다.
+
+**한계**: 이 진입가는 여전히 진짜 15:30 종가가 아니라 15:15~15:19 사이의
+마지막 연속 거래가 근사치다. 이 저장소는 동시호가 자체를 시뮬레이션하는
+인프라가 없다(전용 데이터 소스도, `quant/adapters/execution/paper.py`의 체결
+로직도 "즉시 체결"만 안다) — 그런 인프라 없이 15:20~15:30 구간의 값을 진짜
+체결가처럼 쓰는 건 위 원칙을 그대로 위반하는 것이므로, 여기서는 시도하지 않는다.
+
+**Toss(실거래) 쪽 한계**: Toss 주문 API(`docs/api/toss/openapi.json`)에
+"종가 지정가"(`timeInForce: CLS`, LOC)가 있지만 **미국 주식 지정가 전용**이라고
+명시돼 있다(`"종가 주문(CLS)은 미국 주식 지정가 주문에만 사용할 수 있습니다"`,
+`allowedConditions: {marketCountry: US, orderType: LIMIT}`) — KR 전용 동시호가
+주문 유형은 문서에 없다. KR에서 동시호가에 참여하려면 그 구간(15:20~15:30)에
+일반 LIMIT/MARKET 주문을 내는 수밖에 없고, 그 주문이 어떻게 큐잉·체결되는지는
+Toss 문서에 별도 설명이 없다 — KRX 거래소 자체의 동시호가 매칭 규칙(그 구간에
+접수된 모든 주문이 15:30 단일가로 모여 체결)에 의존한다고 **추정**할 뿐,
+Toss API 문서로 확인된 사실은 아니다. 소유자가 리포트를 보고 실계좌에서 직접
+동시호가에 주문을 낼 수는 있다(이 전략은 판정까지만 대신한다).
 
 ## 왜 오버나이트가 허용되는가
 
@@ -43,6 +84,7 @@ from zoneinfo import ZoneInfo
 
 from quant.core.ports import Context
 from quant.core.models import Position, Signal, SignalAction
+from quant.core.session import in_continuous_session
 
 _KST = ZoneInfo("Asia/Seoul")
 _TAG = "CLOSE_BET"
@@ -56,8 +98,10 @@ class CloseBetStrategy:
         self.market = market  # Protocol 호환 — 실제 판정은 KR 전용(아래 가드)
         self.tags_of = tags_of
 
-        # 진입 창: 리포트(14:50 발행)가 후보를 태깅한 직후 ~ 동시호가 직전.
-        self.entry_start = dtime(*params.get("entry_start_hhmm", (14, 55)))
+        # 진입 창: 연속 거래 마지막 구간, 동시호가(15:20) 직전까지 — 판정과
+        # 체결이 여기서 함께 일어난다(동시호가 구간으로 체결을 밀어 넣지 않는
+        # 이유는 모듈 docstring "마감 동시호가 구조를 반영한다" 참고).
+        self.entry_start = dtime(*params.get("entry_start_hhmm", (15, 15)))
         self.entry_end = dtime(*params.get("entry_end_hhmm", (15, 19)))
         # 마감 강도 하한: (현재가-당일저가)/(당일고가-당일저가). 0.7 = 고가에서
         # 레인지의 30% 안쪽 — "고가 근처 마감 양봉"의 수치화.
@@ -106,11 +150,15 @@ class CloseBetStrategy:
             if sig is not None:
                 signals.append(sig)
 
-        # 2) 진입 — KR 장중, 진입 창 안에서만.
+        # 2) 진입 — KR 장중, 진입 창 안에서만, 그리고 실제로 가격이 발견되는
+        # 연속 거래 구간 안에서만(동시호가 15:20~15:30에는 신뢰할 수 있는
+        # "현재가"가 없다 — quant.core.session.in_continuous_session 참고).
         if not ctx.clock.is_market_open("KR"):
             return signals
         if not (self.entry_start <= now_kst.time() <= self.entry_end):
             return signals
+        if not in_continuous_session("KR", now_kst):
+            return signals  # entry_end 설정 실수로 동시호가에 걸쳐도 이중 방어
 
         candidates = [
             s for s in self.symbols

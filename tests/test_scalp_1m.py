@@ -797,22 +797,37 @@ def test_regular_session_accelerated_entry_invalidated_below_open():
 
 # ---------------- 직접 진입(2번)
 
-def test_premarket_direct_entry_on_full_pattern_a_with_liquidity_guard_passed():
+def test_kr_premarket_never_enters_directly_even_on_perfect_pattern():
+    """**한국장에는 연속 프리마켓이 없다**(2026-08-26 소유자 교정).
+
+    08:30 이전엔 거래 자체가 없고, 08:30~09:00 은 주문만 모아 09:00 정각에 하나의
+    시가로 일괄 체결한다(장전 시간외 종가 08:30~08:40 도 전일 종가 고정이라 가격
+    발견이 없다). 그래서 프리마켓 "체결"은 실재할 수 없는 거래다.
+
+    실사고(2026-08-26): 엔진이 08:27·08:46 에 진입을 기록했고, 09:00 시가가 갭으로
+    열리며 손절선(-1.0%)을 2.8% 지나쳐 **의도한 -1% 손실이 -3.8%** 가 됐다
+    (000720: 진입 129,200 / 손절선 127,900 / 실제 청산 124,369, -165,356원).
+    페이퍼 브로커는 피드가 준 가격이면 무엇이든 체결시키므로 이 구조적 오류를
+    스스로 못 잡는다 — 전략이 막아야 한다.
+
+    관찰(P_pre 마킹)은 그대로 둔다 — 그건 주문을 내지 않고, 정규장 진입의 재료일
+    뿐이다."""
     strat = Scalp1mStrategy([KR_SYMBOL], _params(premarket_min_volume_krw=50_000_000))
     bars = {KR_SYMBOL: _kr_premarket_entry_bars(surge=True, notional_ok=True)}
-    now = _kr_now(dtime(8, 2, 30))  # 재돌파봉(08:02) 완성 직후
+    now = _kr_now(dtime(8, 2, 30))  # 재돌파봉(08:02) 완성 직후 — 패턴은 완벽하다
     ctx = _kr_ctx({KR_SYMBOL: 81300.0}, now, bars=bars)
 
     signals = strat.on_cycle(ctx)
 
-    assert len(signals) == 1
-    sig = signals[0]
-    assert sig.action == SignalAction.ENTER_LONG
-    assert "프리마켓" in sig.reason and "패턴A" in sig.reason
-    assert strat._pattern_a_used.get(KR_SYMBOL) is True
+    assert signals == [], "패턴이 아무리 좋아도 체결될 수 없는 시각엔 주문하지 않는다"
+    assert strat._pattern_a_used.get(KR_SYMBOL, False) is False, \
+        "진입하지 않았으므로 세션 진입 슬롯도 쓰지 않는다"
+    assert "체결" in (strat.last_reject.get(KR_SYMBOL) or ""), \
+        "왜 걸렀는지가 사유로 남아야 한다"
 
 
-def test_premarket_direct_entry_rejected_below_liquidity_guard():
+def test_kr_premarket_liquidity_guard_is_moot_but_still_no_entry():
+    """유동성 가드 이전에 구조적으로 막힌다 — 가드 통과 여부와 무관하게 진입 없음."""
     strat = Scalp1mStrategy([KR_SYMBOL], _params(premarket_min_volume_krw=50_000_000))
     bars = {KR_SYMBOL: _kr_premarket_entry_bars(surge=True, notional_ok=False)}
     now = _kr_now(dtime(8, 2, 30))
@@ -861,32 +876,32 @@ def test_no_new_entry_during_blackout_08_50_to_09_00():
 def test_entry_cap_combines_premarket_and_regular_session():
     """프리마켓 직접 진입(A)이 A 슬롯을 쓰면, 정규장에서는 가속 경로가 아니라
     곧바로 패턴 B 평가로 넘어간다(A 슬롯이 이미 소진됐으므로) — 상한이 합산임을
-    확인한다."""
-    strat = Scalp1mStrategy([KR_SYMBOL], _params())
-    # 프리마켓 직접 진입으로 A 슬롯을 소진시킨다.
-    bars_pre = {KR_SYMBOL: _kr_premarket_entry_bars(surge=True, notional_ok=True)}
-    now_pre = _kr_now(dtime(8, 2, 30))
-    ctx_pre = _kr_ctx({KR_SYMBOL: 81300.0}, now_pre, bars=bars_pre)
+    확인한다.
+
+    2026-08-26: KR → US 로 옮겼다. 한국장에는 연속 프리마켓이 없어 직접 진입
+    자체가 구조적으로 불가능하다(`_PREMARKET_DIRECT_ENTRY_MARKETS`). 이 테스트가
+    지키는 성질(프리마켓+정규장 진입 슬롯 합산)은 시장과 무관하다."""
+    strat = Scalp1mStrategy([US_PRE_SYMBOL], _params())
+    bars_pre = {US_PRE_SYMBOL: _us_premarket_entry_bars(surge=True, notional_ok=True)}
+    ctx_pre = _us_ctx({US_PRE_SYMBOL: 102.3}, _us_now(dtime(8, 2, 30)), bars=bars_pre)
     entry_signals = strat.on_cycle(ctx_pre)
     assert len(entry_signals) == 1
-    assert strat._pattern_a_used.get(KR_SYMBOL) is True
+    assert strat._pattern_a_used.get(US_PRE_SYMBOL) is True
 
-    # 08:50 블랙아웃 확정 사이클 — 프리마켓 확인 마킹은 이 시나리오와 무관해도 된다.
-    strat.on_cycle(_kr_ctx({KR_SYMBOL: 81300.0}, _kr_now(dtime(8, 50, 30)), bars=bars_pre))
+    # 블랙아웃(09:25~09:30) 확정 사이클 — 이 시나리오와 무관해도 된다.
+    strat.on_cycle(_us_ctx({US_PRE_SYMBOL: 102.3}, _us_now(dtime(9, 26)), bars=bars_pre))
 
-    # 정규장 09:0x — A 슬롯이 이미 쓰였으므로 가속/기본 패턴 A 둘 다 평가되지
-    # 않고 곧바로 패턴 B 경로로 간다(포지션 미보유 가정 — 프리마켓 체결은
-    # ensure_lot을 거치지 않는 신호 단계뿐이라 브로커 포지션이 비어 있다).
-    reg_open_ts = _kr_now(KR_OPEN)
+    # 정규장 09:3x — A 슬롯이 이미 쓰였으므로 패턴 A 는 더 이상 평가되지 않는다.
+    reg_open_ts = _us_now(US_OPEN)
     touch = pd.DataFrame(
-        [{"open": 81300.0, "high": 81350.0, "low": 81290.0, "close": 81295.0, "volume": 1000.0}],
-        index=pd.DatetimeIndex([reg_open_ts], tz=KST),
+        [{"open": 102.3, "high": 102.35, "low": 102.29, "close": 102.295, "volume": 1000.0}],
+        index=pd.DatetimeIndex([reg_open_ts], tz=NY),
     )
-    now_reg = reg_open_ts + timedelta(seconds=30)
-    ctx_reg = _kr_ctx({KR_SYMBOL: 81295.0}, now_reg, bars={KR_SYMBOL: touch}, kr_open=True)
+    ctx_reg = _us_ctx({US_PRE_SYMBOL: 102.295}, reg_open_ts + timedelta(seconds=30),
+                      bars={US_PRE_SYMBOL: touch}, us_open=True)
     signals = strat.on_cycle(ctx_reg)
-    assert signals == []  # 패턴 B 미충족(봉 1개뿐) — 패턴 A는 더 이상 평가되지 않는다는 것만 확인
-    assert strat.last_reject.get(KR_SYMBOL) == "패턴B 미충족"
+    assert signals == []  # 패턴 B 미충족(봉 1개뿐) — A 가 재평가되지 않는다는 것만 확인
+    assert strat.last_reject.get(US_PRE_SYMBOL) == "패턴B 미충족"
 
 
 def test_premarket_entry_flattens_before_regular_close():
@@ -1196,14 +1211,17 @@ def test_trend_gate_queries_daily_history_once_per_session():
 
 
 def test_trend_gate_blocks_premarket_direct_entry_on_low_adx():
-    strat = Scalp1mStrategy([KR_SYMBOL], _params(trend_gate_mode="block", premarket_min_volume_krw=50_000_000))
-    bars = {KR_SYMBOL: _kr_premarket_entry_bars(surge=True, notional_ok=True)}
-    now = _kr_now(dtime(8, 2, 30))
-    ctx = _kr_ctx({KR_SYMBOL: 81300.0}, now, bars=bars,
-                  daily_bars={KR_SYMBOL: _daily_bars_sideways()})
+    """2026-08-26: KR → US. 한국장은 프리마켓 직접 진입이 구조적으로 불가라
+    추세 게이트까지 오지도 않는다(그건 별도 테스트가 지킨다). 이 테스트가 지키는
+    성질(게이트가 프리마켓 진입 경로에서도 작동)은 US 로 확인한다."""
+    strat = Scalp1mStrategy([US_PRE_SYMBOL],
+                            _params(trend_gate_mode="block", premarket_min_volume_usd=50_000))
+    bars = {US_PRE_SYMBOL: _us_premarket_entry_bars(surge=True, notional_ok=True)}
+    ctx = _us_ctx({US_PRE_SYMBOL: 102.3}, _us_now(dtime(8, 2, 30)), bars=bars,
+                  daily_bars={US_PRE_SYMBOL: _daily_bars_sideways()})
     signals = strat.on_cycle(ctx)
     assert signals == []
-    assert "추세 게이트" in strat.last_reject[KR_SYMBOL]
+    assert "추세 게이트" in strat.last_reject[US_PRE_SYMBOL]
 
 
 def test_trend_gate_shadow_records_verdict_without_blocking():

@@ -205,6 +205,24 @@ _PREMARKET_WINDOWS: dict[str, tuple[dtime, dtime]] = {
 # 모드(entry_window_minutes=0)의 lookback 산정에 쓴다.
 _FULL_SESSION_MINUTES = 390
 
+# **프리마켓에서 직접 주문을 낼 수 있는 시장** (2026-08-26 소유자 교정).
+#
+# US 프리마켓(04:00~09:30 ET)은 호가가 실시간으로 체결되는 **연속 세션**이다.
+# 한국장에는 그런 구간이 없다:
+#   08:30 이전 — 거래 자체가 없다.
+#   08:30~08:40 장전 시간외 종가 — 전일 종가 고정가(가격 발견 없음).
+#   08:30~09:00 장 시작 동시호가 — 주문만 모으고 09:00 정각에 시가로 일괄 체결.
+#
+# 그래서 KR 프리마켓 "체결"은 실재할 수 없는 거래다. 2026-08-26 에 엔진이
+# 08:27·08:46 에 진입을 기록했고, 09:00 시가 갭이 손절선(-1.0%)을 2.8% 지나쳐
+# 의도한 -1% 손실이 -3.8% 가 됐다(000720 -165,356원). 페이퍼 브로커는 피드가
+# 준 가격이면 무엇이든 체결시키므로 이 오류를 스스로 못 잡는다.
+#
+# **관찰은 KR 에서도 계속한다** — P_pre 마킹은 주문을 내지 않고, 정규장 진입의
+# 재료일 뿐이다(그 재료의 품질은 별개 문제로 남겨 둔다: 동시호가 예상체결가는
+# 실제 체결가가 아니다).
+_PREMARKET_DIRECT_ENTRY_MARKETS = frozenset({"US"})
+
 
 class Scalp1mStrategy:
     def __init__(self, symbols: list[str], params: dict, market: str = "US", id: str = "scalp_1m"):
@@ -863,6 +881,13 @@ class Scalp1mStrategy:
         # state == "premarket" — 직접 진입 평가(패턴 A만, 모듈 docstring
         # "프리마켓" 절 2번). 관찰 마킹은 08:50 확정 시점에 한꺼번에 하므로
         # 여기서는 하지 않는다(반복 계산 방지).
+        if market not in _PREMARKET_DIRECT_ENTRY_MARKETS:
+            # 구조적으로 체결이 불가능한 시장 — 유동성 가드보다 앞에서 막는다.
+            self.last_reject[symbol] = (
+                "프리마켓 직접 진입 불가 — 한국장은 연속 프리마켓이 없다"
+                "(08:30~09:00 동시호가는 09:00 에 일괄 체결). 체결될 수 없는 주문은 내지 않는다"
+            )
+            return None
         if not self.premarket_entry:
             self.last_reject[symbol] = "프리마켓 직접 진입 비활성(premarket_entry=false)"
             return None
@@ -1225,6 +1250,10 @@ class Scalp1mPureStrategy:
         mtc = snap.minutes_to_close.get(market)
         if mtc is None:
             return False
+        # mtc <= 0 = 연속 거래 종료(동시호가 구간) — 원본과 동일하게 False
+        # (2026-08-26, clock._should_flatten 의 remaining<=0 게이트 재현).
+        if mtc <= 0:
+            return False
         return mtc - snap.cadence_minutes < self.flatten_minutes
 
     # ------------------------------------------------------------------ 추세/변동성 게이트
@@ -1380,6 +1409,9 @@ class Scalp1mPureStrategy:
             return None
 
         # state == "premarket" — 직접 진입 평가(패턴 A만).
+        # 레거시와 동일: 연속 호가창이 없는 시장(KR)은 구조적으로 진입 불가.
+        if market not in _PREMARKET_DIRECT_ENTRY_MARKETS:
+            return None
         if not self.premarket_entry:
             return None
         if is_open:

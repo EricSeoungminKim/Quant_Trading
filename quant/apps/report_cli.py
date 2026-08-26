@@ -214,7 +214,9 @@ def _emit_close(snap, root: Path, out_root: Path, snap_root: Path) -> None:
 
     # 종가배팅 후보(2026-08-25) — KR 전용. 토큰 체인: 이 뷰 → close_bet_tokens
     # (SYM:CLOSE) → own_brief 14:52 → watch-score → 태그 CLOSE_BET → 유니버스 롤
-    # 14:53 → close_bet 전략 진입 창 14:55~15:19. 소유자도 같은 카드로 실계좌 판단.
+    # 14:53 → close_bet 진입 창 15:15~15:19(연속 거래 마지막 구간).
+    # 15:20 부터는 동시호가라 체결 자체가 15:30 일괄이다 — 그 구간엔 주문하지 않는다.
+    # 소유자도 같은 카드로 실계좌 판단.
     close_bet_view = (
         _build_close_bet_view(snap, root, cont) if snap.market == "KR" else []
     )

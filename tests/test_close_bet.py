@@ -1,7 +1,8 @@
-"""종가배팅(close_bet) — 2026-08-25 전략 4종 체제 ③.
+"""종가배팅(close_bet) — 2026-08-25 전략 4종 체제 ③, 2026-08-26 마감 동시호가 반영.
 
-계약: CLOSE_BET 태그 + 진입 창(14:55~15:19) + 양봉·마감강도 차트 확인.
-다음날 손절(-1%) < 익절(+2%) 비대칭 + 시초 30분 데드라인.
+계약: CLOSE_BET 태그 + 진입 창(15:15~15:19 — 연속 거래가 끝나는 동시호가(15:20)
+직전, 양봉·마감강도 차트 확인 후 그 자리에서 진입) + 동시호가 구간(15:20~15:30)에는
+절대 진입하지 않는다. 다음날 손절(-1%) < 익절(+2%) 비대칭 + 시초 30분 데드라인.
 """
 from __future__ import annotations
 
@@ -94,7 +95,7 @@ def _strat(**over):
     return CloseBetStrategy(["005930"], params, tags_of={"005930": ["CLOSE_BET"]})
 
 
-ENTRY_TIME = datetime.combine(DAY1, dtime(15, 0), tzinfo=KST)
+ENTRY_TIME = datetime.combine(DAY1, dtime(15, 17), tzinfo=KST)
 
 
 def test_enters_tagged_strong_close_in_window():
@@ -113,6 +114,16 @@ def test_no_entry_outside_window():
     s = _strat()
     early = datetime.combine(DAY1, dtime(14, 30), tzinfo=KST)
     assert s.on_cycle(_ctx(early, {"005930": _strong_close_bars()}, {"005930": 109.0})) == []
+
+
+def test_no_entry_during_closing_auction():
+    """15:20~15:30 은 동시호가 — entry_end 를 그 안까지 잘못 넓혀도(설정 실수)
+    in_continuous_session 가드가 진입을 막는다. 이 구간의 '현재가'는 우리 데이터
+    모델에서 실재하는 체결가가 아니다(quant.core.session.in_continuous_session
+    의 원칙과 동일 — 2026-08-26 scalp_1m 프리마켓 수리와 같은 결)."""
+    s = _strat(entry_end_hhmm=[15, 30])  # 의도적으로 동시호가까지 창을 늘려 봄
+    during_auction = datetime.combine(DAY1, dtime(15, 25), tzinfo=KST)
+    assert s.on_cycle(_ctx(during_auction, {"005930": _strong_close_bars()}, {"005930": 109.0})) == []
 
 
 def test_no_entry_without_tag():
