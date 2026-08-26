@@ -109,6 +109,12 @@
 10 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/session_pnl.sh US >> data/session_pnl.log 2>&1
 15 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.cli equity-snapshot --market US >> data/equity.log 2>&1
 
+# 06:25 US — 일일 피드백(2026-08-26 소유자 조직도 역할 5). 자본 곡선(06:15)
+# 뒤로 10분 띄웠다 — 그 세션 체결 원장이 확정된 뒤. 오늘 US 진입 체결의 진입
+# 타이밍(고점매수/거래 소강 진입/늦은 진입)을 규칙 기반으로 판정해 전략별로
+# 텔레그램에 준다 — LLM 없음, 픽 없으면 무출력(daily_feedback.sh 주석 참고).
+25 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/daily_feedback.sh US >> data/daily_feedback.log 2>&1
+
 # --- 장타(가치·팩터) 전략 전제 데이터 (2026-08-19: 수집기는 있었지만 아무도
 # 부르지 않았던 배선 누락 — naver_quant.py/dart_financials.py의 fetch_and_persist가
 # 호출부 0건이었다) ---
@@ -132,6 +138,12 @@
 # 강제할 수는 없고, 그냥 같은 분 충돌만 피한다. 최초 실행은 17종목×2년 ≈ 430
 # 호출·3~4분, 이후는 backfill()의 gap-only 재조회라 훨씬 싸다(스크립트 상단 주석).
 35 16 * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backfill_kr_stock_daily.sh >> data/backfill.log 2>&1
+
+# 16:45 KR — 일일 피드백(2026-08-26 소유자 조직도 역할 5). KR 개별종목 일봉
+# 백필(16:35) 뒤로 10분 띄웠다 — 그날 1분봉이 확실히 잡힌 뒤라야 진입 타이밍
+# 판정(고점매수/거래 소강 진입/늦은 진입)이 실제 봉으로 재생된다. 나머지는
+# 06:25 US 항목과 동일 — LLM 없음, 픽 없으면 무출력.
+45 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/daily_feedback.sh KR >> data/daily_feedback.log 2>&1
 
 # 매일 05:40 KST — 1분봉 적재 (scalp_1m, 2026-08-18). Toss 1m API는 **과거
 # 4거래일 롤링만** 제공한다(docs/data-availability.md 실측) — 매일 당겨 쌓지
@@ -277,6 +289,15 @@
 # 순환) — 완전히 결정론(LLM 호출 없음). 텔레그램 발송은 여기서 하지 않는다
 # (uswrap 서브커맨드는 stdout 요약만 낸다 — deepdive 와 달리 별도 알림 없음).
 50 5 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.report_cli uswrap >> data/uswrap.log 2>&1
+
+# --- 소식통 배달 점검 (2026-08-26, 소유자 조직도 역할 6) ---
+#
+# 06:35 KST 화~토 — 05:50 US_wrap 발행 뒤, 전날(월~금) KR+US 사이클이 완전히
+# 끝난 시점. ops_watch(매시, "시스템이 잘 도는데 틀린 것")와 다르다: 이쪽은
+# "그날 산출물·텔레그램이 실제로 대표님에게 닿았는가"만 본다. 조용한 게
+# 기본값(정상이면 무출력, 텔레그램도 안 나간다) — server/scripts/
+# delivery_check.sh, 판정은 quant.control.delivery_check(순수 함수).
+35 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/delivery_check.sh >> data/delivery_check.log 2>&1
 
 # --- 판단하는 워치독 (2026-08-19, 사용자 지시) ---
 #

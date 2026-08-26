@@ -696,6 +696,81 @@ def cmd_forensics(args: argparse.Namespace) -> None:
     print(forensics_text(rows, skipped, title=title, rules_result=rules_result))
 
 
+def cmd_daily_feedback(args: argparse.Namespace) -> None:
+    """일일 피드백 — 오늘 진입한 체결의 **타이밍**을 규칙 기반으로 판정해
+    전략별로 돌려준다 (2026-08-26 소유자 조직도 역할 5).
+
+    forensics(`cli forensics`)와 역할이 다르다: forensics는 청산까지 포함한
+    "왜 졌나"를 재생하고, 이건 "그 순간 진입이 나빴나"(고점매수/거래 소강
+    진입/늦은 진입)만 본다. LLM 없음 — 전부 결정론, 임계는 [미검증 초기값]
+    (`quant.control.daily_feedback` 모듈 docstring 참고).
+
+    픽(진입 체결) 없으면 무출력 — experiments_daily.sh 관례. 같은 (날짜, 시장)
+    은 `data/ledger/daily_feedback.jsonl`에 멱등 append(재실행해도 중복 안 남음)."""
+    import json as _json
+    from datetime import date as _date, datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    import pandas as pd
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.control.daily_feedback import (
+        already_recorded, render_feedback_text, strategy_feedback, todays_round_trips,
+    )
+    from quant.control.ledger import load_trades
+    from quant.control.warehouse import read_jsonl
+
+    root = REPO_ROOT
+    market = args.market
+    tz = ZoneInfo("Asia/Seoul") if market == "KR" else ZoneInfo("America/New_York")
+    on = args.date or _dt.now(tz).date().isoformat()
+
+    trades = load_trades(ledger_state_path())
+    trips = todays_round_trips(trades, market, on)
+    if not trips:
+        return  # 무출력 — experiments_daily.sh 관례(오늘 진입 없으면 조용히 대기)
+
+    # 1분봉은 forensics의 load_bars와 같은 2단계 경로(`data/history/{symbol}/
+    # {YYYY}/{MM}.parquet`) — 종목당 한 번만 읽는다.
+    history_dir = root / "data" / "history"
+
+    def _load_symbol_day(symbol: str, entry_ts: str):
+        ts = pd.Timestamp(entry_ts)
+        path = history_dir / symbol / str(ts.year) / f"{ts.month:02d}.parquet"
+        if not path.exists():
+            return None
+        try:
+            df = pd.read_parquet(path)
+            if df.index.tz is None:
+                df.index = df.index.tz_localize("UTC")
+        except Exception as e:  # noqa: BLE001 — 봉 하나 못 읽는다고 피드백 전체를 버리지 않는다
+            logger.warning("일일 피드백: %s 봉 읽기 실패(건너뜀): %s", symbol, e)
+            return None
+        day = df[df.index.normalize() == ts.normalize()]
+        return day if len(day) else None
+
+    bars_by_symbol: dict[str, object] = {}
+    for t in trips:
+        sym = t["symbol"]
+        if sym not in bars_by_symbol:
+            bars_by_symbol[sym] = _load_symbol_day(sym, t["entry_ts"])
+
+    feedback = strategy_feedback(trips, bars_by_symbol)
+    target = _date.fromisoformat(on)
+    print(render_feedback_text(target, market, feedback))
+
+    out_path = root / "data" / "ledger" / "daily_feedback.jsonl"
+    existing = read_jsonl(out_path)
+    if not already_recorded(existing, on, market):
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        row = {
+            "date": on, "market": market, "feedback": feedback,
+            "recorded_at": _dt.now(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds"),
+        }
+        with out_path.open("a", encoding="utf-8") as f:
+            f.write(_json.dumps(row, ensure_ascii=False) + "\n")
+
+
 def cmd_equity_snapshot(args: argparse.Namespace) -> None:
     """자본 곡선 1점 기록 — 세션 마감 후 총자산·전략별 장부 평가액(KRW)을
     `data/ledger/equity_curve.jsonl` 에 덧붙인다 (gs-quant 대조 도입, 2026-08-24).
@@ -2149,6 +2224,87 @@ def cmd_kr_flow(args: argparse.Namespace) -> None:
     _record_flows(details, root, args.date or _date.today().isoformat())
 
 
+def cmd_delivery_check(args: argparse.Namespace) -> None:
+    """소식통 배달 점검 — "대표님에게 오늘 산출물이 실제로 닿았는가"만 본다
+    (2026-08-26, 소유자 조직도 역할 6). 크론 제안: 화~토 06:35 KST(US 마감
+    정산 뒤, 하루 한 바퀴 완료 시점) — 날짜 계산 근거는
+    `quant.control.delivery_check` docstring 참고(오늘이 아니라 대부분 전날
+    기준).
+
+    전부 정상이면 **침묵**(stdout 무출력, exit 0) — 매일 "정상" 알림은 사람이
+    끄고, 끈 알림은 없는 알림이다. 종료코드는 health 관례와 동일: 0=정상 /
+    1=미배달 있음 / 2=미배달은 없지만 확인 못 한 게 있음(모름을 정상으로
+    합산하지 않는다).
+    """
+    from datetime import date as _date, timedelta as _timedelta, timezone as _timezone
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.control.delivery_check import (
+        MISSING,
+        ArtifactStatus,
+        check_ai_trader,
+        check_artifacts,
+        check_log_traces,
+        expected_artifacts,
+    )
+
+    load_settings()
+    root = Path(args.root) if args.root else REPO_ROOT
+    if args.date:
+        today = _date.fromisoformat(args.date)
+    else:
+        today = datetime.now(_timezone(_timedelta(hours=9))).date()
+
+    findings = []
+
+    expected = expected_artifacts(today)
+    if expected:
+        statuses = {}
+        for name, target_date in expected.items():
+            path = root / "out" / f"{target_date:%Y/%m/%d}" / name
+            try:
+                size = path.stat().st_size
+                statuses[name] = ArtifactStatus(exists=True, size=size)
+            except OSError:
+                statuses[name] = ArtifactStatus(exists=False, size=0)
+        findings.extend(check_artifacts(statuses))
+
+        def _read_lines(path: Path) -> list[str] | None:
+            try:
+                return path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                return None
+
+        target_kr = expected.get("KR_report.html", today)
+        logs = {
+            "own_brief_KR": _read_lines(root / "data" / "own_brief.log"),
+            "own_brief_US": _read_lines(root / "data" / "own_brief.log"),
+            "run_report_KR": _read_lines(root / "data" / "report.log"),
+            "run_report_US": _read_lines(root / "data" / "report.log"),
+        }
+        findings.extend(check_log_traces(logs, target_kr))
+
+        ai_trader_lines = _read_lines(root / "data" / "ai_trader.log")
+        for market in ("KR", "US"):
+            f = check_ai_trader(ai_trader_lines, market, target_kr)
+            if f is not None:
+                findings.append(f)
+
+    if not findings:
+        return
+
+    missing = [f for f in findings if f.level == MISSING]
+    lines = [f"📮 소식통 점검: {len(missing)}건 미배달" if missing else "📮 소식통 점검: 확인 못 한 항목 있음"]
+    for f in findings:
+        mark = "❌" if f.level == MISSING else "❔"
+        lines.append(f"{mark} {f.detail}")
+    print("\n".join(lines))
+    if missing:
+        raise SystemExit(1)
+    raise SystemExit(2)
+
+
 def cmd_param_propose(args: argparse.Namespace) -> None:
     """전략 파라미터 제안 — AI 트레이더 3단계 (토 06:40 크론, 2026-08-26).
 
@@ -2652,6 +2808,11 @@ def main() -> None:
     p_forensics.add_argument("--strategy", default=None, help="특정 전략만")
     p_forensics.set_defaults(func=cmd_forensics)
 
+    p_daily_fb = sub.add_parser("daily-feedback", help="일일 피드백 — 오늘 진입 타이밍 규칙 판정(고점매수/거래소강/늦은진입), 전략별 (픽 없으면 무출력)")
+    p_daily_fb.add_argument("--market", required=True, choices=["KR", "US"], help="KR 또는 US")
+    p_daily_fb.add_argument("--date", default=None, help="YYYY-MM-DD (기본: 그 시장 기준 오늘)")
+    p_daily_fb.set_defaults(func=cmd_daily_feedback)
+
     p_session_pnl = sub.add_parser("session-pnl", help="세션(정규장) 마감 후 실화폐 손익 리포트 (실현+미실현, 시장별 통화)")
     p_session_pnl.add_argument("--market", required=True, choices=["KR", "US"], help="KR 또는 US")
     p_session_pnl.add_argument("--date", default=None, help="YYYY-MM-DD (기본: 그 시장 기준 오늘)")
@@ -2753,6 +2914,16 @@ def main() -> None:
     p_kf.add_argument("--limit", type=int, default=20,
                       help="조회 종목 수 상한 — 네이버 요청 예산(기본 20, 아침 리포트와 동일)")
     p_kf.set_defaults(func=cmd_kr_flow)
+
+    p_dc = sub.add_parser(
+        "delivery-check",
+        help="소식통 배달 점검 — 오늘 리포트/브리핑이 실제로 닿았는가만 본다 "
+             "(크론 제안: 화~토 06:35, US 마감 정산 뒤). 정상이면 무출력. "
+             "종료코드 0=정상 / 1=미배달 있음 / 2=미배달은 없지만 확인 못 함.",
+    )
+    p_dc.add_argument("--root", default=None, help="기본: 저장소 루트")
+    p_dc.add_argument("--date", default=None, help="오늘로 볼 날짜 (YYYY-MM-DD, 기본: KST 오늘)")
+    p_dc.set_defaults(func=cmd_delivery_check)
 
     p_pp = sub.add_parser(
         "param-propose",

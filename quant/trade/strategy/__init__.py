@@ -43,6 +43,72 @@ STRATEGY_REGISTRY = {
 }
 
 
+# 태그(관심종목 파일의 `tags: [...]`) → 그 태그를 실제로 소비하는 전략 id.
+# 2026-08-26, 소유자 조직도 역할 3 — "선정된 종목을 알맞는 전략에 지정" 배정을
+# 코드로 명시한다. 실제 소비 코드를 grep 으로 전수 추적해 작성했다(추측 아님):
+# 각 전략 클래스 생성자가 `tags_of`를 받는지(`quant/trade/strategy/*.py`,
+# `_TAGS_OF_CONSUMERS`와 정확히 같은 집합이어야 한다 — `tests/test_tag_assignment.py`가
+# 대조한다), 받는다면 어떤 태그 상수로 게이트하는지(각 파일의 `_EVENT_TAG` 등).
+#
+# "*" 는 특정 태그 게이트가 없는 나머지(무태그·TREND·REBOUND 등, watch_scorer.
+# _VALID_TAGS 중 여기 다른 키에 없는 것 전부) — `universe: watchlist`로 유니버스
+# 전체를 심볼로 받지만 `tags_of`를 아예 모르는 전략들이다. 이 전략들은 태그와
+# 무관하게 유니버스에 들어온 심볼이면 다 감시 대상이라 "전체감시"로 뭉뚱그린다.
+TAG_ASSIGNMENT: dict[str, list[str]] = {
+    # NewsMomentumStrategy._EVENT_TAG — 뉴스 촉매 있는 종목만 개장 즉시 진입.
+    "EVENT": ["news_momentum"],
+    # NewsScalpStrategy._SCALP_TAG — 갈래 A(2026-08-17). 2026-08-26 기준
+    # config/settings.yaml `news_scalp.enabled: false`(paper 등록만, 비활성)지만
+    # 코드 경로는 여전히 이 태그만 읽는다 — 활성화되면 그대로 유효.
+    "EVENT_SCALP": ["news_scalp"],
+    # FrgnAccumulateStrategy._FRGN_TAG/_FRGN_EXIT_TAG — 갈래 B, 외국인 적립
+    # 매수/이탈 신호. 두 태그 다 같은 전략 하나만 읽는다.
+    "FRGN": ["frgn_accumulate"],
+    "FRGN_EXIT": ["frgn_accumulate"],
+    # CloseBetStrategy._TAG — 종가배팅(2026-08-25, 전략 4종 체제 ③).
+    "CLOSE_BET": ["close_bet"],
+    # 게이트 없음 — universe: watchlist 인데 tags_of를 안 받는 전략들
+    # (intraday_scan/orb_scan/cross_momentum/confluence/scalp_1m). 2026-08-26
+    # 기준 이 중 scalp_1m만 enabled: true(전략 4종 체제).
+    "*": ["intraday_scan", "orb_scan", "cross_momentum", "confluence", "scalp_1m"],
+}
+
+
+def assignment_for(tags: list[str]) -> list[str]:
+    """태그 목록(빈 리스트=무태그) → 이 태그를 실제로 소비하는 전략 id 목록
+    (중복 제거, 순서 보존). `TAG_ASSIGNMENT`에 없는 태그(TREND/REBOUND 등
+    게이트가 없는 태그 포함)는 "*"(유니버스 전체 감시) 버킷으로 떨어진다."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for tag in (tags or ["*"]):
+        for sid in TAG_ASSIGNMENT.get(tag, TAG_ASSIGNMENT["*"]):
+            if sid not in seen:
+                seen.add(sid)
+                out.append(sid)
+    return out
+
+
+def describe_tags(tags: list[str]) -> str:
+    """텔레그램 표시용 축약 — 특정 전략을 소비하는 태그는 전략 id 그대로,
+    게이트가 없는 태그("*" 버킷: 무태그/TREND/REBOUND 등)는 "전체감시"로
+    한 번만 뭉친다(전체감시 전략이 5개인데 매번 나열하면, 그 목록이 바뀔 때마다
+    브리핑 문구도 흔들린다). 예: `["TREND", "EVENT"]` → "news_momentum·전체감시"."""
+    specific: list[str] = []
+    seen: set[str] = set()
+    has_catchall = False
+    for tag in (tags or ["*"]):
+        if tag in TAG_ASSIGNMENT and tag != "*":
+            for sid in TAG_ASSIGNMENT[tag]:
+                if sid not in seen:
+                    seen.add(sid)
+                    specific.append(sid)
+        else:
+            has_catchall = True
+    if has_catchall:
+        specific.append("전체감시")
+    return "·".join(specific) if specific else "전체감시"
+
+
 def build_strategies(
     cfg: dict, leverage_of: dict[str, float] | None = None,
     tags_of: dict[str, list[str]] | None = None,

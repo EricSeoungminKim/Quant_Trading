@@ -226,7 +226,11 @@ for key in $TAG_KEYS; do
 done
 
 DISPLAY="$(printf '%s\n' "$PASS" | tr ' ' '\n' | awk -F: '{print $1}' | tr '\n' ' ')"
-tg "🤖 ${MARKET} 확신도 엔진 통과 → 자동 편입: ${DISPLAY}
+# 종목별 배정 전략 표시(2026-08-26, 소유자 조직도 역할 3) — TAG_ASSIGNMENT 재사용.
+# 실패해도(헬퍼 임포트 에러 등) 기존 메시지($DISPLAY, 심볼만)로 그대로 나간다.
+ASSIGNED="$("$PY" server/scripts/format_tag_assignment.py "$PASS" 2>>"$LOG")"
+[ -z "$ASSIGNED" ] && ASSIGNED="$DISPLAY"
+tg "🤖 ${MARKET} 확신도 엔진 통과 → 자동 편입: ${ASSIGNED}
 ${ROLL} 유니버스 갱신 후 매매 대상이 됩니다.
 
 ${SCORE_LINES:0:2500}
