@@ -2180,6 +2180,58 @@ def cmd_ai_trader(args: argparse.Namespace) -> None:
         print(note)
 
 
+def cmd_flow_scan(args: argparse.Namespace) -> None:
+    """장중 거래대금 발굴 (2026-08-28 소유자 지시) — 아침 리포트가 못 잡은
+    종목이라도 장중 거래대금이 쏠리면 워치리스트 후보로 뽑는다. 발굴만 한다
+    — 편입은 own_brief.sh 와 같은 확신도 게이트(watch-score)를 반드시 거친다
+    (`server/scripts/flow_scan.sh`가 이 커맨드의 출력을 watch-score 로 넘긴다).
+
+    출력 계약: 후보가 있으면 정확히 한 줄 `FLOW: SYM1 SYM2 ...`(stdout). 없으면
+    무출력, exit 0 — 셸이 grep으로 파싱하므로 형식을 바꾸지 말 것. 진단은
+    stderr/logger로만 낸다.
+    """
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.analyze.flow_scan import flow_candidates
+    from quant.apps.assembly import MissingCredentials, build_toss_client
+    from quant.trade.universe import FileWatchlistUniverse
+
+    settings = load_settings()
+    _redact.install()  # .env/.env.local + settings.yaml 로드
+
+    root = Path(args.root) if args.root else REPO_ROOT
+    watch = FileWatchlistUniverse(root / "data" / "watchlist.yaml")
+    existing = set(watch.refresh())
+    # 정적 앵커(TQQQ/SQQQ 등 settings.yaml 전략 고정 심볼) — 이미 전략이 고정으로
+    # 다루는 심볼은 "발굴"할 새 정보가 아니다.
+    for strat_cfg in settings.strategies.values():
+        existing.update(strat_cfg.get("symbols", []) or [])
+
+    try:
+        client = build_toss_client()
+    except MissingCredentials as e:
+        logger.error("flow-scan: %s", e)
+        raise SystemExit(2)
+
+    try:
+        result = client.rankings(
+            type="MARKET_TRADING_AMOUNT", market_country=args.market,
+            duration="realtime", count=args.top,
+        )
+    except Exception as e:  # noqa: BLE001 — 조회 실패는 발굴 실패일 뿐, 다른 잡을 막지 않는다
+        logger.warning("flow-scan: 랭킹 조회 실패 — %s: %s", type(e).__name__, e)
+        return
+
+    rows = (result or {}).get("rankings", [])
+    candidates = flow_candidates(rows, existing, args.market, top=args.top)
+    if not candidates:
+        logger.info("flow-scan: %s 신규 후보 없음", args.market)
+        return
+
+    print(f"FLOW: {' '.join(candidates)}")
+
+
 def cmd_kr_flow(args: argparse.Namespace) -> None:
     """KR 마감 후 외국인·기관 수급 스냅샷 (2026-08-26 감사 수리, 크론 15:50).
 
@@ -2903,6 +2955,16 @@ def main() -> None:
     p_ai.add_argument("--root", default=None, help="기본: 저장소 루트")
     p_ai.add_argument("--date", default=None, help="오늘로 볼 날짜 (YYYY-MM-DD)")
     p_ai.set_defaults(func=cmd_ai_trader)
+
+    p_fs = sub.add_parser(
+        "flow-scan",
+        help="장중 거래대금 발굴 — 랭킹 상위 신규 후보를 뽑아 `FLOW: ...` 한 줄로 낸다 "
+             "(편입은 watch-score 게이트를 거친 뒤 별도 셸이 한다).",
+    )
+    p_fs.add_argument("--market", required=True, choices=["KR", "US"])
+    p_fs.add_argument("--top", type=int, default=30, help="랭킹 상위 몇 개까지 볼지 (기본 30)")
+    p_fs.add_argument("--root", default=None, help="기본: 저장소 루트")
+    p_fs.set_defaults(func=cmd_flow_scan)
 
     p_kf = sub.add_parser(
         "kr-flow",

@@ -48,6 +48,14 @@
 # daily_brief.sh는 삭제하지 않고 남겨둔다 — 회사 리포트로 되돌릴 때 쓴다.
 12 8 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/own_brief.sh KR >> data/brief.log 2>&1
 
+# 장중 거래대금 발굴(2026-08-28 소유자 지시) — 아침 리포트가 못 잡은 종목이라도
+# 장중 거래대금이 쏠리면 발굴해 워치리스트에 편입한다. own_brief.sh와 같은 자동
+# 편입 체인(flow-scan 발굴 → watch-score 확신도 게이트 → watch-add)을 재사용 —
+# 게이트 없는 편입은 없다. KR 정규장(09:00~15:30) 30분 간격, 09:30은 동시호가
+# 직후 첫 스캔(own_brief 08:12 편입분이 이미 반영된 뒤라 겹치지 않는다).
+30 9 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/flow_scan.sh KR >> data/flow_scan.log 2>&1
+0,30 10-14 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/flow_scan.sh KR >> data/flow_scan.log 2>&1
+
 # 평일 08:20 KST — 신입사원 AI 트레이더(수습) KR 토론 (2026-08-26 소유자 지시).
 # 아침 리포트(08:00)가 selections 원장에 남긴 서류를 읽고 3역할 LLM 토론으로
 # 판단만 기록한다(producer="ai_trader") — 주문·워치리스트에 닿지 않고, 성적은
@@ -73,6 +81,14 @@
 # 편입분은 22:10 유니버스 롤(_universe_roll_bucket)에서 흡수돼 개장부터 거래된다.
 # us_watch_discover.sh는 남겨둔다 — 리포트 없이 랭킹만으로 돌릴 때의 폴백.
 50 21 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/own_brief.sh US >> data/us_discover.log 2>&1
+
+# 장중 거래대금 발굴 US(2026-08-28, KR 항목과 같은 지시) — US 정규장은
+# 22:30(EDT)/23:30(EST) 개장 ~ 05:00/06:00 마감이라 22:xx~04:xx 구간을 30분
+# 간격으로 덮는다. 미국 세션은 한국 달력으로 익일에 걸치므로 새벽 회차는
+# 화~토(2-6). own_brief.sh US(21:50)의 편입 데드라인(22:05) 이후부터 시작해
+# 겹치지 않는다.
+0,30 23 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/flow_scan.sh US >> data/flow_scan.log 2>&1
+0,30 0-4 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/flow_scan.sh US >> data/flow_scan.log 2>&1
 
 # 평일 20:10 KST — 신입사원 AI 트레이더(수습) US 토론. US 개장전 리포트(20:00)
 # 발행 직후 — 서류(선정 원장)가 그때 준비된다. 나머지는 08:20 KR 항목과 동일.
