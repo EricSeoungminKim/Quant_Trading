@@ -2180,6 +2180,109 @@ def cmd_ai_trader(args: argparse.Namespace) -> None:
         print(note)
 
 
+def cmd_ml_scorer(args: argparse.Namespace) -> None:
+    """학습형 선정자 `ml_scorer` (2026-08-28) — 과거 `selection`⋈`forward_return`
+    (D+1)으로 릿지 회귀를 학습해 오늘 선정 원장 후보를 채점한다. `ai_trader`와
+    같은 계약: judgments 원장(producer="ml_scorer")에 판단만 남기고 주문·
+    워치리스트에는 닿지 않는다.
+
+    학습·후보 데이터 원천이 다르다 — 학습(과거, 전방수익률 필요)은 MySQL
+    `selection`/`forward_return`(`quant/analyze/ml_scorer.py`가 DB 를 모르므로
+    여기서 읽는다), 오늘 채점 대상은 `ai_trader`와 동일하게
+    `data/ledger/selections.jsonl`에서 읽는다 — 그래야 `input_hash`가
+    watch_scorer/ai_trader 와 같은 값이 된다(같은 서류 = 같은 해시 계약).
+
+    표본(독립 거래일)이 `--min-train-days` 미만이면 학습도 예측도 하지 않고
+    한 줄 stdout 을 남기고 exit 0 한다 — 2026-08-28 실측 기준(거래일 10일)
+    지금은 이 경로만 동작하는 게 정상이다. DB 미접속도 같은 방식으로 정직하게
+    알린다. `server/scripts/ml_scorer.sh` 가 이 두 "판단 없음" 메시지와 실제
+    카드를 구분해 텔레그램 전송 여부를 정한다.
+    """
+    from datetime import date as _date
+    from pathlib import Path
+
+    from quant.adapters.db import connect
+    from quant.adapters.env import REPO_ROOT
+    from quant.analyze import ml_scorer
+    from quant.analyze.ai_trader import append_judgments
+    from quant.control import selections
+    from quant.control.judgment import selection_attributes
+
+    load_settings()
+    root = Path(args.root) if args.root else REPO_ROOT
+    today = args.date or _date.today().isoformat()
+    market = args.market
+    min_train_days = args.min_train_days
+    lam = args.ridge_lambda
+
+    conn = connect()
+    if conn is None:
+        print("MySQL 연결 없음 — 판단 없음")
+        return
+
+    try:
+        import pymysql  # connect() 가 이미 성공했으므로 설치돼 있다
+
+        cols_sql = ", ".join(f"s.{c}" for c in ml_scorer.FEATURE_NAMES)
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
+            cur.execute(
+                "SELECT s.session_date AS session_date, s.symbol AS symbol, "
+                f"s.market AS market, {cols_sql}, fr.return_bps AS return_bps "
+                "FROM selection s JOIN forward_return fr "
+                "ON s.market = fr.market AND s.symbol = fr.symbol "
+                "AND s.session_date = fr.session_date "
+                "WHERE fr.horizon_days = 1 AND s.market = %s AND s.session_date < %s",
+                (market, today),
+            )
+            train_recs = list(cur.fetchall())
+    finally:
+        conn.close()
+
+    # 2차 방어선(워크포워드) — SQL WHERE 절이 이미 걸렀지만 코드 구조로 다시 강제한다.
+    train_recs = ml_scorer.training_rows_before(train_recs, today)
+    train_days = len({str(r["session_date"]) for r in train_recs})
+
+    if not ml_scorer.enough_sample(train_days, min_train_days):
+        print(f"표본 부족(거래일 {train_days}/{min_train_days}) — 판단 없음")
+        return
+
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for r in selections.load(root / "data" / "ledger" / "selections.jsonl"):
+        if str(r.get("date")) != today or str(r.get("market")) != market:
+            continue
+        # ai_trader 와 같은 서류만 본다 — 본선 리포트 행 + 감시 축 합류 행.
+        if r.get("producer") not in (None, selections.WATCH_JOIN_PRODUCER):
+            continue
+        sym = str(r.get("symbol") or "")
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        rows.append(r)
+    if not rows:
+        print("선정 원장에 오늘 후보 없음 — 판단 없음")
+        return
+
+    X_train = ml_scorer.to_matrix(train_recs)
+    y_train = [float(r["return_bps"]) for r in train_recs]
+    X_train, medians = ml_scorer.impute_median(X_train)
+    model = ml_scorer.fit_ridge(X_train, y_train, lam=lam)
+
+    cand_attrs = [selection_attributes(r) for r in rows]
+    X_cand = ml_scorer.fill_missing(ml_scorer.to_matrix(cand_attrs), medians)
+    preds = ml_scorer.predict_scores(model, X_cand)
+    pct = ml_scorer.to_percentile_scores(preds)
+    scores = {str(r.get("symbol")): float(s) for r, s in zip(rows, pct)}
+
+    judgments = ml_scorer.to_judgments(scores, rows)
+    added = append_judgments(judgments, root / "data" / "ledger" / "judgments.jsonl")
+    logger.info("ml-scorer: %s %s — 학습 거래일 %d, 후보 %d, 판단 %d(신규 %d)",
+                today, market, train_days, len(rows), len(judgments), added)
+
+    names = {str(r.get("symbol")): r.get("name") for r in rows if r.get("name")}
+    print(ml_scorer.daily_note(scores, market, names))
+
+
 def cmd_flow_scan(args: argparse.Namespace) -> None:
     """장중 거래대금 발굴 (2026-08-28 소유자 지시) — 아침 리포트가 못 잡은
     종목이라도 장중 거래대금이 쏠리면 워치리스트 후보로 뽑는다. 발굴만 한다
@@ -2955,6 +3058,22 @@ def main() -> None:
     p_ai.add_argument("--root", default=None, help="기본: 저장소 루트")
     p_ai.add_argument("--date", default=None, help="오늘로 볼 날짜 (YYYY-MM-DD)")
     p_ai.set_defaults(func=cmd_ai_trader)
+
+    p_ml = sub.add_parser(
+        "ml-scorer",
+        help="학습형 선정자 — 과거 selection⋈forward_return(D+1)로 릿지 회귀를 학습해 "
+             "오늘 선정 원장 후보를 채점, 판단만 기록(주문 없음). "
+             "stdout = 표본부족/DB없음/판단없음 한 줄 또는 텔레그램 카드.",
+    )
+    p_ml.add_argument("--market", required=True, choices=["KR", "US"])
+    p_ml.add_argument("--root", default=None, help="기본: 저장소 루트")
+    p_ml.add_argument("--date", default=None, help="오늘로 볼 날짜 (YYYY-MM-DD)")
+    p_ml.add_argument("--min-train-days", type=int, default=30,
+                      help="학습에 요구하는 최소 독립 거래일 (기본 30 — 근거는 "
+                           "quant/analyze/ml_scorer.py 모듈 docstring)")
+    p_ml.add_argument("--ridge-lambda", type=float, default=10.0,
+                      help="릿지 정규화 강도 (기본 10.0 — 소표본 과최적합 억제)")
+    p_ml.set_defaults(func=cmd_ml_scorer)
 
     p_fs = sub.add_parser(
         "flow-scan",

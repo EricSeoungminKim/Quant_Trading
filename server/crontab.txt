@@ -63,6 +63,12 @@
 # (input_hash)에서 매긴다. 승격은 promote 판정 + 사람. 픽 있을 때만 텔레그램.
 20 8 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/ai_trader.sh KR >> data/ai_trader.log 2>&1
 
+# 평일 08:22 KST — 학습형 선정자 ml_scorer KR (2026-08-28 신규, ai_trader 직후).
+# 과거 selection⋈forward_return(D+1)로 학습한 릿지 회귀가 같은 서류를 채점,
+# 판단만 기록(producer="ml_scorer"). 표본(거래일)이 min_train_days(30) 미만이면
+# 텔레그램 침묵(로그만) — 2026-08-28 실측 거래일 10일뿐이라 지금은 매일 이 경로다.
+22 8 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/ml_scorer.sh KR >> data/ml_scorer.log 2>&1
+
 # (2026-08-10 09:05 검증 통과로 제거됨 — 실전 서버 실시간 틱 수신 확인 후
 #  kiwoom.realtime.enabled: true. 스크립트는 재검증용으로 남겨둔다:
 #  ./server/scripts/kiwoom_ws_check.sh)
@@ -93,6 +99,9 @@
 # 평일 20:10 KST — 신입사원 AI 트레이더(수습) US 토론. US 개장전 리포트(20:00)
 # 발행 직후 — 서류(선정 원장)가 그때 준비된다. 나머지는 08:20 KR 항목과 동일.
 10 20 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/ai_trader.sh US >> data/ai_trader.log 2>&1
+
+# 평일 20:12 KST — 학습형 선정자 ml_scorer US (2026-08-28 신규, KR 항목과 동일).
+12 20 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/ml_scorer.sh US >> data/ml_scorer.log 2>&1
 
 # 평일 13:25 KST — DART 공시 오후 재수집 (2026-08-17 감사, P2). 07:20 스냅샷만
 # 있으면 13:40 마감 포지션 리포트(run_close_report.sh)가 읽는
