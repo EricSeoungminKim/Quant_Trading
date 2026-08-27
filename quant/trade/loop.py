@@ -1330,22 +1330,37 @@ def _universe_roll_bucket(now: datetime | None = None) -> str:
       덕분에 동시호가부터 반영되는 것과 대비되는 비대칭이었다(2026-08-11 사용자 지적:
       "한국장이랑 미국장 사이에 미국 종목 auto add 될 수 있게").
 
-    장중 스냅샷 안정성은 유지된다 — 세션 한복판에는 경계가 지나지 않고, 자정 경계가
-    US 세션을 가로지르는 문제는 `_roll_universe`가 심볼 동일 전략 인스턴스를
-    재사용하는 것으로 이미 흡수한다.
+    - **장중 30분 경계 (2026-08-28 소유자 지시)**: "아침에 못 잡은 종목이라도
+      장중에 거래대금이 쏠리면 발굴해 편입하고 시그널을 감시한다" — flow-scan
+      크론(30분)이 확신도 게이트 통과분을 워치리스트에 넣으면, 세션 중 30분
+      경계가 그것을 흡수한다(KR 09:30~14:30, US 23:00~04:30 KST). 발견→감시
+      시작까지 최대 ~1시간. "장중 스냅샷 안정" 원칙은 이 지시로 개정됐다 —
+      안전 근거는 14:53 장중 롤 선례와 동일하다: `_roll_universe`가 심볼 동일
+      전략 인스턴스를 재사용하므로 패턴 사용 플래그·랏 상태가 흔들리지 않고,
+      워치리스트는 장중에 늘기만 한다(리셋은 08:05/21:40 세션 밖). 한계
+      정직히: 키움 웹소켓 구독은 기동 시 목록 고정이라 장중 편입 종목의
+      시세는 다음 재시작까지 Toss REST 폴백으로 흐른다(느리지만 동작).
+
+    자정 경계가 US 세션을 가로지르는 문제는 위와 같은 인스턴스 재사용으로 흡수한다.
     """
     from zoneinfo import ZoneInfo
     now = now or datetime.now(ZoneInfo("Asia/Seoul"))
     hm = (now.hour, now.minute)
-    if hm >= (22, 10):
-        suffix = "+2210"
-    elif hm >= (14, 53):
-        suffix = "+1453"
-    elif hm >= (8, 27):
-        suffix = "+0827"
-    else:
-        suffix = ""
+    passed = [b for b in _ROLL_BOUNDARIES if hm >= b]
+    suffix = "+%02d%02d" % passed[-1] if passed else ""
     return now.date().isoformat() + suffix
+
+
+# 체인 경계 3개(08:27/14:53/22:10 — 각 사유는 _universe_roll_bucket docstring) +
+# 장중 30분 경계(2026-08-28). (0,0)은 넣지 않는다 — 자정은 날짜 문자열 변경이
+# 이미 경계다. 15:00~15:19 는 close_bet 진입 창이라 경계를 두지 않는다(14:53 이
+# 마지막 KR 경계). US 는 EDT 개장(22:30) 기준 23:00 부터 — EST(23:30 개장)면
+# 23:00 경계가 개장 전 한 번 더 도는 것뿐이라 무해하다.
+_ROLL_BOUNDARIES: tuple[tuple[int, int], ...] = tuple(sorted(
+    [(8, 27), (14, 53), (22, 10), (9, 30), (23, 0), (23, 30)]
+    + [(h, m) for h in range(10, 15) for m in (0, 30)]      # KR 10:00~14:30
+    + [(0, 30)] + [(h, m) for h in range(1, 5) for m in (0, 30)]  # US 00:30~04:30
+))
 
 
 def _refresh_symbol_names(universe: object) -> int:

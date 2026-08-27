@@ -130,6 +130,16 @@ class RiskManagerImpl:
         # 4봉(15분봉 기준 1시간): 손절 직후 같은 신호가 곧바로 재발동하는 휩소 재진입을
         # 막되, 세션(약 26봉)의 상당 부분을 잃지 않을 정도로 짧게 잡는다.
         self.cooldown_bars_after_stop = risk_cfg.get("cooldown_bars_after_stop", 4)
+        # 손절 후 **당일 전체** 재진입 차단 대상 전략(2026-08-28 소유자 지시
+        # "이겼던 패턴 파악" 실측): scalp_1m 원장 75트립 — 같은 (심볼,날)에서
+        # 직전 왕복이 손실이었던 재진입은 n=7 승률 14% 평균 -40.9bp, 직전이
+        # 이익이었던 재진입은 n=7 승률 43% 평균 -17.3bp(전체 최선 서브그룹).
+        # 그래서 재진입 전면 금지가 아니라 **손절 이력이 있는 (전략,심볼)만**
+        # 그날 차단한다 — 이익보호 청산(reason 에 '손절' 마커 없음)은 기록되지
+        # 않으므로 이익 후 재진입은 계속 허용된다. 빈 목록(기본) = 무동작.
+        self.cooldown_eod_strategies: set[str] = set(
+            risk_cfg.get("cooldown_until_eod_strategies", []) or []
+        )
         # 쿨다운 봉 카운팅에 쓰는 봉 간격(분) — 전략이 쓰는 간격과 달라지면 안 된다.
         # 단일 전역값이던 시절 orb(5분봉)에 15분봉이 적용됐고, DataFeed에 15분봉이
         # 없는 구성에서는 history()가 빈 프레임을 돌려줘 **쿨다운이 조용한 no-op**이
@@ -237,6 +247,9 @@ class RiskManagerImpl:
         self._day_order_count: dict[str, int] = {}   # 총 승인 주문 — 가시성 전용
         self._stop_bar_ts: dict[str, object] = {}  # symbol -> 마지막 손절 청산 시점 봉 ts
         self._stop_day: dict[str, str] = {}  # symbol -> 그 손절이 난 거래일(세션 롤 시 쿨다운 해제)
+        # (전략ID, 심볼) -> 손절 난 거래일. cooldown_eod_strategies 대상 전략의
+        # 당일 재진입 차단용 — 날이 다르면 판정 시점에 게으르게 정리한다.
+        self._eod_stopped: dict[tuple[str, str], str] = {}
         # 일일 리스크 상태 영속화 경로. 없으면(백테스트/단위테스트) 저장하지 않는다.
         #
         # 왜 필요한가: 이 상태가 전부 인메모리라 **재시작 한 번에 회로차단기가 전부
@@ -288,6 +301,13 @@ class RiskManagerImpl:
                 logger.warning("손절 쿨다운 복원 실패 — %s 쿨다운이 해제됨: %r", sym, raw)
         self._stop_bar_ts = restored
         self._stop_day = dict(d.get("stop_day") or {})
+        # "전략|심볼" 문자열 키로 저장했다(JSON 은 튜플 키 불가). 재시작이 당일
+        # 차단을 풀면 안 되므로 복원 실패는 항목 단위로만 버린다.
+        self._eod_stopped = {}
+        for key, day in (d.get("eod_stopped") or {}).items():
+            sid, _, sym = str(key).partition("|")
+            if sid and sym:
+                self._eod_stopped[(sid, sym)] = str(day)
         # per_strategy 일일 상태 — 구버전 상태 파일에는 이 키들이 없으므로
         # `or {}` 로 안전하게 빈 값에서 시작한다(다른 필드들과 같은 폴백 원칙).
         raw_day_per_strategy = d.get("day_per_strategy")
@@ -321,6 +341,7 @@ class RiskManagerImpl:
                 # 쿨다운 판정은 "같은 봉인가"만 보므로 문자열 비교로 충분하다.
                 "stop_bar_ts": {k: str(v) for k, v in self._stop_bar_ts.items()},
                 "stop_day": self._stop_day,
+                "eod_stopped": {f"{sid}|{sym}": day for (sid, sym), day in self._eod_stopped.items()},
                 "day_per_strategy": self._day_per_strategy,
                 "day_start_equity_per_strategy": self._day_start_equity_per_strategy,
                 "day_entry_count_per_strategy": self._day_entry_count_per_strategy,
@@ -802,6 +823,19 @@ class RiskManagerImpl:
                 )
                 return None
 
+        if signal.action in _ENTRY_ACTIONS and self._eod_stopped:
+            # 당일 손절 이력 (전략,심볼) 차단 — N봉 쿨다운보다 먼저 본다(더 긴 레일).
+            # 근거는 생성자의 cooldown_eod_strategies 주석(실측 n=7 승률 14%).
+            eod_day = self._eod_stopped.get((signal.strategy_id, signal.symbol))
+            if eod_day == today:
+                self._block(
+                    f"손절 쿨다운(당일): {signal.symbol} 오늘 {signal.strategy_id} 손절 이력 — "
+                    f"세션 종료까지 재진입 차단"
+                )
+                return None
+            if eod_day is not None:
+                self._eod_stopped.pop((signal.strategy_id, signal.symbol), None)
+
         if signal.action in _ENTRY_ACTIONS and self.cooldown_bars_after_stop > 0:
             stop_ts = self._stop_bar_ts.get(signal.symbol)
             # 쿨다운은 **세션 안에서만** 유효하다. 이 레일이 막으려는 것은 손절 직후
@@ -1082,6 +1116,10 @@ class RiskManagerImpl:
             if len(bars) > 0:
                 self._stop_bar_ts[signal.symbol] = bars.index[-1]
                 self._stop_day[signal.symbol] = today
+            if signal.strategy_id in self.cooldown_eod_strategies:
+                # 봉 조회 실패와 무관하게 기록한다 — 이 레일은 봉 카운트가 아니라
+                # 거래일 비교로 판정하므로 조용한 no-op 이 될 이유가 없다.
+                self._eod_stopped[(signal.strategy_id, signal.symbol)] = today
 
         self._day_order_count[market] = self._day_order_count.get(market, 0) + 1
         if signal.action in _ENTRY_ACTIONS:

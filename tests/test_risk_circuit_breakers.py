@@ -246,6 +246,90 @@ def test_cooldown_bars_after_stop_blocks_reentry_until_bar_count_elapses(fake_cl
     assert _SYMBOL not in risk.breaker_state()["cooldown_bars_after_stop"]["symbols_in_cooldown"]
 
 
+def test_eod_cooldown_blocks_same_day_reentry_even_after_bars_elapse(fake_clock_cls):
+    """2026-08-28 소유자 지시 실측(손절 후 재진입 승률 14% vs 이익 후 43%):
+    cooldown_until_eod_strategies 대상 전략은 손절 후 그날 내내 재진입 차단 —
+    N봉 쿨다운이 풀려도 유지된다."""
+    risk = RiskManagerImpl(
+        _risk_cfg(cooldown_bars_after_stop=3, cooldown_bar_interval_minutes=15,
+                  cooldown_until_eod_strategies=["donchian"]),
+        capital_fraction={"donchian": 1.0}, market_of=_MARKET_OF,
+    )
+    positions = {_SYMBOL: Position(symbol=_SYMBOL, qty=50.0, avg_cost=100.0)}
+    stop_data = _FakeData(price=97.5, now=_DEFAULT_NOW)
+    stop_data.bars[_SYMBOL] = _bars(1, _DEFAULT_NOW)
+    stop_ctx = Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=stop_data,
+                       broker=_FakeBroker(10_000_000.0, positions))
+    assert risk.approve(_exit(reason="손절: entry=100.00 stop=98.00 현재=97.50"), stop_ctx) is not None
+
+    # 봉 50개 경과 — 일반 쿨다운(3봉)은 진작 풀렸을 시간
+    d = _FakeData(price=100.0, now=_DEFAULT_NOW)
+    d.bars[_SYMBOL] = _bars(50, _DEFAULT_NOW)
+    ctx = Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=d, broker=_FakeBroker(10_000_000.0, {}))
+    assert risk.approve(_entry(0.02), ctx) is None
+    assert "쿨다운(당일)" in risk.last_block
+
+
+def test_eod_cooldown_ignores_profit_protection_exits(fake_clock_cls):
+    """'이익보호 청산(본전/트레일)'은 손절이 아니다 — 기록되지 않아야 이익 후
+    재진입(실측 최선 서브그룹)이 계속 열려 있다."""
+    risk = RiskManagerImpl(
+        _risk_cfg(cooldown_bars_after_stop=3, cooldown_until_eod_strategies=["donchian"]),
+        capital_fraction={"donchian": 1.0}, market_of=_MARKET_OF,
+    )
+    positions = {_SYMBOL: Position(symbol=_SYMBOL, qty=50.0, avg_cost=100.0)}
+    data = _FakeData(price=101.2, now=_DEFAULT_NOW)
+    data.bars[_SYMBOL] = _bars(1, _DEFAULT_NOW)
+    ctx = Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=data,
+                  broker=_FakeBroker(10_000_000.0, positions))
+    assert risk.approve(
+        _exit(reason="이익보호 청산(본전/트레일): entry=100.00 stop=101.29 현재=101.20"), ctx,
+    ) is not None
+
+    entry_ctx = _ctx(fake_clock_cls, price=100.0, cash=10_000_000.0)
+    assert risk.approve(_entry(0.02), entry_ctx) is not None
+
+
+def test_eod_cooldown_scoped_to_strategy_and_symbol(fake_clock_cls):
+    """차단은 (전략, 심볼) 단위다 — donchian 이 손절한 심볼이라도 목록에 없는
+    다른 전략의 진입은 막지 않는다(측정된 근거가 scalp_1m 뿐이므로 과잉 차단 금지)."""
+    risk = RiskManagerImpl(
+        _risk_cfg(cooldown_bars_after_stop=0, cooldown_until_eod_strategies=["donchian"]),
+        capital_fraction={"donchian": 1.0, "other": 1.0}, market_of=_MARKET_OF,
+    )
+    positions = {_SYMBOL: Position(symbol=_SYMBOL, qty=50.0, avg_cost=100.0)}
+    data = _FakeData(price=97.5, now=_DEFAULT_NOW)
+    data.bars[_SYMBOL] = _bars(1, _DEFAULT_NOW)
+    ctx = Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=data,
+                  broker=_FakeBroker(10_000_000.0, positions))
+    assert risk.approve(_exit(reason="손절: entry=100.00 stop=98.00 현재=97.50"), ctx) is not None
+
+    entry_ctx = _ctx(fake_clock_cls, price=100.0, cash=10_000_000.0)
+    assert risk.approve(_entry(0.02), entry_ctx) is None  # donchian 재진입 차단
+    other = Signal(strategy_id="other", symbol=_SYMBOL,
+                   action=SignalAction.ENTER_LONG, target_weight=0.02)
+    assert risk.approve(other, entry_ctx) is not None  # 다른 전략은 통과
+
+
+def test_eod_cooldown_clears_on_next_trading_day(fake_clock_cls):
+    from datetime import timedelta
+    risk = RiskManagerImpl(
+        _risk_cfg(cooldown_bars_after_stop=0, cooldown_until_eod_strategies=["donchian"]),
+        capital_fraction={"donchian": 1.0}, market_of=_MARKET_OF,
+    )
+    positions = {_SYMBOL: Position(symbol=_SYMBOL, qty=50.0, avg_cost=100.0)}
+    data = _FakeData(price=97.5, now=_DEFAULT_NOW)
+    data.bars[_SYMBOL] = _bars(1, _DEFAULT_NOW)
+    ctx = Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=data,
+                  broker=_FakeBroker(10_000_000.0, positions))
+    assert risk.approve(_exit(reason="손절: entry=100.00 stop=98.00 현재=97.50"), ctx) is not None
+    assert risk.approve(_entry(0.02), _ctx(fake_clock_cls, price=100.0, cash=10_000_000.0)) is None
+
+    tomorrow = _DEFAULT_NOW + timedelta(days=1)
+    next_ctx = _ctx(fake_clock_cls, price=100.0, cash=10_000_000.0, now=tomorrow)
+    assert risk.approve(_entry(0.02), next_ctx) is not None
+
+
 def test_cooldown_bars_after_stop_never_blocks_exits(fake_clock_cls):
     risk = RiskManagerImpl(
         _risk_cfg(cooldown_bars_after_stop=10, cooldown_bar_interval_minutes=15),

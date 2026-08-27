@@ -353,11 +353,18 @@ def test_universe_roll_bucket_adds_preopen_boundary_at_0827_kst():
     midnight = _universe_roll_bucket(datetime(2026, 8, 10, 0, 0, tzinfo=kst))
     next_day = _universe_roll_bucket(datetime(2026, 8, 11, 0, 0, tzinfo=kst))
 
-    assert before == midnight, "자정~08:26은 같은 버킷(그날 첫 리로드 1회뿐)"
-    assert after != before, "08:27에 두 번째 리로드 경계가 지나야 한다"
+    # 2026-08-28: 장중 30분 경계 도입(소유자 지시 — flow-scan 장중 편입 흡수)으로
+    # "자정~08:26 단일 버킷" 계약이 개정됐다 — 이제 US 세션 꼬리(00:30~04:30)
+    # 경계가 이월돼 있고, 05:00~08:26 사이에만 새 경계가 없다.
+    assert before != midnight, "US 세션 꼬리(~04:30) 경계가 자정 버킷과 구분된다"
+    assert _universe_roll_bucket(datetime(2026, 8, 10, 5, 0, tzinfo=kst)) == before, \
+        "US 마감(05:00)~08:26에는 새 경계가 없다"
+    assert after != before, "08:27에 동시호가 직전 리로드 경계가 지나야 한다"
     assert next_day != after, "다음날 자정에 다시 리로드"
-    # KR 오전 세션 내내(~13:59)는 08:27 버킷이 유지된다 — 장중 유니버스 스냅샷 안정성.
-    assert _universe_roll_bucket(datetime(2026, 8, 10, 13, 59, tzinfo=kst)) == after
+    # KR 장중은 이제 30분 경계가 돈다 — 09:29까지는 08:27 버킷 유지.
+    assert _universe_roll_bucket(datetime(2026, 8, 10, 9, 29, tzinfo=kst)) == after
+    assert _universe_roll_bucket(datetime(2026, 8, 10, 13, 59, tzinfo=kst)) != after, \
+        "장중 30분 경계(2026-08-28)가 flow-scan 편입을 세션 중에 흡수한다"
     # 14:00: 오후 마감 포지션 리포트(EVENT_SCALP) 흡수 경계(서브프로젝트 T Task 2) —
     # 08:27 버킷과는 달라야 하고, KR 세션 마감(15:30)과 그 뒤 22:10 전까지 유지된다.
     afternoon = _universe_roll_bucket(datetime(2026, 8, 10, 14, 53, tzinfo=kst))
