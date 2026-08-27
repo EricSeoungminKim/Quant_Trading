@@ -25,7 +25,11 @@ MARKET="${1:?사용법: ai_trader.sh KR|US}"
 
 # LLM 3회 호출 — 무료 레인이 느릴 수 있어 넉넉히. 실패해도 판단이 안 남을 뿐
 # 다른 시스템에 영향 없다(결근).
-OUT="$(timeout 420 .venv/bin/python -m quant.apps.cli ai-trader --market "$MARKET" 2>/dev/null)"
+# stderr 를 로그에 남긴다(2026-08-27): /dev/null 이던 시절 결근 사유(무료 레인
+# 응답 형태 불량)가 증발해 수동 재실행으로만 진단할 수 있었다.
+_run() { timeout 420 .venv/bin/python -m quant.apps.cli ai-trader --market "$MARKET" 2>>data/ai_trader.log; }
+
+OUT="$(_run)"
 RC=$?
 
 if [ "$RC" -ne 0 ]; then
@@ -34,8 +38,19 @@ if [ "$RC" -ne 0 ]; then
 fi
 
 if [ -z "$OUT" ]; then
-  echo "[$(date '+%F %T')] $MARKET 픽 없음/결근 — 침묵"
-  exit 0
+  # 무출력 1회 지연 재시도(2026-08-27): 무료 레인 응답 형태 불량이 같은 날
+  # KR·US 크론을 연속 결근시켰다(수동 재실행은 둘 다 성공 — CLI 내부 1회
+  # 재시도로 부족한 날이 실측됨). "진짜 픽 없음"과 "LLM 결근"은 셸에서 구분
+  # 불가라 전자도 재시도되지만, 판단 원장은 input_hash 멱등이라 무해하고
+  # 비용은 무료 레인이다.
+  echo "[$(date '+%F %T')] $MARKET 1차 무출력 — 90초 후 재시도"
+  sleep 90
+  OUT="$(_run)"
+  RC=$?
+  if [ "$RC" -ne 0 ] || [ -z "$OUT" ]; then
+    echo "[$(date '+%F %T')] $MARKET 픽 없음/결근 — 침묵(재시도 포함)"
+    exit 0
+  fi
 fi
 
 # --- 2단계(태그 소스 승격) 마커 처리 — settings ai_trader.tag_source_enabled
