@@ -74,6 +74,17 @@ fi
 log "게이트 통과: $PASS"
 
 # --- 3. 편입 (RANK 태그로 발굴 출처를 남긴다) ---
+# **회차당 상한**(2026-08-28 첫 실전 실행에서 드러남): 게이트를 14종목이 한 번에
+# 통과했다. 30분마다 그러면 하루 100종목이 넘게 붙어 유니버스가 폭증하고,
+# scalp_1m 사이클(이미 3.8초/분)이 더 느려지며 전략당 자본이 희석된다. 발굴은
+# "오늘 시장이 쳐다보는 상위 몇 개"를 잡는 보너스 경로지 유니버스 확장기가
+# 아니다. 거래대금 순위 순서(flow-scan 출력 순서)가 보존되므로 앞에서 자른다.
+FLOW_MAX_ADD="${FLOW_MAX_ADD:-3}"
+KEPT="$(printf '%s\n' "$PASS" | tr ' ' '\n' | head -n "$FLOW_MAX_ADD" | tr '\n' ' ' | sed 's/ $//')"
+DROPPED="$(printf '%s\n' "$PASS" | tr ' ' '\n' | tail -n +"$((FLOW_MAX_ADD + 1))" | tr '\n' ' ' | sed 's/ $//')"
+[ -n "$DROPPED" ] && log "상한(${FLOW_MAX_ADD}) 초과로 보류: $DROPPED"
+PASS="$KEPT"
+
 SYMS_ONLY="$(printf '%s\n' "$PASS" | tr ' ' '\n' | awk -F: '{print $1}' | tr '\n' ' ' | sed 's/ $//')"
 # shellcheck disable=SC2086
 ADD_OUT="$(timeout 60 "$PY" server/scripts/tg_bridge.py watch-add --source auto --tags RANK $SYMS_ONLY \
