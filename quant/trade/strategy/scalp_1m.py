@@ -36,12 +36,18 @@
    0.3%)/100). **하드 캡** stop_hard_cap_pct(기본 3.0% — news_scalp와 동일한
    꼬리 차단): 손절가 = max(위 값, 진입가 × (1 − 하드캡/100)) — 진입가에 더
    가까운(손실이 더 작은) 쪽을 쓴다.
-2. **절반 익절**: R = 진입가 − 손절가. 가격이 진입가 + partial_take_r(기본
-   1.5)×R에 도달하면 보유의 partial_fraction(기본 50%) 시장가 청산 — 세션당
-   1회만(랏의 `partial_taken` 플래그, news_momentum과 동일 재발동 방지 패턴).
+2. **절반 익절**: R = 진입가 − 손절가(**최초** 손절가 — 아래 5번이 스탑을
+   올려도 R 은 진입 시점 값으로 고정, 랏의 `r0`). 가격이 진입가 +
+   partial_take_r(기본 1.5)×R에 도달하면 보유의 partial_fraction(기본 50%)
+   시장가 청산 — 세션당 1회만(랏의 `partial_taken` 플래그).
 3. **잔량 트레일**: 최근 완성 1분봉 **종가**가 MA60 아래로 마감하면 전량 청산
    (부분 익절 여부와 무관 — 아직 부분 익절 전이면 전량, 후면 잔량). MA60 위에서는
    계속 보유한다.
+5. **본전 이동 + 고수위 트레일**(2026-08-27, 실측 근거는 생성자 주석): 미실현이
+   breakeven_at_bp 에 닿으면 스탑을 진입가로, trail_bp 가 켜져 있으면 고수위
+   (관측 최고가) − trail_bp 로 스탑을 **단조 상향**한다. 스탑이 진입가 이상으로
+   올라온 뒤의 이탈은 "이익보호 청산"으로 표기한다(손절이 아니다). 고정
+   take_profit_bps 와 달리 상방을 자르지 않는다 — "이득 볼 땐 많이"의 구현.
 4. **당일 청산 고정**: EoD 강제청산(flatten_before_close_minutes) + 세션 롤
    오버나잇 금지 레일 — 다른 전략과 동일한 이중 보장.
 
@@ -258,6 +264,18 @@ class Scalp1mStrategy:
         # 기존 partial_fraction 은 코드가 0<x<1 로 강제해 전량 익절을 표현할 수
         # 없으므로 별도 경로를 둔다.
         self.take_profit_bps: float = params.get("take_profit_bps", 0)
+        # 본전 이동 + 고수위 트레일(bp). 0 = 비활성(기본) — 미설정이면 동작이
+        # 지금과 100% 같다. 켜는 건 settings.yaml.
+        #
+        # 2026-08-27 원장 66건 실측: 패자 29건(재생 가능분) 중 12건(41%)이 보유 중
+        # +50bp 를 찍고도 손실로 끝났고(반납형), 승자 17건은 실현 중앙 +94bp 에서
+        # 끊기는데 세션 MFE 중앙은 +342bp — 고정 TP 가 상방을 자른다. 반사실
+        # 시뮬(57트립, 종가 판단, 왕복 20bp 차감, 탐색 6회 사전 고지):
+        # BE50+트레일70 평균 -19.5bp vs 현행 근사(고정 TP100) -28.1bp → 건당
+        # +8.6bp. 인샘플 반사실이므로 절대 성과 주장이 아니라 **규칙 간 우열**
+        # 근거로만 쓴다 — 최종 판정은 experiments(DiD)가 한다.
+        self.breakeven_at_bp: float = params.get("breakeven_at_bp", 0)
+        self.trail_bp: float = params.get("trail_bp", 0)
         self.partial_fraction: float = params.get("partial_fraction", 0.5)
         # 손절 모드(2026-08-26 구조층 재작업 — quant/trade/structure.py):
         #   "basis"     — 기존: 패턴 기준가(L1/MA60) × (1-buffer), 하드캡 바닥.
@@ -337,6 +355,10 @@ class Scalp1mStrategy:
             raise ValueError("partial_take_r은 양수여야 합니다.")
         if self.take_profit_bps < 0:
             raise ValueError("take_profit_bps는 0(비활성) 이상이어야 합니다.")
+        if self.breakeven_at_bp < 0:
+            raise ValueError("breakeven_at_bp는 0(비활성) 이상이어야 합니다.")
+        if self.trail_bp < 0:
+            raise ValueError("trail_bp는 0(비활성) 이상이어야 합니다.")
         if not 0 < self.partial_fraction < 1:
             raise ValueError("partial_fraction은 0과 1 사이여야 합니다.")
         if self.premarket_min_volume_krw < 0:
@@ -963,12 +985,27 @@ class Scalp1mStrategy:
                 target_weight=0.0, exit_fraction=1.0,
                 reason=f"EoD 청산: entry={fmt_price(entry, symbol)} 현재={fmt_price(price, symbol)}",
             )
+        # 본전 이동 + 고수위 트레일 — 손절 판정 **전에** 스탑을 단조 상향한다
+        # (근거는 생성자의 breakeven_at_bp 주석). 최초 리스크 R 은 상향 전 스탑
+        # 으로 고정(r0) — 절반 익절 목표(+1.5R)가 스탑 상향으로 무력화되지 않게.
+        lot.setdefault("r0", entry - stop)
+        if self.breakeven_at_bp or self.trail_bp:
+            hi = max(float(lot.get("hi", entry)), price)
+            lot["hi"] = hi
+            raised = stop
+            if self.breakeven_at_bp and hi >= entry * (1 + self.breakeven_at_bp / 1e4):
+                raised = max(raised, entry)
+            if self.trail_bp:
+                raised = max(raised, hi * (1 - self.trail_bp / 1e4))
+            if raised > stop:
+                lot["stop"] = stop = raised
         if price <= stop:
+            kind = "이익보호 청산(본전/트레일)" if stop >= entry else "손절"
             return Signal(
                 strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
                 target_weight=0.0, exit_fraction=1.0,
                 reason=(
-                    f"손절: entry={fmt_price(entry, symbol)} stop={fmt_price(stop, symbol)} "
+                    f"{kind}: entry={fmt_price(entry, symbol)} stop={fmt_price(stop, symbol)} "
                     f"현재={fmt_price(price, symbol)}"
                 ),
             )
@@ -1004,7 +1041,7 @@ class Scalp1mStrategy:
                 )
 
         if not lot.get("partial_taken"):
-            r = entry - stop
+            r = float(lot.get("r0", entry - stop))
             if r > 0:
                 target = entry + self.partial_take_r * r
                 if price >= target:
@@ -1105,6 +1142,8 @@ class Scalp1mPureStrategy:
         self.partial_take_r = self._legacy.partial_take_r
         self.partial_fraction = self._legacy.partial_fraction
         self.take_profit_bps = self._legacy.take_profit_bps
+        self.breakeven_at_bp = self._legacy.breakeven_at_bp
+        self.trail_bp = self._legacy.trail_bp
         self.flatten_minutes = self._legacy.flatten_minutes
         self.premarket_entry = self._legacy.premarket_entry
         self.premarket_min_volume_krw = self._legacy.premarket_min_volume_krw
@@ -1465,12 +1504,27 @@ class Scalp1mPureStrategy:
                 target_weight=0.0, exit_fraction=1.0,
                 reason=f"EoD 청산: entry={fmt_price(entry, symbol)} 현재={fmt_price(price, symbol)}",
             )
+        # 본전 이동 + 고수위 트레일 — 레거시 `_manage_position`과 동일(그쪽 주석
+        # 참고). `lot`은 이번 사이클 로컬 사본이라 in-place 갱신이 next_state 로만
+        # 흘러간다(partial_taken 과 같은 경로).
+        lot.setdefault("r0", entry - stop)
+        if self.breakeven_at_bp or self.trail_bp:
+            hi = max(float(lot.get("hi", entry)), price)
+            lot["hi"] = hi
+            raised = stop
+            if self.breakeven_at_bp and hi >= entry * (1 + self.breakeven_at_bp / 1e4):
+                raised = max(raised, entry)
+            if self.trail_bp:
+                raised = max(raised, hi * (1 - self.trail_bp / 1e4))
+            if raised > stop:
+                lot["stop"] = stop = raised
         if price <= stop:
+            kind = "이익보호 청산(본전/트레일)" if stop >= entry else "손절"
             return Signal(
                 strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
                 target_weight=0.0, exit_fraction=1.0,
                 reason=(
-                    f"손절: entry={fmt_price(entry, symbol)} stop={fmt_price(stop, symbol)} "
+                    f"{kind}: entry={fmt_price(entry, symbol)} stop={fmt_price(stop, symbol)} "
                     f"현재={fmt_price(price, symbol)}"
                 ),
             )
@@ -1502,7 +1556,7 @@ class Scalp1mPureStrategy:
                 )
 
         if not lot.get("partial_taken"):
-            r = entry - stop
+            r = float(lot.get("r0", entry - stop))
             if r > 0:
                 target = entry + self.partial_take_r * r
                 if price >= target:

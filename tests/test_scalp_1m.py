@@ -1309,3 +1309,73 @@ def test_stop_still_wins_over_take_profit():
 def test_invalid_take_profit_bps_raises():
     with pytest.raises(ValueError):
         Scalp1mStrategy(["AAA"], _params(take_profit_bps=-1))
+
+
+# ============================== 본전 이동 + 고수위 트레일(breakeven_at_bp/trail_bp)
+# 2026-08-27 실측 근거(원장 66건): 패자 29건 중 12건이 +50bp 를 찍고도 손실
+# (반납형), 승자 실현 중앙 +94bp vs 세션 MFE 중앙 +342bp(고정 TP 가 상방 절단).
+# 반사실 시뮬 57트립·탐색 6회: BE50+트레일70 이 고정 TP100 대비 건당 +8.6bp.
+# 0 = 비활성(기본) — 미설정이면 동작이 기존과 100% 같다.
+
+def test_breakeven_move_raises_stop_to_entry_after_threshold():
+    """+50bp 를 찍은 뒤 진입가로 되돌아오면 본전에서 나간다 — 반납형 절단."""
+    strat = Scalp1mStrategy(["AAA"], _params(breakeven_at_bp=50))
+    pos = _lot_position(entry=100.0, stop=97.0)
+    # 사이클 1: +60bp — 본전 이동 발동, 청산은 없다
+    assert strat.on_cycle(_ctx({"AAA": 100.6}, _now_within_window(5.0), positions={"AAA": pos})) == []
+    # 사이클 2: 진입가 복귀 — 원래 스탑(97.0)이었으면 계속 보유했을 자리
+    signals = strat.on_cycle(_ctx({"AAA": 100.0}, _now_within_window(6.0), positions={"AAA": pos}))
+    assert len(signals) == 1
+    assert signals[0].action == SignalAction.EXIT_LONG
+    assert "이익보호" in signals[0].reason
+
+
+def test_trailing_stop_follows_high_water_and_protects_profit():
+    """고수위 −70bp 트레일 — 러너를 열어두되 이익의 대부분을 잠근다."""
+    strat = Scalp1mStrategy(["AAA"], _params(trail_bp=70))
+    pos = _lot_position(entry=100.0, stop=97.0)
+    assert strat.on_cycle(_ctx({"AAA": 102.0}, _now_within_window(5.0), positions={"AAA": pos})) == []
+    # 고수위 102.0 → 트레일 스탑 101.286. +120bp 로 되돌림 → 이익보호 청산
+    signals = strat.on_cycle(_ctx({"AAA": 101.2}, _now_within_window(6.0), positions={"AAA": pos}))
+    assert len(signals) == 1
+    assert signals[0].action == SignalAction.EXIT_LONG
+    assert "이익보호" in signals[0].reason
+
+
+def test_trailing_stop_tightens_initial_risk_below_entry():
+    """트레일은 진입 직후부터 고수위(=진입가) 기준으로 작동한다 — 구조 손절
+    (-300bp)보다 가까운 -70bp 가 유효 스탑이 된다('잃을 땐 적게'). 시뮬도
+    같은 가정으로 쟀다 — 여기서만 동작이 다르면 시뮬 근거가 무효가 된다."""
+    strat = Scalp1mStrategy(["AAA"], _params(trail_bp=70))
+    pos = _lot_position(entry=100.0, stop=97.0)
+    assert strat.on_cycle(_ctx({"AAA": 99.5}, _now_within_window(5.0), positions={"AAA": pos})) == []
+    signals = strat.on_cycle(_ctx({"AAA": 99.2}, _now_within_window(6.0), positions={"AAA": pos}))
+    assert len(signals) == 1
+    assert "손절" in signals[0].reason  # 진입가 아래 이탈은 여전히 손절로 표기
+
+
+def test_partial_target_survives_stop_raise():
+    """스탑이 본전으로 올라와도 절반 익절 목표는 최초 R(r0) 기준을 유지한다 —
+    entry-stop 재계산이면 R=0 이 되어 목표 자체가 사라지는 회귀를 막는다."""
+    strat = Scalp1mStrategy(["AAA"], _params(breakeven_at_bp=50, partial_take_r=1.5))
+    pos = _lot_position(entry=100.0, stop=97.0)
+    assert strat.on_cycle(_ctx({"AAA": 100.6}, _now_within_window(5.0), positions={"AAA": pos})) == []
+    signals = strat.on_cycle(_ctx({"AAA": 104.6}, _now_within_window(6.0), positions={"AAA": pos}))
+    assert len(signals) == 1
+    assert signals[0].action == SignalAction.SCALE_OUT
+
+
+def test_breakeven_trail_disabled_by_default_keeps_behaviour():
+    """미설정(기본 0)이면 스탑이 절대 움직이지 않는다 — 기존 계약 보존."""
+    strat = Scalp1mStrategy(["AAA"], _params())
+    pos = _lot_position(entry=100.0, stop=97.0)
+    assert strat.on_cycle(_ctx({"AAA": 102.0}, _now_within_window(5.0), positions={"AAA": pos})) == []
+    assert pos.meta["lots"]["scalp_1m"]["stop"] == 97.0
+    assert strat.on_cycle(_ctx({"AAA": 100.0}, _now_within_window(6.0), positions={"AAA": pos})) == []
+
+
+def test_invalid_breakeven_and_trail_raise():
+    with pytest.raises(ValueError):
+        Scalp1mStrategy(["AAA"], _params(breakeven_at_bp=-1))
+    with pytest.raises(ValueError):
+        Scalp1mStrategy(["AAA"], _params(trail_bp=-1))

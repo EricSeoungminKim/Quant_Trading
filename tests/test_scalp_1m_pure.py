@@ -505,6 +505,28 @@ def test_partial_take_profit_equivalence():
     assert sig_legacy[0].state_update == {"partial_taken": True}
 
 
+def test_breakeven_trail_exit_equivalence():
+    """본전 이동+트레일(2026-08-27)이 두 구현에서 같은 사이클에 같은 이유로
+    발동해야 한다 — 상태 키(hi/r0/stop 상향)가 next_state 로만 흐르는 pure 와
+    lot in-place 인 legacy 가 갈라지면 여기서 잡는다."""
+    legacy, pure = _strats(["AAA"], _params(breakeven_at_bp=50, trail_bp=70))
+    pos_legacy = _lot_position(LEGACY_ID, entry=100.0, stop=97.0)
+    pos_pure = _lot_position(PURE_ID, entry=100.0, stop=97.0)
+    _seed_open(pure, "AAA", entry=100.0, stop=97.0)
+    now = _now_within_window(5.0)
+
+    # 사이클 1: +200bp — 고수위 형성, 청산 없음(스탑은 101.286 으로 상향)
+    assert legacy.on_cycle(_ctx({"AAA": 102.0}, now, positions={"AAA": pos_legacy})) == []
+    assert pure.on_cycle(_ctx({"AAA": 102.0}, now, positions={"AAA": pos_pure})) == []
+    # 사이클 2: +120bp 되돌림 — 양쪽 다 이익보호 청산
+    now2 = _now_within_window(6.0)
+    sig_legacy = legacy.on_cycle(_ctx({"AAA": 101.2}, now2, positions={"AAA": pos_legacy}))
+    sig_pure = pure.on_cycle(_ctx({"AAA": 101.2}, now2, positions={"AAA": pos_pure}))
+    assert _keys(sig_legacy) == _keys(sig_pure)
+    assert len(sig_legacy) == 1 and "이익보호" in sig_legacy[0].reason
+    assert "이익보호" in sig_pure[0].reason
+
+
 def test_partial_take_profit_does_not_refire_equivalence():
     legacy, pure = _strats(["AAA"], _params(partial_take_r=1.5, partial_fraction=0.5))
     pos_legacy = _lot_position(LEGACY_ID, entry=100.0, stop=97.0, partial_taken=True)
