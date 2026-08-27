@@ -86,7 +86,10 @@ def fetch_series(series_id: str, *, timeout: float = 90.0,
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            with http_client(timeout=timeout) as c:
+            # user_agent=None — FRED 는 공용 브라우저 UA 를 차단한다(quant/adapters/
+            # http.py client() docstring 의 2026-08-28 실측: 같은 요청이 UA 있으면
+            # 30초 타임아웃, 없으면 0.1초 200).
+            with http_client(timeout=timeout, user_agent=None) as c:
                 resp = c.get(_BASE_URL, params={"id": series_id})
                 resp.raise_for_status()
                 return parse_fred_csv(resp.text)
