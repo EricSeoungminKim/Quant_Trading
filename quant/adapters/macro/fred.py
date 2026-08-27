@@ -72,20 +72,32 @@ def parse_fred_csv(text: str) -> list[tuple[str, float]]:
     return out
 
 
-def fetch_series(series_id: str, *, timeout: float = 30.0) -> list[tuple[str, float]] | None:
+def fetch_series(series_id: str, *, timeout: float = 90.0,
+                 attempts: int = 2) -> list[tuple[str, float]] | None:
     """`series_id`(FRED ID)의 전체 과거 시계열. (ISO 날짜, 값) 오름차순.
 
     네트워크 예외는 여기서 삼키고 None(어댑터 계약 — regime_indicators.py의
-    TossIndicatorClient/UpbitBitcoinAdapter와 동일 패턴). 로그는 warning."""
-    try:
-        with http_client(timeout=timeout) as c:
-            resp = c.get(_BASE_URL, params={"id": series_id})
-            resp.raise_for_status()
-            text = resp.text
-    except Exception:
-        logger.warning("macro: FRED %s 조회 실패", series_id, exc_info=True)
-        return None
-    return parse_fred_csv(text)
+    TossIndicatorClient/UpbitBitcoinAdapter와 동일 패턴). 로그는 warning.
+
+    타임아웃 90초·2회 시도인 이유: 전체 시계열은 5천~1만3천 행이라 응답이 크고
+    FRED 가 느린 날이 있다. 2026-08-28 첫 백필이 30초 ReadTimeout 으로 6종 전부
+    실패했다(같은 시각 curl 은 20~25초에 성공 — 경계선이었다). 이 잡은 하루 1회
+    배치라 넉넉히 기다리는 비용이 실패보다 훨씬 싸다."""
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            with http_client(timeout=timeout) as c:
+                resp = c.get(_BASE_URL, params={"id": series_id})
+                resp.raise_for_status()
+                return parse_fred_csv(resp.text)
+        except Exception as e:  # noqa: BLE001 — 어댑터가 삼키는 계약
+            last_error = e
+            if attempt < attempts:
+                logger.warning("macro: FRED %s %d차 실패 — 재시도: %s",
+                               series_id, attempt, type(e).__name__)
+    logger.warning("macro: FRED %s 조회 실패(%d회 시도): %s",
+                   series_id, attempts, type(last_error).__name__ if last_error else "?")
+    return None
 
 
 def append_macro_rows(rows: list[dict], path: str | Path = DEFAULT_LEDGER_PATH) -> int:
