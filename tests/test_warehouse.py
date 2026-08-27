@@ -19,6 +19,7 @@ from quant.control.warehouse import (
     TRADE_COLS,
     article_row,
     fill_sha,
+    ingest_articles,
     ingest_selections,
     ingest_trades,
     read_jsonl,
@@ -292,3 +293,40 @@ def test_empty_artifacts_commit_nothing(tmp_path: Path):
     conn = FakeConn()
     assert ingest_trades(conn, tmp_path) == {"trades": 0}
     assert conn.commits == 0 and conn.log == []
+
+
+# ── 기사 적재 창(증분) ────────────────────────────────────────────────────
+# 2026-08-28: 매 실행이 전 이력을 재적재해 systemd 예산(45분)을 2주간 초과,
+# DB 가 8/24 에 멈춘 채 조용히 실패했다. 파일이 진실 원본이고 upsert 는 멱등이라
+# 최근 창만 훑는다.
+
+def _news_day(root: Path, market: str, day: str, title: str) -> None:
+    d = root / "data" / "news" / market
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{day}.jsonl").write_text(
+        json.dumps({"link": f"https://x/{day}", "title": title, "outlet": "t",
+                    "first_seen": f"{day}T09:00:00+09:00"}) + "\n",
+        encoding="utf-8")
+
+
+def test_ingest_articles_since_skips_older_days(tmp_path: Path):
+    _news_day(tmp_path, "KR", "2026-08-01", "옛날 기사")
+    _news_day(tmp_path, "KR", "2026-08-27", "어제 기사")
+    conn = FakeConn()
+    assert ingest_articles(conn, tmp_path, "KR", since=date(2026, 8, 25)) == {
+        "articles": 1, "tagged": 0}
+
+
+def test_ingest_articles_without_since_ingests_everything(tmp_path: Path):
+    """백필 경로(--days 0)는 전체를 다시 적재한다 — 기존 계약 보존."""
+    _news_day(tmp_path, "KR", "2026-08-01", "옛날 기사")
+    _news_day(tmp_path, "KR", "2026-08-27", "어제 기사")
+    conn = FakeConn()
+    assert ingest_articles(conn, tmp_path, "KR") == {"articles": 2, "tagged": 0}
+
+
+def test_ingest_articles_since_boundary_is_inclusive(tmp_path: Path):
+    """경계일 자체는 포함한다 — 하루가 조용히 빠지면 그날 뉴스가 영영 안 들어온다."""
+    _news_day(tmp_path, "KR", "2026-08-25", "경계일 기사")
+    conn = FakeConn()
+    assert ingest_articles(conn, tmp_path, "KR", since=date(2026, 8, 25))["articles"] == 1

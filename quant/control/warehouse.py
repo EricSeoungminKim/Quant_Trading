@@ -209,12 +209,20 @@ def _executemany(conn, table: str, cols: list[str], update: list[str],
 
 
 def ingest_articles(conn, root: Path, market: str,
-                    symbols_of: Callable[[str], Iterable[str]] | None = None) -> dict:
-    """`data/news/{market}/*.jsonl` 전부를 적재. 종목 태깅은 주입받는다.
+                    symbols_of: Callable[[str], Iterable[str]] | None = None,
+                    since: date | None = None) -> dict:
+    """`data/news/{market}/*.jsonl` 을 적재. 종목 태깅은 주입받는다.
 
     `symbols_of` 는 **이 시장 전용** 제목→종목코드 추출기다(KR 과 US 는 사전도
     매칭 규칙도 다르다). 추출기를 인자로 받는 이유: 이 모듈이 분석 평면을 직접
     알 필요가 없고, 그래야 DB 없이도 순수 테스트가 된다.
+
+    `since`: 그 날짜 **이상**의 파일만 적재(None = 전체 = 백필 경로).
+    **왜 필요한가** — 원래 매 실행이 전 이력을 다시 적재했다. upsert 라 결과는
+    옳지만 비용이 이력에 비례해 늘어 2026-08-15 부터 systemd 예산(45분)을 넘겼고,
+    **2주간 매 회차가 강제 종료**됐다(DB 는 8/24 에서 멈췄는데 감시는 "기록 없음"만
+    반복했다 — 조용한 실패). 파일이 진실 원본이고 upsert 는 멱등이라 최근 며칠만
+    다시 훑으면 충분하다.
     """
     day_dir = root / "data" / "news" / market
     total = tagged = 0
@@ -222,6 +230,8 @@ def ingest_articles(conn, root: Path, market: str,
         try:
             collect_date = date.fromisoformat(path.stem)
         except ValueError:
+            continue
+        if since is not None and collect_date < since:
             continue
         recs = read_jsonl(path)
         rows = [r for r in (article_row(x, market, collect_date) for x in recs) if r]
@@ -335,12 +345,17 @@ def ingest_forward_returns(conn, root: Path) -> dict:
 
 
 def ingest_all(conn, root: Path,
-               tagger_for: Callable[[str], Callable[[str], Iterable[str]] | None] | None = None) -> dict:
+               tagger_for: Callable[[str], Callable[[str], Iterable[str]] | None] | None = None,
+               since: date | None = None) -> dict:
     """전 시장·전 아티팩트 적재.
 
     `tagger_for(market)` 가 그 시장의 추출기를 돌려준다(없으면 None → 태깅 생략).
     시장마다 사전이 달라 하나로 못 쓴다 — KR 은 상장사 한글명, US 는 NASDAQ
     SymDir 티커다.
+
+    `since` 는 기사 적재 창만 좁힌다(사유는 `ingest_articles`). 체결·선정·판단·
+    전방수익률 원장은 파일 하나짜리라 훑는 비용이 작고, 창을 두면 지연 도착분
+    (outcomes 유예 2거래일 등)을 놓칠 수 있어 전체를 유지한다.
     """
     stats: dict = {}
     for market in _MARKETS:
@@ -350,7 +365,7 @@ def ingest_all(conn, root: Path,
                 tagger = tagger_for(market)
             except Exception as e:  # 사전 로딩 실패가 적재를 막지 않는다
                 log.warning("%s 종목 태깅 생략: %s: %s", market, type(e).__name__, e)
-        for k, v in ingest_articles(conn, root, market, tagger).items():
+        for k, v in ingest_articles(conn, root, market, tagger, since=since).items():
             stats[k] = stats.get(k, 0) + v
     stats.update(ingest_trades(conn, root))
     stats.update(ingest_selections(conn, root))
