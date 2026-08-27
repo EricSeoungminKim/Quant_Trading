@@ -64,14 +64,14 @@ class _FakeHttpClient:
 
 def test_fetch_series_parses_response(monkeypatch):
     fake = _FakeHttpClient(text="DATE,DGS10\n2026-08-24,4.66\n")
-    monkeypatch.setattr("quant.adapters.macro.fred.http_client", lambda timeout=30.0: fake)
+    monkeypatch.setattr("quant.adapters.macro.fred.http_client", lambda timeout=30.0, user_agent=None: fake)
 
     assert fetch_series("DGS10") == [("2026-08-24", 4.66)]
 
 
 def test_fetch_series_network_failure_returns_none(monkeypatch):
     fake = _FakeHttpClient(raise_on_get=True)
-    monkeypatch.setattr("quant.adapters.macro.fred.http_client", lambda timeout=30.0: fake)
+    monkeypatch.setattr("quant.adapters.macro.fred.http_client", lambda timeout=30.0, user_agent=None: fake)
 
     assert fetch_series("DGS10") is None
 
