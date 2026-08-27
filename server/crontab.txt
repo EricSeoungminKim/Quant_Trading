@@ -221,6 +221,13 @@
 # experiments 루프(이중차분)가 한다. 사이징 계열 제안은 파싱 단계에서 차단.
 40 6 * * 6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/param_propose.sh >> data/param_propose.log 2>&1
 
+# 토 06:50 KST — 파라미터 자동 반영 거버너 배선(2026-08-28). param-propose(06:40)
+# 직후 그 주 제안을 governor.py 의 6층 방어(ALLOWED/FORBIDDEN·봉투·보폭·냉각·
+# 증거·동시변경상한·자동롤백)로 심사해 config/auto_params.yaml 오버레이에
+# 반영한다(settings.yaml 은 직접 안 쓴다). **관찰 기간에는 --dry-run** —
+# 사람이 신뢰하게 되면 governor.sh 에서 그 플래그를 뗀다.
+50 6 * * 6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/governor.sh >> data/governor.log 2>&1
+
 # --- Phase 5: 백업 + 운영 감시 (2026-08-13 신규) ---
 #
 # 매일 03:30 KST — 아티팩트 + MySQL 덤프를 번들로. KR 개장 전, US 마감 후의 조용한 시각.

@@ -2578,7 +2578,272 @@ def cmd_param_propose(args: argparse.Namespace) -> None:
         result["proposals"], root / param_proposer.PROPOSALS_LEDGER, week)
     logger.info("param-propose: %s 제안 %d건(신규 %d, llm=%s)",
                 week, len(result["proposals"]), added, used)
+
+    # 거버너 형태로도 같은 원장에 남긴다 — governor-apply(2026-08-28 배선)가 읽는
+    # 스키마는 {name, samples, expected_improvement, ...}인데, 위 append_proposals
+    # 가 쓰는 스키마는 {param, risk, verify, ...}라 그대로는 못 쓴다. **LLM 응답에
+    # samples/expected_improvement 가 실제로 있을 때만** 골라 담는다 — 못 뽑으면
+    # 추측해서 채우지 않고 그 제안은 governor-apply 에 안 보인다(정량 근거 없는
+    # 제안을 자동 반영 심사에 넣지 않는다는 뜻이라 옳은 동작이다).
+    import re as _re
+    governor_rows: list[dict] = []
+    raw_by_key: dict[tuple, dict] = {}
+    m = _re.search(r"\{.*\}", result.get("raw") or "", _re.DOTALL)
+    if m:
+        try:
+            raw_data = _json.loads(m.group(0))
+        except ValueError:
+            raw_data = {}
+        for rp in raw_data.get("proposals", []) if isinstance(raw_data, dict) else []:
+            if isinstance(rp, dict) and rp.get("strategy") and rp.get("param"):
+                raw_by_key[(str(rp["strategy"]), str(rp["param"]))] = rp
+    for p in result["proposals"]:
+        rp = raw_by_key.get((p["strategy"], p["param"]), {})
+        samples = rp.get("samples")
+        improvement = rp.get("expected_improvement")
+        if not isinstance(samples, (int, float)) or not isinstance(improvement, (int, float)):
+            continue
+        governor_rows.append({
+            "date": today.isoformat(), "strategy": p["strategy"], "name": p["param"],
+            "current": p["current"], "proposed": p["proposed"], "samples": samples,
+            "expected_improvement": improvement, "rationale": p["rationale"], "llm": used,
+        })
+    if governor_rows:
+        gpath = root / param_proposer.PROPOSALS_LEDGER
+        gpath.parent.mkdir(parents=True, exist_ok=True)
+        with gpath.open("a", encoding="utf-8") as f:
+            for row in governor_rows:
+                f.write(_json.dumps(row, ensure_ascii=False) + "\n")
+        logger.info("param-propose: 거버너 형태 제안 %d건 기록", len(governor_rows))
+
     print(result["note"])
+
+
+# ALLOWED 키(quant.control.governor) → config/settings.yaml 안의 경로.
+#
+# **전수 확인 결과(2026-08-28, 거버너 배선 착수 시점):** ALLOWED 의 7개 이름 중
+# 어느 것도 config/settings.yaml 에 없다 — grep -rn 으로 저장소 전체를 훑어 확인:
+#   min_articles       → quant/analyze/render.py 모듈 상수 MIN_ARTICLES (하드코딩)
+#   min_streak         → quant/analyze/render.py 모듈 상수 MIN_STREAK (하드코딩)
+#   news_hot           → quant/analyze/symbol_score.py 모듈 상수 NEWS_HOT (하드코딩)
+#   rank_top           → quant/analyze/trending_score.py 모듈 상수 RANK_TOP (하드코딩)
+#   vol_surge_ratio    → quant/analyze/trending_score.py 모듈 상수 VOL_SURGE_RATIO (하드코딩)
+#   vol_elevated_ratio → quant/analyze/trending_score.py 모듈 상수 VOL_ELEVATED_RATIO (하드코딩)
+#   trending_min       → 코드 어디에도 없음 (governor 화이트리스트에만 존재하는 고아 이름)
+# 즉 이 7개는 지금 settings.yaml 이 아니라 quant/analyze/ 평면의 파이썬 모듈
+# 상수다. config/auto_params.yaml 오버레이는 settings.yaml 위에만 병합되므로,
+# 이 매핑이 채워지기 전까지는(= 저 상수들을 settings.yaml 에서 읽도록 analyze
+# 모듈을 고치는 별도 작업 전까지는) 어떤 제안도 실제로 반영될 수 없다 — 이건
+# 버그가 아니라 "매핑 없는 이름은 거부한다"(아래 cmd_governor_apply) 원칙의
+# 정직한 결과다. FORBIDDEN 목록이 문을 걸어 잠그듯, 매핑 부재도 같은 역할을
+# 한다: 실수로 analyze 모듈 상수를 몰래 바꾸는 대신 거부하고 기록에 남긴다.
+GOVERNOR_SETTINGS_PATH: dict[str, tuple[str, ...]] = {}
+
+
+def _load_recent_governor_proposals(path, today, window_days: int) -> list:
+    """`data/ledger/param_proposals.jsonl` 에서 최근 `window_days`일치의
+    governor.Proposal 형태 줄만 골라 변환한다.
+
+    이 원장은 두 스키마가 섞여 있다: `cmd_param_propose`(기존)가 쓰는
+    `{strategy, param, risk, verify, ...}`와, 같은 커맨드가 새로 추가한
+    `{name, samples, expected_improvement, ...}`(governor 형태). name/samples/
+    expected_improvement 가 전부 있는 줄만 governor.Proposal 이 될 수 있다 —
+    없는 줄(구 스키마)은 자연히 건너뛴다.
+    """
+    import json as _json
+    from datetime import date as _date, timedelta as _timedelta
+    from pathlib import Path
+
+    from quant.control import governor
+
+    p = Path(path)
+    if not p.exists():
+        return []
+    cutoff = today - _timedelta(days=window_days)
+    out: list[governor.Proposal] = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = _json.loads(line)
+        except ValueError:
+            continue
+        if any(row.get(k) is None for k in
+               ("name", "current", "proposed", "samples", "expected_improvement")):
+            continue
+        try:
+            d = _date.fromisoformat(str(row.get("date", "")))
+        except ValueError:
+            continue
+        if d < cutoff:
+            continue
+        out.append(governor.Proposal(
+            name=row["name"], current=row["current"], proposed=row["proposed"],
+            samples=row["samples"], expected_improvement=row["expected_improvement"],
+            rationale=row.get("rationale", ""),
+        ))
+    return out
+
+
+def _write_overlay(overlay_path, updates: dict[str, tuple]) -> None:
+    """`{name: (path_tuple, value)}` 를 config/auto_params.yaml 에 깊은 병합으로
+    적는다. 값이 None 이면 그 키를 오버레이에서 지운다(=원래 settings.yaml
+    값으로 복귀 — 롤백에 쓴다)."""
+    import yaml as _yaml
+
+    overlay: dict = {}
+    if overlay_path.exists():
+        overlay = _yaml.safe_load(overlay_path.read_text(encoding="utf-8")) or {}
+    for _name, (path_tuple, value) in updates.items():
+        node = overlay
+        for key in path_tuple[:-1]:
+            node = node.setdefault(key, {})
+        if value is None:
+            node.pop(path_tuple[-1], None)
+        else:
+            node[path_tuple[-1]] = value
+    overlay_path.parent.mkdir(parents=True, exist_ok=True)
+    overlay_path.write_text(
+        _yaml.safe_dump(overlay, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def _realized_performance_deltas(root: Path, decisions: list[dict], min_samples: int) -> dict[str, float]:
+    """반영된 변경들의 "반영 전후 성과 변화율" — `governor.rollback_candidates`
+    가 요구하는 `realized` 딕셔너리를 채운다.
+
+    **판단이 아니라 근사다.** governor.ALLOWED 는 analyze 평면의 종목 선정
+    문턱이라 거래 전략 하나에 귀속되지 않는다 — `quant.control.experiments`
+    의 이중차분(DiD)은 `quant/trade` 전략별 파라미터 지문에 귀속되는 비교라
+    여기 그대로 못 쓴다(대조군이 성립하지 않는다: 선정 문턱을 바꾸면 3개
+    전략 전부의 유니버스가 같이 바뀐다). 그래서 반영일 기준 원장 전체
+    (`trades.jsonl`)의 전/후 평균 bps 변화율로 근사한다 — 전략별 인과까지는
+    못 잡지만, "이 변경 이후로 전체 성과가 눈에 띄게 나빠졌는가"는 잡는다.
+    전/후 각각 `min_samples`건을 못 채운 이름은 realized 에서 빠지고,
+    `rollback_candidates()` 가 그 경우 자동으로 후보에서 제외한다(None 처리)."""
+    from quant.control.ledger import load_trades, round_trips
+
+    trips = round_trips(load_trades(root / "data" / "state" / "trades.jsonl"))
+    out: dict[str, float] = {}
+    for row in decisions:
+        if not row.get("accepted"):
+            continue
+        name = row.get("name")
+        change_date = row.get("date")
+        if not name or not change_date or name in out:
+            continue
+        before, after = [], []
+        for t in trips:
+            bps = t.get("bps")
+            ts = t.get("exit_ts") or t.get("entry_ts")
+            if bps is None or ts is None:
+                continue
+            (after if str(ts)[:10] >= change_date else before).append(float(bps))
+        if len(before) < min_samples or len(after) < min_samples:
+            continue
+        mean_before = sum(before) / len(before)
+        mean_after = sum(after) / len(after)
+        if mean_before == 0:
+            continue
+        out[name] = (mean_after - mean_before) / abs(mean_before)
+    return out
+
+
+def cmd_governor_apply(args: argparse.Namespace) -> None:
+    """파라미터 자동 반영 심사 + 적용 — 거버너 배선 (2026-08-28).
+
+    `quant/control/governor.py` 는 완성돼 있었지만 이걸 부르는 프로덕션 코드가
+    없었다(제안은 나오는데 아무도 심사·반영하지 않는 열린 루프). 이 커맨드가
+    그 마지막 칸을 채운다: 최근 제안(`data/ledger/param_proposals.jsonl`,
+    기본 `--window-days`일)을 `governor.Proposal` 로 변환해 `governor.decide()`
+    에 태우고, **수락분만** `config/auto_params.yaml` 오버레이에 반영한다.
+    settings.yaml 은 절대 직접 쓰지 않는다(이유는 `GOVERNOR_SETTINGS_PATH`
+    바로 위 주석 참고).
+
+    `--dry-run` 이면 심사만 하고 파일(오버레이·decisions.jsonl)을 쓰지 않는다.
+    수락 0건(또는 전부 매핑 없어 거부)이면 조용히 종료한다 — 거부 사유는
+    `decisions.jsonl`(dry-run이 아닐 때)과 로그에 남지, 매일 조용한 게 기본값인
+    이 저장소의 다른 크론과 같은 관례를 따른다.
+    """
+    from datetime import date as _date
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.control import governor
+
+    root = Path(args.root) if args.root else REPO_ROOT
+    today = _date.fromisoformat(args.date) if args.date else _date.today()
+    proposals_path = root / "data" / "ledger" / "param_proposals.jsonl"
+    decisions_path = root / "data" / "ledger" / "decisions.jsonl"
+    overlay_path = root / "config" / "auto_params.yaml"
+
+    proposals = _load_recent_governor_proposals(proposals_path, today, args.window_days)
+    if not proposals:
+        logger.info("governor-apply: 최근 %d일 governor 형태 제안 없음 — 침묵", args.window_days)
+        return
+
+    decisions = governor.decide(proposals, today, ledger_path=decisions_path)
+
+    # 수락분 중 settings 매핑이 없는 이름은 여기서 다시 거부 처리한다 —
+    # governor 층들은 통과했어도 "어디에 쓸지 모르면 안 쓴다"는 배선 층의
+    # 원칙이다. **조용히 무시하지 않는다** — accepted 를 뒤집고 사유를 남긴다.
+    updates: dict[str, tuple] = {}
+    for d in decisions:
+        if not d.accepted:
+            continue
+        path_tuple = GOVERNOR_SETTINGS_PATH.get(d.proposal.name)
+        if path_tuple is None:
+            logger.warning(
+                "governor-apply: 매핑 없음 — %s 는 심사는 통과했지만 반영 불가", d.proposal.name)
+            d.accepted = False
+            d.applied_value = None
+            d.layer = "mapping"
+            d.reason = f"settings 매핑 없음: {d.proposal.name} (GOVERNOR_SETTINGS_PATH 미등재)"
+            continue
+        updates[d.proposal.name] = (path_tuple, d.applied_value)
+
+    if not args.dry_run:
+        if updates:
+            _write_overlay(overlay_path, updates)
+        governor.record(decisions, today, decisions_path)
+
+    # --- 자동 롤백: 과거 반영분 전체(이번 회차 포함) 중 성과가 나빠진 것 ---
+    full_history = governor._history(decisions_path)
+    realized = _realized_performance_deltas(root, full_history, governor.MIN_SAMPLES)
+    candidates = governor.rollback_candidates(full_history, realized)
+    rollback_decisions: list[governor.Decision] = []
+    if candidates:
+        rollback_updates: dict[str, tuple] = {}
+        for c in candidates:
+            name = c["name"]
+            path_tuple = GOVERNOR_SETTINGS_PATH.get(name)
+            if path_tuple is None:
+                logger.warning("governor-apply: 롤백 대상 %s 도 매핑이 없어 되돌릴 곳이 없다", name)
+                continue
+            prev_value = c.get("current")
+            rollback_updates[name] = (path_tuple, prev_value)
+            rollback_decisions.append(governor.Decision(
+                proposal=governor.Proposal(
+                    name=name, current=c.get("applied"), proposed=prev_value,
+                    samples=0, expected_improvement=0.0,
+                    rationale=f"자동 롤백: 반영 후 실현 변화율 {c['realized_change']:+.1%}"),
+                accepted=True,
+                reason=(f"자동 롤백 — 반영 후 {c['realized_change']:+.1%} 악화 "
+                        f"(임계 {governor.ROLLBACK_DEGRADE:.0%})"),
+                applied_value=prev_value, layer="6-rollback",
+            ))
+        if rollback_updates and not args.dry_run:
+            _write_overlay(overlay_path, rollback_updates)
+            governor.record(rollback_decisions, today, decisions_path)
+
+    accepted_now = [d for d in decisions if d.accepted] + rollback_decisions
+    if not accepted_now:
+        logger.info("governor-apply: 수락 0건 — 침묵")
+        return
+
+    print(governor.summary(decisions))
+    if rollback_decisions:
+        print(governor.summary(rollback_decisions))
 
 
 def cmd_close_report(args: argparse.Namespace) -> None:
@@ -3170,6 +3435,17 @@ def main() -> None:
     p_pp.add_argument("--root", default=None, help="기본: 저장소 루트")
     p_pp.add_argument("--date", default=None, help="이 날짜가 속한 주를 리뷰 (YYYY-MM-DD)")
     p_pp.set_defaults(func=cmd_param_propose)
+
+    p_ga = sub.add_parser(
+        "governor-apply",
+        help="파라미터 자동 반영 심사(6층 방어) + config/auto_params.yaml 오버레이 반영. "
+             "기본은 실반영 — 관찰 기간에는 --dry-run.",
+    )
+    p_ga.add_argument("--root", default=None, help="기본: 저장소 루트")
+    p_ga.add_argument("--date", default=None, help="오늘로 볼 날짜 (YYYY-MM-DD)")
+    p_ga.add_argument("--window-days", type=int, default=7, help="최근 N일 제안만 심사 (기본 7)")
+    p_ga.add_argument("--dry-run", action="store_true", help="심사만 하고 파일을 쓰지 않는다")
+    p_ga.set_defaults(func=cmd_governor_apply)
 
     p_cr = sub.add_parser(
         "close-report",

@@ -13,19 +13,55 @@ from dotenv import load_dotenv
 
 DEFAULT_SETTINGS_PATH = "config/settings.yaml"
 
+# 오버레이 파일명. settings.yaml과 같은 디렉터리에 둔다 — 배포 경로가 바뀌어도
+# 같이 따라간다. **왜 settings.yaml을 직접 안 쓰는가(거버너 배선, 2026-08):**
+# settings.yaml은 사람이 쓴 수백 줄의 '왜' 주석이 자산이다. 자동 반영 코드가
+# yaml을 파싱해서 다시 쓰면 그 주석이 전부 날아간다. 그래서 기계가 소유하는
+# 작고 주석 없는 오버레이 파일을 따로 두고 settings.yaml 위에 깊은 병합한다 —
+# 되돌리기는 그 파일에서 키를 지우는 것뿐이고, 권한 경계가 파일 단위로 명확하다.
+AUTO_PARAMS_FILENAME = "auto_params.yaml"
+
 
 def _read_yaml(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
+def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """base 위에 overlay를 재귀적으로 얹는다. dict는 병합, 그 외(스칼라·리스트)는
+    overlay가 이긴다. 둘 다 건드리지 않고 새 dict를 반환한다(순수 함수)."""
+    merged = dict(base)
+    for key, value in overlay.items():
+        base_value = merged.get(key)
+        if isinstance(base_value, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(base_value, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _read_merged(path: Path) -> dict[str, Any]:
+    """settings.yaml을 읽고, 옆에 auto_params.yaml이 있으면 깊은 병합한다.
+    없으면 기존과 100% 동일하게 settings.yaml만 반환한다."""
+    raw = _read_yaml(path)
+    overlay_path = path.parent / AUTO_PARAMS_FILENAME
+    if overlay_path.exists():
+        raw = _deep_merge(raw, _read_yaml(overlay_path))
+    return raw
+
+
 class Settings:
-    """settings.yaml을 감싸는 얇은 typed 접근자. 원본 dict는 .raw로 접근 가능."""
+    """settings.yaml(+auto_params.yaml 오버레이)을 감싸는 얇은 typed 접근자.
+    병합된 dict는 .raw로 접근 가능."""
 
     def __init__(self, raw: dict[str, Any], path: Path):
         self.raw = raw
         self.path = path
+        self._overlay_path = path.parent / AUTO_PARAMS_FILENAME
         self._mtime = path.stat().st_mtime
+        self._overlay_mtime = (
+            self._overlay_path.stat().st_mtime if self._overlay_path.exists() else None
+        )
 
     @property
     def engine(self) -> dict:
@@ -60,12 +96,18 @@ class Settings:
         return self.engine.get("poll_seconds", 10)
 
     def reload_if_changed(self) -> bool:
-        """yaml mtime이 바뀌었으면 다시 읽어 raw를 교체한다. 바뀌었으면 True를 반환."""
+        """settings.yaml **또는** auto_params.yaml의 mtime이 바뀌었으면 다시 읽어
+        raw를 교체한다(둘을 병합). 오버레이만 바뀌어도 핫 리로드돼야 거버너가
+        반영한 값이 다음 폴링에 바로 먹힌다. 바뀌었으면 True를 반환."""
         mtime = self.path.stat().st_mtime
-        if mtime == self._mtime:
+        overlay_mtime = (
+            self._overlay_path.stat().st_mtime if self._overlay_path.exists() else None
+        )
+        if mtime == self._mtime and overlay_mtime == self._overlay_mtime:
             return False
-        self.raw = _read_yaml(self.path)
+        self.raw = _read_merged(self.path)
         self._mtime = mtime
+        self._overlay_mtime = overlay_mtime
         return True
 
 
@@ -88,4 +130,4 @@ def load_settings(settings_path: str = DEFAULT_SETTINGS_PATH) -> Settings:
     load_dotenv(".env.local", override=True)
     os.environ.update(explicit)
     path = Path(settings_path)
-    return Settings(_read_yaml(path), path)
+    return Settings(_read_merged(path), path)

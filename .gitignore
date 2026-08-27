@@ -17,6 +17,11 @@ __pycache__/
 # backtest/data/state/portfolio.json 이 실제로 커밋돼 있었다(2026-08-26 정리).
 backtest/data/
 
+# 거버너(quant/control/governor.py)가 쓰는 기계 소유 오버레이 — settings.yaml
+# 위에 깊은 병합되는 자동 반영분. 사람이 쓴 settings.yaml과 달리 자동으로
+# 계속 바뀌므로 커밋하지 않는다(config/ 는 기본적으로 추적 대상이라 별도 등재).
+config/auto_params.yaml
+
 # os / editor
 .DS_Store
 .idea/
