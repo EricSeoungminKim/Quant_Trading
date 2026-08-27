@@ -42,7 +42,12 @@ from quant.adapters.execution.paper import PaperBroker
 from quant.control.ledger import TradeLedgerSink
 from quant.adapters.persistence.sink import ConsoleSink, JsonlSink, MultiSink
 from quant.core.portfolio.portfolio import Portfolio
-from quant.adapters.regime_indicators import TossIndicatorClient, UpbitBitcoinAdapter
+from quant.adapters.regime_indicators import (
+    CompositeIndicatorClient,
+    FileMacroIndicatorClient,
+    TossIndicatorClient,
+    UpbitBitcoinAdapter,
+)
 from quant.trade.regime import RegimeProvider
 from quant.trade.risk.books import StrategyBooks
 from quant.trade.risk.manager import RiskManagerImpl
@@ -856,10 +861,19 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
     # (Toss candles 069500 + investor_trading 수급)로 시장별 국면을 나눠 계산한다
     # (2026-08-10 — KR 세션을 미국 지수로 판단하던 문제 해소). refresh()는 여기서
     # 부르지 않는다 — 네트워크/디스크 I/O는 run_paper_loop의 거래일 경계에서 1회.
+    #
+    # 2026-08-28: indicator_client를 CompositeIndicatorClient로 합성했다 —
+    # FileMacroIndicatorClient(US_BOND_10Y, data/ledger/macro_rates.jsonl만 읽음,
+    # 네트워크 없음)를 먼저 시도하고, KOSPI/KOSDAQ 프록시(+ 여전히 None인
+    # KR_BOND_*)는 그대로 TossIndicatorClient가 답한다. 두 클라이언트의 지원
+    # 심볼이 겹치지 않아 합성해도 KOSPI/KOSDAQ 프록시 동작은 그대로다(회귀 없음).
     regime = RegimeProvider(
         settings=cfg,
         flow_client=client,
-        indicator_client=TossIndicatorClient(client),
+        indicator_client=CompositeIndicatorClient([
+            FileMacroIndicatorClient(),
+            TossIndicatorClient(client),
+        ]),
         bitcoin_adapter=UpbitBitcoinAdapter(),
     )
     logger.info("국면 모듈 준비 — 현재 캐시: %s",

@@ -221,7 +221,7 @@ def test_refresh_same_day_does_not_recompute(tmp_path):
             calls["n"] += 1
             return super().indicator_price(symbol)
 
-    client = CountingClient(prices={"KR_BOND_10Y": (3.0, 3.0), "KOSPI": (2800.0, 2800.0)})
+    client = CountingClient(prices={"US_BOND_10Y": (3.0, 3.0), "KOSPI": (2800.0, 2800.0)})
     now = datetime(2026, 1, 5, 8, 0, tzinfo=KST)
     provider = RegimeProvider(
         settings={}, indicator_client=client, history_dir=tmp_path / "history",
@@ -244,7 +244,7 @@ def test_refresh_new_day_recomputes(tmp_path):
             calls["n"] += 1
             return super().indicator_price(symbol)
 
-    client = CountingClient(prices={"KR_BOND_10Y": (3.0, 3.0), "KOSPI": (2800.0, 2800.0)})
+    client = CountingClient(prices={"US_BOND_10Y": (3.0, 3.0), "KOSPI": (2800.0, 2800.0)})
     day1 = datetime(2026, 1, 5, 8, 0, tzinfo=KST)
     day2 = day1 + timedelta(days=1)
     now = {"value": day1}
@@ -268,7 +268,7 @@ def test_refresh_force_recomputes_same_day(tmp_path):
             calls["n"] += 1
             return super().indicator_price(symbol)
 
-    client = CountingClient(prices={"KR_BOND_10Y": (3.0, 3.0), "KOSPI": (2800.0, 2800.0)})
+    client = CountingClient(prices={"US_BOND_10Y": (3.0, 3.0), "KOSPI": (2800.0, 2800.0)})
     now = datetime(2026, 1, 5, 8, 0, tzinfo=KST)
     provider = RegimeProvider(
         settings={}, indicator_client=client, history_dir=tmp_path / "history",
@@ -539,13 +539,13 @@ def test_aggressive_still_blocked_when_three_valid_are_all_same_source(tmp_path)
 
 def test_aggressive_fires_normally_when_source_diversity_satisfied(tmp_path):
     """원천 다양성 요건 충족 시 정상 발동(CLAUDE.md 지시 §검증 요구 3번) —
-    qqq_trend(QQQ) + kospi(KOSPI) + kr_bond_yield(KR_BOND_YIELD) 3개가 모두
+    qqq_trend(QQQ) + kospi(KOSPI) + us_bond_yield(US_BOND_YIELD) 3개가 모두
     유효하고 서로 다른 원천 3개(요건 2개 이상 충족)라, 유효 지표 개수(3, 요건
     3)도 충족해 aggressive가 강등 없이 정상 발동한다."""
     _write_qqq_daily(tmp_path / "history", [100.0] * 19 + [103.0], start="2025-12-08")  # qqq_trend +1
     client = FakeIndicatorClient(prices={
         "KOSPI": (2828.0, 2800.0),  # +1% → +1
-        "KR_BOND_10Y": (2.90, 2.95),  # -5bp → +1(위험선호)
+        "US_BOND_10Y": (2.90, 2.95),  # -5bp → +1(위험선호)
     })
     provider = RegimeProvider(
         settings={}, indicator_client=client, bitcoin_adapter=None,

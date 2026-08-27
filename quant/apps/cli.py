@@ -2460,6 +2460,52 @@ def cmd_delivery_check(args: argparse.Namespace) -> None:
     raise SystemExit(2)
 
 
+def cmd_macro_collect(args: argparse.Namespace) -> None:
+    """매크로 금리·환율 시계열 수집(2026-08-28, 소유자 지시 — "시그널이 차트만
+    보는 게 아니라 rate 를 함께 보고, 데이터를 미리 수집해 시기별로 ML 학습").
+
+    `quant.adapters.macro.fred.SERIES` 전부를 FRED(fredgraph.csv, 인증 불필요)
+    에서 받아 `data/ledger/macro_rates.jsonl`에 멱등 append(같은 (date, series)는
+    최신값으로 갱신)한다. 국면(`quant.trade.regime`)의 US_BOND_10Y는 이 원장을
+    파일로만 읽는다(`quant.adapters.regime_indicators.FileMacroIndicatorClient`)
+    — 네트워크는 이 배치 커맨드에만 있고 거래 핫패스로는 새지 않는다.
+
+    `--days 0`(기본)은 전체 과거 백필(첫 실행용). 크론(server/scripts/
+    macro_collect.sh, 매일 1회)은 작은 `--days`로 최근분만 갱신해 매일 전체
+    이력을 다시 받는 낭비를 줄인다. 일부 시리즈가 실패해도 나머지는 계속
+    진행하고 실패분을 출력에 명시한다(정직하게 실패를 숨기지 않는다)."""
+    from datetime import date as _date, timedelta as _timedelta
+    from pathlib import Path
+
+    from quant.adapters.macro.fred import DEFAULT_LEDGER_PATH, SERIES, append_macro_rows, fetch_series
+
+    root = Path(args.root)
+    ledger_path = root / DEFAULT_LEDGER_PATH
+    cutoff = None
+    if args.days > 0:
+        cutoff = (_date.today() - _timedelta(days=args.days)).isoformat()
+
+    parts: list[str] = []
+    failed: list[str] = []
+    for name, series_id in SERIES.items():
+        points = fetch_series(series_id)
+        if points is None:
+            failed.append(name)
+            continue
+        if cutoff is not None:
+            points = [(d, v) for d, v in points if d >= cutoff]
+        rows = [{"date": d, "series": name, "value": v} for d, v in points]
+        append_macro_rows(rows, path=ledger_path)
+        parts.append(f"{name} {len(rows)}건")
+
+    line = "수집: " + " · ".join(parts) if parts else "수집: 전체 실패"
+    if failed:
+        line += f" (실패: {', '.join(failed)})"
+    print(line)
+    if not parts:
+        raise SystemExit(1)
+
+
 def cmd_param_propose(args: argparse.Namespace) -> None:
     """전략 파라미터 제안 — AI 트레이더 3단계 (토 06:40 크론, 2026-08-26).
 
@@ -3105,6 +3151,16 @@ def main() -> None:
     p_dc.add_argument("--root", default=None, help="기본: 저장소 루트")
     p_dc.add_argument("--date", default=None, help="오늘로 볼 날짜 (YYYY-MM-DD, 기본: KST 오늘)")
     p_dc.set_defaults(func=cmd_delivery_check)
+
+    p_macro = sub.add_parser(
+        "macro-collect",
+        help="매크로 금리·환율(FRED) 시계열 수집 — data/ledger/macro_rates.jsonl에 "
+             "멱등 append. 국면(US_BOND_10Y)의 원천. --days 0(기본)=전체 백필.",
+    )
+    p_macro.add_argument("--root", default=".", help="저장소 루트")
+    p_macro.add_argument("--days", type=int, default=0,
+                          help="최근 N일만 기록 (기본 0=전체 백필, 크론은 소량만 지정)")
+    p_macro.set_defaults(func=cmd_macro_collect)
 
     p_pp = sub.add_parser(
         "param-propose",

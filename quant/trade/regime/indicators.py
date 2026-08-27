@@ -73,15 +73,19 @@ def qqq_volatility_score(
 
 
 def bond_yield_score(change_bp: float | None, band_bp: float = 3.0) -> IndicatorResult:
-    """국내 국채(10년) 수익률 변화(bp, 전일 대비).
+    """미국 국채 10년물(US_BOND_10Y, FRED DGS10) 수익률 변화(bp, 전일 대비).
 
     금리가 band_bp 이상 상승하면 -1(할인율 상승=위험회피), band_bp 이상 하락하면
     +1(위험선호), 그 사이는 0.
 
-    한계: 국내 국채/코스피는 미국 레버리지 ETF(TQQQ/SQQQ)의 직접적 동인이 아니라
-    Toss API가 국내 지표만 제공해서 쓰는 거시 리스크심리 대리지표(proxy)다.
-    상관관계가 약할 수 있음을 감안해서 읽을 것 — docs/adr/0009 참고."""
-    name = "kr_bond_yield"
+    2026-08-28: 이전엔 Toss API가 국내 지표만 지원해 국내 국채(KR_BOND_10Y, 항상
+    None)를 대신할 수도 없었고 코스피와 함께 "거시 리스크심리 대리지표"로 쓸
+    수밖에 없었다 — 그런데 이 저장소가 거래하는 TQQQ/SQQQ는 미국 레버리지 ETF라
+    국내 금리는 애초에 직접적 동인이 아니었다(docs/adr/0009, kospi_score 문서
+    참고). quant/adapters/macro/fred.py로 실제 미국 10년물을 수집하게 되면서
+    대리지표 대신 직접 지표로 바꿨다 — 호출부는
+    quant/trade/regime/provider.py._bond_yield_indicator."""
+    name = "us_bond_yield"
     if change_bp is None:
         return IndicatorResult(name, None, "국채 10년 금리 조회 실패 — 지표 제외")
     if change_bp >= band_bp:
@@ -95,7 +99,10 @@ def kospi_score(change_pct: float | None, band_pct: float = 0.5) -> IndicatorRes
     """코스피 지수 등락률(전일 대비 %).
 
     band_pct 이상 상승하면 +1(위험선호), band_pct 이상 하락하면 -1(위험회피),
-    그 사이는 0. bond_yield_score와 동일한 대리지표 한계를 갖는다."""
+    그 사이는 0. 국내 지수라 TQQQ/SQQQ(미국 레버리지 ETF)의 직접적 동인은
+    아니다 — 대리지표 한계는 그대로 남는다(2026-08-28: bond_yield_score는
+    US_BOND_10Y로 바뀌어 이 한계를 벗어났다 — 대체 가능한 미국 지수 소스가
+    아직 없어 코스피만 대리지표로 남았다)."""
     name = "kospi"
     if change_pct is None:
         return IndicatorResult(name, None, "코스피 조회 실패 — 지표 제외")

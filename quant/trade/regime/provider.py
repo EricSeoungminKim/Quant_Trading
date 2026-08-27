@@ -73,7 +73,7 @@ DEFAULT_AGGRESSIVE_MIN_SOURCES = 2  # 서로 다른 원천(source) 최소 개수
 INDICATOR_SOURCE: dict[str, str] = {
     "qqq_trend": "QQQ",
     "qqq_volatility": "QQQ",
-    "kr_bond_yield": "KR_BOND_YIELD",
+    "us_bond_yield": "US_BOND_YIELD",  # 2026-08-28: KR_BOND_YIELD(항상 None)에서 개명 — indicators.bond_yield_score 참고
     "kospi": "KOSPI",
     "bitcoin": "BITCOIN",
     "kr_trend": "KR_TREND",
@@ -391,7 +391,17 @@ class RegimeProvider:
         return df["close"]
 
     def _bond_yield_indicator(self) -> IndicatorResult:
-        last, prev = self._indicator_last_prev("KR_BOND_10Y")
+        # 2026-08-28: KR_BOND_10Y(Toss 미구현, 항상 None)에서 US_BOND_10Y(FRED
+        # DGS10, quant/adapters/macro/fred.py가 수집해 data/ledger/macro_rates.jsonl
+        # 에 적재 → quant/adapters/regime_indicators.FileMacroIndicatorClient가
+        # 읽음)로 요청 심볼을 바꿨다. indicators.bond_yield_score 문서(구
+        # docstring)가 이미 지적했듯 국내 국채/코스피는 이 저장소가 거래하는
+        # TQQQ/SQQQ(미국 레버리지 ETF)의 위험심리를 직접 움직이는 동인이 아니다
+        # — 미국 10년물이야말로 그 자산군의 할인율이다. 대리지표를 걷어내고
+        # 실제 소스로 바꾸는 것이지, 국내 지표 부재를 감추려고 이름만 바꾼 게
+        # 아니다(요청 심볼도 US_BOND_10Y로 함께 바뀐다 — indicators.py의
+        # IndicatorResult.name도 "us_bond_yield"로 개명).
+        last, prev = self._indicator_last_prev("US_BOND_10Y")
         if last is None or prev is None:
             return bond_yield_score(None)
         # 국채 수익률은 %(포인트) 단위 시세다 — 1%p 변화 = 100bp.

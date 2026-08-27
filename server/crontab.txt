@@ -321,6 +321,16 @@
 # (uswrap 서브커맨드는 stdout 요약만 낸다 — deepdive 와 달리 별도 알림 없음).
 50 5 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.report_cli uswrap >> data/uswrap.log 2>&1
 
+# --- 매크로 금리·환율(FRED) 일일 수집 (2026-08-28, 소유자 지시) ---
+#
+# 06:15 KST 화~토 — 미국 마감(05:00/05:50 uswrap) 후. quant.adapters.macro.fred
+# 가 FRED(fredgraph.csv, 인증 불필요)에서 us_10y/us_2y/term_spread_10y2y/vix/
+# dollar_index/usdkrw 를 받아 data/ledger/macro_rates.jsonl 에 멱등 append 한다.
+# 국면(quant.trade.regime)의 US_BOND_10Y 지표가 이 원장을 파일로만 읽는다
+# (quant.adapters.regime_indicators.FileMacroIndicatorClient, 네트워크 없음) —
+# 여기가 유일한 네트워크 지점이다. 성공은 침묵, 실패만 텔레그램(이 저장소 관례).
+15 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/macro_collect.sh >> data/macro.log 2>&1
+
 # --- 소식통 배달 점검 (2026-08-26, 소유자 조직도 역할 6) ---
 #
 # 06:35 KST 화~토 — 05:50 US_wrap 발행 뒤, 전날(월~금) KR+US 사이클이 완전히
