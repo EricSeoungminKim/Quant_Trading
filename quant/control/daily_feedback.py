@@ -178,6 +178,21 @@ def strategy_feedback(trades_today: list[dict], bars_by_symbol: dict) -> dict[st
                 })
 
         rows, skipped = replay_all(trips, _load)
+        # 부검 제외분의 원장 실현 합 — 재생 가능한 트립만 집계하면 초단타
+        # (보유가 1분봉 2개 미만 = 즉시 손절류)가 통째로 빠져 좋은 거래만 남는
+        # 선택 편향이 생긴다. 2026-08-27 실측: 스킵 5건에 -195.4bp 가 숨어
+        # MFE 중앙 +105bp 가 합 -215bp 의 하루를 미화했다. 재생분의 ledger_bps
+        # 를 종결 전체 합에서 빼서 구한다(forensics 반환 스키마 불변).
+        skipped_ledger_bp = None
+        if skipped:
+            closed_sum = sum(
+                t["bps"] for t in trips
+                if t.get("exit_ts") and t.get("bps") is not None
+            )
+            replayed_sum = sum(
+                r["ledger_bps"] for r in rows if r.get("ledger_bps") is not None
+            )
+            skipped_ledger_bp = closed_sum - replayed_sum
         out[strategy] = {
             "n_entries": len(trips),
             "finding_counts": finding_counts,
@@ -185,6 +200,7 @@ def strategy_feedback(trades_today: list[dict], bars_by_symbol: dict) -> dict[st
             "forensics": summarize(rows),
             "forensics_skipped": skipped,
             "bars_missing": bars_missing,
+            "skipped_ledger_bp": skipped_ledger_bp,
         }
     return out
 
@@ -226,8 +242,13 @@ def render_feedback_text(target_date, market: str, feedback: dict[str, dict]) ->
             skipped = d.get("forensics_skipped", 0)
             missing = d.get("bars_missing", 0)
             if skipped or missing:
+                # 제외분의 원장 실현 합을 같이 보여야 부검 요약이 하루를 미화하지
+                # 않는다 — 스킵되는 건 주로 즉시 손절류 초단타다(위 주석 실측).
+                sk_bp = d.get("skipped_ledger_bp")
+                tail = f" · 제외분 원장 실현 합 {sk_bp:+.1f}bp" if sk_bp is not None else ""
                 lines.append(
-                    f"  (1분봉 없어 판정 제외 — 진입타이밍 {missing}건 · 청산부검 {skipped}건)"
+                    f"  (부검 제외 — 진입타이밍 {missing}건(봉 없음) · "
+                    f"청산부검 {skipped}건(봉 없음/보유가 1분봉 해상도 미만){tail})"
                 )
 
     lines.append("")

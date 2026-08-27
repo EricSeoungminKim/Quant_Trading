@@ -214,6 +214,42 @@ def test_strategy_feedback_tracks_missing_bars_honestly():
     assert out["donchian"]["finding_counts"] == {}
 
 
+# ── 부검 제외분의 원장 실현 합 (선택 편향 방지) ──────────────────────────
+
+def test_strategy_feedback_reports_ledger_bps_of_skipped_trips():
+    """보유가 1분봉 해상도 미만(hold 봉 <2)인 초단타는 부검에서 빠지는데,
+    2026-08-27 실측에서 빠진 5건에 -195bp 가 숨어 부검 요약(MFE 중앙 +105bp)이
+    합 -215bp 의 하루를 미화했다 — 제외분의 원장 실현 합을 함께 내야 한다."""
+    closes = [100.0] * 11
+    bars = _bars(closes)
+    trips = [
+        _trip("scalp_1m", "005930", 6, 9, 100.0, bps=50.0),        # 재생 가능(hold 4봉)
+        _trip("scalp_1m", "005930", 6.2, 6.5, 100.0, bps=-120.0),  # 봉 사이 18초 → 스킵
+    ]
+    out = strategy_feedback(trips, {"005930": bars})
+    d = out["scalp_1m"]
+    assert d["forensics_skipped"] == 1
+    assert d["skipped_ledger_bp"] == pytest.approx(-120.0)
+
+
+def test_strategy_feedback_skipped_ledger_none_when_nothing_skipped():
+    closes = [100.0] * 11
+    bars = _bars(closes)
+    trips = [_trip("scalp_1m", "005930", 6, 9, 100.0, bps=50.0)]
+    out = strategy_feedback(trips, {"005930": bars})
+    assert out["scalp_1m"]["forensics_skipped"] == 0
+    assert out["scalp_1m"]["skipped_ledger_bp"] is None
+
+
+def test_render_shows_skipped_ledger_sum():
+    feedback = {"scalp_1m": {"n_entries": 8, "finding_counts": {}, "examples": {},
+                             "forensics": {"n": 0}, "forensics_skipped": 5,
+                             "bars_missing": 0, "skipped_ledger_bp": -195.4}}
+    out = render_feedback_text(date(2026, 8, 27), "KR", feedback)
+    assert "제외" in out
+    assert "-195.4bp" in out
+
+
 # ── already_recorded (멱등 append 판정) ──────────────────────────────────
 
 def test_already_recorded_true_when_date_and_market_match():
