@@ -176,6 +176,14 @@
 
 45 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/daily_feedback.sh KR >> data/daily_feedback.log 2>&1
 
+# 평일 16:50 KST — 자본 자동 강등(2026-08-28 배선, 소유자 북극성). KR 마감
+# 정산(outcomes 16:00 → close-report 16:20 → daily-feedback 16:45) 뒤. 종결
+# 신뢰상한이 0 미만인(우연이 아니라 진짜 지고 있는) 전략의 capital_fraction을
+# 반감(하한 0.05) — 늘리는 방향은 절대 자동 아님, 사람이 config/settings.yaml을
+# 직접 고친다. **처음에는 --dry-run** 으로 건다(capital_review.sh 안에 있음) —
+# 관찰 기간 뒤 사람이 --dry-run 을 뗀다.
+50 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/capital_review.sh >> data/capital_review.log 2>&1
+
 # 매일 05:40 KST — 1분봉 적재 (scalp_1m, 2026-08-18). Toss 1m API는 **과거
 # 4거래일 롤링만** 제공한다(docs/data-availability.md 실측) — 매일 당겨 쌓지
 # 않으면 1분봉 백테스트 표본이 영원히 안 생긴다. 유니버스+앵커(QQQ·069500·

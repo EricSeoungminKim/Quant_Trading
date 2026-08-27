@@ -2846,6 +2846,174 @@ def cmd_governor_apply(args: argparse.Namespace) -> None:
         print(governor.summary(rollback_decisions))
 
 
+def _capital_stats_from_trips(trips: list[dict]) -> list:
+    """`ledger.round_trips()` 출력을 전략별 `allocator.StrategyStat` 목록으로.
+
+    시장(KR/US)은 여기서 섞는다 — 강등 판단(`is_losing`)은 전략 단위 증거이고,
+    `allocator.decide()`가 그 판단을 시장별 `capital_fraction` 각각에 적용한다.
+    market 필드 자체는 `ledger._market_of`가 이미 채워 뒀으므로(round_trips 결과)
+    여기서 새로 판정하지 않는다 — 그냥 쓰지 않을 뿐이다.
+    """
+    import statistics as _statistics
+
+    from quant.control import allocator
+
+    by_strategy: dict[str, list[float]] = {}
+    for t in trips:
+        if not t.get("pnl_known"):
+            continue
+        by_strategy.setdefault(str(t.get("strategy", "?")), []).append(float(t.get("bps", 0.0)))
+
+    stats = []
+    for strategy, bps_list in by_strategy.items():
+        n = len(bps_list)
+        mean_bp = sum(bps_list) / n
+        stdev_bp = _statistics.stdev(bps_list) if n >= 2 else 0.0
+        stats.append(allocator.StrategyStat(strategy=strategy, n=n, mean_bp=mean_bp, stdev_bp=stdev_bp))
+    return stats
+
+
+def _capital_current_fractions(settings) -> dict[tuple[str, str], float]:
+    """settings(+오버레이 병합)의 `strategies.*.capital_fraction`을 `{(전략, 시장): 비율}`로.
+
+    시장별로 나뉘지 않은(스칼라) capital_fraction 전략(예: orb)은 이 장치의
+    대상이 아니다 — Demotion이 요구하는 (전략, 시장) 키를 만들 수 없다."""
+    out: dict[tuple[str, str], float] = {}
+    for name, block in (settings.strategies or {}).items():
+        cf = block.get("capital_fraction") if isinstance(block, dict) else None
+        if isinstance(cf, dict):
+            for market, value in cf.items():
+                try:
+                    out[(name, str(market))] = float(value)
+                except (TypeError, ValueError):
+                    continue
+    return out
+
+
+def _capital_last_change_days(path, today) -> dict[str, int | None]:
+    """`capital_decisions.jsonl`에서 전략별 마지막 **실제 강등**(applied=True) 이후
+    경과일. 강등된 적 없으면 None(=냉각 대상 아님)."""
+    from datetime import date as _date
+
+    from quant.control import governor as _governor
+
+    rows = _governor._history(path)
+    best: dict[str, _date] = {}
+    for row in rows:
+        if not row.get("applied"):
+            continue
+        strategy = row.get("strategy")
+        try:
+            d = _date.fromisoformat(str(row.get("date", "")))
+        except ValueError:
+            continue
+        if strategy and (strategy not in best or d > best[strategy]):
+            best[strategy] = d
+    return {s: (today - d).days for s, d in best.items()}
+
+
+def _record_capital_decisions(demotions: list, today, path) -> None:
+    """`Demotion` 목록을 append-only로 남긴다. 적용/스킵 모두 남긴다 — 오너 규율
+    4 "거부·무변경도 기록한다"."""
+    import json as _json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        for d in demotions:
+            f.write(_json.dumps({
+                "date": today.isoformat(),
+                "strategy": d.strategy,
+                "market": d.market,
+                "current": d.current,
+                "proposed": d.proposed,
+                "applied": d.applied,
+                "reason": d.reason,
+                "skip_reason": d.skip_reason,
+            }, ensure_ascii=False) + "\n")
+
+
+def _capital_review_summary(demotions: list) -> str:
+    """텔레그램/stdout용 한 문단. 강등이 실제로 일어난 항목만 본문에 낸다 —
+    스킵 사유는 decisions.jsonl에는 남지만 사람에게 매일 스팸으로 보내지 않는다."""
+    applied = [d for d in demotions if d.applied]
+    lines = [f"📉 자본 자동 강등 — {len(applied)}건"]
+    for d in applied:
+        lines.append(f"  {d.strategy}[{d.market}]: {d.current} → {d.proposed}")
+        lines.append(f"    ↳ {d.reason}")
+    lines.append("되돌리려면 config/auto_params.yaml 에서 해당 키를 지우십시오.")
+    return "\n".join(lines)
+
+
+def cmd_capital_review(args: argparse.Namespace) -> None:
+    """자본 자동 강등 장치 — "지는 곳에서 자본을 뺀다"(소유자 북극성, 2026-08-28).
+
+    실측(원장 399건): 전략 7종 전부 수수료 전에도 음수. 어느 전략도 개선되지
+    않아도 지는 곳의 배분을 줄이면 포트폴리오는 매일 나아진다. `quant/control/
+    allocator.py`가 판단(6층은 아니고 4층: 증거·하한·냉각·한 방향)을 하고, 여기가
+    원장을 읽고 `config/auto_params.yaml` 오버레이에 반영한다 — `governor.py`/
+    `cmd_governor_apply`와 같은 분리(순수 로직 vs 배선), `_write_overlay`도 그대로
+    재사용한다(복제하지 않는다).
+
+    **한 방향만 자동이다 — 자본을 줄이는 것만.** 늘리는 것은 사람이
+    `config/settings.yaml`을 직접 고쳐야 한다.
+
+    강등 후보가 아예 없으면(증거 없음) 아무 파일도 건드리지 않고 조용히
+    끝난다 — `cmd_governor_apply`가 제안 0건일 때 조용한 것과 같은 관례.
+    후보는 있었지만 전부 스킵(냉각/하한)이어도 `capital_decisions.jsonl`에는
+    남긴다(규율 4) — 단, `config/auto_params.yaml`은 실제 강등(applied=True)이
+    최소 1건 있을 때만 쓴다.
+    """
+    from datetime import date as _date
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.apps.config import load_settings
+    from quant.control import allocator
+    from quant.control.ledger import load_trades, round_trips
+
+    root = Path(args.root) if args.root else REPO_ROOT
+    today = _date.today()
+    decisions_path = root / "data" / "ledger" / "capital_decisions.jsonl"
+    overlay_path = root / "config" / "auto_params.yaml"
+
+    trips = round_trips(load_trades(root / "data" / "state" / "trades.jsonl"))
+    stats = _capital_stats_from_trips(trips)
+    if not stats:
+        logger.info("capital-review: 종결 트레이드 없음 — 침묵")
+        return
+
+    settings = load_settings(str(root / "config" / "settings.yaml"))
+    current_fractions = _capital_current_fractions(settings)
+    last_change_days = _capital_last_change_days(decisions_path, today)
+
+    demotions = allocator.decide(
+        stats, current_fractions, last_change_days,
+        min_samples=args.min_samples,
+    )
+    if not demotions:
+        logger.info("capital-review: 강등 후보 없음(증거 부족 또는 전부 양호) — 침묵")
+        return
+
+    applied = [d for d in demotions if d.applied]
+
+    if not args.dry_run:
+        if applied:
+            updates = {
+                f"{d.strategy}:{d.market}": (
+                    ("strategies", d.strategy, "capital_fraction", d.market), d.proposed,
+                )
+                for d in applied
+            }
+            _write_overlay(overlay_path, updates)
+        _record_capital_decisions(demotions, today, decisions_path)
+
+    if not applied:
+        logger.info("capital-review: 후보는 있었으나 전부 스킵(냉각/하한) — 조용히 종료")
+        return
+
+    print(_capital_review_summary(demotions))
+
+
 def cmd_close_report(args: argparse.Namespace) -> None:
     """장마감 결과 리포트 — 그날 만기가 채워진 선정 원장 outcome + 리더보드 판정 +
     누적 스코어보드를 한 장으로 (§E-3). 매일 outcomes(16:00) 직후 크론.
@@ -3446,6 +3614,16 @@ def main() -> None:
     p_ga.add_argument("--window-days", type=int, default=7, help="최근 N일 제안만 심사 (기본 7)")
     p_ga.add_argument("--dry-run", action="store_true", help="심사만 하고 파일을 쓰지 않는다")
     p_ga.set_defaults(func=cmd_governor_apply)
+
+    p_cap = sub.add_parser(
+        "capital-review",
+        help="자본 자동 강등 — 지는 전략의 capital_fraction 을 반감(하한 있음). "
+             "config/auto_params.yaml 오버레이에 반영, 늘리는 방향은 절대 자동 아님.",
+    )
+    p_cap.add_argument("--root", default=None, help="기본: 저장소 루트")
+    p_cap.add_argument("--dry-run", action="store_true", help="심사만 하고 파일을 쓰지 않는다")
+    p_cap.add_argument("--min-samples", type=int, default=20, help="강등 판단 최소 종결 표본 (기본 20)")
+    p_cap.set_defaults(func=cmd_capital_review)
 
     p_cr = sub.add_parser(
         "close-report",
