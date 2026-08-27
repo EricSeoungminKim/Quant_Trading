@@ -62,6 +62,13 @@ def extract(text: str, table: list[tuple[str, str]]) -> list[dict]:
     hits: list[dict] = []
     spans: list[tuple[int, int]] = []
     for name, code in table:
+        # 값싼 사전 필터 — `extract_us` 가 이미 쓰는 것과 같은 수법(대칭).
+        # 이름이 문자열에 아예 없으면 `re.finditer` 는 반드시 빈 결과이므로
+        # 판정이 바뀌지 않는다. 사전이 수천 개라 제목마다 전 항목에 정규식을
+        # 돌리는 비용이 실제로 문제였다: 2026-08-28 실측, 기사 적재의 태깅
+        # 단계가 7일치(약 1.4만 건)에 25분+ 걸려 systemd 예산을 넘겼다.
+        if name not in text:
+            continue
         for m in re.finditer(re.escape(name), text):
             s, e = m.span()
             if any(s < je and e > js for js, je in spans):
