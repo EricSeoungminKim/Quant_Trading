@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 from quant.trade.approval import ApprovalGate
 from quant.apps.config import Settings
+from quant.adapters.smart_flow_log import SmartFlowLogger
 from quant.adapters.tick_log import TickLogger
 from quant.core.models import market_of
 from quant.trade.control import TradingControl
@@ -269,6 +270,34 @@ def _wait_for_connection(feed, timeout: float, poll_interval: float = 0.2, debou
     return feed.health().connected
 
 
+def build_smart_flow(cfg: dict) -> tuple[SmartFlowLogger | None, list[str]]:
+    """세력 신호 수집기 + 웹소켓 구독 타입 목록을 만든다.
+
+    반환은 `(싱크, 구독 타입)`. 플래그(`kiwoom.realtime.smart_flow_enabled`)가
+    꺼져 있으면 `(None, ["0B"])` — **구독 타입 자체가 늘지 않는다.** 켜고 끄는 걸
+    싱크의 enabled 플래그로만 표현하면 REG 프레임에는 여전히 0w/0F 가 실려 나가
+    "안 켰는데 등록은 돼 있는" 상태가 된다. 실서버 검증 전이니 기본값은 **false**.
+
+    왜 타입을 늘리는 방식인가(2026-08-28 감사): **키움 WS 세션은 계정당 1개**다.
+    두 번째 연결을 열면 첫 연결이 끊긴다 — 그래서 별도 피드를 만들지 않고 기존
+    연결의 REG 프레임에 타입만 얹는다(`KiwoomRealtimeFeed(types=...)`).
+
+    이건 수집이다. 알림도, 주문도, 전략도 여기서 나오지 않는다.
+    """
+    from quant.adapters.brokers.kiwoom.websocket import (
+        REALTIME_TICK_TYPE,
+        SMART_FLOW_TYPES,
+    )
+
+    rt_cfg = (cfg.get("kiwoom", {}) or {}).get("realtime", {}) or {}
+    if not rt_cfg.get("smart_flow_enabled", False):
+        return None, [REALTIME_TICK_TYPE]
+    sink = SmartFlowLogger(
+        flush_seconds=float(rt_cfg.get("smart_flow_flush_seconds", 30.0)),
+    )
+    return sink, [REALTIME_TICK_TYPE, *SMART_FLOW_TYPES]
+
+
 def build_kiwoom_realtime_route(cfg: dict, symbols: list[str], clock) -> SourceRoute | None:
     """켜져 있고 자격증명이 있으면 Kiwoom 실시간 웹소켓을 시세 최우선 라우트로 준비한다.
 
@@ -333,6 +362,11 @@ def build_kiwoom_realtime_route(cfg: dict, symbols: list[str], clock) -> SourceR
     # 만료/폐기돼도 스스로 회복한다. 문자열을 캡처해 넘기던 이전 구현은 24시간짜리
     # 토큰이 만료되는 순간 재접속 루프가 죽은 토큰으로 영원히 실패했다
     # (2026-08-11~13 실장애: 805004가 20시간 넘게 30초마다 반복, 재시작 전까지 회복 불가).
+    #
+    # 세력 신호 수집(2026-08-28) — 기본 꺼짐. 켜면 같은 연결의 REG 에 0w/0F 가
+    # 얹히고, 0B 프레임의 최우선호가(FID 27/28)도 원장에 쌓인다. 꺼져 있으면
+    # types=["0B"], sink=None 이라 이 경로는 종전과 완전히 동일하게 동작한다.
+    smart_flow, rt_types = build_smart_flow(cfg)
     feed = KiwoomRealtimeFeed(
         access_token=client.access_token,
         # 인증 실패 시 캐시를 버려야 다음 접속이 진짜로 새 토큰을 받는다 —
@@ -340,7 +374,14 @@ def build_kiwoom_realtime_route(cfg: dict, symbols: list[str], clock) -> SourceR
         invalidate_token=client.invalidate_token,
         ws_url=ws_url,
         symbols=symbols,
+        types=rt_types,
+        smart_flow_sink=smart_flow,
     )
+    if smart_flow is not None:
+        logger.info(
+            "세력 신호 수집 활성 — 구독 타입=%s, 적재=data/ledger/smart_flow.jsonl "
+            "(수집 전용: 알림·주문 없음, 실서버 프레임 검증 전)", ", ".join(rt_types),
+        )
 
     def _runner() -> None:
         try:

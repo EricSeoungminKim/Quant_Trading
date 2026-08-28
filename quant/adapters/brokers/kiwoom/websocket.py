@@ -34,14 +34,27 @@ DEFAULT_WS_URL = "wss://mockapi.kiwoom.com:10000/api/dostk/websocket"
 
 _KST = ZoneInfo("Asia/Seoul")
 
-# 실시간 데이터 프레임(REAL, type="0B" 주식체결)의 FID 코드 — [확인됨, 이 두 개만].
+# 실시간 데이터 프레임(REAL, type="0B" 주식체결)의 FID 코드 — [확인됨, 이 넷만].
 # docs/api/kiwoom/README.md 5.5: 전체 FID 매핑표는 kiwoom_docs/실시간시세.md 원문에
-# 더 있으나, 지금 필요한(체결가/체결시간) 것만 옮긴다 — 검증 안 된 필드로 파싱을
-# 넓히지 않는다.
+# 더 있으나, 그 절의 verbatim 예시로 **확인된 것만** 옮긴다 — 검증 안 된 필드로
+# 파싱을 넓히지 않는다.
 _FID_PRICE = "10"       # 현재가. 부호(+/-/공백)는 등락 방향 표시로 보임 — 절대값 사용 [미확인 해석]
 _FID_TRADE_TIME = "20"  # 체결시간 HHMMSS (날짜 없음 — 오늘 날짜(KST)로 조립)
+# 27/28 은 위 5.5 verbatim 예시에 그대로 실려 있다 [확인됨] — 즉 `0B` 프레임을 이미
+# 받고 있었으면서 **공짜로 오는 최우선호가를 버리고 있었다**(2026-08-28 데이터 감사).
+_FID_BEST_ASK = "27"    # 최우선 매도호가
+_FID_BEST_BID = "28"    # 최우선 매수호가
 
-_REALTIME_TICK_TYPE = "0B"  # 주식체결 — 이 어댑터가 파싱하는 유일한 타입
+REALTIME_TICK_TYPE = "0B"  # 주식체결 — Quote 로 파싱하는 유일한 타입
+_REALTIME_TICK_TYPE = REALTIME_TICK_TYPE  # 하위 호환 별칭(내부용)
+
+# 세력 신호 타입 — README 5.4 등록 타입 코드표 [확인됨]. **FID 이름 매핑표는
+# 우리 문서에 없다**(5.5 는 `0B` 예시만 옮겼다) — 그래서 이 타입들은 파싱해서
+# 이름을 붙이지 않고 `values` 를 FID 코드 그대로 적재한다. 추측한 이름이 원장에
+# 굳는 것보다 코드 그대로가 낫다. 실서버 프레임을 본 뒤 이름을 붙일 것.
+SMART_FLOW_TYPES: tuple[str, ...] = ("0w", "0F")
+_SMART_FLOW_KIND = {"0w": "program", "0F": "broker"}
+_KIND_QUOTE_L1 = "quote_l1"
 
 # 연속 인증 실패가 이 횟수를 넘으면 WARNING이 아니라 ERROR로 승격하고, 로그에
 # AUTH_ALERT_MARKER를 남긴다. server/scripts/watchdog.sh가 이 문자열을 grep해서
@@ -69,14 +82,18 @@ def _msg_trnm(msg: object) -> str:
     return ""
 
 
-def _parse_price(values: dict) -> float | None:
-    raw = values.get(_FID_PRICE)
+def _parse_abs(raw) -> float | None:
+    """부호 접두사(+/-/공백)를 떼고 절대값으로. 파싱 실패는 None(크래시 금지)."""
     if raw is None:
         return None
     try:
         return abs(float(raw))
     except (TypeError, ValueError):
         return None
+
+
+def _parse_price(values: dict) -> float | None:
+    return _parse_abs(values.get(_FID_PRICE))
 
 
 def _parse_trade_time(values: dict) -> datetime:
@@ -137,6 +154,7 @@ class KiwoomRealtimeFeed:
         reconnect_max_delay: float = 30.0,
         auth_reconnect_max_delay: float = DEFAULT_AUTH_RECONNECT_MAX_DELAY,
         invalidate_token: Callable[[], None] | None = None,
+        smart_flow_sink: object | None = None,
     ) -> None:
         """`access_token`은 문자열이 아니라 **호출 가능한 토큰 발급자**를 넘기는 것이
         정상 사용법이다 (`KiwoomClient.access_token` 바운드 메서드). 매 접속마다
@@ -155,6 +173,14 @@ class KiwoomRealtimeFeed:
 
         문자열도 받는다 — 테스트/일회성 프로브용이다. 문자열을 넘기면 그 토큰이
         만료되는 순간 재접속 루프가 영원히 실패한다(2026-08-11 실장애).
+
+        `smart_flow_sink`(2026-08-28)는 세력 신호 적재기다 — 선택적이고, 없으면
+        이 클래스의 동작은 **한 바이트도 달라지지 않는다**. 덕 타이핑으로 받는다
+        (`quant.adapters.smart_flow_log.SmartFlowLogger`를 임포트하지 않는다):
+        어댑터가 다른 어댑터를 알 필요가 없고, 테스트가 가짜를 꽂기도 쉽다.
+        요구 표면은 `record(kind, symbol, ts, fields)` / `record_raw(payload, ts)`
+        / `flush_if_due(now) -> int` / `close()` 넷이다. **이 싱크의 예외는 절대
+        시세 수신을 멈추지 않는다**(`_safe_sink` 참고).
         """
         self._token_source = access_token
         self._invalidate_token = invalidate_token
@@ -179,6 +205,9 @@ class KiwoomRealtimeFeed:
         self._health = RealtimeHealth()
 
         self._tick_events: dict[str, asyncio.Event] = {}
+
+        self._smart_flow_sink = smart_flow_sink
+        self._sink_failed_warned = False
 
     # -------------------------------------------------------------- public 조회
     def quote(self, symbol: str) -> Quote | None:
@@ -287,6 +316,8 @@ class KiwoomRealtimeFeed:
 
     async def close(self) -> None:
         self._stopped = True
+        # 남은 버퍼를 먼저 비운다 — 소켓을 닫고 나서 하면 종료 경로에서 유실된다.
+        self._safe_sink("close", lambda s: s.close())
         if self._ws is not None:
             await self._ws.close()
 
@@ -374,6 +405,10 @@ class KiwoomRealtimeFeed:
             if msg is None:
                 continue
             await self._handle_message(msg)
+            # 메시지마다 부르되 실제 쓰기는 flush_seconds 마다 한 번뿐이다(그 외에는
+            # 시각 비교만 하고 즉시 반환). PING 도 여기를 지나므로 장이 조용해도
+            # 버퍼가 무한정 눌러앉지 않는다.
+            self._flush_sink()
 
     @staticmethod
     def _safe_parse(raw) -> dict | str | None:
@@ -404,17 +439,94 @@ class KiwoomRealtimeFeed:
 
     def _handle_real(self, msg: dict) -> None:
         for item in msg.get("data", []):
-            if not isinstance(item, dict) or item.get("type") != _REALTIME_TICK_TYPE:
-                continue  # 0B(주식체결) 외 타입은 이 어댑터가 아직 파싱하지 않는다
-            symbol = item.get("item")
-            values = item.get("values")
-            if not symbol or not isinstance(values, dict):
+            if not isinstance(item, dict):
+                self._record_raw(item)
                 continue
-            price = _parse_price(values)
-            if price is None:
-                continue  # 알 수 없는/누락된 필드 — 조용히 스킵 (크래시 금지)
-            quote = Quote(symbol=symbol, ts=_parse_trade_time(values), price=price)
-            self._set_quote(symbol, quote)
+            itype = item.get("type")
+            if itype == _REALTIME_TICK_TYPE:
+                self._handle_tick(item)
+            elif itype in _SMART_FLOW_KIND:
+                self._handle_smart_flow(item, _SMART_FLOW_KIND[itype])
+            else:
+                # 구독하지 않은/모르는 타입. 싱크가 없으면 종전대로 조용히 버린다
+                # (동작 불변), 있으면 raw 로 남긴다 — 실서버 프레임을 봐야 파서를
+                # 고칠 수 있다.
+                self._record_raw(item)
+
+    def _handle_tick(self, item: dict) -> None:
+        """0B(주식체결). **기존 계약(Quote/price)은 그대로다** — 아래 L1 적재는
+        Quote 를 건드리지 않고 싱크로만 흘린다(코어 모델 확장은 별도 설계 결정)."""
+        symbol = item.get("item")
+        values = item.get("values")
+        if not symbol or not isinstance(values, dict):
+            self._record_raw(item)
+            return
+        ts = _parse_trade_time(values)
+        price = _parse_price(values)
+        if price is not None:
+            # 알 수 없는/누락된 현재가는 조용히 스킵 (크래시 금지). 그래도 아래
+            # 최우선호가는 따로 살아 있을 수 있으므로 return 하지 않는다.
+            self._set_quote(symbol, Quote(symbol=symbol, ts=ts, price=price))
+        self._record_l1(symbol, ts, values)
+
+    def _record_l1(self, symbol: str, ts: datetime, values: dict) -> None:
+        """FID 27/28(최우선 매도/매수호가) — 이미 0B 프레임에 실려 오던 것이다."""
+        if self._smart_flow_sink is None:
+            return
+        ask = _parse_abs(values.get(_FID_BEST_ASK))
+        bid = _parse_abs(values.get(_FID_BEST_BID))
+        if ask is None and bid is None:
+            return
+        self._sink_record(_KIND_QUOTE_L1, symbol, ts, {"bid": bid, "ask": ask})
+
+    def _handle_smart_flow(self, item: dict, kind: str) -> None:
+        """0w(종목프로그램매매)/0F(주식당일거래원).
+
+        **FID 이름을 붙이지 않는다.** 이 두 타입의 FID 매핑표는
+        `docs/api/kiwoom/README.md` 에 없다(5.5 는 0B 예시만 verbatim 으로 옮겼고
+        전체 표는 키움 원문에 있다고만 적혀 있다). 스펙에 없는 필드를 추측해
+        이름 붙이면 그 추측이 원장에 굳는다 — `values` 를 FID 코드 그대로 적재하고,
+        실서버 프레임을 확인한 뒤에 이름을 붙인다.
+
+        시각도 마찬가지다. 0B 의 FID 20 이 체결시간인 건 문서로 확인됐지만, 이
+        타입들에서 20 이 같은 뜻인지는 **[미확인]** 이라 쓰지 않는다 — 수신 시각
+        (KST)을 ts 로 쓴다. 원본 FID 는 fields 에 그대로 남으니 나중에 정정 가능하다.
+        """
+        symbol = item.get("item")
+        values = item.get("values")
+        if not symbol or not isinstance(values, dict):
+            self._record_raw(item)
+            return
+        self._sink_record(
+            kind, symbol, datetime.now(_KST), {str(k): v for k, v in values.items()}
+        )
+
+    # ------------------------------------------------------- 세력 신호 싱크 배관
+    def _safe_sink(self, op: str, fn) -> None:
+        """싱크 호출은 **어떤 예외도 밖으로 내보내지 않는다** — 수집기가 죽어도
+        시세 수신은 멈추지 않는다(TickLogger 와 같은 원칙). 실패는 1회만 경고한다:
+        프레임마다 반복하면 장중 로그가 폭발한다."""
+        if self._smart_flow_sink is None:
+            return
+        try:
+            fn(self._smart_flow_sink)
+        except Exception:  # noqa: BLE001 — 의도적으로 전부 삼킨다
+            if not self._sink_failed_warned:
+                self._sink_failed_warned = True
+                logger.warning(
+                    "세력 신호 싱크 %s 실패 — 이후 실패는 조용히 무시한다", op, exc_info=True,
+                )
+
+    def _sink_record(self, kind: str, symbol: str, ts: datetime, fields: dict) -> None:
+        self._safe_sink(
+            "record", lambda s: s.record(kind=kind, symbol=symbol, ts=ts, fields=fields)
+        )
+
+    def _record_raw(self, payload: object) -> None:
+        self._safe_sink("record_raw", lambda s: s.record_raw(payload, datetime.now(_KST)))
+
+    def _flush_sink(self) -> None:
+        self._safe_sink("flush_if_due", lambda s: s.flush_if_due(datetime.now(_KST)))
 
     def _set_quote(self, symbol: str, quote: Quote) -> None:
         with self._lock:
