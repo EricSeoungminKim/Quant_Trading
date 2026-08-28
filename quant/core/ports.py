@@ -127,6 +127,21 @@ class Notifier(Protocol):
 
 
 @runtime_checkable
+class TickLogger(Protocol):
+    """엔진이 사이클마다 읽는 시세를 초 단위로 남기는 어댑터가 구현하는 최소 표면
+    (2026-08-28). Notifier와 같은 계약: 실패가 거래를 막으면 안 되므로 구현체가
+    스스로 예외를 삼킨다. `quant/trade/loop.py`는 `quant/adapters/tick_log.py`를
+    직접 임포트하지 않고 이 Protocol로만 받는다 — 조립(주입)은 `quant/apps/assembly.py`
+    가 한다."""
+
+    def record(self, symbol: str, price: float, ts: datetime) -> None: ...
+
+    def flush_if_due(self, now: datetime) -> int:
+        """마지막 flush 이후 flush_seconds 경과 시에만 디스크에 쓴다. 반환은 쓴 행 수."""
+        ...
+
+
+@runtime_checkable
 class Narrator(Protocol):
     """결정론적 판정을 사람이 읽을 산문으로 바꾼다. **판단하지 않는다.**
 

@@ -206,7 +206,7 @@ def cmd_paper(args: argparse.Namespace) -> None:
         approval=rt.approval, approval_notifier=rt.approval_notifier,
         approval_cfg=rt.approval_cfg, reconciler=rt.reconciler, regime=rt.regime,
         universe=rt.universe, rebuild_strategies=_rebuild if rt.universe is not None else None,
-        name_of=rt.name_of, books=rt.books,
+        name_of=rt.name_of, books=rt.books, tick_logger=rt.tick_logger,
     ))
 
 

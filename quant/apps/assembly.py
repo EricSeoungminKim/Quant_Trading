@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 from quant.trade.approval import ApprovalGate
 from quant.apps.config import Settings
+from quant.adapters.tick_log import TickLogger
 from quant.core.models import market_of
 from quant.trade.control import TradingControl
 from quant.trade.reconcile import OpenOrderBook, Reconciler
@@ -110,6 +111,10 @@ class PaperRuntime:
     # 전략별 독립 명목계정(2026-08-19, capital_mode: per_strategy 전용) — shared
     # 모드(기본)면 None이고 loop.py의 books 갱신 코드는 한 줄도 실행되지 않는다.
     books: "StrategyBooks | None" = None
+    # 틱 로거(2026-08-28) — 항상 주입되고, engine.tick_log.enabled: false는 이
+    # 인스턴스 내부의 enabled 플래그로 표현된다(TickLogger.__init__ 참고). loop.py는
+    # quant.core.ports.TickLogger Protocol로만 받고 이 어댑터를 직접 임포트하지 않는다.
+    tick_logger: "TickLogger | None" = None
 
 
 def build_toss_client(mode: str | None = None):
@@ -879,6 +884,18 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
     logger.info("국면 모듈 준비 — 현재 캐시: %s",
                 (regime.current_state().label if regime.current_state() else "없음(첫 세션에 계산)"))
 
+    # 틱 로거(2026-08-28 소유자 지시) — Toss 1분봉이 4거래일 롤링이라 소급 불가하니
+    # 엔진이 읽는 시세를 우리가 직접 초 단위로 쌓는다. tick_log.enabled: false여도
+    # TickLogger(enabled=False)를 그대로 넘긴다(항상 주입) — 켜고 끄는 것은 이
+    # 인스턴스 내부의 enabled 플래그가 한다: record()/flush_if_due()/close() 전부
+    # 즉시 반환이라 버퍼도 안 쌓고 디스크도 안 건드린다(흔적 없음).
+    tick_log_cfg = cfg.get("engine", {}).get("tick_log", {}) or {}
+    tick_logger = TickLogger(
+        Path("data/ticks"),
+        flush_seconds=float(tick_log_cfg.get("flush_seconds", 30.0)),
+        enabled=bool(tick_log_cfg.get("enabled", True)),
+    )
+
     return PaperRuntime(
         strategies=strategies,
         ctx=Context(clock=clock, data=data, broker=broker),
@@ -909,6 +926,7 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
         # -10,470,186원까지 내려갔다(체결 13건, 장부 파일은 mtime 그대로).
         # "만든 것 ≠ 배선된 것" — 조립 지점을 끝까지 따라가지 않으면 절반만 켜진다.
         books=books,
+        tick_logger=tick_logger,
     )
 
 

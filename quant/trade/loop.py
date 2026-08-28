@@ -24,7 +24,9 @@ from typing import Protocol
 from quant.trade.approval import STATUS_REJECTED, ApprovalGate, ApprovalRequest
 from quant.core import oms
 from quant.trade.control import TradingControl
-from quant.core.ports import Context, EventSink, Notifier, OrderSink, RiskManager, Strategy
+from quant.core.ports import (
+    Context, EventSink, Notifier, OrderSink, RiskManager, Strategy, TickLogger,
+)
 from quant.core.models import (
     Fill, Order, OrderState, Side, Signal, SignalAction, market_of_symbol,
 )
@@ -855,6 +857,35 @@ def _build_marks(ctx: Context) -> dict[str, float]:
     return marks
 
 
+def _record_ticks(
+    ctx: Context, tick_logger: TickLogger, strategies: list[Strategy], marks: dict[str, float],
+) -> None:
+    """워치리스트 전 심볼(활성 전략들이 다루는 심볼의 합집합)의 이번 사이클 시세를
+    틱 로거에 남긴다(2026-08-28) — Toss 1분봉이 4거래일 롤링이라 소급이 안 되므로
+    엔진이 읽는 시세를 우리가 직접 쌓는다(TickLogger 모듈 docstring 참고).
+
+    marks(보유 종목 스냅샷, `_build_marks`)에 이미 있는 값은 재사용해 quote() 호출을
+    줄인다. 시장이 닫힌 심볼은 건너뛴다 — `_build_marks`와 같은 이유로, 닫힌 시장을
+    계속 찔러 실패를 쌓는 것은 낭비이자 오탐이다. quote() 실패는 조용히 건너뛴다 —
+    틱 로깅이 사이클을 막으면 안 된다(TickLogger.record 자체도 예외를 삼키지만, 여기서
+    quote() 실패까지 한 번 더 막는다)."""
+    now = ctx.clock.now()
+    symbols = {s for st in strategies for s in st.symbols}
+    for symbol in symbols:
+        price = marks.get(symbol)
+        if price is None:
+            if not ctx.clock.is_market_open(market_of_symbol(symbol)):
+                continue
+            try:
+                quote = ctx.data.quote(symbol)
+            except Exception:
+                continue
+            if quote is None or not math.isfinite(quote.price) or quote.price <= 0:
+                continue
+            price = quote.price
+        tick_logger.record(symbol, price, now)
+
+
 def _estimate_equity(ctx: Context) -> float | None:
     """PaperBroker처럼 portfolio.equity()를 노출하는 브로커면 KRW 환산 총자산을 계산한다.
 
@@ -1489,6 +1520,7 @@ async def run_paper_loop(
     heartbeat_path: Path | str | None = None,
     name_of: dict[str, str] | None = None,
     books: StrategyBooks | None = None,
+    tick_logger: TickLogger | None = None,
 ) -> None:
     """paper 루프. control이 None이면 기본 경로(data/state/control.json)로 새로 만든다.
     regime(RegimeProvider)을 주면 KST 거래일이 바뀔 때 1회 refresh()로 국면을
@@ -1507,7 +1539,11 @@ async def run_paper_loop(
     외부 워치독용 상태 파일을 남긴다 — 쓰기 실패는 삼키고 경고 1회만 남긴다(파일이
     없어도 거래는 계속돼야 한다). books(전략별 독립 명목계정)를 주면 체결마다 그
     전략의 장부를 갱신·저장한다 — None이면(capital_mode: shared 기본값) 관련 코드는
-    한 줄도 실행되지 않는다."""
+    한 줄도 실행되지 않는다. tick_logger(TickLogger, 2026-08-28)를 주면 사이클마다
+    워치리스트 전 심볼의 시세를 기록하고 사이클 끝에 flush_if_due를 호출한다 —
+    None이면(호출부가 주입하지 않음) 관련 코드는 한 줄도 실행되지 않는다.
+    engine.tick_log.enabled: false는 다른 경로다 — assembly.py가 TickLogger는
+    항상 주입하되 그 인스턴스의 enabled 플래그를 끈다(record/flush가 즉시 반환)."""
     if control is None:
         control = TradingControl()
     if reconciler is not None:
@@ -1644,6 +1680,8 @@ async def run_paper_loop(
         # 캐시 만료 시에만 든다). run_cycle/_process_approvals가 만드는 approve() 호출
         # 전부가 이 스냅샷을 공유한다.
         marks, unpriced = _build_marks_and_unpriced(ctx)
+        if tick_logger is not None:
+            _record_ticks(ctx, tick_logger, strategies, marks)
         # 보유 중인데 시세가 없으면 손절/EoD 판정이 통째로 멈춘다(전략의
         # `quote is None -> return None`). 무인 운용에서 이 침묵이 가장 위험하다.
         _now_mono = time.time()
@@ -1866,5 +1904,9 @@ async def run_paper_loop(
         if not ok and not heartbeat_write_warned:
             heartbeat_write_warned = True
             logger.warning("하트비트 파일 쓰기 실패 — 거래는 계속한다: %s", heartbeat_path)
+
+        # 틱 로그 flush — 사이클 끝에서 한 번(버퍼링, N초마다만 실제 디스크 쓰기).
+        if tick_logger is not None:
+            tick_logger.flush_if_due(ctx.clock.now())
 
         await asyncio.sleep(settings.poll_seconds)

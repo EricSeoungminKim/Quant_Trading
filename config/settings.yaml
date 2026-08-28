@@ -33,6 +33,13 @@ engine:
   # 엔진 소유 원장 vs 브로커 실보유를 대조한다. 불일치 시 신규 진입만 halt하고
   # 청산은 계속 동작한다. 엔진 소유 원장을 노출하는 브로커에서만 활성.
   reconcile_interval_minutes: 5
+  # 틱 로거(2026-08-28 소유자 지시) — Toss 1분봉이 4거래일 롤링이라 소급이 안 되므로
+  # 엔진이 사이클마다 읽는 시세를 초 단위로 data/ticks/{market}/{YYYY-MM-DD}.jsonl에
+  # 남긴다. 파동 스캘핑 전략의 재료. 거래 핫패스에는 메모리 버퍼 append만 하고,
+  # 디스크 쓰기는 flush_seconds마다 한 번(append-only)만 한다.
+  tick_log:
+    enabled: true
+    flush_seconds: 30
 
 universe:
   us: [TQQQ, SQQQ]
