@@ -96,6 +96,60 @@ def cmd_walkforward(args: argparse.Namespace) -> None:
     print(_json.dumps(out, ensure_ascii=False, indent=2))
 
 
+def cmd_strategy_report(args: argparse.Namespace) -> None:
+    """전략 성적표 — quant-expert §4 형식을 **코드가 강제하는** 단일 진입점.
+
+    `backtest`는 인샘플 표를, `walkforward`는 fold JSON을, `scoreboard`는 원장
+    결과를 낸다 — 세 개를 사람이 머릿속에서 합쳐야 "이 전략을 써도 되나"에
+    답할 수 있었다. 합치는 과정에서 빠지는 게 항상 같았다: **탐색 횟수**와
+    **비용이 실측인지 기본값인지**.
+
+    여기서는 셋을 한 번에 돌리고, 다중검정 보정(deflated Sharpe)과 실측 비용
+    (`control.cost_model`)을 붙여 한 장으로 낸다. 표본이 모자란 항목은
+    "판단 불가"로 찍힌다 — 빈칸을 그럴듯한 숫자로 채우지 않는다.
+
+    `--trials`는 **사람이 신고한다.** 이 전략을 채택하기까지 시험한 변형의 수를
+    코드가 알 방법이 없고, 모르는 것을 1로 가정하면 보정이 조용히 꺼진다.
+    """
+    from quant.backtest.fitness import evaluate
+    from quant.backtest.strategy_report import report_text
+    from quant.backtest.walkforward import run_walkforward, stability_summary
+    from quant.control.cost_model import by_strategy, effective_round_trip_bp
+    from quant.control.ledger import load_trades, round_trips
+    from quant.control.tca import join_intents_fills, slippage_bps
+    from quant.control.warehouse import read_jsonl
+
+    symbols = args.symbols.split() if args.symbols else None
+    result = run_backtest(
+        strategy_id=args.strategy, days=args.days, interval=args.interval,
+        source=args.source, symbols=symbols,
+    )
+    fit = evaluate(result)
+    folds = run_walkforward(
+        strategy_id=args.strategy, total_days=args.total_days, window_days=args.window,
+        step_days=args.step, interval=args.interval, source=args.source, symbols=symbols,
+    )
+
+    # 비용은 **원장 실측**이 우선이다. 이 전략의 트립이 모자라면 cost_model이
+    # None을 내고 effective_round_trip_bp가 기본값으로 물러서며 그 사실을
+    # 라벨에 싣는다(백테스트 자체의 비용 가정은 settings.yaml이 따로 쓴다).
+    from quant.adapters.env import REPO_ROOT
+
+    raw_trades = load_trades(ledger_state_path())
+    trips = round_trips(raw_trades)
+    intents = read_jsonl(REPO_ROOT / "data" / "state" / "order_intents.jsonl")
+    slips = slippage_bps(join_intents_fills(intents, raw_trades))
+    cost = by_strategy(trips, slips).get(args.strategy)
+    cost_bp, cost_label = effective_round_trip_bp(cost)
+
+    print(report_text(
+        result, fit, folds, stability_summary(folds),
+        strategy=args.strategy, source=args.source, interval=args.interval,
+        window_days=args.window, step_days=args.step, n_trials=args.trials,
+        cost_bp=cost_bp, cost_label=cost_label,
+    ))
+
+
 def cmd_kelly(args: argparse.Namespace) -> None:
     """원장 기반 부분 켈리 자문 — 승률·payoff로 켈리 비율을 **표시만** 한다.
 
@@ -3326,6 +3380,27 @@ def main() -> None:
     p_wf.add_argument("--source", default="stub")
     p_wf.add_argument("--symbols", default=None)
     p_wf.set_defaults(func=cmd_walkforward)
+
+    p_sr = sub.add_parser(
+        "strategy-report",
+        help="전략 성적표 한 장 — 인샘플+OOS+deflated Sharpe(탐색 횟수 보정)+실측 비용 "
+             "(quant-expert §4 형식, 표본 부족 항목은 '판단 불가')",
+    )
+    p_sr.add_argument("--strategy", default="donchian")
+    p_sr.add_argument("--days", type=int, default=90, help="인샘플 백테스트 기간(거래일)")
+    p_sr.add_argument("--total-days", type=int, default=360, help="walk-forward 전체 관찰 기간(달력일)")
+    p_sr.add_argument("--window", type=int, default=90, help="walk-forward 창 크기(거래일)")
+    p_sr.add_argument("--step", type=int, default=90, help="walk-forward 창 간격(달력일)")
+    p_sr.add_argument("--interval", default="15m")
+    p_sr.add_argument("--source", default="stub")
+    p_sr.add_argument("--symbols", default=None)
+    p_sr.add_argument(
+        "--trials", type=int, default=1,
+        help="이 전략을 채택하기까지 시험한 변형의 수. deflated Sharpe 가 이 값으로 "
+             "샤프를 깎는다 — **축소해 신고하면 그만큼 관대한 판정이 나온다**. "
+             "기본 1은 '한 번도 탐색하지 않았다'는 뜻이다.",
+    )
+    p_sr.set_defaults(func=cmd_strategy_report)
 
     p_kelly = sub.add_parser(
         "kelly", help="원장 기반 부분 켈리 자문(표시만, 자동 반영 없음)",
