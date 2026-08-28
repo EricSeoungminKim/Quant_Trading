@@ -153,6 +153,12 @@
 # 텔레그램에 준다 — LLM 없음, 픽 없으면 무출력(daily_feedback.sh 주석 참고).
 25 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/daily_feedback.sh US >> data/daily_feedback.log 2>&1
 
+# 06:55 US — 하루 요약 HTML 한 장을 텔레그램 **파일**로 (2026-08-28 소유자 지시:
+# "매매 관련만 장중에 메시지로, 마감 뒤엔 하루 요약을 HTML 파일로"). 세션
+# 손익(06:10)·자본 곡선(06:15)·일일 피드백(06:25)이 전부 끝난 뒤라야 그날
+# 원장·자본 점이 확정돼 요약에 들어간다. 읽기 전용 — 시세도 LLM 도 부르지 않는다.
+55 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/daily_wrap.sh US >> data/daily_wrap.log 2>&1
+
 # --- 장타(가치·팩터) 전략 전제 데이터 (2026-08-19: 수집기는 있었지만 아무도
 # 부르지 않았던 배선 누락 — naver_quant.py/dart_financials.py의 fetch_and_persist가
 # 호출부 0건이었다) ---
@@ -196,6 +202,12 @@
 # 직접 고친다. **처음에는 --dry-run** 으로 건다(capital_review.sh 안에 있음) —
 # 관찰 기간 뒤 사람이 --dry-run 을 뗀다.
 50 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/capital_review.sh >> data/capital_review.log 2>&1
+
+# 16:55 KR — 하루 요약 HTML 한 장을 텔레그램 **파일**로 (US 06:55 항목과 같은
+# 리포트). KR 마감 정산 체인(session-pnl 15:35 → outcomes 16:00 → close-report
+# 16:20 → daily-feedback 16:45 → capital-review 16:50) **맨 끝**에 둔다 —
+# 앞 단계가 남긴 원장·판정·조치까지 요약에 들어가야 "오늘 하루"가 완성된다.
+55 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/daily_wrap.sh KR >> data/daily_wrap.log 2>&1
 
 # 매일 05:40 KST — 1분봉 적재 (scalp_1m, 2026-08-18). Toss 1m API는 **과거
 # 4거래일 롤링만** 제공한다(docs/data-availability.md 실측) — 매일 당겨 쌓지

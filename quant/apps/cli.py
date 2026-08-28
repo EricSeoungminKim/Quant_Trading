@@ -991,6 +991,286 @@ def cmd_performance(args: argparse.Namespace) -> None:
     print("\n※ 샤프는 무위험 이자율 0 가정 — 과대평가 방향. MDD 를 수익률보다 먼저 보라.")
 
 
+def _wrap_equity_points(path, market: str, on) -> list[dict]:
+    """자본 곡선에서 `market`·`on 이하` 점만, (date) 중복은 마지막 기록이 이긴다
+    (`cmd_performance` 와 같은 관례). 날짜 오름차순."""
+    import json as _json
+
+    if not path.exists():
+        return []
+    latest: dict[str, dict] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = _json.loads(line)
+        except ValueError:
+            continue
+        d = str(r.get("date") or "")
+        if not d or r.get("market") != market or d > on.isoformat():
+            continue
+        latest[d] = r
+    return [latest[d] for d in sorted(latest)]
+
+
+def _wrap_issues(root, on) -> list[str]:
+    """3절 재료 — **오늘 실제로 관측된 것만**. 없으면 빈 목록(호출부가 "없음").
+
+    세 갈래를 본다: 운영 감시(ops_watch.log 판정 줄), 잡 하트비트(opstate →
+    health.job_findings 의 alert), 워치독 상태 파일. 셋 다 이미 있는 계측이다 —
+    이 리포트를 위해 새로 수집하지 않는다(수집이 늘면 리포트가 장애 원인이 된다).
+    """
+    today = on.isoformat()
+    out: list[str] = []
+
+    # (1) 운영 감시 — 오늘 날짜의 판정 줄만. 형식은 ops_watch.sh 의 log() 그대로.
+    try:
+        lines = (root / "data" / "ops_watch.log").read_text(
+            encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        lines = []
+    for ln in lines:
+        if not ln.startswith(f"[{today} "):
+            continue
+        if "알림 전송 실패" in ln:
+            out.append(f"운영 감시 이상 — 텔레그램 발송 실패(다음 주기 재시도): {ln.strip()}")
+        elif "알림 전송" in ln:
+            out.append(f"운영 감시 이상 판정 — 텔레그램 알림 전송됨: {ln.strip()}")
+
+    # (2) 잡 하트비트 — alert 만(unknown 은 "모른다"라 이상으로 세지 않는다).
+    try:
+        from quant.adapters.kv import make_kv
+        from quant.control import health as H
+        from quant.control.opstate import snapshot
+
+        jobs = ["collect:KR", "collect:US", "report:KR", "report:US", "ingest", "backup",
+                "deepdive:KR", "deepdive:US", "close-report", "report_close:KR",
+                "ops-judge", "experiments", "equity-snapshot"]
+        for f in H.job_findings(snapshot(make_kv(), jobs)):
+            if f.level == H.ALERT:
+                out.append(f"잡 실패 — {f.detail} (조치: 자동 재시도 없음, 크론 로그 확인 필요)")
+    except Exception:  # noqa: BLE001 — 상태 저장소 부재가 리포트를 막지 않는다
+        pass
+
+    # (3) 워치독 — 상태 파일이 있고 오늘 갱신됐으면 발동한 것이다(watchdog.sh 는
+    # 회복하면 지운다). 파일 내용이 곧 장애 종류다.
+    state = root / "data" / "state" / "watchdog.state"
+    try:
+        if state.exists():
+            mtime = datetime.fromtimestamp(state.stat().st_mtime).date()
+            if mtime == on:
+                kind = state.read_text(encoding="utf-8").strip() or "종류 불명"
+                out.append(f"워치독 발동 — {kind} (조치: 자동 알림 전송, 미해결 시 상태 파일 유지)")
+    except OSError:
+        pass
+
+    return out[:10]
+
+
+NOTIFY_QUEUE_PATH = ("data", "notify_queue.jsonl")
+NOTIFY_ARCHIVE_PATH = ("data", "ledger", "notify_queue_archive.jsonl")
+
+
+def _wrap_queue_parse(line: str) -> dict | None:
+    """큐 한 줄 → dict, 못 읽으면 None. 깨진 줄이 리포트를 죽이지 않는다(원장 관례).
+
+    **읽는 쪽과 비우는 쪽이 같은 판정을 써야 한다** — 유효 줄만 세서 읽고 원시
+    줄 수만큼 지우면, 깨진 줄 하나가 끼는 순간 마지막 알림이 안 지워져 다음
+    리포트에 또 나온다."""
+    import json as _json
+
+    try:
+        row = _json.loads(line)
+    except ValueError:
+        return None
+    return row if isinstance(row, dict) and row.get("text") is not None else None
+
+
+def _wrap_queue_rows(raw: str) -> list[dict]:
+    """큐 원문 → 유효한 줄만."""
+    return [r for r in (_wrap_queue_parse(ln) for ln in raw.splitlines() if ln.strip())
+            if r is not None]
+
+
+def _wrap_deferred(root, on, consume: bool) -> list[dict]:
+    """장중에 미뤄진 알림 — 알림 게이트(`server/scripts/lib/notify.sh`)가 쌓은 큐.
+
+    줄 계약은 그 셸 파일이 정의한다: `{ts, source, text, level}`, ts 는
+    `%Y-%m-%dT%H:%M:%S%z`(로컬 KST). **이 파일을 읽는 곳은 여기 하나다** — 안
+    읽으면 미뤄진 알림이 영영 소유자에게 닿지 않는다.
+
+    `consume=True`(오늘치 정규 실행)면 **큐 전체**를 읽는다. 날짜로 거르지
+    않는 이유: 큐의 의미는 "지난 리포트 이후 억눌린 것"이지 "오늘 억눌린 것"이
+    아니다. 날짜로 걸렀더니 KR 리포트(16:55 KST)와 다음 날 US 리포트(06:55 KST,
+    시장 기준일이 전날)가 **같은 KST 날짜를 둘 다 집어** 오전분이 두 번 나왔다.
+    비우는 쪽(`_wrap_consume_queue`)이 중복을 없애는 유일한 장치다.
+
+    `consume=False`(`--date` 백필)면 큐+아카이브에서 **그 날짜 줄만** 읽고
+    비우지 않는다 — 과거를 다시 그리는 실행이 오늘 몫을 삼키면 안 된다.
+    """
+    queue = root.joinpath(*NOTIFY_QUEUE_PATH)
+    if consume:
+        try:
+            return _wrap_queue_rows(queue.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            return []
+
+    prefix = on.isoformat()
+    rows: list[dict] = []
+    for path in (root.joinpath(*NOTIFY_ARCHIVE_PATH), queue):
+        try:
+            rows += _wrap_queue_rows(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+    return [r for r in rows if str(r.get("ts", "")).startswith(prefix)]
+
+
+def _wrap_consume_queue(root, n_consumed: int) -> None:
+    """읽은 줄 `n_consumed` 개를 아카이브로 옮기고 큐 앞에서 덜어낸다.
+
+    **호출 시점이 계약이다** — HTML 을 성공적으로 쓴 **뒤**에만 부른다. 먼저
+    비우면 렌더가 실패한 날 그날 알림이 통째로 증발한다.
+
+    읽은 개수만큼만(앞에서부터) 덜어낸다: 읽은 뒤 이 순간까지 크론이 새로
+    append 했을 수 있고, 파일을 통째로 비우면 그 줄들을 읽지도 않고 잃는다.
+
+    락은 게이트(`_notify_enqueue`)와 같은 `flock` 을 같은 파일에 건다. 새
+    inode 로 교체(tmp-replace)하지 **않는다** — 교체하면 락을 기다리던 appender
+    가 사라질 옛 inode 에 쓰게 된다. 같은 inode 를 제자리에서 다시 쓴다.
+
+    실패는 전부 삼킨다: 큐 정리 실패가 이미 만들어진 리포트를 되돌리지 않는다
+    (최악의 경우 다음 리포트에 같은 줄이 한 번 더 나올 뿐이다).
+    """
+    if n_consumed <= 0:
+        return
+    queue = root.joinpath(*NOTIFY_QUEUE_PATH)
+    archive = root.joinpath(*NOTIFY_ARCHIVE_PATH)
+    try:
+        import fcntl
+
+        with queue.open("r+", encoding="utf-8", errors="replace") as f:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                pass  # 락을 못 걸어도 진행 — 개인 서버의 크론은 초 단위로 겹치지 않는다
+            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+            # `n_consumed` 는 **유효 줄** 개수다 — 그 N번째 유효 줄까지 자른다
+            # (사이에 낀 깨진 줄도 같이 아카이브로 간다).
+            cut, seen = len(lines), 0
+            for i, ln in enumerate(lines):
+                if _wrap_queue_parse(ln) is not None:
+                    seen += 1
+                    if seen == n_consumed:
+                        cut = i + 1
+                        break
+            moved, rest = lines[:cut], lines[cut:]
+            if moved:
+                archive.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open("a", encoding="utf-8") as a:
+                    a.write("\n".join(moved) + "\n")
+            f.seek(0)
+            f.write("\n".join(rest) + ("\n" if rest else ""))
+            f.truncate()
+    except (OSError, ImportError) as e:
+        logger.warning("알림 큐 정리 실패(리포트는 이미 발행됨): %s: %s", type(e).__name__, e)
+
+
+def _wrap_commits(root, on) -> list[str] | None:
+    """4절 재료 — 그날 커밋 제목 줄(최대 10). git 을 못 읽으면 `None`(절 생략).
+
+    빈 리스트("오늘 배포 없음")와 `None`("모른다")을 구분한다."""
+    import shutil
+    import subprocess
+    from datetime import timedelta
+
+    if not shutil.which("git") or not (root / ".git").exists():
+        return None
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(root), "log", "--no-merges", "--format=%s",
+             f"--since={on.isoformat()} 00:00",
+             f"--until={(on + timedelta(days=1)).isoformat()} 00:00"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()][:10]
+
+
+def cmd_daily_wrap(args: argparse.Namespace) -> None:
+    """장 마감 하루 요약 HTML 한 장 — 실적/지분/문제/변경 (2026-08-28 소유자 지시).
+
+    이 명령은 **읽기만** 한다: 거래 원장·자본 곡선·포트폴리오·종목명 캐시·ops
+    로그·git. 시세 조회도 LLM 도 없다 — 마감 후 파일 하나를 만드는 일이
+    네트워크에 의존하면 네트워크가 나쁜 날 하루가 통째로 기록되지 않는다.
+
+    출력: `out/YYYY/MM/DD/{market}_wrap.html` 경로를 첫 줄에, 텔레그램 캡션을
+    `CAPTION:` 접두로 둘째 줄에 찍는다(ai_trader.sh 의 `AI_WATCH:` 와 같은 관례)."""
+    import json as _json
+    from datetime import date as _date
+    from zoneinfo import ZoneInfo
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.apps.assembly import _load_symbol_names
+    from quant.control import daily_wrap as DW
+    from quant.control.ledger import (
+        load_trades, round_trips, session_pnl_summary, session_window, trades_in_session,
+    )
+    from quant.core.models import market_of_symbol
+
+    market = args.market
+    tz = ZoneInfo("Asia/Seoul") if market == "KR" else ZoneInfo("America/New_York")
+    on = _date.fromisoformat(args.date) if args.date else datetime.now(tz).date()
+    root = REPO_ROOT
+
+    trades = load_trades(root / "data" / "state" / "trades.jsonl")
+    pnl = session_pnl_summary(trades, market, on)
+    session_trades = trades_in_session(trades, market, on)
+    start, end = session_window(market, on)
+    trips = DW.trips_closed_between(round_trips(trades), start, end)
+
+    try:
+        portfolio = _json.loads(
+            (root / "data" / "state" / "portfolio.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        portfolio = {}
+    # 이 리포트는 시장 하나를 다룬다 — 다른 시장 보유를 섞으면 통화가 섞인다.
+    positions = {
+        sym: p for sym, p in (portfolio.get("positions") or {}).items()
+        if market_of_symbol(sym) == market
+    }
+
+    # `--date` 백필은 큐를 소비하지 않는다 — 과거를 다시 그리는 실행이 오늘
+    # 몫을 삼키면 그날 알림이 소유자에게 닿지 않는다.
+    consume_queue = args.date is None
+    deferred = _wrap_deferred(root, on, consume=consume_queue)
+
+    sections = DW.build_sections(
+        market=market, on=on, pnl=pnl, trips=trips,
+        equity_points=_wrap_equity_points(
+            root / "data" / "ledger" / "equity_curve.jsonl", market, on),
+        positions=positions, session_trades=session_trades,
+        names=_load_symbol_names(root / "data" / "state" / "symbol_names.json"),
+        issues=_wrap_issues(root, on), commits=_wrap_commits(root, on),
+        deferred=deferred,
+    )
+
+    out_path = (root / "out" / f"{on.year:04d}" / f"{on.month:02d}" / f"{on.day:02d}"
+                / f"{market}_wrap.html")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(DW.render_html(sections), encoding="utf-8")
+
+    # 큐 비우기는 **파일을 쓴 뒤**다 — 순서가 곧 계약이다(_wrap_consume_queue).
+    if consume_queue:
+        _wrap_consume_queue(root, len(deferred))
+
+    print(out_path)
+    print(f"CAPTION: {DW.caption_line(sections)}")
+
+
 def cmd_weekly_review(args: argparse.Namespace) -> None:
     """주간 재검토 세션(2026-08-26 소유자 지시) — 토요일 아침, 양시장 마감 후.
 
@@ -3639,6 +3919,14 @@ def main() -> None:
 
     p_perf = sub.add_parser("performance", help="자본 곡선 성과 — CAGR/변동성/샤프(rf=0)/MDD (gs-quant econometrics 상당)")
     p_perf.set_defaults(func=cmd_performance)
+
+    p_wrap = sub.add_parser(
+        "daily-wrap",
+        help="장 마감 하루 요약 HTML 한 장 (실적·지분 변경·문제와 조치·배포된 커밋) — 경로를 stdout 에 낸다",
+    )
+    p_wrap.add_argument("--market", required=True, choices=["KR", "US"], help="KR 또는 US")
+    p_wrap.add_argument("--date", default=None, help="YYYY-MM-DD (기본: 그 시장 기준 오늘)")
+    p_wrap.set_defaults(func=cmd_daily_wrap)
 
     p_weekly = sub.add_parser("weekly-review", help="주간 재검토 — 전략별 성적·손해 패턴·주간 장 흐름·점수 적중률 (토 06:25)")
     p_weekly.set_defaults(func=cmd_weekly_review)
