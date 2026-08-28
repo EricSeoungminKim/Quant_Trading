@@ -91,41 +91,52 @@ def test_custom_gate_limit_is_honored():
 
 
 def test_production_settings_yaml_passes_the_gate_as_intended():
-    """실제 설정 파일 회귀 가드 — 2026-08-25 전략 4종 체제(소유자 지시) 기준.
+    """실제 설정 파일 회귀 가드 — 2026-08-29 전략 11종 체제(소유자 결정) 기준.
 
-    활성 4종: ①news_momentum(뉴스·미국섹터 개장 단타) ②scalp_1m(1분봉 스캘핑)
-    ③close_bet(종가배팅, 신규) ④frgn_accumulate(외국인 추세, 유일한 장기).
-    나머지 7종은 비활성(코드·원장 보존) — 이전 배분표 단언은 그 체제와 함께
-    내려갔다(git 히스토리 2026-08-18 판 참고).
+    2026-08-29 새벽 소유자: "대회인데 더 다양한 전략들을 웹서치로 근거를 찾고
+    다 시도해보자 … 다 긁어서 병렬로 돌려야 의미가 있지" — 4종(8-25) → 7종(8-28)
+    → 11종. 시행 횟수 재신고는 tests/test_strategy_registry_new_branches.py 와
+    settings.yaml 주석(`--trials 8`)에 있다.
 
-    검산 두 개:
-    - 활성 declared 합계가 시장별로 정확히 1.00 (설계표가 100%로 맞아떨어지는가)
-    - 캡 적용 후(런타임) 합계가 1.00 이하 (over-allocation 금지 — 진짜 안전 invariant)
+    배분표 설계(균등 대회 체제): 전 레인 burn_in 이라 캡 0.2 가 먼저 걸리고,
+    캡 합이 1.0 을 넘는 시장은 **비례 축소가 전 레인을 균등하게 눌러** 결과적으로
+    시장별 활성 레인이 같은 자본으로 출발한다 — 소유자의 대회 원칙("같은 자본으로
+    리셋해서 병렬로") 그 자체다. KR 6레인 → 각 1/6, US 8레인 → 각 0.125.
+    declared(1.0 등)는 승격 시 도달할 목표 선언이라는 기존 관례 그대로다.
 
-    전부 burn_in 이므로 캡 0.2가 실효 상한이다: KR 0.2+0.2+0.2+0.2=0.8,
-    US 는 scalp_1m 만(0.2). declared 를 캡보다 크게 두는 이유는 frgn(0.3)·
-    scalp US(1.0)가 승격 시 도달할 목표 선언이기 때문 — 승격 전까지 안전 캡이
-    우선한다(이 저장소 기존 관례).
+    검산 두 개(안전 invariant):
+    - 캡·축소 적용 후(런타임) 시장별 합계가 정확히 1.00 — 초과 배분(의도치 않은
+      레버리지) 금지이자, 대회 중 노는 자본도 없어야 한다.
+    - 시장별 활성 레인의 런타임 배분이 전부 같다 — 균등이 깨지면 대회 성적
+      비교의 전제가 깨진다.
     """
     import yaml
 
     cfg = yaml.safe_load(open("config/settings.yaml", encoding="utf-8"))
-    active = ("news_momentum", "scalp_1m", "close_bet", "frgn_accumulate")
-
-    for market in ("KR", "US"):
-        declared = sum(cfg["strategies"][sid]["capital_fraction"][market] for sid in active)
-        assert abs(declared - 1.0) < 1e-9, f"{market} 활성 declared 합계 {declared} != 1.00"
-
     fractions = validated_capital_fractions(cfg)
-    assert fractions["news_momentum"] == {"KR": 0.2, "US": 0.0}
-    assert fractions["close_bet"] == {"KR": 0.2, "US": 0.0}
-    # declared 0.3/1.0 이 burn_in 캡 0.2 에 눌린다 — 승격 전 안전 캡 우선.
-    assert fractions["frgn_accumulate"] == {"KR": 0.2, "US": 0.0}
-    assert fractions["scalp_1m"] == {"KR": 0.2, "US": 0.2}
 
-    for market in ("KR", "US"):
+    kr_lanes = ("news_momentum", "close_bet", "frgn_accumulate",
+                "scalp_1m", "vol_breakout", "rsi2_dip")
+    us_lanes = ("scalp_1m", "pullback_impulse", "mr_vwap_quiet", "overnight_drift",
+                "vol_breakout", "intraday_momentum", "gap_fade", "rsi2_dip")
+
+    for sid in kr_lanes:
+        assert abs(fractions[sid]["KR"] - 1.0 / 6) < 1e-9, (
+            f"KR {sid} 런타임 {fractions[sid]['KR']} != 1/6 — 균등 대회 전제가 깨졌다"
+        )
+    for sid in us_lanes:
+        assert abs(fractions[sid]["US"] - 0.125) < 1e-9, (
+            f"US {sid} 런타임 {fractions[sid]['US']} != 0.125 — 균등 대회 전제가 깨졌다"
+        )
+
+    active = [sid for sid, c in cfg["strategies"].items() if c.get("enabled", True)]
+    for market, lanes in (("KR", kr_lanes), ("US", us_lanes)):
         runtime = sum(fractions[sid][market] for sid in active)
-        assert runtime <= 1.0 + 1e-9, f"{market} 런타임 합계 {runtime} > 1.00 — over-allocation"
+        assert abs(runtime - 1.0) < 1e-9, f"{market} 런타임 합계 {runtime} != 1.00"
+        # 시장에 자본을 받는 활성 레인 집합이 위 명단과 정확히 일치해야 한다 —
+        # 새 레인이 0 선언으로 조용히 빠지거나, 명단 밖 레인이 자본을 받으면 잡는다.
+        nonzero = {sid for sid in active if fractions[sid][market] > 0}
+        assert nonzero == set(lanes), f"{market} 자본 레인 불일치: {sorted(nonzero)}"
 
 def test_market_dict_declaration_is_used_as_is_when_verified():
     cfg = _cfg({

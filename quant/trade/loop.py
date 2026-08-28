@@ -79,6 +79,19 @@ _STRATEGY_LABELS = {
     "orb_scan": "개장 5분 돌파",
     "intraday_scan": "장중 신고가 돌파",
     "orb": "개장 범위 돌파(논문판)",
+    "news_momentum": "뉴스 개장 단타",
+    "scalp_1m": "1분봉 스캘핑",
+    "close_bet": "종가배팅",
+    "frgn_accumulate": "외국인 추세 추종",
+    "pullback_impulse": "눌림목 임펄스",
+    "mr_vwap_quiet": "저거래 VWAP 회귀",
+    "overnight_drift": "오버나이트 드리프트",
+    # 대회 확장 2차(2026-08-29) — 소유자 "이름 항상 등록" 원칙은 종목만이 아니라
+    # 전략 표시명도 같다: id 원문만 보이면 초보 유저가 판단할 수 없다.
+    "vol_breakout": "변동성 돌파",
+    "intraday_momentum": "일중 모멘텀(양방향)",
+    "gap_fade": "갭하락 되돌림",
+    "rsi2_dip": "RSI2 눌림 매수",
 }
 
 
@@ -1036,6 +1049,9 @@ _OVERNIGHT_STRATEGIES = frozenset({
     # overnight_drift(2026-08-28): 종가 매수 → 익일 시가 매도가 전략 정의 자체다.
     # 누락하면 EoD 강제청산이 진입 당일 포지션을 털어 전략이 무효화된다.
     "overnight_drift",
+    # rsi2_dip(2026-08-29): 마감 직전 매수 → 며칠 보유(RSI 회복/시간/하드레일
+    # 청산)가 전략 정의다. overnight_drift 와 같은 이유로 누락 시 무효화된다.
+    "rsi2_dip",
 })
 
 

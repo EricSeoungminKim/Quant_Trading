@@ -636,9 +636,12 @@ strategies:
   # 찾자." capital_mode: per_strategy 라 각자 독립 1,000만원으로 같은 조건에서
   # 출발한다 — 성적 비교의 전제.
   #
-  # **이건 N번의 시행이다.** 전략 3개를 나란히 돌리면 하나는 우연히 좋아 보인다
-  # (490 관측일·100 시행이면 엣지 0 이어도 최고가 연율 샤프 1.81 — quant/backtest/
-  # statistics.py). 성적을 볼 때 `strategy-report --trials 3` 으로 신고해서
+  # **이건 N번의 시행이다.** 전략 여러 개를 나란히 돌리면 하나는 우연히 좋아
+  # 보인다(490 관측일·100 시행이면 엣지 0 이어도 최고가 연율 샤프 1.81 —
+  # quant/backtest/statistics.py). 2026-08-29 대회 확장으로 병렬 레인이 8개다
+  # (scalp_1m·pullback_impulse·mr_vwap_quiet·overnight_drift + vol_breakout·
+  # intraday_momentum·gap_fade·rsi2_dip). 성적을 볼 때 `strategy-report
+  # --trials 8` 로 신고해서
   # Deflated Sharpe 보정을 받아야 한다. 안 하면 "얻어걸린 것"과 "찾아낸 것"을
   # 구분하지 못한다.
   #
@@ -692,6 +695,106 @@ strategies:
       target_min_bp: 60
       timeout_minutes: 75
       max_entries_per_session: 1
+      target_weight: 0.5
+  # ── 대회 확장 2차 (2026-08-29 소유자 지시) ──────────────────────────────
+  # "대회인데 더 다양한 전략을 웹 근거로 다 긁어서 병렬로 — 하락장 전략,
+  # 상승장 전략 등을 단타 기준으로." 아래 4개 전부 순수 계약 신규이고 백테스트
+  # 표본 0(burn_in) — 문헌 근거와 그 **한계·혼재**는 각 모듈 docstring 에 있다.
+  vol_breakout:
+    class: vol_breakout
+    # Larry Williams 변동성 돌파 — 시가 + k×전일범위 상향 돌파를 추종, 목표 없이
+    # 마감 청산. 상승 확장 국면 레인. KR 은 ETF 만(왕복 ~4bp 실측 — 유일한
+    # 엣지>비용 venue), US 는 TQQQ.
+    enabled: true
+    # 122630(KODEX레버리지)은 첫날 제외(2026-08-29 검수): universe.kr 주석이
+    # "데이터 검증 전 비활성"으로 못 박은 심볼이고, 레버리지 배수 조회(stock_info
+    # leverageFactor)가 실패하면 헤어컷 없이 비레버리지 취급되어 리스크 예산이
+    # 조용히 2배가 된다(assembly.py 부팅 조회 1회 의존). EC2 부팅 로그에서
+    # "레버리지 확인: 122630" 이 실제로 잡히는 것을 본 뒤에 추가한다.
+    symbols: ["069500", "TQQQ"] # KODEX200 / US 3x
+    capital_fraction:
+      KR: 1.0 # ETF 전용 — 거래세 면제 + KODEX200 스프레드 0.5bp 실측(2026-08-28)
+      US: 1.0
+    validation:
+      status: burn_in # 문헌 인용(원 공식) — 우리 원장 실측 0
+    params:
+      k: 0.5
+      min_stop_bp: 40
+      eod_exit_min: 5
+      target_weight: 0.5
+  intraday_momentum:
+    class: intraday_momentum
+    # SSRN 4824172(Zarattini·Aziz·Barbon 2024) — 시각대별 노이즈 밴드 이탈 방향
+    # 추종, SPY 2007~2024 비용 차감 후 Sharpe 1.33. 롱온리 계좌라 하방 신호는
+    # SQQQ(인버스) **매수**로 표현한다 — **하락장 레인**이 이 블록이다.
+    enabled: true
+    symbols: [] # 심볼은 params 의 signal/long/short 3개로 내부 구성(전략이 무시)
+    capital_fraction:
+      KR: 0.0
+      US: 1.0
+    validation:
+      status: burn_in
+    params:
+      signal_symbol: "QQQ"
+      long_symbol: "TQQQ"
+      short_symbol: "SQQQ"
+      lookback_days: 14
+      # 5 → 3 (배선 시 하향, 2026-08-29): Toss 5분봉 히스토리가 ~4거래일
+      # 롤링이라(docs/data-availability.md 실측) 기본 5 로는 **영구히 0건**이
+      # 된다 — 배선 검수에서 잡은 "겉으론 돌지만 조용히 죽는" 부류. 3일 σ 는
+      # 논문(14일)보다 얕아 밴드 품질이 낮다는 것을 알고 켠다 — 히스토리가
+      # 쌓이면 lookback_days=14 로 자연 수렴한다.
+      min_lookback_days: 3
+      band_mult: 1.0
+      stop_pct: 1.5
+      min_stop_bp: 40
+      max_same_direction_entries_per_day: 2
+      flatten_before_close_minutes: 5
+      target_weight: 0.5
+  gap_fade:
+    class: gap_fade
+    # 갭하락 되돌림 — 야간-주간 반전 문헌(Della Corte·Kosowski, Akbas 2022) 기반.
+    # 단 선물(MNQ) 반증 연구가 있어 **근거 혼재**(모듈 docstring 정직 고지) —
+    # 8개 레인 중 가장 약한 근거라는 것을 알고 소액으로 출전시킨다.
+    enabled: true
+    universe: watchlist
+    symbols: []
+    capital_fraction:
+      KR: 0.0 # KR 개별주 왕복 30bp — 갭 절반 메움 목표와 산수가 빠듯해 US 먼저
+      US: 1.0
+    validation:
+      status: burn_in
+    params:
+      gap_min_bp: 100
+      gap_max_bp: 400
+      entry_window_min: 30
+      fill_ratio: 0.5
+      atr_buffer_mult: 0.3
+      atr_period: 14
+      min_stop_bp: 40
+      max_hold_min: 120
+      flatten_before_close_minutes: 5
+      target_weight: 0.5
+  rsi2_dip:
+    class: rsi2_dip
+    # Connors RSI(2) 눌림 매수 — 지수 ETF 과매도(RSI2<10)에 마감 직전 사서 회복
+    # (RSI2>60)에 판다. 문헌 승률 75~79%. **오버나이트 보유형**(loop.py
+    # _OVERNIGHT_STRATEGIES 등재 — EoD 강제청산 제외). 원전은 손절이 없지만
+    # 실계좌 레일로 하드 손절 5% 를 추가했다(모듈 docstring).
+    enabled: true
+    symbols: ["069500", "QQQ"] # KR ETF 4bp venue + US 지수 — 레버리지 제외(갭 리스크)
+    capital_fraction:
+      KR: 1.0
+      US: 1.0
+    validation:
+      status: burn_in
+    params:
+      entry_rsi: 10
+      exit_rsi: 60
+      entry_before_close_minutes: 10
+      trend_sma_days: 200
+      max_hold_days: 5
+      hard_stop_pct: 5.0
       target_weight: 0.5
   scalp_1m:
     class: scalp_1m
@@ -957,6 +1060,11 @@ kiwoom:
     enabled: true
     stale_seconds: 30 # 최신 틱이 이보다 오래되면 웹소켓이 죽은 걸로 보고 toss로 폴백
     startup_timeout_seconds: 10 # 기동 시 이 시간 안에 연결이 안정되지 않으면 라우트 없이 진행
+    # 세력 신호 수집(0w 프로그램매매·0F 거래원·FID 27/28 최우선호가 →
+    # data/ledger/smart_flow.jsonl 원문 적재). 2026-08-29 KR 개장부터 켠다 —
+    # 소유자 지시 "세력 들어가는 곳 빨리 탐지"의 1단계(하루 실프레임으로 FID
+    # 형식 확정 → 선행 신호 실측 → 전략화). 수집 전용이라 매매 판단에 미개입.
+    smart_flow_enabled: true
 
 notifications:
   telegram:

@@ -17,6 +17,10 @@ from quant.trade.strategy.orb_scan import OrbScanStrategy
 from quant.trade.strategy.mr_vwap_quiet import MrVwapQuietShell
 from quant.trade.strategy.pullback_impulse import PullbackImpulseShell
 from quant.trade.strategy.scalp_1m import Scalp1mPureShell, Scalp1mStrategy
+from quant.trade.strategy.vol_breakout import VolBreakoutShell
+from quant.trade.strategy.intraday_momentum import IntradayMomentumShell
+from quant.trade.strategy.gap_fade import GapFadeShell
+from quant.trade.strategy.rsi2_dip import Rsi2DipShell
 
 STRATEGY_REGISTRY = {
     "donchian": DonchianStrategy,
@@ -65,6 +69,15 @@ STRATEGY_REGISTRY = {
     # 1회로 비용 대비 최우위. 동시에 **일중 전략들의 벤치마크** — 이걸 못
     # 이기면 일중 매매를 할 이유가 없다. US ETF 전용 의도.
     "overnight_drift": OvernightDriftShell,
+    # 대회 확장 2차(2026-08-29 소유자 지시 "다양한 전략을 웹 근거로 긁어 병렬로").
+    # 전부 순수 계약 신규 — 레거시 쌍둥이 없음, 이름에 _pure 안 붙인다.
+    # 문헌 근거는 각 모듈 docstring 에 출처와 **혼재/한계까지** 명시돼 있다.
+    # 넷 다 백테스트 표본 0 — paper 번인이 유일한 검증 경로이고, 시행 수가
+    # 늘었으므로 성적 판독은 `strategy-report --trials` 신고가 전제다.
+    "vol_breakout": VolBreakoutShell,       # Larry Williams 변동성 돌파(상승 확장)
+    "intraday_momentum": IntradayMomentumShell,  # SSRN 4824172 — 하방은 인버스 ETF 매수로 표현(하락장 레인)
+    "gap_fade": GapFadeShell,               # 갭하락 되돌림(근거 혼재 — 소액 출전)
+    "rsi2_dip": Rsi2DipShell,               # Connors RSI(2) 눌림 — 오버나이트 보유형
 }
 
 

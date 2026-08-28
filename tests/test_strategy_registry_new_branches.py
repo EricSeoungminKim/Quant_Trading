@@ -82,7 +82,15 @@ def test_enabled_in_real_config_now_that_tag_wiring_is_done():
     # 강제하는 이유이기도 하다.
     # 2026-08-28 저녁: overnight_drift 추가(소유자 위임 "알아서 수익률 높게" —
     # 문헌·비용 근거 최우위 + 일중 전략들의 벤치마크 역할). 7종 체제.
+    # 2026-08-29 새벽: **소유자 결정으로 11종 체제** — "대회인데 더 다양한 전략들을
+    # 웹서치로 근거를 찾고 다 시도해보자. 하락장 전략, 상승장 전략 등을 단타
+    # 기준으로 다 긁어서 병렬로 돌려야 의미가 있지". 추가 4종은 전부 외부 문헌
+    # 근거(각 모듈 docstring 에 출처·한계 명시): vol_breakout(Larry Williams),
+    # intraday_momentum(SSRN 4824172 — 하락장 레인, 인버스 ETF 매수로 표현),
+    # gap_fade(야간-주간 반전 문헌, 근거 혼재 고지), rsi2_dip(Connors, 오버나이트).
+    # 시행 횟수 재신고: 스캘핑/단기 레인 8개 → `strategy-report --trials 8`.
     assert ids == {
         "news_momentum", "scalp_1m", "close_bet", "frgn_accumulate",
         "pullback_impulse", "mr_vwap_quiet", "overnight_drift",
+        "vol_breakout", "intraday_momentum", "gap_fade", "rsi2_dip",
     }, "활성 전략 목록이 바뀌었다 — 늘리려면 소유자 결정 + 시행 횟수 재신고"
