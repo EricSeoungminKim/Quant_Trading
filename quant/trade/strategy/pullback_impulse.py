@@ -186,6 +186,9 @@ class PullbackImpulsePureStrategy:
         self.ema_period: int = int(params.get("ema_period", 9))
         # 6) 손절 버퍼 — 되돌림 저점 아래 ATR 배수.
         self.atr_buffer_mult: float = float(params.get("atr_buffer_mult", 0.3))
+        # 최소 손절폭(bp). 기본 40 = 왕복 비용(US 20bp)의 2배 — 손절폭이 비용과
+        # 같은 자릿수면 진입 자체가 마이너스섬이다(2026-08-29 NOW 실사고 주석 참고).
+        self.min_stop_bp: float = float(params.get("min_stop_bp", 40.0))
         self.atr_period: int = int(params.get("atr_period", 14))
         # 7) 목표 — 임펄스 폭 배수.
         self.target_mult: float = float(params.get("target_mult", 1.2))
@@ -209,6 +212,8 @@ class PullbackImpulsePureStrategy:
             raise ValueError("ema_period는 2 이상이어야 합니다.")
         if self.atr_buffer_mult < 0:
             raise ValueError("atr_buffer_mult는 0 이상이어야 합니다.")
+        if self.min_stop_bp < 0:
+            raise ValueError("min_stop_bp는 0(비활성) 이상이어야 합니다.")
         if self.atr_period < 2:
             raise ValueError("atr_period는 2 이상이어야 합니다.")
         if self.target_mult <= 0:
@@ -369,6 +374,19 @@ class PullbackImpulsePureStrategy:
         stop = pullback_low - self.atr_buffer_mult * atr_abs
         if stop >= entry:
             last_reject[symbol] = "손절가 계산 불가(진입가 이상)"
+            return None
+        # **최소 손절폭 게이트**(2026-08-29 실전 첫날 결함 수리): EMA9 터치의
+        # 얕은 되돌림에서는 되돌림 저점이 현재가 바로 아래라 손절폭이 사실상
+        # 0이 된다 — NOW 실사고: 진입 142.80 / 손절 142.75(**3.5bp**), 17초 만에
+        # 손절. 왕복 비용 20bp+ 에 손절폭 3.5bp 는 진입 순간 지는 구조다.
+        # 손절폭이 이 문턱에 못 미치는 자리는 "손절선을 정할 수 없는 자리"와
+        # 같다 — 진입하지 않는다(structure.py 손절 철학).
+        stop_bp = (entry - stop) / entry * 1e4
+        if stop_bp < self.min_stop_bp:
+            last_reject[symbol] = (
+                f"손절폭 {stop_bp:.0f}bp < 최소 {self.min_stop_bp:g}bp — "
+                "되돌림 저점이 너무 가깝다(노이즈 안)"
+            )
             return None
         target = entry + setup["width"] * self.target_mult
 
