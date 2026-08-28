@@ -14,6 +14,7 @@ run.py에 흩뿌리지 않고 이 모듈에 모아 테스트 가능하게 만든
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from pathlib import Path
@@ -55,6 +56,38 @@ from quant.trade.risk.manager import RiskManagerImpl
 from quant.trade.strategy import build_strategies
 
 logger = logging.getLogger(__name__)
+
+
+# 표시명 영속 캐시 — 텔레그램·리포트 가독성 전용(거래 판단에 쓰이지 않는다).
+# 2026-08-28: 소유자가 "리포트에 한국 주식이 번호만 보인다"고 지적했다. 원인은
+# 이름 조회 대상이 현재 유니버스뿐이라 **유니버스에서 빠진 보유 종목**(예:
+# 042700·000500 — 외국인 적립 전략이 계속 들고 있는데 워치리스트에서는 빠졌다)이
+# 조회조차 안 된 것이었다. 한 번 알게 된 이름을 잃지 않으면 이 부류가 사라진다.
+_SYMBOL_NAME_CACHE_PATH = Path("data/state/symbol_names.json")
+
+
+def _load_symbol_names(path: Path | None = None) -> dict[str, str]:
+    """캐시를 읽는다. 없거나 깨졌으면 빈 dict — 이름표가 없다고 기동을 막지 않는다."""
+    p = path or _SYMBOL_NAME_CACHE_PATH
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if k and v}
+
+
+def _save_symbol_names(names: dict[str, str], path: Path | None = None) -> None:
+    """원자적 tmp-replace. 쓰기 실패는 경고만 — 이름표 저장 실패가 거래를 막으면 안 된다."""
+    p = path or _SYMBOL_NAME_CACHE_PATH
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(names, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+        tmp.replace(p)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("종목명 캐시 저장 실패(거래는 계속): %s", e)
 
 
 class MissingCredentials(RuntimeError):
@@ -716,7 +749,12 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
     # 레버리지 금지 게이트가 이 dict를 쓴다. 필드가 없거나 조회 실패한 심볼은
     # dict에서 빠진다 — 1.0(비레버리지)으로 단정하지 않는다(호출부가 "모름"으로
     # 보수적으로 처리한다).
-    name_of: dict[str, str] = {}
+    # 표시명은 **영속 캐시**에서 시작한다(2026-08-28 소유자 지적: "리포트에 한국
+    # 주식이 번호만 보인다"). 원인은 이 조회 대상이 `markets`(현재 유니버스)뿐이라
+    # **유니버스에서 빠진 보유 종목은 조회조차 되지 않는 것**이었다 — 보유는
+    # 남는데 이름만 사라져 사용자가 종목코드를 검색해야 했다. 한 번 알게 된
+    # 이름은 잃지 않는다(캐시는 커지기만 하고, 새 조회가 있으면 덮어쓴다).
+    name_of: dict[str, str] = _load_symbol_names()
     kr_etf: set[str] = set()
     leverage_of: dict[str, float] = {}
     for sym, mkt in markets.items():
@@ -734,8 +772,9 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
                 leverage_of[sym] = abs(float(raw_leverage))
             except (TypeError, ValueError):
                 pass
+    _save_symbol_names(name_of)
     logger.info(
-        "종목명 %d개 확보 · KR ETF(매도 거래세 면제): %s · 레버리지 확인: %s",
+        "종목명 %d개 확보(영속 캐시 포함) · KR ETF(매도 거래세 면제): %s · 레버리지 확인: %s",
         len(name_of), ", ".join(sorted(kr_etf)) or "없음",
         ", ".join(f"{s}={v:g}x" for s, v in sorted(leverage_of.items())) or "없음",
     )
