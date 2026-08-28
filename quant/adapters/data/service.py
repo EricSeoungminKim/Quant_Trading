@@ -16,6 +16,8 @@ Toss는 시세는 있지만 1분봉 히스토리가 며칠뿐이고 웹소켓이
   항상 드러낸다.
 - history()는 클록 기준으로 완성되지 않은 봉을 마지막 방어선으로 한 번 더 걸러낸다
   (소스가 sloppy해도 look-ahead가 새어나가지 않게).
+- quote()/history() 모두 사이클 내 공유 캐시를 갖는다 — 전략이 여러 개 붙어도
+  소스(브로커 API)를 때리는 횟수는 심볼 수에 비례하지, 전략 수에 비례하지 않는다.
 - brokers/를 import하지 않는다 — 소스는 코디네이터가 주입한다.
 """
 from __future__ import annotations
@@ -35,6 +37,12 @@ from quant.core.models import Quote
 logger = logging.getLogger(__name__)
 
 _OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
+
+# 봉 캐시 항목 수 상한. 심볼×interval 단위로만 쌓이므로(같은 조합의 지난 경계는
+# 저장 시 즉시 버린다) 정상 운용에서는 유니버스 크기(수십)를 넘지 않는다. 이 상한은
+# 유니버스가 폭주하거나 예상 못 한 심볼이 밀려들 때를 막는 백스톱이다 — 이 저장소는
+# 1.8GB EC2에서 무인으로 며칠씩 돌기 때문에 "언젠가는 정리되겠지"가 통하지 않는다.
+_DEFAULT_BAR_CACHE_MAX_ENTRIES = 512
 
 
 class Capability(str, Enum):
@@ -96,14 +104,44 @@ def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _interval_minutes(interval: str) -> int:
+    return 24 * 60 if interval == "1d" else int(interval.rstrip("m"))
+
+
 def _filter_completed_bars(df: pd.DataFrame, interval: str, now: datetime) -> pd.DataFrame:
     """봉 마감 시각(open + interval)이 now 이후인 행은 미완성봉으로 간주하고 버린다 —
-    소스가 sloppy하게 미래 봉을 반환해도 여기서 최종적으로 막는다."""
+    소스가 sloppy하게 미래 봉을 반환해도 여기서 최종적으로 막는다.
+
+    불린 마스크 인덱싱은 **항상 새 프레임을 만든다**. 봉 캐시가 같은 프레임을 여러
+    전략에 나눠주는데, 호출자가 지표 컬럼을 붙이는 일이 흔하다 — 이 복사가 캐시
+    원본을 보호한다. 여기를 뷰 반환으로 바꾸면 한 전략의 계산이 다른 전략의
+    입력을 오염시킨다.
+    """
     if df.empty:
         return df
-    minutes = 24 * 60 if interval == "1d" else int(interval.rstrip("m"))
-    bar_close = df.index + pd.Timedelta(minutes=minutes)
+    bar_close = df.index + pd.Timedelta(minutes=_interval_minutes(interval))
     return df[bar_close <= now]
+
+
+def _bar_boundary(now: datetime, interval: str) -> datetime:
+    """now가 속한 봉의 시작 시각(= interval 크기로 내림).
+
+    캐시 유효성 판정에 TTL이 아니라 이 경계를 쓰는 이유: **1분봉은 1분에 한 번만
+    바뀐다.** TTL이면 "2초 전 값"이라는 이유로 같은 분의 동일한 데이터를 다시
+    받아오지만, 경계를 키에 넣으면 같은 분 안의 모든 호출이 정확히 한 번만
+    소스를 때리고, 분이 바뀌는 순간 지체 없이 새 봉을 받는다.
+    """
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    step = _interval_minutes(interval) * 60
+    epoch = int(now.timestamp())
+    return datetime.fromtimestamp(epoch - (epoch % step), tz=timezone.utc)
+
+
+@dataclass
+class _BarCacheEntry:
+    frame: pd.DataFrame  # 정규화만 된 원본(완성봉 필터·tail은 매 호출 새로 적용한다)
+    n: int  # 이 프레임을 받을 때 소스에 요청한 개수
 
 
 class MarketDataService:
@@ -115,7 +153,9 @@ class MarketDataService:
     """
 
     def __init__(self, routes: list[SourceRoute], clock: Clock,
-                 quote_cache_seconds: float = 0.0) -> None:
+                 quote_cache_seconds: float = 0.0,
+                 bar_cache_enabled: bool = True,
+                 bar_cache_max_entries: int = _DEFAULT_BAR_CACHE_MAX_ENTRIES) -> None:
         self._routes = list(routes)
         self._clock = clock
         self._health: dict[str, SourceHealth] = {r.name: SourceHealth(name=r.name) for r in self._routes}
@@ -127,6 +167,13 @@ class MarketDataService:
         # 사이클 내 quote 캐시. 0이면 비활성(기존 동작 그대로).
         self._quote_cache_seconds = float(quote_cache_seconds)
         self._quote_cache: dict[str, tuple[float, Quote | None]] = {}
+        # 봉 캐시. 키 = (symbol, interval, bar_boundary), 값 = _BarCacheEntry.
+        self._bar_cache_enabled = bool(bar_cache_enabled)
+        self._bar_cache_max_entries = int(bar_cache_max_entries)
+        self._bar_cache: dict[tuple[str, str, datetime], _BarCacheEntry] = {}
+        self._bar_cache_hits = 0
+        self._bar_cache_misses = 0
+        self._bar_source_calls = 0
 
     def quote(self, symbol: str) -> Quote | None:
         """한 사이클 안에서 같은 심볼을 여러 번 물어도 소스는 한 번만 친다.
@@ -173,14 +220,80 @@ class MarketDataService:
         return None
 
     def history(self, symbol: str, interval: str, n: int) -> pd.DataFrame:
+        """같은 봉 경계 안에서는 (symbol, interval)당 소스를 정확히 한 번만 친다.
+
+        전략 8개가 같은 20종목의 1분봉을 보는 구성에서 캐시가 없으면 사이클마다
+        160회 브로커 API를 때린다 — Toss MARKET_DATA는 10 TPS라 그 자체로 rate
+        limit이고, 순수 껍질(PureStrategyShell)이 정적 DataNeeds로 매 사이클 전량을
+        다시 요청하기 때문에 전략을 늘릴수록 선형으로 악화된다. 경계 캐시를 끼우면
+        같은 구성이 20회로 떨어진다(전략 수와 무관해진다).
+
+        `bar_cache_enabled=False`면 이 경로는 통째로 비활성이고 동작은 캐시 도입
+        전과 100% 동일하다.
+        """
+        if not self._bar_cache_enabled:
+            return self._finalize_bars(self._history_raw(symbol, interval, n), interval, n)
+
+        key = (symbol, interval, _bar_boundary(self._clock.now(), interval))
+        entry = self._bar_cache.get(key)
+        # 판정 기준은 캐시된 **행 수**가 아니라 그때 요청한 n이다. 소스가 가진
+        # 봉이 요청보다 적을 수 있는데(신규 상장, 얕은 히스토리) 행 수로 판정하면
+        # n=200 요청에 30개를 받아 캐시한 뒤 n=50 요청이 매번 miss가 나 캐시가
+        # 영영 안 먹는다. "이미 그만큼 이상 요청해봤다"가 옳은 기준이다.
+        if entry is not None and n <= entry.n:
+            self._bar_cache_hits += 1
+            return self._finalize_bars(entry.frame, interval, n)
+
+        self._bar_cache_misses += 1
+        frame = self._history_raw(symbol, interval, n)
+        # **실패는 캐시하지 않는다.** 빈 프레임을 캐시하면 그 봉 내내(1분봉이면 1분,
+        # 일봉이면 하루) 모든 전략이 데이터 없이 돌아간다 — 손절 판정이 조용히 멈춘다.
+        if not frame.empty:
+            self._store_bars(key, frame, n)
+        return self._finalize_bars(frame, interval, n)
+
+    def _finalize_bars(self, frame: pd.DataFrame, interval: str, n: int) -> pd.DataFrame:
+        """완성봉 필터와 tail(n)은 **캐시 뒤가 아니라 앞**에서 매번 새로 적용한다.
+        캐시에는 정규화만 된 원본이 들어가므로, 같은 경계 안이라도 look-ahead 방어선은
+        항상 현재 클록 기준으로 다시 계산된다(캐시가 있든 없든 결과가 같아야 한다)."""
+        return _filter_completed_bars(frame, interval, self._clock.now()).tail(n)
+
+    def _store_bars(self, key: tuple[str, str, datetime], frame: pd.DataFrame, n: int) -> None:
+        symbol, interval, boundary = key
+        # 키에 경계가 들어 있으므로 정리하지 않으면 분마다 새 항목이 쌓인다.
+        # 같은 (symbol, interval)의 지난 경계는 다시 쓰이지 않으니 즉시 버린다 —
+        # 이걸로 캐시 크기가 상한이 아니라 유니버스 크기에 묶인다.
+        for stale in [
+            k for k in self._bar_cache
+            if k[0] == symbol and k[1] == interval and k[2] != boundary
+        ]:
+            del self._bar_cache[stale]
+        self._bar_cache[key] = _BarCacheEntry(frame=frame, n=n)
+        # 백스톱: 그래도 상한을 넘으면 가장 오래 전에 들어온 항목부터 버린다
+        # (dict는 삽입 순서를 유지한다).
+        while len(self._bar_cache) > self._bar_cache_max_entries:
+            del self._bar_cache[next(iter(self._bar_cache))]
+
+    def bar_cache_stats(self) -> dict[str, int]:
+        """봉 캐시 계측 스냅샷. `source_calls`는 소스 `history()` 호출 **시도** 횟수다
+        (폴백 시도 포함) — 실제로 브로커 API에 나간 요청 수와 일치해야 관측값으로서
+        의미가 있다."""
+        return {
+            "hits": self._bar_cache_hits,
+            "misses": self._bar_cache_misses,
+            "source_calls": self._bar_source_calls,
+        }
+
+    def _history_raw(self, symbol: str, interval: str, n: int) -> pd.DataFrame:
         # 소스에는 n+1을 요청한다(2026-08-24). 어댑터들은 요청 개수로 잘라
-        # 반환하는데, 아래 완성봉 필터가 형성 중인 마지막 봉을 버리면 소비자는
+        # 반환하는데, _finalize_bars의 완성봉 필터가 형성 중인 마지막 봉을 버리면 소비자는
         # n-1개를 받는다 — cross_momentum(월요일 **장중** 리밸런스)이 일봉
         # 21개를 요구하며 항상 20개를 받아 '랭킹봉부족: 21'로 태어나서 한 번도
         # 랭킹하지 못했다(전 종목, 전 회차). 형성 중일 수 있는 봉은 어느
         # interval이든 마지막 1개뿐이므로 여유분은 +1이면 충분하고, 마지막
         # tail(n)이 초과분을 잘라 장 마감 후에도 결과는 정확히 n개다.
         for route in self._candidates(Capability.BARS, symbol, interval):
+            self._bar_source_calls += 1
             try:
                 result = route.source.history(symbol, interval, n + 1)
             except Exception as e:
@@ -193,9 +306,7 @@ class MarketDataService:
             self._record_success(route.name)
             self._provenance[(symbol, Capability.BARS)] = route.name
             self._last_unserved = False
-            normalized = _normalize_frame(result)
-            completed = _filter_completed_bars(normalized, interval, self._clock.now())
-            return completed.tail(n)
+            return _normalize_frame(result)
         self._last_unserved = True
         return pd.DataFrame(columns=_OHLCV_COLUMNS)
 

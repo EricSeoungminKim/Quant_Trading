@@ -213,7 +213,10 @@ def build_market_data(client, clock, *, interval: str, symbols: list[str],
         logger.warning("과거 데이터 폴백 라우트 비활성 (%s: %s)", type(e).__name__, e)
 
     logger.info("데이터 라우트(우선순위 순): %s", " > ".join(r.name for r in routes))
-    return MarketDataService(routes=routes, clock=clock, quote_cache_seconds=quote_cache_seconds)
+    return MarketDataService(
+        routes=routes, clock=clock, quote_cache_seconds=quote_cache_seconds,
+        bar_cache_enabled=bool((cfg or {}).get("engine", {}).get("bar_cache_enabled", True)),
+    )
 
 
 def _wait_for_connection(feed, timeout: float, poll_interval: float = 0.2, debounce: float = 1.0) -> bool:

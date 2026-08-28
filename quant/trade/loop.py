@@ -60,6 +60,9 @@ _DEFAULT_APPROVAL_EXPIRE_SECONDS = 300
 _DEFAULT_MAX_PRICE_DRIFT_PCT = 0.5
 _DEFAULT_PRUNE_AFTER_SECONDS = 86400
 _CYCLE_LATENCY_HISTORY_SIZE = 20  # 하트비트 "최근 N회 최대" 계산에 쓰는 사이클 지연 이력 길이
+# 봉 캐시 적중률 INFO 로그 주기(초). 캐시가 실제로 먹히는지 운영 로그에서 확인할 수
+# 없으면 "넣었으니 되겠지"가 된다 — 히트율이 떨어지면 곧바로 rate limit으로 돌아온다.
+_BAR_CACHE_LOG_INTERVAL_SEC = 300
 
 DEFAULT_HEARTBEAT_PATH = Path("data/state/heartbeat.json")
 
@@ -1602,6 +1605,7 @@ async def run_paper_loop(
     # 표시명 이름표(코드 → "한화생명") — 텔레그램 메시지 전용, 거래 판단에 안 쓰인다.
     _SYMBOL_NAMES.update(name_of or {})
     cycle_latencies_ms: deque[float] = deque(maxlen=_CYCLE_LATENCY_HISTORY_SIZE)
+    last_bar_cache_log = float("-inf")
     regime_day: str | None = None  # 마지막으로 refresh()한 KST 거래일
     universe_day: str | None = None  # 마지막 유니버스 리로드 경계 버킷(_universe_roll_bucket)
     heartbeat_path = Path(heartbeat_path or DEFAULT_HEARTBEAT_PATH)
@@ -1835,6 +1839,23 @@ async def run_paper_loop(
                         timings.total_ms, slow_cycle_warn_ms, timings.strategy_ms,
                         timings.risk_approve_ms, timings.broker_place_order_ms, timings.sinks_ms,
                     )
+
+        # 봉 캐시 적중률 — 느린 사이클 경고와 같은 자리에서 본다. 사이클이 느려졌을 때
+        # "소스를 몇 번이나 때리고 있나"가 바로 옆에 있어야 원인을 짚을 수 있다.
+        stats_fn = getattr(market_data, "bar_cache_stats", None)
+        if callable(stats_fn) and now_mono - last_bar_cache_log >= _BAR_CACHE_LOG_INTERVAL_SEC:
+            last_bar_cache_log = now_mono
+            try:
+                stats = stats_fn()
+                total = stats["hits"] + stats["misses"]
+                logger.info(
+                    "봉 캐시: 적중 %d / 요청 %d (%.0f%%) · 소스 호출 %d",
+                    stats["hits"], total,
+                    100.0 * stats["hits"] / total if total else 0.0,
+                    stats["source_calls"],
+                )
+            except Exception as e:  # noqa: BLE001 — 계측이 매매를 멈추게 하면 안 된다
+                logger.debug("봉 캐시 통계 조회 실패: %s: %s", type(e).__name__, e)
 
         # 데이터 스테일 가드 — 장중인데 소스가 계속 실패/빈값이면 예외 없이도 알림.
         # 장외 시간엔 카운트하지 않는다(정상적으로 시세가 없는 시간대라 오탐이 된다).
