@@ -1330,28 +1330,48 @@ def test_breakeven_move_raises_stop_to_entry_after_threshold():
     assert "이익보호" in signals[0].reason
 
 
-def test_trailing_stop_follows_high_water_and_protects_profit():
-    """고수위 −70bp 트레일 — 러너를 열어두되 이익의 대부분을 잠근다."""
-    strat = Scalp1mStrategy(["AAA"], _params(trail_bp=70))
+def test_trailing_stop_follows_high_water_after_arming():
+    """고수위 −70bp 트레일 — 단 **이익 구간(+50bp)에 들어간 뒤에만** 작동한다."""
+    strat = Scalp1mStrategy(["AAA"], _params(breakeven_at_bp=50, trail_bp=70))
     pos = _lot_position(entry=100.0, stop=97.0)
     assert strat.on_cycle(_ctx({"AAA": 102.0}, _now_within_window(5.0), positions={"AAA": pos})) == []
-    # 고수위 102.0 → 트레일 스탑 101.286. +120bp 로 되돌림 → 이익보호 청산
+    # 고수위 102.0 → 무장 후 트레일 스탑 101.286. +120bp 로 되돌림 → 이익보호 청산
     signals = strat.on_cycle(_ctx({"AAA": 101.2}, _now_within_window(6.0), positions={"AAA": pos}))
     assert len(signals) == 1
     assert signals[0].action == SignalAction.EXIT_LONG
     assert "이익보호" in signals[0].reason
 
 
-def test_trailing_stop_tightens_initial_risk_below_entry():
-    """트레일은 진입 직후부터 고수위(=진입가) 기준으로 작동한다 — 구조 손절
-    (-300bp)보다 가까운 -70bp 가 유효 스탑이 된다('잃을 땐 적게'). 시뮬도
-    같은 가정으로 쟀다 — 여기서만 동작이 다르면 시뮬 근거가 무효가 된다."""
-    strat = Scalp1mStrategy(["AAA"], _params(trail_bp=70))
+def test_trail_does_not_tighten_initial_stop_before_profit():
+    """**2026-08-28 수리한 계약**: 이익 구간 진입 전에는 트레일이 구조 손절을
+    건드리지 않는다.
+
+    직전 구현은 진입 직후부터 스탑을 `진입가 -trail_bp` 로 조여, 구조 손절이
+    더 넓어도 무력화했다. 실거래 확증(096770): 구조손절 -111bp 가 트레일 때문에
+    -70bp 로 조여져 청산됐고, 원래 손절선이었다면 살아남았다. 원장 실측은 더
+    분명하다 — 손절당한 뒤 **76%(35/46)가 당일 진입가 위로 회복**(회복 폭 중앙
+    +105bp). 진입이 틀린 게 아니라 손절이 노이즈에 걸린 것이다."""
+    strat = Scalp1mStrategy(["AAA"], _params(breakeven_at_bp=50, trail_bp=70))
     pos = _lot_position(entry=100.0, stop=97.0)
+    # -50bp 로 밀려도(트레일이 켜졌다면 -70bp 스탑에 걸렸을 자리) 구조 손절 97.0
+    # 위이므로 계속 보유해야 한다.
     assert strat.on_cycle(_ctx({"AAA": 99.5}, _now_within_window(5.0), positions={"AAA": pos})) == []
-    signals = strat.on_cycle(_ctx({"AAA": 99.2}, _now_within_window(6.0), positions={"AAA": pos}))
-    assert len(signals) == 1
-    assert "손절" in signals[0].reason  # 진입가 아래 이탈은 여전히 손절로 표기
+    assert strat.on_cycle(_ctx({"AAA": 99.2}, _now_within_window(6.0), positions={"AAA": pos})) == []
+    assert pos.meta["lots"]["scalp_1m"]["stop"] == 97.0, "이익 전에는 스탑이 움직이지 않는다"
+    # 구조 손절 아래로 내려가면 그때는 손절
+    signals = strat.on_cycle(_ctx({"AAA": 96.9}, _now_within_window(7.0), positions={"AAA": pos}))
+    assert len(signals) == 1 and "손절" in signals[0].reason
+
+
+def test_trail_stays_armed_after_pullback_below_threshold():
+    """한 번 무장하면 되돌림으로 문턱 아래로 내려가도 풀리지 않는다 — 풀리면
+    본전 보호가 사라져 이익을 반납하게 된다."""
+    strat = Scalp1mStrategy(["AAA"], _params(breakeven_at_bp=50, trail_bp=70))
+    pos = _lot_position(entry=100.0, stop=97.0)
+    assert strat.on_cycle(_ctx({"AAA": 100.6}, _now_within_window(5.0), positions={"AAA": pos})) == []
+    assert pos.meta["lots"]["scalp_1m"]["trail_armed"] is True
+    signals = strat.on_cycle(_ctx({"AAA": 100.0}, _now_within_window(6.0), positions={"AAA": pos}))
+    assert len(signals) == 1 and "이익보호" in signals[0].reason
 
 
 def test_partial_target_survives_stop_raise():

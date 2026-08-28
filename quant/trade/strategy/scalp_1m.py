@@ -993,10 +993,22 @@ class Scalp1mStrategy:
             hi = max(float(lot.get("hi", entry)), price)
             lot["hi"] = hi
             raised = stop
-            if self.breakeven_at_bp and hi >= entry * (1 + self.breakeven_at_bp / 1e4):
-                raised = max(raised, entry)
-            if self.trail_bp:
-                raised = max(raised, hi * (1 - self.trail_bp / 1e4))
+            # **트레일은 이익 구간에 들어간 뒤에만 작동한다**(2026-08-28 수리).
+            # 이전 구현은 진입 직후부터 `hi*(1-trail)` 로 스탑을 올려, 고수위가
+            # 아직 진입가일 때도 손절선을 진입가 -trail_bp 로 **조여버렸다**.
+            # 실거래 확증: 096770 구조손절 117,216(-111bp) → 트레일이 117,571
+            # (-70bp)로 조임 → 117,500 에서 청산. 원래 손절선이었으면 살아남았다.
+            # 원장 실측이 방향을 확정한다: 손절당한 뒤 **76%(35/46)가 당일 진입가
+            # 위로 회복**했고 회복 폭 중앙 +105bp — 진입이 틀린 게 아니라 손절이
+            # 노이즈에 걸린 것이다(소유자 지적과 일치).
+            armed = bool(lot.get("trail_armed")) or (
+                self.breakeven_at_bp and hi >= entry * (1 + self.breakeven_at_bp / 1e4)
+            )
+            if armed:
+                lot["trail_armed"] = True
+                raised = max(raised, entry)          # 본전 확보
+                if self.trail_bp:
+                    raised = max(raised, hi * (1 - self.trail_bp / 1e4))
             if raised > stop:
                 lot["stop"] = stop = raised
         if price <= stop:
@@ -1512,10 +1524,22 @@ class Scalp1mPureStrategy:
             hi = max(float(lot.get("hi", entry)), price)
             lot["hi"] = hi
             raised = stop
-            if self.breakeven_at_bp and hi >= entry * (1 + self.breakeven_at_bp / 1e4):
-                raised = max(raised, entry)
-            if self.trail_bp:
-                raised = max(raised, hi * (1 - self.trail_bp / 1e4))
+            # **트레일은 이익 구간에 들어간 뒤에만 작동한다**(2026-08-28 수리).
+            # 이전 구현은 진입 직후부터 `hi*(1-trail)` 로 스탑을 올려, 고수위가
+            # 아직 진입가일 때도 손절선을 진입가 -trail_bp 로 **조여버렸다**.
+            # 실거래 확증: 096770 구조손절 117,216(-111bp) → 트레일이 117,571
+            # (-70bp)로 조임 → 117,500 에서 청산. 원래 손절선이었으면 살아남았다.
+            # 원장 실측이 방향을 확정한다: 손절당한 뒤 **76%(35/46)가 당일 진입가
+            # 위로 회복**했고 회복 폭 중앙 +105bp — 진입이 틀린 게 아니라 손절이
+            # 노이즈에 걸린 것이다(소유자 지적과 일치).
+            armed = bool(lot.get("trail_armed")) or (
+                self.breakeven_at_bp and hi >= entry * (1 + self.breakeven_at_bp / 1e4)
+            )
+            if armed:
+                lot["trail_armed"] = True
+                raised = max(raised, entry)          # 본전 확보
+                if self.trail_bp:
+                    raised = max(raised, hi * (1 - self.trail_bp / 1e4))
             if raised > stop:
                 lot["stop"] = stop = raised
         if price <= stop:
