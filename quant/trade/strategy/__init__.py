@@ -13,6 +13,8 @@ from quant.trade.strategy.news_momentum import NewsMomentumPureShell, NewsMoment
 from quant.trade.strategy.news_scalp import NewsScalpStrategy
 from quant.trade.strategy.orb import OpeningRangeBreakoutStrategy
 from quant.trade.strategy.orb_scan import OrbScanStrategy
+from quant.trade.strategy.mr_vwap_quiet import MrVwapQuietShell
+from quant.trade.strategy.pullback_impulse import PullbackImpulseShell
 from quant.trade.strategy.scalp_1m import Scalp1mPureShell, Scalp1mStrategy
 
 STRATEGY_REGISTRY = {
@@ -50,6 +52,13 @@ STRATEGY_REGISTRY = {
     "news_momentum_pure": NewsMomentumPureShell,
     "frgn_accumulate_pure": FrgnAccumulatePureShell,
     "close_bet_pure": CloseBetPureShell,
+    # 병렬 스캘핑 실험(2026-08-28 소유자 지시 "스캘핑 전략을 여러 개 병렬로
+    # 돌려 실전에서 살아남는 것을 찾자"). 둘 다 순수 계약 신규 전략이라
+    # 레거시 쌍둥이가 없다 — 이름에 _pure 를 붙이지 않는다.
+    # 근거: 우리 원장 실측(손절 후 76% 회복 → 눌림목 / 고RVOL 역상관 -0.46
+    # → 저거래량 회귀). 둘 다 5분봉 — 1분봉은 왕복 20bp 에서 산수가 안 맞는다.
+    "pullback_impulse": PullbackImpulseShell,
+    "mr_vwap_quiet": MrVwapQuietShell,
 }
 
 

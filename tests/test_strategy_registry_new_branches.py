@@ -70,6 +70,17 @@ def test_enabled_in_real_config_now_that_tag_wiring_is_done():
     assert strat_cfg["close_bet"]["enabled"] is True
     built = build_strategies(settings.raw)
     ids = {s.id for s in built}
-    assert ids == {"news_momentum", "scalp_1m", "close_bet", "frgn_accumulate"}, (
-        "활성 전략은 정확히 4종 체제여야 한다 — 늘리려면 소유자 결정"
-    )
+    # 2026-08-28 **소유자 결정으로 6종 체제**(이 테스트가 요구하던 "늘리려면 소유자
+    # 결정"이 실제로 일어났다): 스캘핑 병렬 실험 — "스캘핑 전략을 여러 개 병렬로
+    # 돌려서, 계속 돌려봤을 때 수익이 나는 전략을 찾자". 추가된 둘은 우리 원장
+    # 실측에서 나온 가설이다 — pullback_impulse(손절 후 76% 회복 → 눌림에서 산다),
+    # mr_vwap_quiet(고RVOL 역상관 -0.46 → 조용한 종목만 노린다).
+    #
+    # **이 집합이 늘면 다중검정 시행 횟수도 는다**: 성적을 볼 때
+    # `strategy-report --trials <활성 스캘핑 수>` 로 신고해 Deflated Sharpe 보정을
+    # 받아야 한다(quant/backtest/statistics.py). 이 테스트가 계속 정확한 수를
+    # 강제하는 이유이기도 하다.
+    assert ids == {
+        "news_momentum", "scalp_1m", "close_bet", "frgn_accumulate",
+        "pullback_impulse", "mr_vwap_quiet",
+    }, "활성 전략 목록이 바뀌었다 — 늘리려면 소유자 결정 + 시행 횟수 재신고"
