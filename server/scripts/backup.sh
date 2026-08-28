@@ -28,11 +28,10 @@ log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
-tg() {
-  if [ "${DRY_RUN:-0}" = "1" ]; then printf '[DRY_RUN][TG]\n%s\n\n' "$1"; return 0; fi
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
-}
+# 알림은 전부 notify_now (역할별 게이트 — server/scripts/lib/notify.sh). 백업이
+# 조용히 실패한 채로 며칠 지나면 복원할 때까지 아무도 모른다 — 그래서 즉시.
+# (성공은 원래 침묵이다. 여기서 나가는 건 전부 실패·경고다.)
+. "$(dirname "$0")/lib/notify.sh"
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 DUMP="$TMP/mysql-${STAMP}.sql.gz"
@@ -63,12 +62,12 @@ if [ -n "$DB" ]; then
       log "MySQL 덤프 $(du -h "$DUMP" | cut -f1)"
     else
       log "MySQL 덤프가 0바이트 — 번들에서 제외"
-      tg "⚠️ 백업: MySQL 덤프가 0바이트다. 아티팩트만 담는다 (재적재로 복구 가능하지만 확인 필요)"
+      notify_now "⚠️ 백업: MySQL 덤프가 0바이트다. 아티팩트만 담는다 (재적재로 복구 가능하지만 확인 필요)"
       rm -f "$DUMP"
     fi
   else
     log "mysqldump 실패 — 번들에서 제외"
-    tg "⚠️ 백업: mysqldump 실패. 아티팩트만 담는다 — data/backup.log 확인"
+    notify_now "⚠️ 백업: mysqldump 실패. 아티팩트만 담는다 — data/backup.log 확인"
     rm -f "$DUMP"
   fi
 else
@@ -87,7 +86,7 @@ if [ "${DRY_RUN:-0}" = "1" ]; then
 fi
 
 if [ "$RC" -ne 0 ]; then
-  tg "🚨 백업 실패 (rc=${RC})
+  notify_now "🚨 백업 실패 (rc=${RC})
 $(printf '%s' "$OUT_JSON" | tail -c 900)
 
 '줄이 줄었다'가 보이면 **원장 소스가 망가진 것**이다 — 그 상태를 백업하면 지난

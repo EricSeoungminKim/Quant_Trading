@@ -13,10 +13,11 @@ set -u
 cd "$(dirname "$0")/../.."
 
 set -a; [ -f .env.local ] && . ./.env.local; set +a
-tg() {
-  curl -s -m 10 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN:-}/sendMessage" \
-    -d "chat_id=${TELEGRAM_CHAT_ID:-}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
-}
+# notify_now (역할별 게이트 — server/scripts/lib/notify.sh). 이 임시 크론은 09:05,
+# 즉 **장중 한복판**에 돈다. 그래도 즉시 보내는 이유: 여기서 보고하는 건 실시간
+# 시세 인증·수신 여부라, 틀렸으면 그날 장 내내 시세가 느린 채로 매매한다.
+# (검증이 끝나면 이 크론 자체가 제거된다 — 파일 상단 절차 참고.)
+. "$(dirname "$0")/lib/notify.sh"
 
 probe() {  # $1=라벨 $2=appkey $3=secret $4=rest_base $5=ws_url
   if [ -z "$2" ] || [ -z "$3" ]; then
@@ -35,7 +36,7 @@ R_MOCK="$(probe "모의 mockapi" "${KIWOOM_MOCK_APP_KEY:-}" "${KIWOOM_MOCK_SECRE
 R_REAL="$(probe "실전 api" "${KIWOOM_APP_KEY:-}" "${KIWOOM_SECRET_KEY:-}" \
   "https://api.kiwoom.com" "wss://api.kiwoom.com:10000/api/dostk/websocket")"
 
-tg "🔌 키움 웹소켓 장중 검증 (005930, 15초씩)
+notify_now "🔌 키움 웹소켓 장중 검증 (005930, 15초씩)
 ${R_MOCK}
 ${R_REAL}
 — last quote에 값이 있으면 성공. 성공한 서버 기준으로 kiwoom.realtime.enabled 켜면 됨."

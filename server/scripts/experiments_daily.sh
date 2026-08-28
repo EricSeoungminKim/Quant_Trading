@@ -25,6 +25,10 @@ STATE="data/state/experiments.state"
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
+# 알림은 notify_defer (역할별 게이트 — server/scripts/lib/notify.sh): 요약·정보성
+# 이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl 에 쌓여
+# 마감 HTML 리포트로만 간다.
+. "$(dirname "$0")/lib/notify.sh"
 
 # TZ 가드 — 이 잡의 시각 판단(오늘 날짜, 변경일 경계)이 전부 KST 전제다.
 if [ "$(date +%z)" != "+0900" ]; then
@@ -38,12 +42,7 @@ RC=$?
 if [ "$RC" -ne 0 ]; then
   # 실패는 알린다 — 판정 루프가 조용히 죽으면 "판정할 게 없다"와 구분되지 않는다.
   # (이 잡 자체의 하트비트는 cli health 의 jobs 목록이 따로 본다.)
-  if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
-    curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-      -d "chat_id=${TG_CHAT}" \
-      --data-urlencode "text=⚠️ 자동 판정 잡 실패 (exit ${RC}) — data/experiments.log 확인" \
-      >/dev/null 2>&1 || true
-  fi
+  notify_defer "experiments_daily" "⚠️ 자동 판정 잡 실패 (exit ${RC}) — data/experiments.log 확인"
   echo "[$(date '+%F %T')] 실패 exit=$RC"
   exit "$RC"
 fi
@@ -65,10 +64,7 @@ if [ -f "$STATE" ] && [ "$(cat "$STATE")" = "$HASH" ] && [ "${FORCE_SEND:-0}" !=
   exit 0
 fi
 
-if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=${OUT}" >/dev/null 2>&1 || true
-fi
+notify_defer "experiments_daily" "${OUT}"
 mkdir -p "$(dirname "$STATE")"
 printf '%s' "$HASH" > "$STATE"
 echo "[$(date '+%F %T')] 알림 전송 (해시 $HASH)"

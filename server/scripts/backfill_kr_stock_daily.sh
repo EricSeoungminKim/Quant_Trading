@@ -59,14 +59,10 @@ log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
-tg() {
-  if [ "${DRY_RUN:-0}" = "1" ]; then
-    printf '[DRY_RUN][TG]\n%s\n\n' "$1"
-    return 0
-  fi
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
-}
+# 알림은 전부 notify_defer (역할별 게이트 — server/scripts/lib/notify.sh):
+# 요약·정보성이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl
+# 에 쌓여 마감 HTML 리포트로만 간다.
+. "$(dirname "$0")/lib/notify.sh"
 
 START="$(date -u -d "${DEPTH_YEARS} years ago" +%Y-%m-%d 2>/dev/null \
          || date -u -v-${DEPTH_YEARS}y +%Y-%m-%d)"   # GNU / BSD 양쪽
@@ -147,7 +143,7 @@ log "KR 개별종목 일봉 백필 종료: 성공 ${OK_COUNT}/${N_SYMBOLS}, 실�
 
 # 정상일 때는 조용하다(다른 백필 크론과 동일 관례) — 실패가 있었을 때만 알린다.
 if [ "$FAIL_COUNT" -gt 0 ]; then
-  tg "🚨 KR 개별종목 일봉 백필 일부 실패 (${FAIL_COUNT}/${N_SYMBOLS}종목)${FAIL_LINES}
+  notify_defer "backfill_kr_stock_daily" "🚨 KR 개별종목 일봉 백필 일부 실패 (${FAIL_COUNT}/${N_SYMBOLS}종목)${FAIL_LINES}
 data/fetch_kr_stock_daily.log 확인"
   exit 1
 fi

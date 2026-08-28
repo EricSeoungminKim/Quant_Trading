@@ -29,17 +29,16 @@ mkdir -p data
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
+# 알림은 notify_defer (역할별 게이트 — server/scripts/lib/notify.sh): 요약·정보성
+# 이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl 에 쌓여
+# 마감 HTML 리포트로만 간다.
+. "$(dirname "$0")/lib/notify.sh"
 
 OUT="$(timeout 120 .venv/bin/python -m quant.apps.cli daily-feedback --market "$MARKET" 2>>"$LOG")"
 RC=$?
 
 if [ "$RC" -ne 0 ]; then
-  if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
-    curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-      -d "chat_id=${TG_CHAT}" \
-      --data-urlencode "text=⚠️ 일일 피드백(${MARKET}) 실패 (exit ${RC}) — ${LOG} 확인" \
-      >/dev/null 2>&1 || true
-  fi
+  notify_defer "daily_feedback" "⚠️ 일일 피드백(${MARKET}) 실패 (exit ${RC}) — ${LOG} 확인"
   echo "[$(date '+%F %T')] 실패 exit=$RC"
   exit "$RC"
 fi
@@ -50,7 +49,4 @@ if [ -z "$OUT" ]; then
 fi
 
 echo "$OUT"
-if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=${OUT:0:3900}" >/dev/null 2>&1 || true
-fi
+notify_defer "daily_feedback" "${OUT:0:3900}"

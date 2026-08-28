@@ -20,16 +20,16 @@ STALE_SECONDS=300                     # 루프 5초 주기 대비 60배 여유 �
 mkdir -p data/state
 
 set -a; [ -f .env.local ] && . ./.env.local; set +a
-tg() {
-  curl -s -m 10 "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN:-}/sendMessage" \
-    -d "chat_id=${TELEGRAM_CHAT_ID:-}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
-}
+# 알림은 전부 notify_now (역할별 게이트 — server/scripts/lib/notify.sh). 엔진이
+# 죽거나 멈춘 것은 "지금 조치 안 하면 손해"의 원형이라 장중에도 즉시 나간다.
+# 회복 알림도 그 장애의 짝이므로 같이 즉시 — 미뤄서 보내면 의미가 없다.
+. "$(dirname "$0")/lib/notify.sh"
 alerted() { [ -f "$STATE" ] && grep -qx "$1" "$STATE"; }
 mark()    { echo "$1" > "$STATE"; }
 clear_mark() {
   if [ -f "$STATE" ]; then
     rm -f "$STATE"
-    tg "✅ 워치독: 엔진 회복 확인"
+    notify_now "✅ 워치독: 엔진 회복 확인" || true   # 발송 실패가 크론 exit 코드를 바꾸지 않게
   fi
 }
 
@@ -37,7 +37,7 @@ clear_mark() {
 if ! systemctl is-active --quiet quant-engine; then
   if ! alerted "engine-down"; then
     mark "engine-down"
-    tg "🚨 워치독: quant-engine 서비스 다운 — systemd 자동복구도 실패한 상태. 수동 확인 필요:
+    notify_now "🚨 워치독: quant-engine 서비스 다운 — systemd 자동복구도 실패한 상태. 수동 확인 필요:
 ssh 후 'journalctl -u quant-engine -n 50' / 'sudo systemctl restart quant-engine'"
   fi
   exit 0
@@ -46,7 +46,7 @@ fi
 if ! systemctl is-active --quiet tg-bridge; then
   if ! alerted "bridge-down"; then
     mark "bridge-down"
-    tg "⚠️ 워치독: tg-bridge 다운 — /watch·/halt 명령 불가 상태 (거래 엔진은 정상)"
+    notify_now "⚠️ 워치독: tg-bridge 다운 — /watch·/halt 명령 불가 상태 (거래 엔진은 정상)"
   fi
   exit 0
 fi
@@ -59,7 +59,7 @@ if [ -f "$HEARTBEAT" ]; then
   if [ "$age" -gt "$STALE_SECONDS" ]; then
     if ! alerted "engine-hung"; then
       mark "engine-hung"
-      tg "🚨 워치독: 엔진 행(hang) 의심 — 하트비트 ${age}초 정체 (임계 ${STALE_SECONDS}초). 자동 재시작 시도."
+      notify_now "🚨 워치독: 엔진 행(hang) 의심 — 하트비트 ${age}초 정체 (임계 ${STALE_SECONDS}초). 자동 재시작 시도."
     fi
     sudo systemctl restart quant-engine
     exit 0
@@ -81,7 +81,7 @@ if journalctl -u quant-engine --since "10 min ago" --no-pager 2>/dev/null \
      | grep -q "$AUTH_MARKER"; then
   if ! alerted "realtime-auth"; then
     mark "realtime-auth"
-    tg "🚨 워치독: 키움 실시간 시세 인증 연속 실패 — 웹소켓 피드가 죽어 있다.
+    notify_now "🚨 워치독: 키움 실시간 시세 인증 연속 실패 — 웹소켓 피드가 죽어 있다.
 거래는 Toss REST 폴백으로 계속되지만 시세가 느려진다(체결 지연/슬리피지 확대).
 토큰 재발급으로도 안 되는 상황이라 자격증명·계정·호스트 확인 필요:
 journalctl -u quant-engine | grep '인증 연속 실패' | tail -5"

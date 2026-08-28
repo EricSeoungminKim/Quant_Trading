@@ -32,10 +32,10 @@ log() { echo "[$(date '+%F %T')] [$MARKET] $*" >> "$LOG"; }
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
-tg() {
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
-}
+# 알림은 전부 notify_auto (역할별 게이트 — server/scripts/lib/notify.sh):
+# 편입·픽은 알아야 하지만 급하지 않다. **장중이면 data/notify_queue.jsonl 로
+# 미뤄져 마감 HTML 리포트로 나가고**, 장외면 지금처럼 즉시 발송된다.
+. "$(dirname "$0")/lib/notify.sh"
 
 # --- 1. 발굴 (결정론적 랭킹 스캔) ---
 FLOW_OUT="$(timeout 120 "$PY" -m quant.apps.cli flow-scan --market "$MARKET" 2>>"$LOG")"
@@ -96,6 +96,6 @@ if [ "$ADD_RC" -ne 0 ]; then
 fi
 log "편입 완료: $SYMS_ONLY"
 
-if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
-  tg "🌊 장중 거래대금 편입(${MARKET}): ${SYMS_ONLY} — 확신도 게이트 통과. 전략들이 시그널 감시를 시작한다."
-fi
+# 토큰 유무 검사는 게이트가 한다 — 여기서 걸러버리면 토큰이 없는 날 큐 적재까지
+# 같이 사라진다(장중 편입은 미뤄서 마감 리포트에 실려야 한다).
+notify_auto "flow_scan" "🌊 장중 거래대금 편입(${MARKET}): ${SYMS_ONLY} — 확신도 게이트 통과. 전략들이 시그널 감시를 시작한다." || true   # 발송 실패가 크론 exit 코드를 바꾸지 않게

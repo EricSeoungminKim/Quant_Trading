@@ -34,15 +34,15 @@ _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 
-tg() {  # 실패해도 스크립트를 죽이지 않는다
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
-}
+# 알림은 전부 notify_auto (역할별 게이트 — server/scripts/lib/notify.sh):
+# 편입·픽은 알아야 하지만 급하지 않다. **장중이면 data/notify_queue.jsonl 로
+# 미뤄져 마감 HTML 리포트로 나가고**, 장외면 지금처럼 즉시 발송된다.
+. "$(dirname "$0")/lib/notify.sh"
 
 # TZ 가드 — 08:57 유니버스 경계·크론 시각 전부 KST 전제다. 호스트가 KST가 아니면
 # "아침 브리핑"이 엉뚱한 시각에 돌고 자동 등록이 조용히 다음날로 밀린다.
 if [ "$(date +%z)" != "+0900" ]; then
-  tg "⚠️ daily_brief: 호스트 TZ가 KST가 아님($(date +%z)) — 브리핑은 진행하되 자동 /watch는 건너뜀"
+  notify_auto "daily_brief" "⚠️ daily_brief: 호스트 TZ가 KST가 아님($(date +%z)) — 브리핑은 진행하되 자동 /watch는 건너뜀"
   TZ_OK=0
 else
   TZ_OK=1
@@ -64,18 +64,18 @@ while [ -z "$REPORT_FILE" ] && [ "$attempt" -le 2 ]; do
 done
 if [ -z "$REPORT_FILE" ]; then
   echo "[$(date '+%F %T')] 리포트 없음 ($DATE_PATH, ${attempt}회 시도)" >> "$LOG"
-  tg "🗞 ${TODAY} 회사 리포트 없음 (${attempt}회 시도) — 오늘 브리핑 건너뜀"
+  notify_auto "daily_brief" "🗞 ${TODAY} 회사 리포트 없음 (${attempt}회 시도) — 오늘 브리핑 건너뜀"
   exit 0
 fi
 
 REPORT_URL="$BASE_URL/$DATE_PATH/$REPORT_FILE"
-tg "🗞 ${TODAY} 리포트 분석 세션 시작 — ${REPORT_FILE}"
+notify_auto "daily_brief" "🗞 ${TODAY} 리포트 분석 세션 시작 — ${REPORT_FILE}"
 echo "[$(date '+%F %T')] 세션 시작: $REPORT_URL" >> "$LOG"
 
 # --- 2. 입력 조립: 스킬 지침 + 시스템 상태 + 리포트 본문 ---
 REPORT_BODY="$(curl -s -m 30 "$REPORT_URL")"
 if [ -z "$REPORT_BODY" ]; then
-  tg "🗞 ${TODAY} 리포트 본문 다운로드 실패 — 브리핑 건너뜀"
+  notify_auto "daily_brief" "🗞 ${TODAY} 리포트 본문 다운로드 실패 — 브리핑 건너뜀"
   exit 0
 fi
 
@@ -99,12 +99,12 @@ BRIEF="$(printf '%s' "$INPUT" | timeout 600 nice -n 10 "$CLAUDE_BIN" -p \
   2>>"$LOG")"
 
 if [ -z "$BRIEF" ]; then
-  tg "🗞 ${TODAY} 분석 세션 실패 (출력 없음) — data/brief.log 확인"
+  notify_auto "daily_brief" "🗞 ${TODAY} 분석 세션 실패 (출력 없음) — data/brief.log 확인"
   exit 0
 fi
 
 # --- 4. 전송 (텔레그램 4096자 제한 — 여유 두고 절단) ---
-tg "${BRIEF:0:3900}"
+notify_auto "daily_brief" "${BRIEF:0:3900}"
 echo "[$(date '+%F %T')] 브리핑 전송 완료 ($(printf '%s' "$BRIEF" | wc -c)자)" >> "$LOG"
 
 # --- 5. AUTO_WATCH → 확신도 엔진 → 통과분만 자동 등록 (2026-08-10 사용자 설계) ---
@@ -118,7 +118,7 @@ echo "[$(date '+%F %T')] 브리핑 전송 완료 ($(printf '%s' "$BRIEF" | wc -c
 AW_COUNT="$(printf '%s\n' "$BRIEF" | grep -cE '^AUTO_WATCH:')"
 AUTO_LINE="$(printf '%s\n' "$BRIEF" | grep -E '^AUTO_WATCH:' | tail -1 | sed 's/^AUTO_WATCH:[[:space:]]*//')"
 echo "[$(date '+%F %T')] AUTO_WATCH ${AW_COUNT}줄: ${AUTO_LINE:-<없음>}" >> "$LOG"
-[ "$AW_COUNT" -ne 1 ] && tg "⚠️ 브리핑 AUTO_WATCH 줄이 ${AW_COUNT}개 — 출력 계약 위반(마지막 줄 기준으로 처리)"
+[ "$AW_COUNT" -ne 1 ] && notify_auto "daily_brief" "⚠️ 브리핑 AUTO_WATCH 줄이 ${AW_COUNT}개 — 출력 계약 위반(마지막 줄 기준으로 처리)"
 
 if [ "$TZ_OK" -ne 1 ]; then
   : # TZ 비정상 — 위에서 이미 알림, 자동 등록 건너뜀
@@ -126,7 +126,7 @@ elif [ -n "${REPORT_DATE:-}" ]; then
   DEADLINE_OK=1   # 수동 테스트 경로(REPORT_DATE 지정)는 시각 무관
 elif [ "1$(date +%H%M)" -ge 10855 ]; then
   DEADLINE_OK=0
-  tg "⏰ 브리핑 지연 — 08:55 데드라인 초과, 자동 /watch 건너뜀 (08:57 유니버스 리로드에 못 태움. 수동 /watch는 다음 경계에 반영)"
+  notify_auto "daily_brief" "⏰ 브리핑 지연 — 08:55 데드라인 초과, 자동 /watch 건너뜀 (08:57 유니버스 리로드에 못 태움. 수동 /watch는 다음 경계에 반영)"
 else
   DEADLINE_OK=1
 fi
@@ -152,7 +152,7 @@ if [ "${TZ_OK}" -eq 1 ] && [ "${DEADLINE_OK:-0}" -eq 1 ]; then
     SCORE_LINES="$(printf '%s\n' "$SCORE_OUT" | grep -v '^PASS:')"
     if [ "$SCORE_RC" -ne 0 ]; then
       # 인프라 실패를 "전원 탈락"으로 위장하지 않는다 — 리뷰 H3.
-      tg "🛑 확신도 엔진 오류(exit ${SCORE_RC}) — 자동 등록 건너뜀. data/brief.log 확인"
+      notify_auto "daily_brief" "🛑 확신도 엔진 오류(exit ${SCORE_RC}) — 자동 등록 건너뜀. data/brief.log 확인"
     elif [ -n "$PASS" ]; then
       # watch-add --tags는 --source처럼 호출 1건에 값 하나다(tg_bridge.py의 전역
       # 플래그 시맨틱 — _parse_watch_add_argv 참고) — 태그가 다른 심볼을 한 콜에
@@ -174,12 +174,12 @@ if [ "${TZ_OK}" -eq 1 ] && [ "${DEADLINE_OK:-0}" -eq 1 ]; then
 "
       done
       DISPLAY_PASS="$(printf '%s\n' "$PASS" | tr ' ' '\n' | awk -F: '{print $1}' | tr '\n' ' ')"
-      tg "🤖 확신도 엔진 통과 → 자동 /watch: ${DISPLAY_PASS}
+      notify_auto "daily_brief" "🤖 확신도 엔진 통과 → 자동 /watch: ${DISPLAY_PASS}
 ${SCORE_LINES:0:2800}
 ${RESULT:0:600}
 (원치 않으면 /unwatch <심볼>)"
     else
-      tg "🤖 브리핑 후보 ${CANDS} — 확신도 엔진 통과 0건, 자동 등록 없음
+      notify_auto "daily_brief" "🤖 브리핑 후보 ${CANDS} — 확신도 엔진 통과 0건, 자동 등록 없음
 ${SCORE_LINES:0:2800}"
     fi
     echo "[$(date '+%F %T')] auto-watch 후보: $CANDS → rc=$SCORE_RC 통과: ${PASS:-없음}" >> "$LOG"

@@ -11,6 +11,10 @@ cd "$(dirname "$0")/../.."
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
+# 알림은 notify_defer (역할별 게이트 — server/scripts/lib/notify.sh): 요약·정보성
+# 이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl 에 쌓여
+# 마감 HTML 리포트로만 간다.
+. "$(dirname "$0")/lib/notify.sh"
 
 OUT="$(timeout 300 .venv/bin/python -m quant.apps.cli weekly-review 2>/dev/null)"
 RC=$?
@@ -18,7 +22,4 @@ if [ "$RC" -ne 0 ] || [ -z "$OUT" ]; then
   OUT="⚠️ 주간 재검토 생성 실패 (exit ${RC}) — data/weekly_review.log 확인"
 fi
 echo "$OUT"
-if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=${OUT}" >/dev/null 2>&1 || true
-fi
+notify_defer "weekly_review" "${OUT}"

@@ -49,14 +49,10 @@ log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
-tg() {
-  if [ "${DRY_RUN:-0}" = "1" ]; then
-    printf '[DRY_RUN][TG]\n%s\n\n' "$1"
-    return 0
-  fi
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
-}
+# 알림은 전부 notify_defer (역할별 게이트 — server/scripts/lib/notify.sh):
+# 요약·정보성이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl
+# 에 쌓여 마감 HTML 리포트로만 간다.
+. "$(dirname "$0")/lib/notify.sh"
 
 START="$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%d 2>/dev/null \
          || date -u -v-${LOOKBACK_DAYS}d +%Y-%m-%d)"   # GNU / BSD 양쪽
@@ -109,11 +105,11 @@ fi
 # 정상일 때는 조용하다 — 매일 오는 "정상" 알림은 사람이 끄고, 끈 알림은 없는 알림이다.
 case "${VERDICT%% *}" in
   OK)
-    [ "$FETCH_RC" -ne 0 ] && tg "⚠️ QQQ 일봉 백필 종료코드 ${FETCH_RC} — 다만 봉은 최신이다(${VERDICT#* }). data/fetch_us_daily.log 확인"
+    [ "$FETCH_RC" -ne 0 ] && notify_defer "backfill_us_daily" "⚠️ QQQ 일봉 백필 종료코드 ${FETCH_RC} — 다만 봉은 최신이다(${VERDICT#* }). data/fetch_us_daily.log 확인"
     exit 0
     ;;
   STALE)
-    tg "🚨 QQQ 일봉이 백필 후에도 낡았다 — ${VERDICT#* }
+    notify_defer "backfill_us_daily" "🚨 QQQ 일봉이 백필 후에도 낡았다 — ${VERDICT#* }
 US 국면(regime)이 이 파일을 읽어 사이징에 곱한다. 낡으면 코드 가드가 지표를
 제외하고 중립(1.0x)으로 떨어뜨리므로 손실 방향은 아니지만, 국면 판단이 통째로
 사라진 상태다.
@@ -121,7 +117,7 @@ yfinance 응답·네트워크 확인: tail -40 data/fetch_us_daily.log"
     exit 1
     ;;
   *)
-    tg "🚨 QQQ 일봉 백필 검증 불가 — ${VERDICT:-판정 실패} (fetch rc=${FETCH_RC})
+    notify_defer "backfill_us_daily" "🚨 QQQ 일봉 백필 검증 불가 — ${VERDICT:-판정 실패} (fetch rc=${FETCH_RC})
 '봉이 최신인지 모른다'는 상태다. data/fetch_us_daily.log 확인"
     exit 1
     ;;

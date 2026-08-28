@@ -39,14 +39,10 @@ log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
-tg() {
-  if [ "${DRY_RUN:-0}" = "1" ]; then
-    printf '[DRY_RUN][TG]\n%s\n\n' "$1"
-    return 0
-  fi
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
-}
+# 알림은 전부 notify_defer (역할별 게이트 — server/scripts/lib/notify.sh):
+# 요약·정보성이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl
+# 에 쌓여 마감 HTML 리포트로만 간다.
+. "$(dirname "$0")/lib/notify.sh"
 
 START="$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%d 2>/dev/null \
          || date -u -v-${LOOKBACK_DAYS}d +%Y-%m-%d)"   # GNU / BSD 양쪽
@@ -100,18 +96,18 @@ fi
 # 정상일 때는 조용하다 — 매일 오는 "정상" 알림은 사람이 끄고, 끈 알림은 없는 알림이다.
 case "${VERDICT%% *}" in
   OK)
-    [ "$FETCH_RC" -ne 0 ] && tg "⚠️ 069500 일봉 백필 종료코드 ${FETCH_RC} — 다만 봉은 최신이다(${VERDICT#* }). data/fetch_kr_daily.log 확인"
+    [ "$FETCH_RC" -ne 0 ] && notify_defer "backfill_kr_daily" "⚠️ 069500 일봉 백필 종료코드 ${FETCH_RC} — 다만 봉은 최신이다(${VERDICT#* }). data/fetch_kr_daily.log 확인"
     exit 0
     ;;
   STALE)
-    tg "🚨 069500 일봉이 백필 후에도 낡았다 — ${VERDICT#* }
+    notify_defer "backfill_kr_daily" "🚨 069500 일봉이 백필 후에도 낡았다 — ${VERDICT#* }
 개장일 판정(opendays)이 이 파일을 앵커로 쓴다. 낡으면 last_open_day가 갱신되지
 않아 리포트 집계 창이 계속 닫힌 채로 남는다.
 yfinance 응답·네트워크 확인: tail -40 data/fetch_kr_daily.log"
     exit 1
     ;;
   *)
-    tg "🚨 069500 일봉 백필 검증 불가 — ${VERDICT:-판정 실패} (fetch rc=${FETCH_RC})
+    notify_defer "backfill_kr_daily" "🚨 069500 일봉 백필 검증 불가 — ${VERDICT:-판정 실패} (fetch rc=${FETCH_RC})
 '봉이 최신인지 모른다'는 상태다. data/fetch_kr_daily.log 확인"
     exit 1
     ;;

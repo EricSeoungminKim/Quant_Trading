@@ -38,14 +38,10 @@ log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
-tg() {
-  if [ "${DRY_RUN:-0}" = "1" ]; then
-    printf '[DRY_RUN][TG]\n%s\n\n' "$1"
-    return 0
-  fi
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
-}
+# 알림은 전부 notify_defer (역할별 게이트 — server/scripts/lib/notify.sh):
+# 요약·정보성이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl
+# 에 쌓여 마감 HTML 리포트로만 간다.
+. "$(dirname "$0")/lib/notify.sh"
 
 START="$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%d 2>/dev/null \
          || date -u -v-${LOOKBACK_DAYS}d +%Y-%m-%d)"   # GNU / BSD 양쪽
@@ -134,7 +130,7 @@ log "1분봉 백필 종료: 신규 봉 합계 ${TOTAL_BARS}개, 실패 종목:${
 
 # 정상일 때는 조용하다(다른 백필 크론과 동일 관례) — 실패가 있었을 때만 알린다.
 if [ -n "$FAILS" ]; then
-  tg "🚨 1분봉 백필 일부 실패 — 종목:${FAILS}
+  notify_defer "backfill_1m" "🚨 1분봉 백필 일부 실패 — 종목:${FAILS}
 scalp_1m 표본 적재용(Toss 1m은 4거래일 롤링이라 하루라도 밀리면 그 구간이 영구히
 사라진다). data/fetch_1m.log 확인"
   exit 1

@@ -13,6 +13,10 @@ cd "$(dirname "$0")/../.."
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
+# 알림은 notify_defer (역할별 게이트 — server/scripts/lib/notify.sh): 요약·정보성
+# 이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl 에 쌓여
+# 마감 HTML 리포트로만 간다.
+. "$(dirname "$0")/lib/notify.sh"
 
 if [ "$(date +%z)" != "+0900" ]; then
   echo "[$(date '+%F %T')] 호스트 TZ 가 KST 가 아님($(date +%z)) — 중단" >&2
@@ -36,7 +40,4 @@ fi
 echo "[$(date '+%F %T')] 제안 발생:"
 echo "$OUT"
 
-if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=${OUT}" >/dev/null 2>&1 || true
-fi
+notify_defer "param_propose" "${OUT}"

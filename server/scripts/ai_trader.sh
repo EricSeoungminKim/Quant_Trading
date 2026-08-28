@@ -15,6 +15,10 @@ cd "$(dirname "$0")/../.."
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
+# 알림은 notify_auto (역할별 게이트 — server/scripts/lib/notify.sh): 픽·편입은
+# 알아야 하지만 급하지 않다. **장중이면 data/notify_queue.jsonl 로 미뤄져 마감
+# HTML 리포트로 나가고**, 장외면 지금처럼 즉시 발송된다.
+. "$(dirname "$0")/lib/notify.sh"
 
 if [ "$(date +%z)" != "+0900" ]; then
   echo "[$(date '+%F %T')] 호스트 TZ 가 KST 가 아님($(date +%z)) — 중단" >&2
@@ -85,7 +89,4 @@ fi
 echo "[$(date '+%F %T')] $MARKET 픽 발생:"
 echo "$CARD"
 
-if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=${CARD}" >/dev/null 2>&1 || true
-fi
+notify_auto "ai_trader" "${CARD}" || true

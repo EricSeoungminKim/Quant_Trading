@@ -19,23 +19,23 @@ mkdir -p data
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
-tg() {  # 실패해도 스크립트를 죽이지 않는다
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
-}
+# 알림은 전부 notify_defer (역할별 게이트 — server/scripts/lib/notify.sh):
+# 요약·정보성이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl
+# 에 쌓여 마감 HTML 리포트로만 간다.
+. "$(dirname "$0")/lib/notify.sh"
 
 # TZ 가드 — 크론 시각(KR 15:30/US 마감 직후)은 호스트가 KST라는 전제다. 세션
 # 경계 자체는 session-pnl 내부에서 시장별 현지시간대로 계산되므로 서머타임에
 # 영향받지 않지만, 호스트 TZ가 어긋나면 "마감 직후"라는 크론의 전제가 깨진다.
 if [ "$(date +%z)" != "+0900" ]; then
-  tg "⚠️ session_pnl(${MARKET}): 호스트 TZ가 KST가 아님($(date +%z)) — 크론이 마감 직후가 아닐 수 있음"
+  notify_defer "session_pnl" "⚠️ session_pnl(${MARKET}): 호스트 TZ가 KST가 아님($(date +%z)) — 크론이 마감 직후가 아닐 수 있음"
 fi
 
 OUT="$(timeout 60 .venv/bin/python -m quant.apps.cli session-pnl --market "$MARKET" 2>>"$LOG")"
 if [ -n "$OUT" ]; then
-  tg "${OUT:0:3900}"
+  notify_defer "session_pnl" "${OUT:0:3900}"
 else
-  tg "session-pnl(${MARKET}) 생성 실패 — ${LOG} 확인"
+  notify_defer "session_pnl" "session-pnl(${MARKET}) 생성 실패 — ${LOG} 확인"
 fi
 
 # 전략별 성과(2026-08-19 사용자 요청: "각 전략마다 1000만원으로 시작, 텔레그램도
@@ -49,8 +49,8 @@ fi
 STRAT_OUT="$(timeout 60 .venv/bin/python -m quant.apps.cli strategy-pnl 2>>"$LOG")"
 if [ -n "$STRAT_OUT" ]; then
   while IFS= read -r -d $'\x1e' msg; do
-    [ -n "$msg" ] && tg "${msg:0:3900}"
+    [ -n "$msg" ] && notify_defer "session_pnl" "${msg:0:3900}"
   done <<< "${STRAT_OUT}"$'\x1e'
 else
-  tg "strategy-pnl 생성 실패 — ${LOG} 확인"
+  notify_defer "session_pnl" "strategy-pnl 생성 실패 — ${LOG} 확인"
 fi

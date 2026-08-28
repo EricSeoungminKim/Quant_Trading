@@ -46,15 +46,11 @@ log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
-tg() {
-  # 성공 여부를 반환한다 — 실패를 삼키면(구 `|| true`) 첫 알림이 유실돼도 상태가
-  # 기록돼 영원히 재시도하지 않는 결함이 났다. 텔레그램 응답의 "ok":true 로 판정.
-  if [ "${DRY_RUN:-0}" = "1" ]; then printf '[DRY_RUN][TG]\n%s\n' "$1"; return 0; fi
-  RESP="$(curl -s -m 15 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" 2>/dev/null)"
-  case "$RESP" in *'"ok":true'*) return 0 ;; esac
-  return 1
-}
+# 알림은 전부 notify_now (역할별 게이트 — server/scripts/lib/notify.sh). 여기서
+# 나가는 건 "실제 이상 판정"뿐이고(ok 는 위에서 이미 침묵), 이상은 장중에도 사람이
+# 지금 봐야 한다. notify_now 는 옛 tg() 처럼 **발송 성공 여부를 그대로 반환한다** —
+# 아래 `if notify_now ...` 의 상태 기록 계약이 그 반환값에 달려 있다.
+. "$(dirname "$0")/lib/notify.sh"
 
 # --- 1. 감지 (결정론적) ---
 # 있어야 하는 타이머를 명시한다 — 유닛이 조용히 사라지는 것을 잡는다.
@@ -89,7 +85,7 @@ fi
 
 if [ -z "$REPORT" ]; then
   # health 자체가 죽었다. 이것도 침묵하면 안 된다.
-  tg "🚨 운영 감시: 점검 명령이 출력 없이 실패했다 (rc=${RC}) — data/ops_watch.log 확인"
+  notify_now "🚨 운영 감시: 점검 명령이 출력 없이 실패했다 (rc=${RC}) — data/ops_watch.log 확인"
   exit 1
 fi
 
@@ -155,7 +151,7 @@ $(printf '%s' "$REPORT" | head -c 2500)"
 fi
 
 HEAD="$([ "$RC" -eq 1 ] && echo '🚨 운영 감시: 이상' || echo '❔ 운영 감시: 확인 못 한 항목')"
-if tg "${HEAD}
+if notify_now "${HEAD}
 
 ${BODY}
 

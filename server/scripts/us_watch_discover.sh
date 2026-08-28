@@ -28,13 +28,13 @@ _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 
-tg() {
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
-}
+# 알림은 전부 notify_auto (역할별 게이트 — server/scripts/lib/notify.sh):
+# 편입·픽은 알아야 하지만 급하지 않다. **장중이면 data/notify_queue.jsonl 로
+# 미뤄져 마감 HTML 리포트로 나가고**, 장외면 지금처럼 즉시 발송된다.
+. "$(dirname "$0")/lib/notify.sh"
 
 if [ "$(date +%z)" != "+0900" ]; then
-  tg "⚠️ us_watch_discover: 호스트 TZ가 KST가 아님($(date +%z)) — 건너뜀"
+  notify_auto "us_watch_discover" "⚠️ us_watch_discover: 호스트 TZ가 KST가 아님($(date +%z)) — 건너뜀"
   exit 0
 fi
 
@@ -48,7 +48,7 @@ SCORE_LINES="$(printf '%s\n' "$SCORE_OUT" | grep -v '^PASS:' | head -c 2800)"
 echo "[$(date '+%F %T')] rc=$SCORE_RC 통과: ${PASS:-없음}" >> "$LOG"
 
 if [ "$SCORE_RC" -ne 0 ]; then
-  tg "⚠️ 미국 관심종목 자동 발굴 실패 (엔진 오류) — 오늘 미국 세션은 기존 목록으로 진행합니다"
+  notify_auto "us_watch_discover" "⚠️ 미국 관심종목 자동 발굴 실패 (엔진 오류) — 오늘 미국 세션은 기존 목록으로 진행합니다"
   exit 1
 fi
 
@@ -86,14 +86,14 @@ for SYM in $PASS; do
 done
 
 if [ -n "$ADDED" ]; then
-  tg "🇺🇸 미국 관심종목 자동 편입
+  notify_auto "us_watch_discover" "🇺🇸 미국 관심종목 자동 편입
 
 📈 추가된 종목:$ADDED
 
 거래대금 상위에서 발굴해 확신도 엔진을 통과한 종목입니다.
 자정 유니버스 갱신 후 매매 대상이 됩니다.
 
-$SCORE_LINES"
+$SCORE_LINES" || true   # 발송 실패가 크론 exit 코드를 바꾸지 않게
 else
   echo "[$(date '+%F %T')] 통과했으나 등록 0건" >> "$LOG"
 fi

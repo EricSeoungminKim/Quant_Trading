@@ -44,17 +44,16 @@ log() { echo "[$(date '+%F %T')] [$LABEL] $*" >> "$LOG"; }
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
-tg() {
-  if [ "${DRY_RUN:-0}" = "1" ]; then printf '[DRY_RUN][TG]\n%s\n' "$1"; return 0; fi
-  curl -s -m 15 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
-}
+# 알림은 전부 notify_defer (역할별 게이트 — server/scripts/lib/notify.sh):
+# 요약·정보성이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl
+# 에 쌓여 마감 HTML 리포트로만 간다.
+. "$(dirname "$0")/lib/notify.sh"
 
 # TZ 가드 — run_report.sh/run_close_report.sh 와 같은 방어. 세션 경계·편입
 # 데드라인이 KST 전제라 타임존이 어긋나면 판단 자체가 무의미하다.
 if [ "$(date +%z)" != "+0900" ]; then
   log "호스트 TZ 가 KST 가 아님($(date +%z)) — 중단"
-  tg "🚨 판단 워치독(${LABEL}): 호스트 타임존이 KST 가 아니다 — 점검 중단"
+  notify_defer "ops_judge" "🚨 판단 워치독(${LABEL}): 호스트 타임존이 KST 가 아니다 — 점검 중단"
   exit 1
 fi
 
@@ -88,7 +87,7 @@ if [ -z "$BODY" ]; then
   # 판단 명령 자체가 출력 없이 죽었다. **이것도 침묵하면 안 된다** — 이 감시가
   # 조용히 죽는 경로 중 셸 레벨에서 잡을 수 있는 것(타임아웃 SIGTERM, 파이썬
   # 크래시 등).
-  tg "🚨 판단 워치독(${LABEL}): 점검 명령이 출력 없이 실패했다 (rc=${RC}, timeout=${TIME_BUDGET}s) — data/ops_judge.log 확인"
+  notify_defer "ops_judge" "🚨 판단 워치독(${LABEL}): 점검 명령이 출력 없이 실패했다 (rc=${RC}, timeout=${TIME_BUDGET}s) — data/ops_judge.log 확인"
   exit 1
 fi
 
@@ -142,7 +141,7 @@ $(printf '%s' "$BODY" | head -c 2000)"
 fi
 
 HEAD="$([ "$LEVEL" = "alert" ] && echo '🚨 판단 워치독: 이상' || echo '🧭 판단 워치독: 확인 필요')"
-tg "${HEAD} (${LABEL})
+notify_defer "ops_judge" "${HEAD} (${LABEL})
 
 ${SUMMARY}
 

@@ -74,20 +74,16 @@ _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 
-# DRY_RUN에서는 발송하지 않고 찍기만 한다 — 리허설이 사용자 폰을 울리면
-# 리허설을 안 하게 된다(그래서 검증 없이 배포하게 된다).
-tg() {
-  if [ "${DRY_RUN:-0}" = "1" ]; then
-    printf '[DRY_RUN][TG]\n%s\n\n' "$1"
-    return 0
-  fi
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
-}
+# 알림은 전부 notify_auto (역할별 게이트 — server/scripts/lib/notify.sh):
+# 편입·픽은 알아야 하지만 급하지 않다. **장중이면 data/notify_queue.jsonl 로
+# 미뤄져 마감 HTML 리포트로 나가고**, 장외면 지금처럼 즉시 발송된다.
+# DRY_RUN에서는 발송하지 않고 찍기만 한다(게이트가 그대로 승계) — 리허설이
+# 사용자 폰을 울리면 리허설을 안 하게 된다(그래서 검증 없이 배포하게 된다).
+. "$(dirname "$0")/lib/notify.sh"
 
 # TZ 가드 — 편입 데드라인·유니버스 롤 경계가 전부 KST 전제다.
 if [ "$(date +%z)" != "+0900" ]; then
-  tg "⚠️ own_brief(${MARKET}): 호스트 TZ가 KST가 아님($(date +%z)) — 자동 편입 건너뜀"
+  notify_auto "own_brief" "⚠️ own_brief(${MARKET}): 호스트 TZ가 KST가 아님($(date +%z)) — 자동 편입 건너뜀"
   log "TZ 비정상 — 중단"
   exit 1
 fi
@@ -123,10 +119,10 @@ BRIEF="$(printf '%s\n' "$BRIEF_OUT" | grep -v '^TOKENS:' | grep -v '^FRGN_EXIT:'
 log "리포트 rc=$BRIEF_RC 후보: ${TOKENS:-<없음>} FRGN_EXIT: ${FRGN_EXIT_LINE:-<없음>}"
 
 case "$BRIEF_RC" in
-  0) tg "$BRIEF" ;;
-  3) tg "🗞 ${MARKET} 자체 리포트 없음 — 랭킹 발굴만으로 진행합니다 (리포트 생성 실패 의심: systemctl status market-report@${MARKET})" ;;
-  4) tg "🗞 ${MARKET} 자체 리포트가 오늘 것이 아님 (낡은 스냅샷) — 랭킹 발굴만으로 진행합니다" ;;
-  *) tg "🗞 ${MARKET} 자체 리포트 읽기 실패 (rc=${BRIEF_RC}) — 랭킹 발굴만으로 진행합니다" ;;
+  0) notify_auto "own_brief" "$BRIEF" ;;
+  3) notify_auto "own_brief" "🗞 ${MARKET} 자체 리포트 없음 — 랭킹 발굴만으로 진행합니다 (리포트 생성 실패 의심: systemctl status market-report@${MARKET})" ;;
+  4) notify_auto "own_brief" "🗞 ${MARKET} 자체 리포트가 오늘 것이 아님 (낡은 스냅샷) — 랭킹 발굴만으로 진행합니다" ;;
+  *) notify_auto "own_brief" "🗞 ${MARKET} 자체 리포트 읽기 실패 (rc=${BRIEF_RC}) — 랭킹 발굴만으로 진행합니다" ;;
 esac
 
 # --- 2. 데드라인 ---
@@ -138,7 +134,7 @@ esac
 if [ -n "${BRIEF_DATE:-}" ]; then
   :  # 수동 테스트 경로는 시각 무관
 elif [ "1$(date +%H%M)" -gt "1${DEADLINE}" ]; then
-  tg "⏰ ${MARKET} 편입 지연 — 데드라인(${DEADLINE}) 초과, 자동 편입 건너뜀 (${ROLL} 유니버스 롤에 못 태움)"
+  notify_auto "own_brief" "⏰ ${MARKET} 편입 지연 — 데드라인(${DEADLINE}) 초과, 자동 편입 건너뜀 (${ROLL} 유니버스 롤에 못 태움)"
   log "데드라인 초과 — 편입 생략"
   exit 0
 fi
@@ -157,7 +153,7 @@ if [ -n "$FRGN_EXIT_LINE" ]; then
       R_EXIT="$(timeout 60 "$PY" server/scripts/tg_bridge.py watch-add --tags-only --tags FRGN_EXIT $FRGN_EXIT_SYMS \
            2>>"$LOG" || echo "이탈 태그 갱신 실패 — data/own_brief.log 확인")"
       log "FRGN_EXIT 태그 갱신: $FRGN_EXIT_SYMS"
-      tg "📉 ${MARKET} 외국인 이탈 태그 갱신: ${FRGN_EXIT_SYMS}
+      notify_auto "own_brief" "📉 ${MARKET} 외국인 이탈 태그 갱신: ${FRGN_EXIT_SYMS}
 ${R_EXIT:0:600}"
     fi
   fi
@@ -191,12 +187,12 @@ log "watch-score rc=$SCORE_RC 통과: ${PASS:-없음}"
 
 if [ "$SCORE_RC" -ne 0 ]; then
   # 인프라 실패를 "전원 탈락"으로 위장하지 않는다.
-  tg "🛑 ${MARKET} 확신도 엔진 오류(exit ${SCORE_RC}) — 자동 편입 건너뜀. data/own_brief.log 확인"
+  notify_auto "own_brief" "🛑 ${MARKET} 확신도 엔진 오류(exit ${SCORE_RC}) — 자동 편입 건너뜀. data/own_brief.log 확인"
   exit 1
 fi
 
 if [ -z "$PASS" ]; then
-  tg "🤖 ${MARKET} 확신도 엔진 통과 0건 — 자동 편입 없음
+  notify_auto "own_brief" "🤖 ${MARKET} 확신도 엔진 통과 0건 — 자동 편입 없음
 ${SCORE_LINES:0:2800}"
   exit 0
 fi
@@ -234,7 +230,7 @@ DISPLAY="$(printf '%s\n' "$PASS" | tr ' ' '\n' | awk -F: '{print $1}' | tr '\n' 
 # 실패해도(헬퍼 임포트 에러 등) 기존 메시지($DISPLAY, 심볼만)로 그대로 나간다.
 ASSIGNED="$("$PY" server/scripts/format_tag_assignment.py "$PASS" 2>>"$LOG")"
 [ -z "$ASSIGNED" ] && ASSIGNED="$DISPLAY"
-tg "🤖 ${MARKET} 확신도 엔진 통과 → 자동 편입: ${ASSIGNED}
+notify_auto "own_brief" "🤖 ${MARKET} 확신도 엔진 통과 → 자동 편입: ${ASSIGNED}
 ${ROLL} 유니버스 갱신 후 매매 대상이 됩니다.
 
 ${SCORE_LINES:0:2500}

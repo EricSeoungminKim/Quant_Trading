@@ -24,14 +24,10 @@ log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
 TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
-tg() {
-  if [ "${DRY_RUN:-0}" = "1" ]; then
-    printf '[DRY_RUN][TG]\n%s\n' "$1"
-    return 0
-  fi
-  curl -s -m 10 "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-    -d "chat_id=${TG_CHAT}" --data-urlencode "text=$1" >/dev/null 2>&1 || true
-}
+# 알림은 전부 notify_defer (역할별 게이트 — server/scripts/lib/notify.sh):
+# 요약·정보성이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl
+# 에 쌓여 마감 HTML 리포트로만 간다.
+. "$(dirname "$0")/lib/notify.sh"
 
 if [ "$(date +%z)" != "+0900" ]; then
   echo "[$(date '+%F %T')] 호스트 TZ 가 KST 가 아님($(date +%z)) — 중단" >&2
@@ -51,7 +47,7 @@ printf '%s\n' "$OUT" >> "$LOG"
 log "매크로 수집 종료 rc=$RC"
 
 if [ "$RC" -ne 0 ]; then
-  tg "🚨 매크로 시계열(FRED) 수집 실패(exit ${RC}) — ${OUT:-<출력 없음>}
+  notify_defer "macro_collect" "🚨 매크로 시계열(FRED) 수집 실패(exit ${RC}) — ${OUT:-<출력 없음>}
 data/macro.log 확인. 국면 US_BOND_10Y 지표가 낡은 값으로 남는다."
   exit 0   # 크론 스케줄러 관점에서는 조용히 끝낸다(알림은 위 tg 로 이미 감)
 fi
