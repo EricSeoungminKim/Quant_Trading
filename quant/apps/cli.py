@@ -825,6 +825,123 @@ def cmd_daily_feedback(args: argparse.Namespace) -> None:
             f.write(_json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _daily_closes(history_dir, symbol: str) -> list[tuple[object, float]]:
+    """`data/history/{symbol}/1d/{YYYY}/{MM}.parquet` → [(날짜, 종가)].
+
+    빈 파티션은 버린다 — 백필은 데이터가 없는 달에도 0행 파일을 남기고, 빈
+    DataFrame 은 DatetimeIndex 를 잃어 인덱스가 혼합 타입이 된다(regime provider
+    가 같은 결함을 이미 겪었다). 파케이를 못 읽는 건 알파를 못 내는 사유일 뿐
+    예외로 올릴 일이 아니다."""
+    import pandas as pd
+
+    base = history_dir / symbol / "1d"
+    out: list[tuple[object, float]] = []
+    for part in sorted(base.glob("*/*.parquet")) if base.exists() else []:
+        try:
+            df = pd.read_parquet(part)
+        except Exception:  # noqa: BLE001 — 파티션 하나가 전체를 막지 않는다
+            continue
+        if df.empty or "close" not in df.columns:
+            continue
+        for ts, r in df.iterrows():
+            d = ts.date() if hasattr(ts, "date") else None
+            if d is None:
+                continue
+            try:
+                close = float(r["close"])
+            except (TypeError, ValueError):
+                continue
+            if close > 0:
+                out.append((d, close))
+    out.sort(key=lambda t: t[0])
+    return out
+
+
+def _last_daily_close(history_dir, symbol: str) -> float | None:
+    closes = _daily_closes(history_dir, symbol)
+    return closes[-1][1] if closes else None
+
+
+def cmd_alpha_report(args: argparse.Namespace) -> None:
+    """지수 대비 초과수익(알파) 일일 추적 — 2026-08-28 소유자 지시.
+
+    "지수가 빠지건 오르건 항상 지수 그래프 위에서 논다"가 목표다. 목표를
+    보장할 수는 없어도 **측정은 할 수 있다** — 측정하지 않으면 알파가 있는지조차
+    알 수 없다.
+
+    지수 수익률의 출처는 두 갈래고 순서가 있다: ① 자본 곡선 행에 동반 기록된
+    `benchmark_close`(2026-08-28~), ② 로컬 일봉 파케이. ①이 있는 날은 ①을 쓴다
+    — 그날 마감 시점에 실제로 본 값이고, 백필 상태에 의존하지 않는다."""
+    import json as _json
+    from datetime import date as _date
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.control.alpha import (
+        BENCHMARKS, alpha_series, alpha_summary, benchmark_returns, daily_returns,
+    )
+
+    path = REPO_ROOT / "data" / "ledger" / "equity_curve.jsonl"
+    if not path.exists():
+        print("표본 없음 — 자본 곡선 원장이 없다(`cli equity-snapshot` 이 아직 안 돌았다)")
+        return
+
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(_json.loads(line))
+        except ValueError:
+            continue
+
+    for market in [args.market] if args.market else ["KR", "US"]:
+        ours = [(d, r) for d, m, r in daily_returns(rows) if m == market]
+        bench_symbol = BENCHMARKS[market]
+
+        # 동반 기록 우선, 없는 날만 로컬 일봉으로 채운다.
+        bars: dict[object, float] = {
+            b[0]: b[1] for b in _daily_closes(REPO_ROOT / "data" / "history", bench_symbol)
+        }
+        for r in rows:
+            if r.get("market") != market or r.get("benchmark_symbol") != bench_symbol:
+                continue
+            close = r.get("benchmark_close")
+            try:
+                d = _date.fromisoformat(str(r.get("date"))[:10])
+            except ValueError:
+                continue
+            if close is not None and float(close) > 0:
+                bars[d] = float(close)
+
+        series = alpha_series(ours, benchmark_returns(sorted(bars.items())))
+        if args.days and args.days > 0:
+            series = series[-args.days:]
+        if not series:
+            print(f"[{market}] 표본 없음 — 자본 곡선 2점 이상 + {bench_symbol} 종가가 있어야 알파가 나온다")
+            continue
+
+        print(f"[{market}] 지수 대비 초과수익 — 벤치마크 {bench_symbol} ({len(series)}일)")
+        print(f"{'날짜':<12}{'우리%':>10}{'지수%':>10}{'알파%p':>10}")
+        for d, our, bench, alpha in series:
+            print(f"{d.isoformat():<12}{our:>10.2f}{bench:>10.2f}{alpha:>10.2f}")
+
+        s = alpha_summary(series)
+        print(f"  누적: 우리 {s['cum_our_pct']:+.2f}% / 지수 {s['cum_bench_pct']:+.2f}% "
+              f"→ 알파 {s['cum_alpha_pp']:+.2f}%p (이긴 날 {s['win_days']}/{s['n_days']})")
+        if s["up_our_avg_pct"] is None:
+            print(f"  지수 상승일 참여: 표본 부족({s['up_days']}일)")
+        else:
+            print(f"  지수 상승일 참여: 우리 {s['up_our_avg_pct']:+.2f}% vs 지수 "
+                  f"{s['up_bench_avg_pct']:+.2f}% ({s['up_days']}일, {s['up_capture']:.2f}x — 높을수록 더 먹었다)")
+        if s["down_our_avg_pct"] is None:
+            print(f"  지수 하락일 방어: 표본 부족({s['down_days']}일)")
+        else:
+            print(f"  지수 하락일 방어: 우리 {s['down_our_avg_pct']:+.2f}% vs 지수 "
+                  f"{s['down_bench_avg_pct']:+.2f}% ({s['down_days']}일, {s['down_capture']:.2f}x — 낮을수록 덜 잃었다)")
+        print()
+
+
 def cmd_equity_snapshot(args: argparse.Namespace) -> None:
     """자본 곡선 1점 기록 — 세션 마감 후 총자산·전략별 장부 평가액(KRW)을
     `data/ledger/equity_curve.jsonl` 에 덧붙인다 (gs-quant 대조 도입, 2026-08-24).
@@ -839,13 +956,20 @@ def cmd_equity_snapshot(args: argparse.Namespace) -> None:
     않는다(빠진 날은 나중에 복원할 수 없다).
 
     같은 (date, market) 은 마지막 기록이 이긴다 — 재실행은 덮어쓰기가 아니라
-    append 이고, 읽는 쪽(`cli performance`)이 마지막 것만 쓴다(원장 관례)."""
+    append 이고, 읽는 쪽(`cli performance`)이 마지막 것만 쓴다(원장 관례).
+
+    2026-08-28: **벤치마크 종가를 같이 적는다**(`benchmark_symbol`/`benchmark_close`,
+    기존 필드는 그대로 — additive). 알파(`cli alpha-report`)는 우리 곡선과 지수
+    곡선의 차이인데, 지수 쪽을 일봉 파케이에만 의존하면 백필이 끊기거나 파티션이
+    유실된 날의 알파가 영원히 계산 불능이 된다. 자본 곡선 행이 스스로 비교 대상을
+    들고 있으면 알파 계산이 자립한다."""
     import json as _json
     import sys
     from datetime import datetime as _dt
     from zoneinfo import ZoneInfo
 
     from quant.adapters.env import REPO_ROOT
+    from quant.control.alpha import BENCHMARKS
     from quant.core.models import market_of_symbol
 
     load_settings()
@@ -865,22 +989,25 @@ def cmd_equity_snapshot(args: argparse.Namespace) -> None:
         if float(p.get("qty", 0) or 0) > 0
     }
 
+    bench_symbol = BENCHMARKS[market]
+
+    # 벤치마크는 포지션이 하나도 없는 날에도 조회한다 — 그날 지수 등락은 우리가
+    # 쉬었다는 사실과 무관하게 기록돼야 알파 시계열에 구멍이 안 생긴다.
     quotes: dict[str, float] = {}
-    if positions:
-        from quant.apps.assembly import MissingCredentials, build_toss_client
-        try:
-            rows = build_toss_client().prices(list(positions))
-            for row in rows or []:
-                if not isinstance(row, dict) or not row.get("symbol"):
-                    continue
-                price = row.get("price") or row.get("lastPrice") or row.get("close")
-                try:
-                    if price is not None and float(price) > 0:
-                        quotes[row["symbol"]] = float(price)
-                except (TypeError, ValueError):
-                    continue
-        except (MissingCredentials, Exception) as e:  # noqa: BLE001 — 시세 실패가 곡선 점을 잃게 하지 않는다(저하 기록)
-            print(f"시세 조회 실패 — 전 종목 평균단가 저하: {type(e).__name__}: {e}", file=sys.stderr)
+    from quant.apps.assembly import MissingCredentials, build_toss_client
+    try:
+        rows = build_toss_client().prices(sorted({*positions, bench_symbol}))
+        for row in rows or []:
+            if not isinstance(row, dict) or not row.get("symbol"):
+                continue
+            price = row.get("price") or row.get("lastPrice") or row.get("close")
+            try:
+                if price is not None and float(price) > 0:
+                    quotes[row["symbol"]] = float(price)
+            except (TypeError, ValueError):
+                continue
+    except (MissingCredentials, Exception) as e:  # noqa: BLE001 — 시세 실패가 곡선 점을 잃게 하지 않는다(저하 기록)
+        print(f"시세 조회 실패 — 전 종목 평균단가 저하: {type(e).__name__}: {e}", file=sys.stderr)
 
     # 환율: 전략별 장부와 같은 소스(FxProvider). 실패 시 보수 고정값 — 장부 관례.
     from quant.core.fx import FixedFxProvider
@@ -913,13 +1040,22 @@ def cmd_equity_snapshot(args: argparse.Namespace) -> None:
     except (OSError, ValueError):
         pass  # 장부 없음(shared 모드) — 총자산만 기록
 
+    # 벤치마크 종가 — 시세가 없으면 로컬 일봉의 마지막 종가로 저하한다. 둘 다
+    # 없으면 None 을 적는다(알파는 그날을 건너뛴다 — 없는 지수를 지어내지 않는다).
+    bench_close = quotes.get(bench_symbol)
+    if bench_close is None:
+        bench_close = _last_daily_close(REPO_ROOT / "data" / "history", bench_symbol)
+
     row = {
         "date": today,
         "market": market,
         "total_krw": round(total_krw, 2),
         "books": books_equity,
-        "marked": len(quotes),
+        "marked": sum(1 for s in positions if s in quotes),
         "degraded": degraded,
+        # 2026-08-28 추가(additive) — 알파 계산의 자립을 위한 동반 기록.
+        "benchmark_symbol": bench_symbol,
+        "benchmark_close": None if bench_close is None else round(bench_close, 4),
         "recorded_at": _dt.now(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds"),
     }
     out = REPO_ROOT / "data" / "ledger" / "equity_curve.jsonl"
@@ -927,7 +1063,9 @@ def cmd_equity_snapshot(args: argparse.Namespace) -> None:
     with out.open("a", encoding="utf-8") as f:
         f.write(_json.dumps(row, ensure_ascii=False) + "\n")
     print(f"자본 곡선 기록: {today} {market} 총 {total_krw:,.0f}원 "
-          f"(마크 {len(quotes)} / 저하 {len(degraded)}) 전략 장부 {len(books_equity)}개")
+          f"(마크 {row['marked']} / 저하 {len(degraded)}) 전략 장부 {len(books_equity)}개 "
+          f"벤치마크 {bench_symbol}="
+          f"{'없음' if bench_close is None else format(bench_close, ',.2f')}")
 
     # 하트비트 — cmd_experiments 와 같은 관례(job_findings 가 조용한 죽음을 잡게 함).
     try:
@@ -3919,6 +4057,15 @@ def main() -> None:
 
     p_perf = sub.add_parser("performance", help="자본 곡선 성과 — CAGR/변동성/샤프(rf=0)/MDD (gs-quant econometrics 상당)")
     p_perf.set_defaults(func=cmd_performance)
+
+    p_alpha = sub.add_parser(
+        "alpha-report",
+        help="지수 대비 초과수익(알파) — 날짜별 우리/지수/알파 + 상승일 참여율·하락일 방어율",
+    )
+    p_alpha.add_argument("--market", choices=["KR", "US"], default=None,
+                         help="생략하면 KR·US 둘 다")
+    p_alpha.add_argument("--days", type=int, default=30, help="최근 N 거래일 (0=전체)")
+    p_alpha.set_defaults(func=cmd_alpha_report)
 
     p_wrap = sub.add_parser(
         "daily-wrap",
