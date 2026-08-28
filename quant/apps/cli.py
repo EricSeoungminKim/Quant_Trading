@@ -3347,6 +3347,141 @@ def cmd_kiwoom_probe(args: argparse.Namespace) -> None:
     asyncio.run(_probe())
 
 
+def cmd_spread_sample(args: argparse.Namespace) -> None:
+    """호가창 스프레드 실측 수집 (2026-08-28) — 스캘핑 비용 가정의 검증.
+
+    `slippage_bps: 2.5`도 "왕복 20bp"도 실측이 아니라 추정치다. 스캘핑은 비용이
+    엣지보다 크면 전부 무의미하므로, 알파를 찾기 전에 이 숫자를 실측으로 바꾼다.
+    측정 전용 — 거래 평면에 닿지 않고, 결과는 `data/ledger/spread.jsonl`에만 쌓인다.
+
+    ## rate limit 방어 (이 잡의 핵심)
+
+    Toss MARKET_DATA 그룹 상한은 10 TPS 이고 **엔진의 시세 폴링이 같은 버킷을
+    쓴다**. 측정 잡이 상한을 다 쓰면 장중 시세가 429 로 밀린다 — 돈이 걸린 쪽이
+    우선이다. 그래서 우리 몫을 절반 이하(5 TPS)로 스스로 자른다:
+
+      - `collect.spread.sample_spread`가 호출 간 최소 0.2초(=5 TPS)를 강제한다.
+        호출자가 더 촘촘한 값을 넘겨도 이 바닥값으로 잘린다.
+      - 기본 `--interval-seconds 1.0`은 실제로는 1 TPS — 상한의 1/10 이다.
+      - 한 라운드에서 심볼당 정확히 1회만 호출한다(중복 조회 없음).
+      - 크론은 10분 간격이라 평균 부하는 무시할 수준이다.
+    """
+    import json
+    import statistics
+    import time as _time
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.apps.assembly import MissingCredentials, build_toss_client
+    from quant.collect.spread import sample_spread
+    from quant.core.models import market_of_symbol
+    from quant.trade.universe import FileWatchlistUniverse
+
+    settings = load_settings()
+    _redact.install()
+
+    root = Path(args.root) if args.root else REPO_ROOT
+
+    symbols: list[str] = []
+    seen: set[str] = set()
+
+    def _add(sym: str) -> None:
+        s = str(sym).strip()
+        if s and s not in seen:
+            seen.add(s)
+            symbols.append(s)
+
+    if args.symbols:
+        for s in args.symbols:
+            _add(s)
+    else:
+        # 기본 대상: 워치리스트(그날 실제로 감시하는 종목) + 전략 앵커(TQQQ/SQQQ 등
+        # settings.yaml 이 고정으로 든 심볼). 비용을 알아야 할 대상이 정확히 이 집합이다.
+        for s in FileWatchlistUniverse(root / "data" / "watchlist.yaml").refresh():
+            _add(s)
+        for strat_cfg in settings.strategies.values():
+            for s in strat_cfg.get("symbols") or []:
+                _add(s)
+
+    if args.market:
+        symbols = [s for s in symbols if market_of_symbol(s) == args.market]
+
+    if not symbols:
+        why = f"--market {args.market} 필터에 남은 심볼이 없다" if args.market else (
+            "--symbols 도 워치리스트도 비었다"
+        )
+        print(f"대상 심볼 없음 — {why}")
+        return
+
+    try:
+        client = build_toss_client()
+    except MissingCredentials as e:
+        logger.error("spread-sample: %s", e)
+        raise SystemExit(2)
+
+    out_path = root / "data" / "ledger" / "spread.jsonl"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    by_symbol: dict[str, list[float]] = {}
+    dropped: list[str] = []
+    empty: list[str] = []
+    failed: list[tuple[str, str]] = []
+    written = 0
+
+    for round_no in range(args.rounds):
+        if round_no:
+            _time.sleep(args.interval_seconds)
+        sample = sample_spread(
+            client, symbols,
+            now=datetime.now(timezone.utc),
+            min_interval=args.interval_seconds,
+        )
+        if sample.rows:
+            with out_path.open("a", encoding="utf-8") as f:
+                for row in sample.rows:
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            written += len(sample.rows)
+        for row in sample.rows:
+            by_symbol.setdefault(row["symbol"], []).append(row["spread_bp"])
+        dropped += sample.dropped
+        empty += sample.empty
+        failed += sample.failed
+
+    print(f"=== 호가 스프레드 실측 ({args.market or 'ALL'}, {args.rounds}라운드, {len(symbols)}종목) ===")
+    if not by_symbol:
+        print("표본 없음 — 아래 결측 내역 참고 (0bp 가 아니라 '못 쟀다'이다)")
+    for symbol in sorted(by_symbol, key=lambda s: statistics.median(by_symbol[s])):
+        spreads = by_symbol[symbol]
+        median = statistics.median(spreads)
+        print(f"{symbol:>8}  중앙값 {median:6.1f}bp  왕복 {median * 2:6.1f}bp  표본 {len(spreads)}")
+
+    if by_symbol:
+        overall = statistics.median([statistics.median(v) for v in by_symbol.values()])
+        # 왕복 스프레드 = 중앙값 × 2 (즉시 사고 즉시 파는 스캘핑이 지불하는 스프레드).
+        # 우리 가정은 편도 slippage_bps × 2 이고, 저장소가 인용하는 총 왕복 비용은 20bp다.
+        assumed = float(settings.execution.get("slippage_bps", 2.5)) * 2
+        print(
+            f"\n왕복 스프레드 실측(전 종목 중앙값) {overall * 2:.1f}bp "
+            f"vs 가정 slippage 왕복 {assumed:.1f}bp / 총비용 가정 20bp — "
+            f"{'가정보다 비싸다' if overall * 2 > assumed else '가정 범위 안'}"
+        )
+
+    print(f"\n원장 기록: {written}줄 → {out_path}")
+    if dropped:
+        print(f"이상치 배제(ask<=bid 등): {len(set(dropped))}종목 {len(dropped)}건 {sorted(set(dropped))}")
+    if empty:
+        # US 심볼에서 Toss 호가가 실데이터를 주는지는 아직 미검증이다 — 빈 응답이면
+        # 되는 척하지 않고 여기 그대로 드러낸다.
+        us_empty = sorted({s for s in empty if market_of_symbol(s) == "US"})
+        print(f"호가 응답 없음: {len(set(empty))}종목 {len(empty)}건 {sorted(set(empty))}")
+        if us_empty:
+            print(f"  ↳ US 응답 없음: {us_empty} — Toss 호가가 US 실데이터를 주는지 미확인")
+    if failed:
+        syms = sorted({s for s, _ in failed})
+        print(f"조회 실패: {len(syms)}종목 {len(failed)}건 {syms} (사유 예: {failed[0][1]})")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="quant")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -3746,6 +3881,20 @@ def main() -> None:
     p_kiwoom_probe.add_argument("--symbol", default="005930", help="기본: 삼성전자 (해외주식 실시간 지원 여부는 미검증)")
     p_kiwoom_probe.add_argument("--seconds", type=int, default=10)
     p_kiwoom_probe.set_defaults(func=cmd_kiwoom_probe)
+
+    p_spread = sub.add_parser(
+        "spread-sample",
+        help="호가창 스프레드 실측 수집 (측정 전용, 원장 data/ledger/spread.jsonl)",
+    )
+    p_spread.add_argument("--market", choices=["KR", "US"], default=None,
+                          help="심볼 시장 필터. 미지정이면 전부")
+    p_spread.add_argument("--symbols", nargs="*", default=None,
+                          help="기본: 워치리스트 + 전략 앵커 심볼")
+    p_spread.add_argument("--rounds", type=int, default=1, help="반복 라운드 수 (심볼당 라운드당 1회 조회)")
+    p_spread.add_argument("--interval-seconds", type=float, default=1.0,
+                          help="호출 간 최소 간격(초). 0.2 미만은 5 TPS 상한으로 잘린다")
+    p_spread.add_argument("--root", default=None)
+    p_spread.set_defaults(func=cmd_spread_sample)
 
     args = parser.parse_args()
     args.func(args)

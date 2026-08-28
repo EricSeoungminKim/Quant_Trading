@@ -56,6 +56,12 @@
 30 9 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/flow_scan.sh KR >> data/flow_scan.log 2>&1
 0,30 10-14 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/flow_scan.sh KR >> data/flow_scan.log 2>&1
 
+# 호가 스프레드 실측 KR(2026-08-28 신규) — 스캘핑 비용 가정(slippage_bps 2.5,
+# "왕복 20bp")이 전부 추정치라 실측으로 바꾼다. 장중에만 의미가 있으므로 KR
+# 정규장(09:00~15:30) 시간대만, 10분 간격(부하 최소화 — MARKET_DATA 10 TPS 를
+# 엔진과 나눠 쓴다). 측정 전용이라 텔레그램 없음 — 원장에만 쌓인다.
+*/10 10-14 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/spread_sample.sh KR >> data/spread.log 2>&1
+
 # 평일 08:20 KST — 신입사원 AI 트레이더(수습) KR 토론 (2026-08-26 소유자 지시).
 # 아침 리포트(08:00)가 selections 원장에 남긴 서류를 읽고 3역할 LLM 토론으로
 # 판단만 기록한다(producer="ai_trader") — 주문·워치리스트에 닿지 않고, 성적은
@@ -95,6 +101,13 @@
 # 겹치지 않는다.
 0,30 23 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/flow_scan.sh US >> data/flow_scan.log 2>&1
 0,30 0-4 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/flow_scan.sh US >> data/flow_scan.log 2>&1
+
+# 호가 스프레드 실측 US(2026-08-28, KR 항목과 같은 이유) — US 정규장 구간만
+# 10분 간격. 새벽 회차는 한국 달력 익일이라 화~토(2-6). **Toss 호가가 US 실
+# 데이터를 주는지는 아직 미검증이다** — 빈 응답이면 CLI 요약이 "US 응답 없음"
+# 으로 드러내므로, 며칠치 data/spread.log 로 그 사실부터 확인할 것.
+*/10 23 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/spread_sample.sh US >> data/spread.log 2>&1
+*/10 0-4 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/spread_sample.sh US >> data/spread.log 2>&1
 
 # 평일 20:10 KST — 신입사원 AI 트레이더(수습) US 토론. US 개장전 리포트(20:00)
 # 발행 직후 — 서류(선정 원장)가 그때 준비된다. 나머지는 08:20 KR 항목과 동일.
