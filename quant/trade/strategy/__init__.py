@@ -12,6 +12,7 @@ from quant.trade.strategy.mean_reversion import MeanReversionStrategy
 from quant.trade.strategy.news_momentum import NewsMomentumPureShell, NewsMomentumStrategy
 from quant.trade.strategy.news_scalp import NewsScalpStrategy
 from quant.trade.strategy.orb import OpeningRangeBreakoutStrategy
+from quant.trade.strategy.overnight_drift import OvernightDriftShell
 from quant.trade.strategy.orb_scan import OrbScanStrategy
 from quant.trade.strategy.mr_vwap_quiet import MrVwapQuietShell
 from quant.trade.strategy.pullback_impulse import PullbackImpulseShell
@@ -59,6 +60,11 @@ STRATEGY_REGISTRY = {
     # → 저거래량 회귀). 둘 다 5분봉 — 1분봉은 왕복 20bp 에서 산수가 안 맞는다.
     "pullback_impulse": PullbackImpulseShell,
     "mr_vwap_quiet": MrVwapQuietShell,
+    # 오버나이트 드리프트(2026-08-28) — 종가 매수→익일 시가 매도. 문헌 근거
+    # (Lachance RFE 2023: 오버나이트 +12.9%/yr vs 인트라데이 -4.3%/yr) + 왕복
+    # 1회로 비용 대비 최우위. 동시에 **일중 전략들의 벤치마크** — 이걸 못
+    # 이기면 일중 매매를 할 이유가 없다. US ETF 전용 의도.
+    "overnight_drift": OvernightDriftShell,
 }
 
 

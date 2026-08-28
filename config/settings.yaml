@@ -610,6 +610,27 @@ strategies:
       take_profit_pct: 2.0
       exit_deadline_minutes_after_open: 30
 
+  # 오버나이트 드리프트(2026-08-28) — 종가 5분 전 매수 → 익일 개장 5분 내 매도.
+  # 문헌(Lachance RFE 2023 등): 특정 ETF 표본에서 총수익이 사실상 전부 밤에 발생
+  # (오버나이트 +12.9%/yr vs 인트라데이 -4.3%/yr), 비용 후에도 성립 가능 보고.
+  # 왕복 1회로 하루치를 먹어 비용 대비 마진이 우리 후보 중 최고. 동시에 **일중
+  # 전략들의 벤치마크** — 스캘핑이 이걸 못 이기면 일중 매매를 할 이유가 없다.
+  # 진입 필터는 전부 기본 비활성(코드 주석 참고 — 문헌 근거는 무조건 보유이지
+  # 조건부가 아니다. 조건은 표본이 쌓인 뒤 experiments 가 판정한다).
+  overnight_drift:
+    class: overnight_drift
+    enabled: true
+    symbols: [QQQ] # US ETF 전용 의도 — 레버리지(TQQQ)는 갭 리스크 3배라 제외
+    capital_fraction:
+      KR: 0.0
+      US: 1.0
+    validation:
+      status: burn_in # 백테스트 표본 0 — 문헌 인용이지 우리 측정이 아니다
+    params:
+      entry_before_close_minutes: 5
+      exit_after_open_minutes: 5
+      stop_pct: 3.0
+      target_weight: 0.5
   # ── 병렬 스캘핑 실험 (2026-08-28 소유자 지시) ─────────────────────────
   # "스캘핑 전략을 여러 개 병렬로 돌려서, 계속 돌려봤을 때 수익이 나는 전략을
   # 찾자." capital_mode: per_strategy 라 각자 독립 1,000만원으로 같은 조건에서

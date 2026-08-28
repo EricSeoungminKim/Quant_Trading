@@ -1031,7 +1031,12 @@ def _persist_position_meta(ctx: Context, last_signature: str) -> str:
 # 이 집합이 낡지 않도록 tests/test_position_report_wording.py 가 실제 소스에서
 # should_flatten 호출 여부를 세어 대조한다.
 # close_bet(2026-08-25): 수익 원천이 오버나이트 갭 그 자체 — EoD 청산에서 제외.
-_OVERNIGHT_STRATEGIES = frozenset({"cross_momentum", "frgn_accumulate", "mean_reversion", "close_bet"})
+_OVERNIGHT_STRATEGIES = frozenset({
+    "cross_momentum", "frgn_accumulate", "mean_reversion", "close_bet",
+    # overnight_drift(2026-08-28): 종가 매수 → 익일 시가 매도가 전략 정의 자체다.
+    # 누락하면 EoD 강제청산이 진입 당일 포지션을 털어 전략이 무효화된다.
+    "overnight_drift",
+})
 
 
 def _is_overnight(sid: str | None) -> bool:

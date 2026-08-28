@@ -80,7 +80,9 @@ def test_enabled_in_real_config_now_that_tag_wiring_is_done():
     # `strategy-report --trials <활성 스캘핑 수>` 로 신고해 Deflated Sharpe 보정을
     # 받아야 한다(quant/backtest/statistics.py). 이 테스트가 계속 정확한 수를
     # 강제하는 이유이기도 하다.
+    # 2026-08-28 저녁: overnight_drift 추가(소유자 위임 "알아서 수익률 높게" —
+    # 문헌·비용 근거 최우위 + 일중 전략들의 벤치마크 역할). 7종 체제.
     assert ids == {
         "news_momentum", "scalp_1m", "close_bet", "frgn_accumulate",
-        "pullback_impulse", "mr_vwap_quiet",
+        "pullback_impulse", "mr_vwap_quiet", "overnight_drift",
     }, "활성 전략 목록이 바뀌었다 — 늘리려면 소유자 결정 + 시행 횟수 재신고"
