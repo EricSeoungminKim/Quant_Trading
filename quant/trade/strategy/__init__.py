@@ -5,11 +5,11 @@ from quant.core.models import market_of
 from quant.trade.strategy.confluence import ConfluenceStrategy
 from quant.trade.strategy.cross_momentum import CrossMomentumStrategy
 from quant.trade.strategy.donchian import DonchianStrategy, DonchianPureShell
-from quant.trade.strategy.close_bet import CloseBetStrategy
-from quant.trade.strategy.frgn_accumulate import FrgnAccumulateStrategy
+from quant.trade.strategy.close_bet import CloseBetPureShell, CloseBetStrategy
+from quant.trade.strategy.frgn_accumulate import FrgnAccumulatePureShell, FrgnAccumulateStrategy
 from quant.trade.strategy.intraday_scan import IntradayScanStrategy
 from quant.trade.strategy.mean_reversion import MeanReversionStrategy
-from quant.trade.strategy.news_momentum import NewsMomentumStrategy
+from quant.trade.strategy.news_momentum import NewsMomentumPureShell, NewsMomentumStrategy
 from quant.trade.strategy.news_scalp import NewsScalpStrategy
 from quant.trade.strategy.orb import OpeningRangeBreakoutStrategy
 from quant.trade.strategy.orb_scan import OrbScanStrategy
@@ -40,6 +40,16 @@ STRATEGY_REGISTRY = {
     # 종가배팅(2026-08-25, 전략 4종 체제 ③) — 마감 강한 종목을 종가에 사서
     # 다음날 시초 갭에 판다. CLOSE_BET 태그(장중 리포트 채점)만 소비.
     "close_bet": CloseBetStrategy,
+    # 순수함수 계약 이전 완료분(2026-08-28, 소유자 지시 "전략만 바꿔끼면 나머지
+    # 사이클이 알아서 번역해 스며들게"). donchian_pure/scalp_1m_pure 와 같은
+    # 관례로 **별도 이름 등록만** 한다 — settings.yaml 은 건드리지 않으므로
+    # 등록 자체는 동작을 바꾸지 않는다(선택되지 않으면 인스턴스화되지 않는다).
+    # 전환은 규칙 동결기간(2026-08-28~) 이후 사람이 명시적으로 결정한다.
+    # 각 순수 구현의 docstring 에 "아직 못 하는 것"(재시작 복구·고아 포지션·
+    # 조회 최적화 소실)이 정직하게 적혀 있다 — 전환 전에 반드시 읽을 것.
+    "news_momentum_pure": NewsMomentumPureShell,
+    "frgn_accumulate_pure": FrgnAccumulatePureShell,
+    "close_bet_pure": CloseBetPureShell,
 }
 
 
@@ -54,6 +64,12 @@ STRATEGY_REGISTRY = {
 # _VALID_TAGS 중 여기 다른 키에 없는 것 전부) — `universe: watchlist`로 유니버스
 # 전체를 심볼로 받지만 `tags_of`를 아예 모르는 전략들이다. 이 전략들은 태그와
 # 무관하게 유니버스에 들어온 심볼이면 다 감시 대상이라 "전체감시"로 뭉뚱그린다.
+# **`_pure` 껍질은 이 표에 넣지 않는다**(2026-08-28): 전략 id 는 settings.yaml 의
+# **설정 키**이고 순수 구현으로의 전환은 그 블록의 `class:` 만 바꾸는 것이라,
+# id 는 그대로 "news_momentum" 이다. 여기에 `_pure` 를 넣으면 텔레그램 편입
+# 알림에 실제로 감시하지 않는 이름이 표시된다(이 표는 사용자에게 보이는
+# 배정 표시다). 반면 아래 `_TAGS_OF_CONSUMERS` 는 **클래스** 집합이라 껍질을
+# 반드시 포함해야 한다 — 두 목록의 단위가 다르다.
 TAG_ASSIGNMENT: dict[str, list[str]] = {
     # NewsMomentumStrategy._EVENT_TAG — 뉴스 촉매 있는 종목만 개장 즉시 진입.
     "EVENT": ["news_momentum"],
@@ -122,7 +138,14 @@ def build_strategies(
     무조건 넘기면 TypeError가 난다."""
     markets = market_of(cfg.get("universe", {}))
     strategies = []
-    _TAGS_OF_CONSUMERS = (NewsMomentumStrategy, NewsScalpStrategy, FrgnAccumulateStrategy, CloseBetStrategy)
+    # 순수 껍질도 같은 태그 소비자다 — **누락하면 `tags_of`가 전달되지 않아 후보가
+    # 0개가 되고 전략이 조용히 아무것도 하지 않는다**(2026-08-28 이관 워커들이
+    # 배선 위험으로 명시). `TAG_ASSIGNMENT`와 이 튜플의 일치는
+    # `tests/test_tag_assignment.py`가 대조한다.
+    _TAGS_OF_CONSUMERS = (
+        NewsMomentumStrategy, NewsScalpStrategy, FrgnAccumulateStrategy, CloseBetStrategy,
+        NewsMomentumPureShell, FrgnAccumulatePureShell, CloseBetPureShell,
+    )
     for strat_id, strat_cfg in cfg.get("strategies", {}).items():
         if not strat_cfg.get("enabled", True):
             continue

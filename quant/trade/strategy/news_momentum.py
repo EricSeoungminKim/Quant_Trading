@@ -143,11 +143,14 @@
 from __future__ import annotations
 
 from datetime import date as dtdate, datetime, timedelta
+from typing import Any, Mapping
 
 from quant.core.ports import Context
 from quant.core.models import Position, Signal, SignalAction, market_of_symbol
+from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
 from quant.trade.indicators.breadth import ANCHOR_SYMBOLS, anchor_drawdown
 from quant.trade.strategy.orb_scan import _SESSION_OPEN
+from quant.trade.strategy.shell import PureStrategyShell
 
 _EVENT_TAG = "EVENT"
 # 진입 자격은 EVENT 뿐이지만, 상한에 걸려 고를 때는 TREND 를 함께 가진 쪽을
@@ -589,3 +592,455 @@ class NewsMomentumStrategy:
                 state_update={"partial_taken": True},
             )
         return None
+
+
+class NewsMomentumPureStrategy:
+    """`NewsMomentumStrategy`와 동일한 판단을 하는 순수함수 구현 — 엔진 분리 설계
+    Phase A(`docs/superpowers/specs/2026-08-19-engine-separation-design.md`),
+    `donchian_pure`·`scalp_1m_pure`에 이은 세 번째 이전 대상.
+
+    `decide(snap, state)`는 `ctx`도 인스턴스 가변 상태도 읽지 않는다 — 세션 롤
+    기록·세션 진입 카운트·"오늘 이미 처리함" 마킹·진입 컨텍스트·열린 랏 상태가
+    전부 `state`↔`next_state`로만 다닌다.
+
+    **왜 `NewsMomentumStrategy` 인스턴스(`self._legacy`)를 들고 있는가.**
+    `scalp_1m_pure`와 같은 이유다: 생성자의 파라미터 파싱·검증(`ValueError`)과
+    후보 우선순위(`_rank_candidates` — TREND 동반 우선, 동점은 심볼 오름차순)는
+    이미 `ctx`도 가변 상태도 읽지 않는 순수 계산이라, 손으로 다시 옮기면 전사
+    오류로 동치성이 몰래 깨질 위험만 크다. 그래서 **재구현하지 않고 그대로
+    재사용**한다. `self._legacy`의 `on_cycle`은 **절대 호출하지 않는다** —
+    오직 순수 헬퍼/파라미터 재사용 용도다.
+
+    ## 레거시 가변 상태 → `next_state` 매핑 (전수)
+
+    | # | 레거시 가변 상태 | 무엇을 결정하나 | `next_state` 키 |
+    |---|---|---|---|
+    | 1 | `_session_date: {market: date}` | 세션 롤 감지, 진입 랏의 `session` 값 | `session_date` |
+    | 2 | `_entries_this_session: {market: int}` | 세션 진입 종목 수 상한(`max_entries_per_session`) | `entries_this_session` |
+    | 3 | `_entered_today: set[symbol]` | 종목당 세션 1회 + 개장확인 실패 마킹 | `entered_today` |
+    | 4 | `_pending: {symbol: dict}` | 신호 생성~체결 사이의 진입 컨텍스트 | `pending` |
+    | 5 | `Position.meta["lots"][id]`의 `entry`/`entered_at`/`partial_taken`/`session` | 청산 사다리 전부(손절·목표가·타임아웃·부분익절·오버나잇) | `open` |
+    | 6 | `last_reject: {symbol: str}` | **판단에 안 쓰인다** — 텔레그램 진단 문자열 | 이관 안 함(아래 1번) |
+    | 7 | `market_risk_verdict: {market: bool}` | **판단에 안 쓰인다** — shadow 표본 관측(쓰기 전용) | 이관 안 함(아래 1번) |
+    | 8 | `_anchor_cache: {market: (분키, bars)}` | 조회 최적화(분 경계 캐시) | 이관 안 함(아래 2번) |
+    | 9 | `_bars_cache: {symbol: (분키, bars)}` | 조회 최적화(개장확인 봉) | 이관 안 함(아래 2번) |
+
+    5번은 레거시에서 유일하게 인스턴스 밖(`Position.meta`)에 살던 상태다. 이
+    순수 버전은 `Position.meta`에 **아무것도 쓰지 않는다** — `open` 키로만
+    들고 다닌다(`donchian_pure`/`scalp_1m_pure`와 동일). `SCALE_OUT` 신호의
+    `state_update={"partial_taken": True}`는 기존 루프 메커니즘과의 하위호환을
+    위해 그대로 채우지만, 이 전략 스스로는 그걸 다시 읽지 않는다.
+
+    **구조적으로 없어지는 버그**: `_entered_today` 등록과 `_entries_this_session`
+    증가가 `return Signal(...)`과 **같은 반환값의 두 필드**(`signals`/`next_state`)로
+    묶여, "카운터만 올라가고 신호는 안 나갔다"거나 그 반대인 경로가 코드 구조상
+    존재할 수 없다(레거시는 별개 문장이라 향후 리팩터링이 둘을 갈라놓을 여지가
+    있었다). 또 매 `decide()`가 인자로 받은 `state`의 **사본**만 고쳐 반환하므로
+    (원본 dict/set을 in-place mutate 하지 않는다) 같은 인스턴스를 재진입 호출해도
+    사이클끼리 상태가 오염될 수 없다.
+
+    ## 아직 못 하는 것 (정직하게)
+
+    1. **`last_reject`/`market_risk_verdict`가 사라진다.** 둘 다 레거시가
+       판단에 다시 읽지 않는 관측용 사이드채널이다(거부 사유 텔레그램 표기,
+       리스크오프 shadow 표본). 신호 자체는 동일하지만, 이 순수 구현을 실제로
+       배선하면 그 진단 표시는 비게 된다. 관측을 살리려면 `Decision`에 진단
+       필드를 더하는 계약 변경이 필요하다 — 이번 범위 밖이다.
+    2. **조회 최적화(분 경계 캐시)가 사라진다.** `DataNeeds`는 사이클마다 정적
+       으로 같은 것을 선언하므로, 껍질은 같은 1분봉이 반복돼도 매 사이클 재조회
+       한다. 데이터 내용은 동일하므로(완성봉만) **신호 정확성에는 영향이 없다**
+       — 순수한 조회 횟수 회귀다. 다만 기본 설정(`open_confirm_mode="off"` +
+       `market_risk_gate_mode="shadow"`)에서는 심볼 봉을 아예 선언하지 않으므로
+       (`requirements()` 참고) 실제 증가분은 시장당 앵커 1건뿐이다.
+    3. **재시작 복구(`_ensure_state`의 `avg_cost` 폴백)는 이번 범위 밖이다** —
+       `StrategySnapshot.lots`는 내 lot 필드만 주지 `pos.avg_cost` 같은 심볼
+       합산 필드를 주지 않는다(`donchian_pure`/`scalp_1m_pure`와 동일한 한계).
+       레거시는 이 경로에서 `entered_at`을 `max_hold_minutes`만큼 과거로 잡아
+       즉시 시간 손절을 유도하는데, 순수 쪽은 `pending`에도 `open`에도 없는
+       심볼을 **그냥 건너뛴다**. 즉 프로세스 재시작 뒤 남은 포지션에 대해 두
+       구현의 동작이 갈린다(레거시=즉시 청산 시도, 순수=관리 안 함).
+    4. **"고아 포지션"을 볼 수 없다.** 레거시 `on_cycle`은
+       `ctx.broker.positions()` 전체를 돌며 `_owns()`로 유니버스에서 빠진 뒤에도
+       남은 보유분까지 관리한다. `DataNeeds`는 정적으로 `self.symbols`만 선언
+       하므로 이 구현은 그런 심볼을 볼 수조차 없다(`scalp_1m_pure` 4번과 동일,
+       관심종목 기반 전략 공통 문제).
+    5. **`_owns()`의 3단 소유권 판정을 스냅샷만으로는 재현할 수 없다.**
+       `snap.lots[symbol]`은 `pos.lot(self.id)`를 `pos.is_open`(심볼 합산 qty)
+       게이트로 채운 것이라 "내 lot 은 없지만 다른 전략이 들고 있어 합산 qty>0"과
+       "방금 내가 체결됐는데 lot qty 필드가 아직 없음"을 구분할 수 없다. 이
+       구현은 `pending`/`open`(내가 실제로 진입 시도한 심볼만)으로 그 모호성을
+       우회한다 — 위 3·4번과 같은 "복구 불가면 건너뛴다" 경로로 흡수된다.
+    6. **관리 순서가 포지션 딕셔너리 순서가 아니라 `self.symbols` 순서다.**
+       레거시는 `positions.items()`(브로커가 준 삽입 순서)를 돈다. 신호 **집합**은
+       같지만 여러 심볼이 같은 사이클에 청산되면 리스트 순서가 다를 수 있다.
+    7. Phase A 공통 한계: `next_state`는 체결 확인 여부와 무관하게 매 사이클
+       그대로 적용된다(`shell.py` docstring). risk 거부/미체결에도 진입 카운터와
+       "오늘 처리함" 마킹은 되돌릴 수 없다 — **레거시도 동일하게 취약하므로
+       동치성은 유지된다**.
+
+    ## 손으로 재구현한 것 (동치성 위험 구간 — 테스트가 고정한다)
+
+    `_market_risk_note`/`_confirm_open`/`_check_entry_for`는 레거시에서
+    `ctx`를 인자로 받는 형태라 그대로 재사용할 수 없어 스냅샷 기반으로 다시
+    썼다(각각 20줄 안팎, 임계값 계산 자체는 `anchor_drawdown` 같은 기존 순수
+    함수에 위임). `tests/test_news_momentum_pure.py`가 세 곳 전부를
+    레거시와 나란히 대조한다.
+    """
+
+    def __init__(self, symbols: list[str], params: dict, market: str = "US",
+                 id: str = "news_momentum_pure", tags_of: dict[str, list[str]] | None = None):
+        self.id = id
+        self.symbols = list(symbols)
+        self.market = market
+        self.tags_of = tags_of
+
+        # 파라미터 파싱/검증은 레거시에 위임한다(클래스 docstring "왜 self._legacy"
+        # 절). `on_cycle`은 절대 호출하지 않는다. `tags_of`도 같이 넘겨 `_rank_candidates`
+        # 재사용이 성립하게 한다(그 메서드가 `self.tags_of`를 읽는다).
+        self._legacy = NewsMomentumStrategy(
+            list(symbols), params, market=market, id=f"{id}__helper", tags_of=tags_of,
+        )
+
+        self.entry_window_seconds = self._legacy.entry_window_seconds
+        self.max_entries_per_session = self._legacy.max_entries_per_session
+        self.stop_loss_pct = self._legacy.stop_loss_pct
+        self.partial_take_pct = self._legacy.partial_take_pct
+        self.partial_fraction = self._legacy.partial_fraction
+        self.full_take_pct = self._legacy.full_take_pct
+        self.max_hold_minutes = self._legacy.max_hold_minutes
+        self.flatten_minutes = self._legacy.flatten_minutes
+        self.risk_budget_pct = self._legacy.risk_budget_pct
+        self.max_leverage = self._legacy.max_leverage
+        self.market_risk_gate_mode = self._legacy.market_risk_gate_mode
+        self.market_risk_max_drawdown_pct = self._legacy.market_risk_max_drawdown_pct
+        self.open_confirm_mode = self._legacy.open_confirm_mode
+        self.open_confirm_minutes = self._legacy.open_confirm_minutes
+
+    # ------------------------------------------------------------------ 계약
+
+    # 앵커 봉 조회 개수 — 레거시 `_get_anchor_bars`의 `history(anchor, "1m", 400)`와
+    # 같은 값이어야 한다(앵커 당일 시가를 잡으려면 세션 전체를 덮어야 한다).
+    _ANCHOR_LOOKBACK_BARS = 400
+
+    def requirements(self) -> DataNeeds:
+        """**실제로 쓰는 것만** 선언한다 — 레거시가 모드별로 조회 자체를
+        건너뛰는 것(`open_confirm_mode="off"`는 `_get_symbol_bars`를 부르지
+        않고, `market_risk_gate_mode="off"`는 앵커를 조회하지 않는다)을 정적
+        선언으로 옮긴 것이다. 두 모드 다 생성자 이후 불변이라 정적 선언으로
+        안전하게 표현된다.
+
+        앵커 심볼이 `self.symbols`에도 들어 있으면 `(symbol, "1m")` 키가 겹친다 —
+        앵커 선언을 **뒤에** 두어 더 긴 lookback(400)이 이기게 한다(짧은 60개만
+        받으면 장중 늦은 시각에 앵커의 당일 시가 봉이 잘려 `anchor_drawdown`이
+        엉뚱한 기준가를 잡는다). 개장확인 쪽은 봉이 더 많아도 판정이 같다
+        (세션 첫 봉만 본다)."""
+        bars: tuple[tuple[str, str, int], ...] = ()
+        if self.open_confirm_mode != "off":
+            bars += tuple(
+                (s, "1m", NewsMomentumStrategy._CONFIRM_LOOKBACK_BARS) for s in self.symbols
+            )
+        if self.market_risk_gate_mode != "off":
+            markets = sorted({market_of_symbol(s) for s in self.symbols})
+            anchors = [ANCHOR_SYMBOLS[m] for m in markets if m in ANCHOR_SYMBOLS]
+            bars += tuple((a, "1m", self._ANCHOR_LOOKBACK_BARS) for a in anchors)
+        return DataNeeds(bars=bars, quotes=tuple(self.symbols), needs_positions=True)
+
+    def decide(self, snap: StrategySnapshot, state: Mapping[str, Any]) -> Decision:
+        session_date: dict[str, dtdate] = dict(state.get("session_date", {}))
+        entries_this_session: dict[str, int] = dict(state.get("entries_this_session", {}))
+        entered_today: set[str] = set(state.get("entered_today", ()))
+        pending: dict[str, dict] = {s: dict(p) for s, p in state.get("pending", {}).items()}
+        open_: dict[str, dict] = {s: dict(o) for s, o in state.get("open", {}).items()}
+
+        signals: list[Signal] = []
+
+        # 1) 포지션 관리 — 레거시와 **같은 순서로 먼저** 돈다(레거시는 세션 롤
+        #    감지가 2)단계 안에 있으므로 관리가 앞선다). self.symbols 만 본다
+        #    (클래스 docstring "아직 못 하는 것" 4번).
+        for symbol in self.symbols:
+            if symbol not in open_:
+                if symbol in snap.lots and symbol in pending:
+                    open_[symbol] = pending.pop(symbol)
+                else:
+                    continue  # 내 것이 아니거나 복구 불가 — 관리하지 않는다.
+            elif symbol not in snap.lots:
+                open_.pop(symbol, None)  # 외부적으로 청산됨 — 정리.
+                continue
+            signal = self._manage(symbol, open_[symbol], snap)
+            if signal is not None:
+                signals.append(signal)
+
+        next_state = {
+            "session_date": session_date, "entries_this_session": entries_this_session,
+            "entered_today": entered_today, "pending": pending, "open": open_,
+        }
+
+        # 2) EVENT 태그 대상만 진입 후보. 태그 정보가 없으면 후보가 있을 수 없다
+        #    — 레거시와 동일하게 즉시 빠진다(세션 롤 감지도 함께 건너뛴다).
+        if not self.tags_of:
+            return Decision(signals=tuple(signals), next_state=next_state)
+        candidates = [s for s in self.symbols if _EVENT_TAG in self.tags_of.get(s, [])]
+        if not candidates:
+            return Decision(signals=tuple(signals), next_state=next_state)
+
+        markets_present = sorted({market_of_symbol(s) for s in candidates})
+        for market in markets_present:
+            if not snap.market_open.get(market, False):
+                continue
+            tz, session_open = _SESSION_OPEN[market]
+            now_local = snap.now.astimezone(tz)
+            today = now_local.date()
+            if today != session_date.get(market):
+                session_date[market] = today
+                # 세션 롤은 시장별이다(레거시 주석 그대로) — 한쪽 시장이 새 날이
+                # 됐다고 다른 시장 종목의 기록을 지우면 재진입 창이 다시 열린다.
+                entered_today = {s for s in entered_today if market_of_symbol(s) != market}
+                next_state["entered_today"] = entered_today
+                entries_this_session[market] = 0
+                # 레거시는 `positions.get(s).is_open`(심볼 합산, 체결 확정)으로
+                # 살아있는 pending 만 남긴다 — `snap.lots`가 정확히 같은 조건으로
+                # 채워지므로(shell.py) 그대로 대응한다.
+                for s in [
+                    s for s in pending
+                    if market_of_symbol(s) == market and s not in snap.lots
+                ]:
+                    pending.pop(s, None)
+
+            if entries_this_session.get(market, 0) >= self.max_entries_per_session:
+                continue
+
+            session_open_dt = datetime.combine(today, session_open, tzinfo=tz)
+            seconds_since_open = (now_local - session_open_dt).total_seconds()
+            if not 0 <= seconds_since_open <= self.entry_window_seconds:
+                continue
+
+            # 시장 리스크오프 게이트 — 시장당 1회 판정(후보 수와 무관).
+            market_blocked, market_note = self._market_risk_note(market, snap)
+
+            market_candidates = self._legacy._rank_candidates(
+                [s for s in candidates if market_of_symbol(s) == market]
+            )
+            for symbol in market_candidates:
+                if entries_this_session.get(market, 0) >= self.max_entries_per_session:
+                    break
+                if symbol in open_ or symbol in entered_today:
+                    continue  # 세션당 1회 — 재진입 없음
+                if market_blocked:
+                    continue
+                confirm_status, confirm_note = self._confirm_open(
+                    symbol, snap, session_open_dt, now_local,
+                )
+                if confirm_status == "wait":
+                    continue  # 아직 판정 불가 — 창이 남아 있는 한 다음 사이클 재시도
+                if confirm_status == "fail":
+                    # "이미 진입함"과 동일 시맨틱 재사용(레거시와 같다).
+                    entered_today.add(symbol)
+                    continue
+                signal = self._check_entry_for(
+                    symbol, market, snap, session_date, pending, entered_today,
+                    entries_this_session, market_note=market_note, confirm_note=confirm_note,
+                )
+                if signal is not None:
+                    signals.append(signal)
+
+        return Decision(signals=tuple(signals), next_state=next_state)
+
+    # ------------------------------------------------------------ 시장 리스크오프
+
+    def _market_risk_note(self, market: str, snap: StrategySnapshot) -> tuple[bool, str]:
+        """`NewsMomentumStrategy._market_risk_note`의 스냅샷 재구현 — 임계 판정
+        자체는 레거시와 같은 순수 함수(`anchor_drawdown`)에 위임한다. off 모드는
+        `requirements()`가 앵커를 아예 선언하지 않으므로 조회 비용도 0이다."""
+        if self.market_risk_gate_mode == "off":
+            return False, ""
+        anchor = ANCHOR_SYMBOLS.get(market)
+        if anchor is None:
+            return False, ""
+        bars = snap.bars.get((anchor, "1m"))
+        dd = anchor_drawdown(bars) if bars is not None else None
+        if dd is None:
+            return False, ""  # 게이트 부재(앵커 데이터 없음) — 기존 동작
+        if dd > -self.market_risk_max_drawdown_pct:
+            return False, ""
+        note = f" [시장:리스크오프 {anchor} {dd:+.2f}%]"
+        return (self.market_risk_gate_mode == "block"), note
+
+    # ------------------------------------------------------------------ 개장 확인
+
+    def _confirm_open(
+        self, symbol: str, snap: StrategySnapshot, session_open_dt: datetime,
+        now_local: datetime,
+    ) -> tuple[str, str]:
+        """`NewsMomentumStrategy._confirm_open`의 스냅샷 재구현. 반환 (status, note):
+        "ok"(진입 가능) / "wait"(아직 판정 불가, 재시도) / "fail"(오늘 이 종목은
+        확인 실패, 재시도 없음). off 모드는 봉을 보지 않고 즉시 "ok"."""
+        if self.open_confirm_mode == "off":
+            return "ok", ""
+
+        bars = snap.bars.get((symbol, "1m"))
+        if bars is None or len(bars) == 0:
+            return "wait", ""  # 데이터 미도착 — 폴백 없음(진입하지 않는 쪽이 기본)
+        session_bars = bars[bars.index >= session_open_dt]
+        if len(session_bars) == 0:
+            return "wait", ""
+        open_bar = session_bars.iloc[0]
+        day_open = float(open_bar["open"])
+
+        if self.open_confirm_mode == "bar":
+            if float(open_bar["close"]) > day_open:
+                return "ok", " [개장확인:bar]"
+            return "fail", ""
+
+        elapsed_min = (now_local - session_open_dt).total_seconds() / 60
+        if elapsed_min < self.open_confirm_minutes:
+            return "wait", ""
+        quote = snap.quotes.get(symbol)
+        if quote is None or quote.price <= 0:
+            return "wait", ""
+        if quote.price > day_open:
+            return "ok", " [개장확인:above_open]"
+        return "fail", ""
+
+    # ------------------------------------------------------------------ 진입
+
+    def _check_entry_for(
+        self, symbol: str, market: str, snap: StrategySnapshot,
+        session_date: dict[str, dtdate], pending: dict[str, dict], entered_today: set[str],
+        entries_this_session: dict[str, int], *, market_note: str = "", confirm_note: str = "",
+    ) -> Signal | None:
+        """`NewsMomentumStrategy._check_entry_for`의 스냅샷 재구현 — 사이징/손절
+        수식과 사유 문자열은 한 글자도 다르지 않아야 한다(동치 테스트가 `reason`
+        까지 비교한다). 상태 갱신은 인자로 받은 이번 사이클 로컬 사본에만 한다."""
+        quote = snap.quotes.get(symbol)
+        if quote is None or quote.price <= 0:
+            return None
+        entry_price = quote.price
+
+        risk_pct = self.stop_loss_pct / 100
+        target_weight = min((self.risk_budget_pct / 100) / risk_pct, self.max_leverage)
+        stop = entry_price * (1 - risk_pct)
+
+        # 레거시의 `qty_at_signal`/`strategy` 는 `Position.meta` 랏 장부 필드라
+        # 여기서는 만들지 않는다 — 이 구현은 `Position.meta`에 쓰지 않고, 관리
+        # 판정도 이 네 키만 읽는다.
+        pending[symbol] = {
+            "entry": entry_price,
+            "entered_at": snap.now.isoformat(),
+            "partial_taken": False,
+            "session": session_date[market].isoformat(),
+        }
+        entered_today.add(symbol)
+        entries_this_session[market] = entries_this_session.get(market, 0) + 1
+
+        return Signal(
+            strategy_id=self.id,
+            symbol=symbol,
+            action=SignalAction.ENTER_LONG,
+            target_weight=target_weight,
+            reason=(
+                f"뉴스 모멘텀 개장진입(EVENT): {symbol} w={target_weight:.2f} "
+                f"손절 -{self.stop_loss_pct:g}%{market_note}{confirm_note}"
+            ),
+            stop=stop,
+        )
+
+    # ------------------------------------------------------------------ 관리
+
+    def _should_flatten(self, market: str, snap: StrategySnapshot) -> bool:
+        """`Clock._should_flatten`(quant/core/clock.py) 재현 — donchian_pure/
+        scalp_1m_pure와 동일 공식(`StrategySnapshot.cadence_minutes` 원재료 사용)."""
+        mtc = snap.minutes_to_close.get(market)
+        if mtc is None:
+            return False
+        if mtc <= 0:
+            return False  # 연속 거래 종료(동시호가) — 원본과 동일하게 False
+        return mtc - snap.cadence_minutes < self.flatten_minutes
+
+    def _manage(self, symbol: str, lot: dict, snap: StrategySnapshot) -> Signal | None:
+        """`lot`은 `decide()`가 만든 이번 사이클 로컬 사본(`open_[symbol]`)이다 —
+        여기서의 in-place 갱신은 `next_state`에만 반영되고 `Position.meta`는
+        건드리지 않는다. 판정 순서·사유 문자열은 레거시 `_manage_position`과
+        동일하다(오버나잇 → EoD → 손절 → 목표가 → 타임아웃 → 부분익절)."""
+        quote = snap.quotes.get(symbol)
+        if quote is None:
+            return None
+        price = quote.price
+        entry = lot["entry"]
+        market = market_of_symbol(symbol)
+        tz, _ = _SESSION_OPEN[market]
+
+        entry_session = lot.get("session")
+        if entry_session and entry_session != snap.now.astimezone(tz).date().isoformat():
+            return Signal(
+                strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
+                target_weight=0.0, exit_fraction=1.0,
+                reason=f"세션 롤 강제청산(오버나잇 금지): 진입 {entry_session} 현재={price:.2f}",
+            )
+        if self._should_flatten(market, snap):
+            return Signal(
+                strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
+                target_weight=0.0, exit_fraction=1.0,
+                reason=f"EoD 청산: entry={entry:.2f} 현재={price:.2f}",
+            )
+
+        stop_price = entry * (1 - self.stop_loss_pct / 100)
+        if price <= stop_price:
+            return Signal(
+                strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
+                target_weight=0.0, exit_fraction=1.0,
+                reason=(
+                    f"손절(-{self.stop_loss_pct:g}%): entry={entry:.2f} "
+                    f"stop={stop_price:.2f} 현재={price:.2f}"
+                ),
+            )
+
+        full_price = entry * (1 + self.full_take_pct / 100)
+        if price >= full_price:
+            return Signal(
+                strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
+                target_weight=0.0, exit_fraction=1.0,
+                reason=(
+                    f"목표가 도달(+{self.full_take_pct:g}%): entry={entry:.2f} "
+                    f"현재={price:.2f} 잔량 전량 청산"
+                ),
+            )
+
+        entered_at = lot.get("entered_at")
+        if entered_at and self.max_hold_minutes:
+            elapsed_min = (snap.now - datetime.fromisoformat(entered_at)).total_seconds() / 60
+            if elapsed_min >= self.max_hold_minutes:
+                return Signal(
+                    strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
+                    target_weight=0.0, exit_fraction=1.0,
+                    reason=(
+                        f"보유시간 초과({elapsed_min:.1f}분 >= {self.max_hold_minutes:g}분): "
+                        f"entry={entry:.2f} 현재={price:.2f} 잔량 청산"
+                    ),
+                )
+
+        partial_price = entry * (1 + self.partial_take_pct / 100)
+        if not lot.get("partial_taken") and price >= partial_price:
+            lot["partial_taken"] = True
+            return Signal(
+                strategy_id=self.id, symbol=symbol, action=SignalAction.SCALE_OUT,
+                target_weight=0.0, exit_fraction=self.partial_fraction,
+                reason=(
+                    f"부분 익절(+{self.partial_take_pct:g}%): entry={entry:.2f} "
+                    f"현재={price:.2f} {self.partial_fraction * 100:.0f}% 청산"
+                ),
+                state_update={"partial_taken": True},
+            )
+        return None
+
+
+class NewsMomentumPureShell(PureStrategyShell):
+    """`STRATEGY_REGISTRY`/`build_strategies`가 기존 전략과 같은 방식으로
+    (`cls(symbols=..., params=..., market=..., id=..., tags_of=...)`) 생성할 수
+    있게 하는 얇은 팩토리 — `DonchianPureShell`/`Scalp1mPureShell`과 동일 패턴에
+    `tags_of` 하나가 더 붙는다(이 전략은 태그 소비자다)."""
+
+    def __init__(self, symbols: list[str], params: dict, market: str = "US",
+                 id: str = "news_momentum_pure", tags_of: dict[str, list[str]] | None = None):
+        super().__init__(
+            NewsMomentumPureStrategy(symbols, params, market=market, id=id, tags_of=tags_of)
+        )

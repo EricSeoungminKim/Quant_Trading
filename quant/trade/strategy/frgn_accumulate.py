@@ -82,10 +82,13 @@ manager.py` `_approve_entry_per_strategy`/`approve` 참고).
 from __future__ import annotations
 
 from datetime import date as dtdate
+from typing import Any, Mapping
 
 from quant.core.ports import Context
 from quant.core.models import Signal, SignalAction, market_of_symbol
+from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
 from quant.trade.strategy.orb_scan import _SESSION_OPEN
+from quant.trade.strategy.shell import PureStrategyShell
 
 _FRGN_TAG = "FRGN"
 _FRGN_EXIT_TAG = "FRGN_EXIT"
@@ -210,4 +213,230 @@ class FrgnAccumulateStrategy:
             strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
             target_weight=0.0, exit_fraction=1.0,
             reason=f"외국인 이탈(FRGN_EXIT) 연속 2일차: {symbol} 잔량 전량 청산",
+        )
+
+
+class FrgnAccumulatePureStrategy:
+    """`FrgnAccumulateStrategy`와 동일한 판단을 하는 순수함수 구현 — 엔진 분리
+    설계 Phase A(`docs/superpowers/specs/2026-08-19-engine-separation-design.md`)
+    세 번째 이전 대상. `donchian_pure`/`scalp_1m_pure`와 같은 원칙: `decide()`는
+    `ctx`도 인스턴스 가변 상태도 읽지 않고, 평가 게이트와 이탈 연속 카운터는
+    전부 `state`↔`next_state`로만 다닌다.
+
+    ## 외국인 수급 데이터 의존을 어떻게 다루는가 — **(b) 이번 범위 밖, 정직하게 기록**
+
+    이 전략에는 **파일 I/O 가 없다**(추측이 아니라 코드 전수 확인). 외국인 수급
+    원장 `data/ledger/frgn_flow.jsonl` 을 읽고 쓰는 코드는 전부 다른 평면에 있다:
+    `quant/control/frgn_flow.py`(원장 append/조회)와
+    `quant/backtest/report_replay.py`(백테스트 재생 시 원장 채우기). 거래 평면의
+    이 전략이 보는 것은 그 수급 판정의 **결과물인 태그**(`FRGN`/`FRGN_EXIT`)뿐이고,
+    그 태그는 `build_strategies(... tags_of=...)`(`quant/trade/strategy/__init__.py`
+    의 `_TAGS_OF_CONSUMERS`)가 **생성자로 주입**한다 — 원천은
+    `quant/apps/assembly.py`가 세션 롤마다 새로 읽는 관심종목 파일 스냅샷
+    (`FileWatchlistUniverse.tags()`)이다. 즉 수급 데이터는 이미 "껍질(조립부)이
+    읽어서 넣는" 구조이고, 전략은 `symbols`/`params`와 동일한 **생성 시점 불변
+    설정**으로 받는다. `decide()`가 같은 `(snap, state)`에 대해 같은 `Decision`을
+    돌려준다는 순수 계약은 그대로 성립한다.
+
+    그래서 (a) `StrategySnapshot` 승격은 **하지 않았다**. 설계 스펙 원안에는
+    `tags: Mapping[str, tuple[str, ...]]` 필드가 있었지만, 껍질
+    (`PureStrategyShell._snapshot`)이 태그를 채우려면 `Context`(`quant/core/ports.py`)
+    자체에 태그 출처가 있어야 한다 — 지금 `Context`는 `clock`/`data`/`broker`
+    셋뿐이다. 그러려면 core 포트 + 껍질 + `quant/apps/assembly.py` 배선을 한꺼번에
+    바꿔야 하고, 그건 이 전략 하나의 이관이 아니라 **계약 전체의 변경**이라
+    (다른 전략·다른 워커의 파일을 건드린다) 이번 범위 밖이다. 승격이 필요해지는
+    시점은 "태그가 사이클 중간에 바뀌어야 할 때"인데, 현재 운영은 세션 롤마다
+    전략 인스턴스를 새로 만들어(`quant/trade/loop.py` 1435행 주석: symbols/tags_of
+    는 이월하지 않는다) 그 요구가 없다.
+
+    ## 가변 상태 전수 조사 → `next_state` 매핑
+
+    | 레거시 인스턴스 가변 상태 | 타입 | `next_state` 키 | 비고 |
+    |---|---|---|---|
+    | `_evaluated_date` | `dict[market, date]` | `"evaluated_date"` | 일 1회 평가 게이트 |
+    | `_exit_streak` | `dict[symbol, int]` | `"exit_streak"` | `FRGN_EXIT` 연속 카운터 |
+    | `last_reject` | `dict[symbol, str]` | **(없음)** | 진단 전용 — 프로덕션 소비처 0건(grep: `tests/`만 읽는다). `scalp_1m_pure` 선례대로 순수 계약에 싣지 않는다 |
+
+    생성 시점 불변(가변 상태 아님, 그대로 인스턴스 속성): `id`, `symbols`,
+    `market`, `tags_of`, `buy_qty`, `eval_after_minutes_after_open`,
+    `exit_fraction_first`.
+
+    ## 왜 레거시 인스턴스(`self._legacy`)를 들고 있는가
+
+    파라미터 파싱·검증(`buy_qty` 양의 정수, `exit_fraction_first` 0<x<1)만
+    위임한다 — `scalp_1m_pure`와 같은 이유로, 이중 유지하면 두 구현의 검증 규칙이
+    조용히 갈라진다. 판정 로직 자체는 40줄 남짓이라 여기서 직접 쓴다(레거시
+    헬퍼는 `self.last_reject`·`self._exit_streak`를 인스턴스에 직접 쓰므로 순수
+    재사용이 불가능하다 — `scalp_1m`의 패턴 판정 헬퍼들이 순수했던 것과 다르다).
+    `self._legacy.on_cycle()`은 **절대 호출하지 않는다**.
+
+    ## 구조적으로 없어지는 버그
+
+    레거시 `_check_exit_for`는 신호를 만들면서 `self._exit_streak`를 **그 자리에서**
+    올린다. 그래서 같은 사이클을 두 번 흘리면(드라이런·리플레이·테스트 재호출)
+    같은 하루에 스트릭이 0→1→전량청산까지 진행돼 버린다 — 관측 행위가 상태를
+    바꾼다. 순수 구현은 인자로 받은 `state`의 **사본**만 고쳐 `Decision`에
+    담아 돌려주므로, 같은 `(snap, state)`로 `decide()`를 몇 번 부르든 결과가
+    같고 원본 상태는 오염되지 않는다. 신호와 상태 변경이 한 반환값의 두 필드로
+    묶여 있어 "상태만 바뀌고 신호는 안 나가는" 경로도 구조상 존재할 수 없다.
+
+    ## 아직 못 하는 것 (정직하게)
+
+    1. `next_state`는 체결 확인과 무관하게 매 사이클 적용된다(Phase A 공통 한계,
+       `shell.py` 참고). risk 거부/미체결에도 "오늘 평가했다"와 이탈 스트릭은
+       되돌릴 수 없다 — **레거시도 동일해 동치성은 유지된다**.
+    2. 재시작 시 상태 유실(오늘 평가를 한 번 더 하거나 이탈 판정이 한 단계
+       늦어짐)은 레거시 모듈 docstring이 이미 인정한 한계 그대로다. 다만 이제
+       상태가 `next_state`로 외부화돼 있어, 껍질/루프가 영속화하기로 하면 이
+       전략 코드를 고치지 않고 해결할 수 있는 자리로 바뀌었다.
+    3. 조회 회귀: `DataNeeds`는 정적 선언이라 껍질이 **매 사이클 전 심볼의
+       현재가**를 조회한다(레거시는 하루 1회, `FRGN` 태그가 붙은 심볼만
+       조회했다). 신호 정확성에는 영향이 없지만(같은 값) 순수한 조회 횟수
+       회귀다 — `scalp_1m_pure`의 같은 한계와 동일한 성질이고, 이 전략도
+       `config/settings.yaml`에 아직 배선돼 있지 않아 당장의 운영 영향은 없다.
+    4. `snap.lots`는 껍질이 `pos.is_open`(심볼 합산 qty>0)일 때만 채운다.
+       레거시는 `positions.get(symbol).lot_qty(self.id)`를 `is_open` 게이트 없이
+       읽으므로, "심볼 합산 qty=0인데 내 lot qty>0"인 모순 상태에서만 두 구현이
+       갈린다(실제로는 lot 합이 곧 심볼 qty라 발생하지 않는다).
+    """
+
+    def __init__(self, symbols: list[str], params: dict, market: str = "US",
+                 id: str = "frgn_accumulate_pure",
+                 tags_of: dict[str, list[str]] | None = None):
+        self.id = id
+        self.symbols = list(symbols)
+        self.market = market
+        self.tags_of = tags_of
+
+        # 파라미터 파싱/검증만 레거시에 위임(클래스 docstring 참고).
+        # on_cycle은 절대 호출하지 않는다.
+        self._legacy = FrgnAccumulateStrategy(
+            list(symbols), params, market=market, id=f"{id}__helper", tags_of=tags_of,
+        )
+        self.buy_qty = self._legacy.buy_qty
+        self.eval_after_minutes_after_open = self._legacy.eval_after_minutes_after_open
+        self.exit_fraction_first = self._legacy.exit_fraction_first
+
+    # ------------------------------------------------------------------ 계약
+
+    def requirements(self) -> DataNeeds:
+        """봉은 쓰지 않는다(이 전략은 가격 지표를 보지 않는다 — 태그 판정만).
+        현재가는 매수 신호의 사유 문구와 "현재가 없음" 게이트에 필요하고,
+        보유 수량(`lots`)은 이탈 판정에 필요하다."""
+        return DataNeeds(quotes=tuple(self.symbols), needs_positions=True)
+
+    def decide(self, snap: StrategySnapshot, state: Mapping[str, Any]) -> Decision:
+        evaluated_date: dict[str, dtdate] = dict(state.get("evaluated_date", {}))
+        exit_streak: dict[str, int] = dict(state.get("exit_streak", {}))
+
+        signals: list[Signal] = []
+        if not self.tags_of:
+            # 레거시 on_cycle 첫 줄과 동치 — 태그 배선 전에는 아무 것도 하지 않는다.
+            return Decision(
+                signals=(),
+                next_state={"evaluated_date": evaluated_date, "exit_streak": exit_streak},
+            )
+
+        markets_present = sorted({market_of_symbol(s) for s in self.symbols})
+        for market in markets_present:
+            if not snap.market_open.get(market, False):
+                continue
+            tz, session_open = _SESSION_OPEN[market]
+            now_local = snap.now.astimezone(tz)
+            today = now_local.date()
+            if evaluated_date.get(market) == today:
+                continue  # 오늘 이미 평가함 — 일 1회
+            minutes_since_open = (
+                now_local.hour * 60 + now_local.minute
+                - (session_open.hour * 60 + session_open.minute)
+            )
+            if minutes_since_open < self.eval_after_minutes_after_open:
+                continue  # 지정 평가 시각 전
+            evaluated_date[market] = today
+            signals.extend(self._evaluate(market, snap, exit_streak))
+
+        return Decision(
+            signals=tuple(signals),
+            next_state={"evaluated_date": evaluated_date, "exit_streak": exit_streak},
+        )
+
+    # ------------------------------------------------------------------ 평가
+
+    def _evaluate(
+        self, market: str, snap: StrategySnapshot, exit_streak: dict[str, int]
+    ) -> list[Signal]:
+        """레거시 `_evaluate`와 같은 순서·같은 분기. `exit_streak`는 `decide()`가
+        만든 **사본**이므로 여기서 고쳐도 호출자의 원본 state는 오염되지 않는다."""
+        signals: list[Signal] = []
+        for symbol in sorted(s for s in self.symbols if market_of_symbol(s) == market):
+            tags = self.tags_of.get(symbol, [])
+            lot = snap.lots.get(symbol)
+            held_qty = float(lot.get("qty", 0.0)) if lot else 0.0
+
+            if _FRGN_EXIT_TAG in tags:
+                signal = self._check_exit_for(symbol, held_qty, exit_streak)
+                if signal is not None:
+                    signals.append(signal)
+            elif _FRGN_TAG in tags:
+                # 매수 재개 — 이전 이탈 연속 카운터를 끊는다.
+                exit_streak[symbol] = 0
+                signal = self._check_buy_for(symbol, snap)
+                if signal is not None:
+                    signals.append(signal)
+            else:
+                # 중립 — 보유 유지("잔여 관망"), 연속 카운터만 끊는다.
+                exit_streak[symbol] = 0
+        return signals
+
+    def _check_buy_for(self, symbol: str, snap: StrategySnapshot) -> Signal | None:
+        quote = snap.quotes.get(symbol)
+        if quote is None or quote.price <= 0:
+            return None  # 현재가 없음(레거시 last_reject — 클래스 docstring 매핑 표)
+        price = quote.price
+        return Signal(
+            strategy_id=self.id,
+            symbol=symbol,
+            action=SignalAction.ENTER_LONG,
+            target_weight=0.0,
+            target_qty=self.buy_qty,
+            reason=f"외국인 적립 매수(FRGN): {symbol} {self.buy_qty:g}주 @ {price:,.0f}",
+        )
+
+    def _check_exit_for(
+        self, symbol: str, held_qty: float, exit_streak: dict[str, int]
+    ) -> Signal | None:
+        if held_qty <= 0:
+            exit_streak[symbol] = 0  # 보유가 없으면 연속 카운터도 의미 없음
+            return None
+        streak = exit_streak.get(symbol, 0)
+        if streak == 0:
+            exit_streak[symbol] = 1
+            return Signal(
+                strategy_id=self.id, symbol=symbol, action=SignalAction.SCALE_OUT,
+                target_weight=0.0, exit_fraction=self.exit_fraction_first,
+                reason=(
+                    f"외국인 이탈(FRGN_EXIT) 1일차: {symbol} 보유 "
+                    f"{self.exit_fraction_first * 100:.0f}% 청산"
+                ),
+            )
+        exit_streak[symbol] = 0
+        return Signal(
+            strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
+            target_weight=0.0, exit_fraction=1.0,
+            reason=f"외국인 이탈(FRGN_EXIT) 연속 2일차: {symbol} 잔량 전량 청산",
+        )
+
+
+class FrgnAccumulatePureShell(PureStrategyShell):
+    """`STRATEGY_REGISTRY`/`build_strategies`가 기존 전략과 같은 방식으로 생성할
+    수 있게 하는 얇은 팩토리 — `donchian.py`의 `DonchianPureShell`,
+    `scalp_1m.py`의 `Scalp1mPureShell`과 동일 패턴. 이 전략은 태그 소비자라
+    `tags_of` kwarg를 추가로 받아 안쪽 순수 구현에 그대로 넘긴다(레지스트리
+    배선 시 `__init__.py`의 `_TAGS_OF_CONSUMERS`에 함께 등록해야 한다)."""
+
+    def __init__(self, symbols: list[str], params: dict, market: str = "US",
+                 id: str = "frgn_accumulate_pure",
+                 tags_of: dict[str, list[str]] | None = None):
+        super().__init__(
+            FrgnAccumulatePureStrategy(symbols, params, market=market, id=id, tags_of=tags_of)
         )

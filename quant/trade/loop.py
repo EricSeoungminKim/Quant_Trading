@@ -1031,6 +1031,28 @@ def _persist_position_meta(ctx: Context, last_signature: str) -> str:
 _OVERNIGHT_STRATEGIES = frozenset({"cross_momentum", "frgn_accumulate", "mean_reversion", "close_bet"})
 
 
+def _is_overnight(sid: str | None) -> bool:
+    """오버나이트 보유 전략인가. `_pure` 접미사는 벗겨서 본다.
+
+    순수 계약으로 전환해도 **보통은 id 가 그대로다** — settings.yaml 의 전략
+    블록에서 `class:` 만 바꾸고 블록 키(=id)는 유지하기 때문이다. 하지만
+    레거시와 순수를 나란히 돌려 비교하려면 별도 id(`close_bet_pure`)로 블록을
+    하나 더 두게 되고, 그때 이 목록에 없으면 **EoD 강제청산이 오버나이트
+    포지션을 당일 마감에 털어버려 전략 자체가 무효화된다**(2026-08-28 이관
+    워커 경고). 접미사를 벗겨 판정하면 A/B 구성에서도 자동으로 맞는다.
+
+    목록 자체에 `_pure` 를 넣지 않는 이유: `tests/test_position_report_wording.py`
+    가 이 집합을 **전략 모듈 파일명**에서 유도해 대조한다(should_flatten 을
+    호출하지 않는 모듈 = 오버나이트). 순수 구현은 같은 모듈 안에 있으므로
+    목록에 새 이름을 넣으면 그 대조가 깨진다 — 대조를 약화시키는 대신
+    판정 쪽을 관대하게 만든다."""
+    # sid 가 None 일 수 있다 — 소유 전략을 모르는 포지션(수동 매수·구버전 lot).
+    # 그때는 오버나이트로 단정하지 않는다(호출부가 기한 없는 문구를 쓴다).
+    if not sid:
+        return False
+    return sid in _OVERNIGHT_STRATEGIES or sid.removesuffix("_pure") in _OVERNIGHT_STRATEGIES
+
+
 def _position_report_text(ctx: Context, marks: dict[str, float], risk: RiskManager | None = None) -> str | None:
     """열린 포지션의 진입가 대비 현황 — 보유 중일 때만 1분 주기로 보낸다.
 
@@ -1145,7 +1167,7 @@ def _position_report_text(ctx: Context, marks: dict[str, float], risk: RiskManag
         else:
             if target:
                 lines.append(f"   🎯 목표가 {_price(target, symbol)}")
-            elif sid in _OVERNIGHT_STRATEGIES:
+            elif _is_overnight(sid):
                 lines.append("   🎯 목표가 없음 (오버나이트 보유 — 전략 청산 규칙에 따름)")
             elif sid:
                 lines.append("   🎯 목표가 없음 (장 마감까지 보유)")
