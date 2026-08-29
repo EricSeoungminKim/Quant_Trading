@@ -12,9 +12,11 @@ WebSocket 경로가 별도(`/api/us/websocket`)로 존재할 가능성이 있다
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -153,6 +155,8 @@ class KiwoomRealtimeFeed:
         reconnect_initial_delay: float = 1.0,
         reconnect_max_delay: float = 30.0,
         auth_reconnect_max_delay: float = DEFAULT_AUTH_RECONNECT_MAX_DELAY,
+        stable_reset_seconds: float = 5.0,
+        health_log_interval_seconds: float = 60.0,
         invalidate_token: Callable[[], None] | None = None,
         smart_flow_sink: object | None = None,
     ) -> None:
@@ -174,6 +178,19 @@ class KiwoomRealtimeFeed:
         문자열도 받는다 — 테스트/일회성 프로브용이다. 문자열을 넘기면 그 토큰이
         만료되는 순간 재접속 루프가 영원히 실패한다(2026-08-11 실장애).
 
+        `stable_reset_seconds`(2026-08-29)는 재접속 지수 백오프의 리셋 시점을 늦춘다.
+        예전에는 `connect()`가 성공하는 **즉시** 백오프를 초기값으로 되돌렸다 — 서버가
+        연결을 곧바로 다시 끊는 상황("1000 OK Bye" 패턴, 관찰된 하루 747건 중 98%)에서는
+        지수 백오프가 전혀 작동하지 않고 초당 ~1회 재접속 폭풍이 자기 지속됐다(키움이
+        계정당 세션 제어를 하면 그 폭풍 자체가 서버 킬을 유발·지속시킨다 — cli.py의
+        kiwoom-probe 경고문 참고). 이제는 연결이 이 초 이상 유지된 뒤 끊겨야만 리셋한다
+        — `quant/apps/assembly.py`의 `_wait_for_connection()` debounce와 같은 철학이다
+        (거기는 "연결됨"으로 오판하지 않기 위해, 여기는 "복구됨"으로 오판하지 않기 위해).
+
+        `health_log_interval_seconds`(2026-08-29)는 health() 스냅샷을 주기적으로
+        INFO 로그로 남기는 간격이다 — "연결됐는데 무데이터" 상태가 로그만으로 보이게
+        하기 위함(`_health_log_loop` 참고).
+
         `smart_flow_sink`(2026-08-28)는 세력 신호 적재기다 — 선택적이고, 없으면
         이 클래스의 동작은 **한 바이트도 달라지지 않는다**. 덕 타이핑으로 받는다
         (`quant.adapters.smart_flow_log.SmartFlowLogger`를 임포트하지 않는다):
@@ -193,6 +210,13 @@ class KiwoomRealtimeFeed:
         self._auth_reconnect_max_delay = auth_reconnect_max_delay
         self._reconnect_delay = reconnect_initial_delay
         self._current_max_delay = reconnect_max_delay
+        self._stable_reset_seconds = stable_reset_seconds
+        # connect()+subscribe()가 성공한 시각(monotonic) — 백오프 리셋 판정에만
+        # 쓴다. 매 재접속 시도(성공/실패 무관)의 except 블록에서 소비 후 None으로
+        # 되돌리므로, 연결에 도달하지 못한 시도가 이전 성공 시각을 재사용해 리셋을
+        # 오판하는 일은 없다.
+        self._connected_at: float | None = None
+        self._health_log_interval_seconds = health_log_interval_seconds
 
         self._ws = None
         self._stopped = False
@@ -326,12 +350,24 @@ class KiwoomRealtimeFeed:
         """connect -> (symbols 있으면) subscribe -> 수신 루프. 끊기면 지수 백오프로
         재접속 + 재등록을 반복한다. close()가 호출될 때까지 멈추지 않는다."""
         self._loop = asyncio.get_running_loop()  # resubscribe()가 threadsafe 호출 대상으로 쓴다
+        health_log_task = asyncio.create_task(self._health_log_loop())
+        try:
+            await self._run_reconnect_loop()
+        finally:
+            health_log_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await health_log_task
+
+    async def _run_reconnect_loop(self) -> None:
         while not self._stopped:
             try:
                 await self.connect()
                 if self._symbols:
                     await self.subscribe(self._symbols, self._types)
-                self._reconnect_delay = self._reconnect_initial_delay
+                # 연결이 여기 도달했다는 것만으로는 아직 리셋하지 않는다 — 서버가
+                # 곧바로 다시 끊을 수 있다(아래 except의 stable 판정 참고). 대신
+                # "언제부터 살아 있었는지"만 기록해 둔다.
+                self._connected_at = time.monotonic()
                 await self._dispatch_loop()
                 # 서버가 연결을 정상 종료해도 재접속 대상이다 — 예외로 통일해서
                 # 아래 except 블록 하나로 처리한다.
@@ -340,6 +376,19 @@ class KiwoomRealtimeFeed:
                 raise
             except Exception as e:
                 is_auth = isinstance(e, KiwoomWSAuthError)
+                # 백오프 리셋은 "connect()가 성공한 순간"이 아니라 "그 연결이
+                # stable_reset_seconds 이상 유지된 뒤 끊긴 순간"에만 한다. 짧게
+                # 붙었다 바로 끊기는 연결(관찰된 "1000 OK Bye" 패턴)에서 매번
+                # 리셋하면 지수 백오프가 전혀 작동하지 않는다 — 리셋하지 않으면
+                # 이전 값에서 계속 지수 증가한다.
+                now = time.monotonic()
+                was_stable = (
+                    self._connected_at is not None
+                    and (now - self._connected_at) >= self._stable_reset_seconds
+                )
+                self._connected_at = None
+                if was_stable:
+                    self._reconnect_delay = self._reconnect_initial_delay
                 with self._lock:
                     self._health.connected = False
                     self._health.last_error = f"{type(e).__name__}: {e}"
@@ -383,6 +432,30 @@ class KiwoomRealtimeFeed:
                 break
             await asyncio.sleep(self._reconnect_delay)
             self._reconnect_delay = min(self._reconnect_delay * 2, self._current_max_delay)
+
+    async def _health_log_loop(self) -> None:
+        """health() 스냅샷을 `health_log_interval_seconds`마다 INFO로 남긴다(2026-08-29).
+
+        "연결됐는데 REAL이 안 온다" 상태는 에러도 경고도 아니라서 기존 로그에는
+        전혀 흔적이 남지 않는다 — 이 루프가 그 흔적을 만든다. 예외는 삼킨다
+        (`_safe_sink`와 같은 원칙: 관측 실패가 시세 수신을 막으면 안 된다)."""
+        while not self._stopped:
+            try:
+                await asyncio.sleep(self._health_log_interval_seconds)
+            except asyncio.CancelledError:
+                return
+            if self._stopped:
+                return
+            try:
+                h = self.health()
+                logger.info(
+                    "Kiwoom WS health: connected=%s, 구독심볼=%d개, 마지막틱=%s, "
+                    "재접속=%d회, 인증연속실패=%d회, last_error=%s",
+                    h.connected, len(self._symbols), h.last_tick_at,
+                    h.reconnect_count, h.consecutive_auth_failures, h.last_error,
+                )
+            except Exception:  # noqa: BLE001 — 관측 실패가 피드를 죽이면 안 된다
+                logger.warning("Kiwoom WS health 로깅 실패(무시)", exc_info=True)
 
     # ------------------------------------------------------------------ 수신
     async def _recv_until(self, predicate) -> dict:

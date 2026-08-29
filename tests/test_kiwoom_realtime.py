@@ -343,6 +343,108 @@ def test_resubscribe_sends_new_reg_frame_from_another_thread_while_dispatch_loop
     assert reg_frames[1]["refresh"] == "1"
 
 
+def test_backoff_does_not_reset_on_short_lived_connections_but_resets_after_stable_one():
+    """2026-08-29 결함 1 회귀: 서버가 연결을 즉시 다시 끊으면(짧은 수명 연결) 백오프가
+    리셋되지 않고 지수 증가를 유지해야 한다. 연결이 stable_reset_seconds 이상 유지된
+    뒤 끊기면 그때는 리셋된다.
+
+    서버는 처음 두 연결을 REG ack 직후 곧바로 끊고(짧은 수명), 세 번째 연결은
+    `hold_seconds`(stable_reset_seconds보다 김) 동안 유지한 뒤 끊는다. 리셋 판정은
+    `feed._reconnect_delay`를 재접속 시각마다 관찰해 검증한다 — 그 값은 except
+    블록에서 계산되고 그 직후 `await asyncio.sleep(...)`으로 넘어가므로, health()의
+    reconnect_count가 올라간 시점에 읽으면 "이번에 실제로 쓸 딜레이"를 정확히 본다
+    (단일 이벤트 루프이므로 폴링 코루틴과 run() 태스크 사이에 경합이 없다)."""
+    connections = 0
+    hold_seconds = 0.2
+
+    async def handler(ws):
+        nonlocal connections
+        connections += 1
+        conn_no = connections
+        await ws.recv()  # login
+        await ws.send(json.dumps({"trnm": "LOGIN", "return_code": 0}))
+        await ws.recv()  # reg
+        await ws.send(json.dumps({"trnm": "REG", "return_code": 0}))
+        if conn_no == 3:
+            await asyncio.sleep(hold_seconds)  # 안정적으로 유지되는 연결
+        await ws.close()
+
+    async def run():
+        async with websockets.serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            feed = KiwoomRealtimeFeed(
+                access_token="tok", ws_url=f"ws://127.0.0.1:{port}",
+                symbols=["005930"],
+                reconnect_initial_delay=0.05, reconnect_max_delay=5.0,
+                stable_reset_seconds=0.1,  # hold_seconds(0.2)보다 짧게 — 3번째 연결은 stable
+            )
+            run_task = asyncio.create_task(feed.run())
+
+            observed_delays = []
+            last_count = 0
+            for _ in range(2000):
+                count = feed.health().reconnect_count
+                if count > last_count:
+                    observed_delays.append(feed._reconnect_delay)
+                    last_count = count
+                if last_count >= 4:
+                    break
+                await asyncio.sleep(0.01)
+
+            await feed.close()
+            await _drain(run_task)
+            return observed_delays
+
+    observed_delays = asyncio.run(run())
+
+    assert len(observed_delays) >= 4, f"재접속이 충분히 관찰되지 않음: {observed_delays}"
+    # 1번째(conn1 짧은 수명 사후) 딜레이는 초기값 그대로.
+    assert observed_delays[0] == pytest.approx(0.05)
+    # 2번째(conn2도 짧은 수명 사후) — 리셋되지 않고 지수 증가했어야 한다.
+    assert observed_delays[1] == pytest.approx(0.10)
+    # 3번째(conn3=stable 연결 사후) — stable_reset_seconds 이상 유지됐으므로 리셋된다.
+    assert observed_delays[2] == pytest.approx(0.05), (
+        f"stable 연결 뒤에도 백오프가 리셋되지 않았다: {observed_delays}"
+    )
+    # 4번째(conn4, 짧은 수명 사후) — 리셋된 값에서 다시 지수 증가.
+    assert observed_delays[3] == pytest.approx(0.10)
+
+
+def test_health_log_loop_emits_periodic_info_snapshot(caplog):
+    """`_health_log_loop`가 health_log_interval_seconds마다 connected/구독심볼수/
+    재접속횟수를 담은 INFO 로그를 남긴다 — "연결됐는데 무데이터"가 로그로 보이게."""
+    async def handler(ws):
+        await ws.recv()  # login
+        await ws.send(json.dumps({"trnm": "LOGIN", "return_code": 0}))
+        await ws.recv()  # reg
+        await ws.send(json.dumps({"trnm": "REG", "return_code": 0}))
+        await ws.wait_closed()
+
+    async def run():
+        async with websockets.serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            feed = KiwoomRealtimeFeed(
+                access_token="tok", ws_url=f"ws://127.0.0.1:{port}",
+                symbols=["005930", "000660"],
+                health_log_interval_seconds=0.05,
+            )
+            run_task = asyncio.create_task(feed.run())
+            for _ in range(200):
+                if any("Kiwoom WS health" in r.getMessage() for r in caplog.records):
+                    break
+                await asyncio.sleep(0.02)
+            await feed.close()
+            await _drain(run_task)
+
+    with caplog.at_level(logging.INFO, logger="quant.adapters.brokers.kiwoom.websocket"):
+        asyncio.run(run())
+
+    health_logs = [r.getMessage() for r in caplog.records if "Kiwoom WS health" in r.getMessage()]
+    assert health_logs, "health 스냅샷 로그가 한 번도 안 남았다"
+    assert "connected=True" in health_logs[0]
+    assert "구독심볼=2개" in health_logs[0]
+
+
 def test_resubscribe_before_run_raises_runtime_error():
     """run()이 시작되기 전(이벤트 루프 없음)에는 조용히 무시하지 않고 명확히 실패한다."""
     feed = KiwoomRealtimeFeed(access_token="tok")

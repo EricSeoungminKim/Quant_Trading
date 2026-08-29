@@ -7,11 +7,13 @@ domain/interfaces.py 계약), 부호 붙은 가격 문자열 파싱, KR 심볼 �
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from quant.adapters.brokers.kiwoom.client import KiwoomError
 from quant.adapters.brokers.kiwoom.us_datafeed import KiwoomUSDataFeed
 from quant.core.ports import DataSourceError
 
@@ -168,3 +170,103 @@ def test_history_malformed_row_is_dropped_not_crashing():
 
     assert len(bars) == 1
     assert bars.iloc[0]["close"] == 100.0
+
+
+# ---------------------------------------------------------------- 실패 쿨다운
+# 2026-08-29: usa06010이 폴링 사이클마다 모든 US 심볼에 재시도되며 429(rate
+# limit)와 1903(종목 정보 없음)을 상시 유발했다(15~20분당 5,000~6,600건 실측).
+
+
+def test_1903_permanently_excludes_symbol_without_further_network_calls():
+    """1903(종목 정보 없음)은 같은 심볼을 다시 물어도 낫지 않는다 — 첫 실패 이후
+    두 번째 호출부터는 네트워크를 아예 타지 않고 즉시 DataSourceError를 던진다."""
+    client = FakeGlobalClient(_ROWS)
+    feed = KiwoomUSDataFeed(client, FakeClock(_NOW))
+    client.fail_next = KiwoomError(1903, "종목 정보 없음")
+
+    with pytest.raises(DataSourceError):
+        feed.quote("GLD")
+    assert len(client.calls) == 1
+
+    with pytest.raises(DataSourceError):
+        feed.quote("GLD")
+    assert len(client.calls) == 1, "1903 이후 재시도가 네트워크를 다시 탔다"
+
+    # 다른 심볼은 영향받지 않는다 — 심볼별로 독립된 상태다.
+    q = feed.quote("TQQQ")
+    assert q is not None
+
+
+def test_1903_logs_exclusion_once_at_info_level(caplog):
+    client = FakeGlobalClient(_ROWS)
+    feed = KiwoomUSDataFeed(client, FakeClock(_NOW))
+    client.fail_next = KiwoomError(1903, "종목 정보 없음")
+
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(DataSourceError):
+            feed.quote("GLD")
+        with pytest.raises(DataSourceError):
+            feed.quote("GLD")
+
+    info_msgs = [
+        r.getMessage() for r in caplog.records
+        if r.levelno == logging.INFO and "GLD" in r.getMessage()
+    ]
+    assert len(info_msgs) == 1, f"영구 제외 INFO 로그는 최초 1회여야 한다: {info_msgs}"
+
+
+def test_other_errors_cooldown_after_threshold_then_retry_after_expiry(monkeypatch):
+    """1903이 아닌 오류(429 등)는 연속 threshold회 실패해야 쿨다운에 들어가고,
+    쿨다운 중에는 네트워크를 타지 않으며, 쿨다운 만료 후에는 다시 시도한다."""
+    fake_now = {"t": 1_000.0}
+    monkeypatch.setattr(
+        "quant.adapters.brokers.kiwoom.us_datafeed.time.monotonic", lambda: fake_now["t"]
+    )
+    client = FakeGlobalClient(_ROWS)
+    feed = KiwoomUSDataFeed(client, FakeClock(_NOW), failure_threshold=2, cooldown_seconds=100.0)
+    err = KiwoomError(429, "rate limit exceeded")
+
+    # 1회차 실패 — 아직 임계 미만, 네트워크는 탄다.
+    client.fail_next = err
+    with pytest.raises(DataSourceError):
+        feed.quote("TQQQ")
+    assert len(client.calls) == 1
+
+    # 2회차 실패 — 임계(2) 도달, 쿨다운 진입.
+    client.fail_next = err
+    with pytest.raises(DataSourceError):
+        feed.quote("TQQQ")
+    assert len(client.calls) == 2
+
+    # 쿨다운 중 — 네트워크를 타지 않고 즉시 실패.
+    with pytest.raises(DataSourceError):
+        feed.quote("TQQQ")
+    assert len(client.calls) == 2, "쿨다운 중인데 네트워크를 다시 탔다"
+
+    # 쿨다운 만료 후 — 다시 시도해 성공한다.
+    fake_now["t"] += 100.1
+    q = feed.quote("TQQQ")
+    assert len(client.calls) == 3
+    assert q is not None
+
+
+def test_success_resets_consecutive_failure_count():
+    """threshold 미만의 실패는 성공이 끼면 리셋된다 — 산발적 실패가 쌓여서
+    쿨다운으로 이어지지 않는다."""
+    client = FakeGlobalClient(_ROWS)
+    feed = KiwoomUSDataFeed(client, FakeClock(_NOW), failure_threshold=2, cooldown_seconds=100.0)
+    err = KiwoomError(429, "rate limit exceeded")
+
+    client.fail_next = err
+    with pytest.raises(DataSourceError):
+        feed.quote("TQQQ")
+
+    assert feed.quote("TQQQ") is not None  # 성공 — 카운터 리셋
+
+    client.fail_next = err
+    with pytest.raises(DataSourceError):
+        feed.quote("TQQQ")  # 리셋됐으므로 이것만으로는 threshold(2) 미도달
+
+    # 쿨다운에 들어가지 않았으므로 다음 호출은 네트워크를 정상적으로 탄다.
+    q = feed.quote("TQQQ")
+    assert q is not None

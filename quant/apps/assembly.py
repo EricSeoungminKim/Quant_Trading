@@ -320,9 +320,13 @@ def build_kiwoom_realtime_route(cfg: dict, symbols: list[str], clock) -> SourceR
       재접속을 시도하지만, 이번 세션에서는 쓰지 않는다).
     - 연결됐어도 **개별 심볼 단위**의 안전장치는 여기가 아니라
       `KiwoomRealtimeSource.quote()`가 담당한다 — 틱이 없거나 오래되면
-      DataSourceError를 던져 MarketDataService가 toss로 폴백한다. 해외주식(US
-      포맷 심볼)의 실시간 지원 여부는 [미확인]이므로, 구독은 시도하되 그 실패는
-      "정상 시나리오"로 취급하고 개별 심볼 폴백에 맡긴다(여기서는 경고 로그 1회만).
+      DataSourceError를 던져 MarketDataService가 toss로 폴백한다.
+    - **US 심볼은 구독하지 않는다**(2026-08-29). 예전에는 KR+US를 섞어 한 REG에
+      실었는데, 연결이 3시간 안정적으로 유지된 동안에도 REAL 프레임이 0건이었다
+      — 유일하게 검증된 성공 사례(2026-08-10)는 005930 단일 심볼이었다. 혼합
+      구독이 REAL 무전달의 용의자로 남았고, US 심볼은 애초에 이 경로로 틱이 온
+      적이 없어 Toss 폴백으로 전량 처리되고 있었으므로 빼도 잃는 게 없다.
+      KR 심볼만 있으면 이 함수는 원래와 동일하게 동작한다.
     """
     rt_cfg = (cfg.get("kiwoom", {}) or {}).get("realtime", {}) or {}
     if not rt_cfg.get("enabled", False):
@@ -343,12 +347,16 @@ def build_kiwoom_realtime_route(cfg: dict, symbols: list[str], clock) -> SourceR
     from quant.adapters.brokers.kiwoom.datafeed import KiwoomRealtimeSource, is_kr_symbol
     from quant.adapters.brokers.kiwoom.websocket import DEFAULT_WS_URL, KiwoomRealtimeFeed
 
+    kr_symbols = [s for s in symbols if is_kr_symbol(s)]
     us_symbols = [s for s in symbols if not is_kr_symbol(s)]
     if us_symbols:
         logger.warning(
-            "Kiwoom 웹소켓의 해외주식(%s) 실시간 지원 여부는 [미확인] — 구독은 시도하되 "
-            "틱이 오지 않거나 stale하면 자동으로 toss로 폴백된다", ", ".join(us_symbols),
+            "US 심볼 %d개는 실시간 구독에서 제외(2026-08-29: 혼합 구독이 REAL 무전달의 "
+            "용의자, 단일 심볼 검증(08-10)과의 간극) — 시세는 Toss 폴백 그대로: %s",
+            len(us_symbols), ", ".join(us_symbols),
         )
+    if not kr_symbols:
+        return None
 
     try:
         client = KiwoomClient(app_key=app_key, secret_key=secret_key)
@@ -381,7 +389,7 @@ def build_kiwoom_realtime_route(cfg: dict, symbols: list[str], clock) -> SourceR
         # 이 배선이 없어 죽은 토큰으로 9일간 두드렸다(2026-08-11~20).
         invalidate_token=client.invalidate_token,
         ws_url=ws_url,
-        symbols=symbols,
+        symbols=kr_symbols,
         types=rt_types,
         smart_flow_sink=smart_flow,
     )
@@ -412,13 +420,13 @@ def build_kiwoom_realtime_route(cfg: dict, symbols: list[str], clock) -> SourceR
     source = KiwoomRealtimeSource(feed, clock, stale_seconds=stale_seconds)
     logger.info(
         "Kiwoom 실시간 웹소켓 라우트 활성 — 심볼=%s, stale 임계=%.0f초",
-        ", ".join(symbols), stale_seconds,
+        ", ".join(kr_symbols), stale_seconds,
     )
     return SourceRoute(
         name="kiwoom_rt",
         source=source,
         capabilities=frozenset({Capability.QUOTE}),
-        symbols=frozenset(symbols),
+        symbols=frozenset(kr_symbols),
     )
 
 

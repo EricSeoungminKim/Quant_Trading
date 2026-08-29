@@ -109,6 +109,77 @@ def test_enabled_without_credentials_warns_and_returns_none(monkeypatch, caplog)
     assert any("KIWOOM_APP_KEY" in rec.message for rec in caplog.records)
 
 
+def test_all_us_symbols_returns_none_without_touching_network(monkeypatch, caplog):
+    """2026-08-29 결함 2 회귀 가드: 유니버스가 전부 US 심볼이면 자격증명이 있어도
+    웹소켓 라우트를 아예 만들지 않는다(빈 REG를 보낼 이유가 없다) — 토큰 발급도
+    시도하지 않는다."""
+    _clean_kiwoom_env(monkeypatch)
+    monkeypatch.setenv("KIWOOM_APP_KEY", "would-be-used-if-any-kr-symbols")
+    monkeypatch.setenv("KIWOOM_SECRET_KEY", "would-be-used-if-any-kr-symbols")
+
+    from quant.adapters.brokers.kiwoom.client import KiwoomClient
+
+    def _boom(self):
+        raise AssertionError("US 심볼만 있는데 토큰 발급을 시도했다")
+
+    monkeypatch.setattr(KiwoomClient, "access_token", _boom)
+
+    with caplog.at_level("WARNING"):
+        route = build_kiwoom_realtime_route(
+            {"kiwoom": {"realtime": {"enabled": True}}}, ["TQQQ", "SQQQ"], FakeClock(),
+        )
+
+    assert route is None
+    assert any("실시간 구독에서 제외" in rec.message for rec in caplog.records)
+
+
+def test_mixed_symbols_subscribes_kr_only(monkeypatch, caplog):
+    """결함 2 핵심 회귀: KR+US가 섞인 유니버스에서 웹소켓에는 KR 심볼만 실린다.
+    US 심볼은 로그로만 남고 REG/route.symbols에는 등장하지 않는다."""
+    _clean_kiwoom_env(monkeypatch)
+    monkeypatch.setenv("KIWOOM_APP_KEY", "k")
+    monkeypatch.setenv("KIWOOM_SECRET_KEY", "s")
+
+    from quant.adapters.brokers.kiwoom.client import KiwoomClient
+
+    monkeypatch.setattr(KiwoomClient, "access_token", lambda self: "tok")
+
+    captured = {}
+
+    class FakeFeed:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def health(self):
+            return SimpleNamespace(connected=True)
+
+    monkeypatch.setattr(
+        "quant.adapters.brokers.kiwoom.websocket.KiwoomRealtimeFeed", FakeFeed,
+    )
+    # build_kiwoom_realtime_route는 KiwoomRealtimeFeed를 함수 내부에서 다시
+    # import하므로, 모듈 속성 패치 + threading.Thread를 막아 백그라운드 스레드가
+    # 실제 이벤트 루프를 돌리지 않게 한다(FakeFeed는 asyncio 코루틴이 없다).
+    monkeypatch.setattr("quant.apps.assembly.threading.Thread", lambda **kwargs: SimpleNamespace(start=lambda: None))
+    # _wait_for_connection의 debounce(기본 1.0초) 실제 대기를 없애 테스트를 빠르게 한다
+    # — FakeFeed는 항상 connected=True이므로 debounce 값 자체는 이 테스트와 무관하다.
+    monkeypatch.setattr("quant.apps.assembly.time.sleep", lambda s: None)
+
+    with caplog.at_level("WARNING"):
+        route = build_kiwoom_realtime_route(
+            {"kiwoom": {"realtime": {"enabled": True}}},
+            ["005930", "TQQQ", "000660", "SQQQ"],
+            FakeClock(),
+        )
+
+    assert route is not None
+    assert route.symbols == frozenset({"005930", "000660"})
+    assert captured["symbols"] == ["005930", "000660"]
+    assert any(
+        "실시간 구독에서 제외" in rec.message and "TQQQ" in rec.message and "SQQQ" in rec.message
+        for rec in caplog.records
+    )
+
+
 # --------------------------------------------------------- build_kiwoom_us_route
 
 def _clean_kiwoom_global_env(monkeypatch: pytest.MonkeyPatch) -> None:
