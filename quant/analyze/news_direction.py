@@ -85,13 +85,3 @@ def scan(titles: list[str]) -> list[str]:
         if name and name not in found:
             found.append(name)
     return found
-
-
-def news_is_vetoed(titles: list[str]) -> bool:
-    """오늘 기사에 명백한 악재가 하나라도 있으면 True.
-
-    **하나면 충분하다.** 호재 기사가 여섯 건이어도 목표가 하향이 한 건 있으면
-    "명백한 촉매"가 아니다 — 대신증권이 정확히 그 모양이었고, 개장에 사서
-    잃었다. 이 전략의 전제는 "방향이 분명한 신선한 촉매"다.
-    """
-    return bool(scan(titles))

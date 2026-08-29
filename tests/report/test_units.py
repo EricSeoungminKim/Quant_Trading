@@ -1,22 +1,12 @@
 from quant.analyze.units import (
     CATEGORY_ORDER,
     SYMBOL_META,
-    category_of,
     fmt_fred,
     fmt_krw_eok,
     fmt_shares,
     fmt_value,
     group_quotes,
 )
-
-
-def test_category_of_known_symbols():
-    assert category_of("^KS11") == "한국 증시"
-    assert category_of("GC=F") == "원자재"
-
-
-def test_category_of_unknown_symbol_is_etc():
-    assert category_of("UNKNOWN=X") == "기타"
 
 
 def test_group_quotes_orders_and_drops_empty_categories():

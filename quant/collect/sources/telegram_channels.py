@@ -212,23 +212,6 @@ def _parse_messages_with_reason(html_text: str, limit: int = LIMIT) -> tuple[lis
     return messages[:limit], None
 
 
-def fetch_channel(handle: str, getter=None) -> list[dict]:
-    """채널 하나의 최신 메시지. `[{"msg_id","text","published","links","images"}]`,
-    최신순 최대 20. `images`는 사진 첨부 URL 리스트(없으면 빈 리스트).
-
-    네트워크·파싱·프리뷰 비활성 어느 쪽이 실패해도 예외를 올리지 않고 빈
-    리스트를 돌려준다 — `fetch_all`이 채널 단위로 실패를 격리할 수 있는 건
-    이 계약 덕분이다.
-    """
-    get = getter or _http_get
-    try:
-        html_text = get(_PREVIEW_URL.format(handle=handle))
-    except Exception:  # noqa: BLE001 — 채널 하나의 네트워크 실패가 전체를 막지 않는다
-        return []
-    messages, _reason = _parse_messages_with_reason(html_text)
-    return messages
-
-
 def fetch_all(getter=None, sleep=None) -> dict[str, dict]:
     """`CHANNELS` 전체를 순회. 채널 단위로 실패를 격리하고 실패 사유를 정직하게 남긴다.
 

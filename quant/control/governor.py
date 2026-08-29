@@ -5,23 +5,33 @@
 
 ## 층 0 — 폭발 반경 (다른 어떤 층보다 중요하다)
 
-**자동 반영은 "무엇을 볼 것인가"만 건드린다. "얼마를 걸 것인가"는 절대 못 건드린다.**
+**자동 반영은 리스크를 줄이는 방향만. 나머지는 전부 제안.**(소유자 승인,
+2026-08-30 — 기존 자본 강등 장치 `quant/control/allocator.py`의 "줄이기만
+자동, 늘리기는 사람"과 같은 철학.) `ALLOWED` 의 각 항목은 방향까지 못 박는다:
 
-    자동 허용 (선정 문턱)          자동 금지 (리스크)
-    ─────────────────────         ─────────────────────
-    min_articles                  capital_fraction
-    min_streak                    stop_loss_pct
-    news_hot                      max_entries_per_session
-    rank_top                      risk_budget_pct
-    vol_surge_ratio               max_leverage
-    trending_min                  threshold(watch-score)
+    이름                                          방향          의미
+    ────────────────────────────────────────    ──────────    ──────────────
+    strategies.*.params.min_stop_bp              raise_only    손절을 넓히는(=문턱을
+                                                                엄격히 하는) 쪽만
+    engine.cold_fetch_budget_per_cycle            lower_only    사이클 부하를 줄이는
+                                                                쪽만
 
-이유는 회복 가능성이 다르기 때문이다. 선정 문턱을 잘못 조이면 **그날 좋은 종목을
-놓칠 뿐**이고 다음날 되돌리면 끝난다. 사이징을 잘못 키우면 **계좌가 날아가고**
-되돌릴 자산이 남지 않는다. 실수의 비용이 비대칭이므로 권한도 비대칭이어야 한다.
+반대 방향 제안(손절을 좁히거나 예산을 늘리는 쪽)은 6층을 다 통과해도 거부된다
+— evaluate()의 "0-direction" 층. `FORBIDDEN`(사이징·손절 자체를 끄는 값 등
+회복 불가능한 리스크 파라미터)은 방향과 무관하게 항상 거부다: 사이징을 잘못
+키우면 **계좌가 날아가고** 되돌릴 자산이 남지 않는다. 실수의 비용이
+비대칭이므로 권한도 비대칭이어야 한다.
 
 `ALLOWED` 밖의 이름은 어떤 근거를 들고 와도 거부한다 — 근거의 품질을 심사하는
 층이 아니라, **애초에 그 문을 열지 않는** 층이다.
+
+2026-08-30 재정의 배경: 이전 ALLOWED 7개(min_articles 등, analyze 평면 선정
+문턱)는 `config/settings.yaml` 어디에도 없는 이름이었다(2026-08-28 실측,
+`quant/apps/cli.py`의 옛 `GOVERNOR_SETTINGS_PATH` 주석 참고) — 제안은 나와도
+반영될 곳이 없어 이 거버너 전체가 죽은 코드였다. 이번 ALLOWED 는 이름 자체가
+`config/settings.yaml` 의 점(.) 표기 경로다 — 매핑 테이블이 따로 필요 없고,
+스키마 이탈은 `tests/test_governor_wiring.py::test_allowed_paths_all_exist_in_real_settings_yaml`
+가 실제 파일로 매 실행마다 고정한다.
 
 ## 층 1~6
 
@@ -35,25 +45,51 @@
 6. **자동 롤백** — 반영 후 성과가 기준 이하로 나빠지면 되돌린다.
 
 모든 결정은 `decisions.jsonl`에 append-only로 남는다 — 거부도 남긴다. 무엇이
-거부됐는지가 방어층이 실제로 일하는지 보여주는 유일한 증거다.
+거부됐는지가 방어층이 실제로 일하는지 보여주는 유일한 증거다. 실반영(파일
+쓰기)은 여기서 끝나지 않는다 — `quant/apps/cli.py`의 `cmd_governor_apply`가
+`--live` 플래그로 한 겹 더 게이트한다(이 모듈은 판단만, 배선은 거기).
 """
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
 # --- 층 0: 폭발 반경 -------------------------------------------------------
-# 이름 → (하한, 상한, 1회 최대 보폭, 냉각일)
-ALLOWED: dict[str, tuple[float, float, float, int]] = {
-    "min_articles":      (1, 6, 1, 7),
-    "min_streak":        (1, 5, 1, 7),
-    "news_hot":          (2, 10, 1, 7),
-    "rank_top":          (1, 10, 2, 7),
-    "vol_surge_ratio":   (1.5, 6.0, 0.5, 14),
-    "vol_elevated_ratio": (1.1, 3.0, 0.25, 14),
-    "trending_min":      (0, 100, 5, 7),
+# 이름(=config/settings.yaml 점 표기 경로) → (방향, 하한, 상한, 1회 최대 보폭, 냉각일)
+#
+# 방향: "raise_only" = 올리는 제안만 자동 반영 대상(문턱 강화 = 리스크 축소),
+#       "lower_only" = 내리는 제안만 자동 반영 대상(부하 축소 = 리스크 축소).
+# 반대 방향 제안은 6층을 다 통과해도 evaluate()의 "0-direction" 층에서 거부되고
+# decisions.jsonl 에 거부 사유로 남는다(=사람에게는 "제안"으로 보인다).
+#
+# 각 하한은 아래 값이 config/settings.yaml 의 **현재 실제 기본값**과 모순되지
+# 않게 잡았다(2026-08-30 대조 — min_stop_bp 3종 전부 40, cold_fetch_budget 8).
+ALLOWED: dict[str, tuple[str, float, float, float, int]] = {
+    "strategies.vol_breakout.params.min_stop_bp":      ("raise_only", 40, 120, 20, 3),
+    "strategies.intraday_momentum.params.min_stop_bp": ("raise_only", 40, 120, 20, 3),
+    "strategies.gap_fade.params.min_stop_bp":           ("raise_only", 40, 120, 20, 3),
+    "engine.cold_fetch_budget_per_cycle":               ("lower_only", 4, 8, 2, 3),
+    # watch_conditions 블록은 다른 워커가 작업 도중에 실제로 추가했다(2026-08-30,
+    # config/settings.yaml, 기본값 cooldown_minutes=60 — 아래 하한 30과 모순
+    # 없음 확인). 재알림 간격을 늘리는 쪽 = 알림 스팸을 줄이는 쪽 = 리스크 축소로
+    # 분류해 raise_only 로 등재한다.
+    "watch_conditions.cooldown_minutes": ("raise_only", 30, 240, 30, 1),
+    # 소유자 지시에 있었지만 지금 config/settings.yaml 에 그 경로가 없어 뺐다 —
+    # 있지도 않은 경로를 자동 반영 화이트리스트에 올리면 2026-08-28 결함(위
+    # 배경 문단)이 그대로 재발한다. 아래는 실제로 확인한 부재 사유다:
+    #
+    #   strategies.scalp_1m.params.min_stop_bp
+    #     scalp_1m 은 min_stop_bp 가 아니라 stop_hard_cap_pct(%, 하드캡) +
+    #     stop_mode: structure(스윙 저점 기반 손절)를 쓴다 — 단위(bp vs %)도
+    #     의미(고정 최소폭 vs 구조적 상한)도 달라 같은 이름에 억지로 태우지
+    #     않는다.
+    #
+    #   strategies.pullback_impulse.params.min_stop_bp
+    #     pullback_impulse 의 params 에는 손절 관련 키가 아예 없다(min_impulse_bp/
+    #     pullback_min_pct/pullback_max_pct/ema_period/atr_buffer_mult/
+    #     target_mult/timeout_minutes/target_weight 뿐).
 }
 
 # 자동 반영이 절대 닿으면 안 되는 이름. ALLOWED 화이트리스트만으로도 막히지만,
@@ -88,7 +124,11 @@ class Decision:
     reason: str
     applied_value: float | None = None
     layer: str = ""               # 어느 층에서 걸렸나
-    blocked_layers: list[str] = field(default_factory=list)
+    # (사망 코드 정리, 2026-08-30) 예전엔 여기에 `blocked_layers: list[str]`
+    # 필드가 있었지만 어디서도 채워지지 않았다 — evaluate()가 첫 실패 층에서
+    # 즉시 return 하는 구조라 결정 하나는 항상 최대 한 층에서만 막힌다. 그
+    # 한 층은 위 `layer`(단수)로 이미 완전히 표현되므로, 여러 층을 동시에
+    # 담는 리스트가 채워질 경로 자체가 없었다.
 
 
 def _history(path: Path) -> list[dict]:
@@ -132,7 +172,22 @@ def evaluate(proposal: Proposal, today: date, decisions: list[dict],
     if p.name not in ALLOWED:
         return Decision(p, False, f"자동 반영 허용 목록에 없음: {p.name}", layer="0-blast-radius")
 
-    lo, hi, max_step, cooldown_days = ALLOWED[p.name]
+    direction, lo, hi, max_step, cooldown_days = ALLOWED[p.name]
+
+    # 층 0b — 방향 (2026-08-30: "자동 반영은 리스크를 줄이는 방향만, 나머지는
+    # 전부 제안" — 소유자 승인). 6층을 다 통과해도 방향이 틀리면 여기서 막힌다.
+    if direction == "raise_only" and p.proposed < p.current:
+        return Decision(
+            p, False,
+            f"내리는 방향 제안 거부(올리는 것만 자동 반영 대상): {p.current} → {p.proposed}",
+            layer="0-direction",
+        )
+    if direction == "lower_only" and p.proposed > p.current:
+        return Decision(
+            p, False,
+            f"올리는 방향 제안 거부(내리는 것만 자동 반영 대상): {p.current} → {p.proposed}",
+            layer="0-direction",
+        )
 
     # 층 4 — 증거
     if p.samples < MIN_SAMPLES:

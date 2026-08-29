@@ -18,21 +18,6 @@ financialjuice) 등이 물어오는 미국 매크로·개별주 헤드라인을 
 """
 from __future__ import annotations
 
-# GICS 11섹터 — 공식 영문 명칭을 키로 쓴다(사전순이 아니라 GICS 표준 배열순).
-GICS_SECTORS: tuple[str, ...] = (
-    "Energy",
-    "Materials",
-    "Industrials",
-    "Consumer Discretionary",
-    "Consumer Staples",
-    "Health Care",
-    "Financials",
-    "Information Technology",
-    "Communication Services",
-    "Utilities",
-    "Real Estate",
-)
-
 # 섹터별 키워드 사전(영어 중심 + 대표 티커·기업명, 한국어 키워드도 일부 포함).
 # `classify_sector`가 title에 등장하는 키워드 개수로 최다 매칭 섹터를 고른다 —
 # 겹치는 키워드(예: "google"은 IT·Communication Services 둘 다에 걸림)가 있어도
@@ -99,9 +84,9 @@ def classify_sector(title: str) -> str | None:
     """US 뉴스 헤드라인(영/한) → GICS 11섹터 중 하나, 매칭 없으면 `None`.
 
     섹터별 키워드 히트 수를 세어 최다 매칭 섹터를 고른다(대소문자 무시). 동률이면
-    `GICS_SECTORS` 순서상 먼저 오는 섹터(`_SECTOR_KEYWORDS` 삽입 순서, dict 순회
-    순서로 결정론적). 억지 분류를 피하려고 히트가 하나도 없으면 `None`을
-    돌려준다 — 아무 섹터에나 욱여넣지 않는다.
+    `_SECTOR_KEYWORDS` 삽입 순서상 먼저 오는 섹터(dict 순회 순서로 결정론적).
+    억지 분류를 피하려고 히트가 하나도 없으면 `None`을 돌려준다 — 아무 섹터에나
+    욱여넣지 않는다.
     """
     if not title:
         return None

@@ -130,28 +130,6 @@ def test_falls_back_when_primary_raises_and_records_degraded_state(caplog):
     assert health.sources["secondary"].healthy is True
 
 
-# ----------------------------------------------------------------- provenance
-
-def test_provenance_reports_actual_serving_source():
-    now = datetime(2024, 1, 2, 10, 30, tzinfo=timezone.utc)
-    quote_source = FakeSource(quote_result=Quote(symbol="TQQQ", ts=now, price=51.0))
-    bars_source = FakeSource(history_df=_bars("2024-01-02T09:30", 4))
-    svc = MarketDataService(
-        routes=[
-            SourceRoute(name="quotes", source=quote_source, capabilities=frozenset({Capability.QUOTE})),
-            SourceRoute(name="bars", source=bars_source, capabilities=frozenset({Capability.BARS})),
-        ],
-        clock=FakeClock(now),
-    )
-
-    svc.quote("TQQQ")
-    svc.history("TQQQ", "15m", 10)
-
-    assert svc.provenance("TQQQ", Capability.QUOTE) == "quotes"
-    assert svc.provenance("TQQQ", Capability.BARS) == "bars"
-    assert svc.provenance("TQQQ", Capability.STREAM) is None  # 서빙된 적 없음
-
-
 # ------------------------------------------------------ symbol/interval skip
 
 def test_source_not_supporting_symbol_or_interval_is_skipped():
@@ -173,7 +151,6 @@ def test_source_not_supporting_symbol_or_interval_is_skipped():
     assert wrong_interval.history_calls == []
     # 서비스는 형성봉 보정을 위해 소스에 n+1을 요청한다(2026-08-24 결함 수리).
     assert matching.history_calls == [("TQQQ", "15m", 11)]
-    assert svc.provenance("TQQQ", Capability.BARS) == "matching"
 
 
 # -------------------------------------------------------------- look-ahead

@@ -9,7 +9,6 @@ _MEMBERS_WITH_QUOTES: 위와 같은 URL, 2026-08-16 EC2 재실측 — 무선통�
 """
 from quant.collect.sources.naver_sector import (
     fetch_sector_data,
-    fetch_sector_map,
     fetch_sector_quotes,
     parse_sector_detail_members,
     parse_sector_index,
@@ -227,35 +226,6 @@ def test_parse_sector_members():
     assert ("032640", "LG유플러스") in result
 
 
-def test_fetch_sector_map_maps_code_to_sector():
-    def getter(url):
-        if "type=upjong&no=" not in url:
-            return _INDEX
-        if "no=333" in url:
-            return _MEMBERS
-        return ""  # no=273 상세는 이 테스트에서 안 씀
-
-    m = fetch_sector_map(getter=getter, sleep=lambda s: None)
-    assert m.get("017670") == "무선통신서비스"
-    assert m.get("032640") == "무선통신서비스"
-
-
-def test_fetch_sector_map_partial_failure_keeps_going():
-    # 업종 하나(333) 조회가 실패해도 나머지(273)는 수집된다 — 전체를 버리지 않는다
-    def getter(url):
-        if "type=upjong&no=" not in url:
-            return _INDEX
-        if "no=333" in url:
-            raise RuntimeError("timeout")
-        if "no=273" in url:
-            return _MEMBERS
-        return ""
-
-    m = fetch_sector_map(getter=getter, sleep=lambda s: None)
-    assert m.get("017670") == "자동차"
-    assert m.get("032640") == "자동차"
-
-
 def test_parse_sector_quotes_name_change_and_updown_counts():
     result = parse_sector_quotes(_INDEX)
     assert result == [
@@ -369,17 +339,3 @@ def test_fetch_sector_data_returns_map_and_members_from_one_crawl():
     assert {"code": "065530", "name": "와이어블", "change_pct": -1.03} in sector_members["무선통신서비스"]
     # 추가 네트워크 0 — 인덱스 1 + 업종별 상세 각 1(기존 fetch_sector_map 과 동일한 호출 수)
     assert calls.count("https://finance.naver.com/sise/sise_group.naver?type=upjong") == 1
-
-
-def test_fetch_sector_map_wraps_fetch_sector_data_first_element():
-    # 하위호환 — fetch_sector_map 은 fetch_sector_data 의 첫 원소(sector_map)만 돌려준다
-    def getter(url):
-        if "type=upjong&no=" not in url:
-            return _INDEX
-        if "no=333" in url:
-            return _MEMBERS_WITH_QUOTES
-        return ""
-
-    m = fetch_sector_map(getter=getter, sleep=lambda s: None)
-    assert m == {"017670": "무선통신서비스", "032640": "무선통신서비스",
-                 "006490": "무선통신서비스", "065530": "무선통신서비스"}

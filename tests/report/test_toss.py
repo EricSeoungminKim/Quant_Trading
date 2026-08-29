@@ -16,8 +16,6 @@ from quant.collect.sources.toss import (
     _warning_label,
     fetch_investor_trading,
     fetch_rankings,
-    fetch_usd_krw,
-    fetch_warnings,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "toss_rankings.json"
@@ -224,42 +222,6 @@ def test_fetch_rankings_all_boards_failing_raises():
                 fetch_rankings("KR")
 
 
-# --- fetch_warnings: 심볼당 실패는 건너뛴다 ---------------------------------
-
-
-def test_fetch_warnings_parses_result_and_labels():
-    # _request 는 이미 {"result": ...} 래핑을 벗겨서 반환한다 — 여기선 경고 리스트 그대로.
-    warnings = [
-        {"warningType": "INVESTMENT_WARNING", "startDate": "2026-08-01", "endDate": "2026-08-15"},
-    ]
-    with patch("quant.collect.sources.toss.client"):
-        with patch("quant.collect.sources.toss._request", return_value=warnings):
-            result = fetch_warnings(["005930"])
-    assert result["005930"] == [
-        {"type": "INVESTMENT_WARNING", "label": "투자경고", "start": "2026-08-01", "end": "2026-08-15"}
-    ]
-
-
-def test_fetch_warnings_no_warnings_returns_empty_list():
-    with patch("quant.collect.sources.toss.client"):
-        with patch("quant.collect.sources.toss._request", return_value=[]):
-            result = fetch_warnings(["005930"])
-    assert result["005930"] == []
-
-
-def test_fetch_warnings_per_symbol_failure_does_not_kill_others():
-    def side_effect(c, path, params=None):
-        if "005930" in path:
-            raise httpx.HTTPStatusError("404", request=None, response=None)
-        return []
-
-    with patch("quant.collect.sources.toss.client"):
-        with patch("quant.collect.sources.toss._request", side_effect=side_effect):
-            result = fetch_warnings(["005930", "000660"])
-    assert result["005930"] == []
-    assert result["000660"] == []
-
-
 # --- fetch_investor_trading: 순매수 계산 ------------------------------------
 
 
@@ -286,16 +248,6 @@ def test_fetch_investor_trading_builds_kospi_kosdaq():
     assert result["KOSPI"]["updated_at"] == "2026-08-12T15:30:00+09:00"
 
 
-# --- fetch_usd_krw -----------------------------------------------------------
-
-
-def test_fetch_usd_krw_returns_float_rate():
-    with patch("quant.collect.sources.toss.client"):
-        with patch("quant.collect.sources.toss._request", return_value={"rate": 1350.5}):
-            result = fetch_usd_krw()
-    assert result == {"rate": 1350.5}
-
-
 # --- 라이브 (자격증명 없거나 403 이면 skip) ----------------------------------
 
 
@@ -316,11 +268,3 @@ def test_live_fetch_rankings_kr():
         pytest.skip("TOSS_CLIENT_ID/TOSS_CLIENT_SECRET 미설정")
     result = _skip_if_unreachable(fetch_rankings, "KR")
     assert result["boards"]
-
-
-@pytest.mark.live
-def test_live_fetch_usd_krw():
-    if not get_key("TOSS_CLIENT_ID") or not get_key("TOSS_CLIENT_SECRET"):
-        pytest.skip("TOSS_CLIENT_ID/TOSS_CLIENT_SECRET 미설정")
-    result = _skip_if_unreachable(fetch_usd_krw)
-    assert result["rate"] > 0

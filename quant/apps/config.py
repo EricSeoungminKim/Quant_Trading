@@ -84,14 +84,6 @@ class Settings:
         return self.raw.get("execution", {})
 
     @property
-    def notifications(self) -> dict:
-        return self.raw.get("notifications", {})
-
-    @property
-    def banker(self) -> dict:
-        return self.raw.get("banker", {})
-
-    @property
     def poll_seconds(self) -> float:
         return self.engine.get("poll_seconds", 10)
 

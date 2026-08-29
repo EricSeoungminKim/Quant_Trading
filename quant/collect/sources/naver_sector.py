@@ -140,8 +140,3 @@ def fetch_sector_data(getter=None, sleep=None) -> tuple[dict[str, str], dict[str
         sector_members[sector] = parse_sector_detail_members(page or "")
         zzz(0.3)
     return sector_map, sector_members
-
-
-def fetch_sector_map(getter=None, sleep=None) -> dict[str, str]:
-    """하위호환 래퍼 — `fetch_sector_data` 의 첫 원소(sector_map)만 돌려준다."""
-    return fetch_sector_data(getter=getter, sleep=sleep)[0]

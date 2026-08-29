@@ -38,16 +38,11 @@
 from __future__ import annotations
 
 import statistics as st
-from typing import Callable, Protocol
+from typing import Callable
 
 # 왕복 비용(bp) 기본값 — 2026-08-21 원장 실측 평균(수수료 17.9~22.7bp).
 # 재생 결과에서 이 값을 빼 순bp로 비교한다. 호출부가 설정값으로 덮을 수 있다.
 DEFAULT_ROUND_TRIP_BP = 20.0
-
-
-class _Bars(Protocol):
-    """`load_bars`가 돌려주는 것의 최소 계약 — pandas DataFrame을 쓰되 이
-    모듈은 컬럼 이름과 순서만 안다(open/high/low/close, 시간 오름차순 인덱스)."""
 
 
 def _pct_bp(now: float, base: float) -> float:

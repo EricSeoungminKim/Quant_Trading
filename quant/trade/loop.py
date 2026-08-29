@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+import pandas as pd
+
 from quant.trade.approval import STATUS_REJECTED, ApprovalGate, ApprovalRequest
 from quant.core import oms
 from quant.trade.control import TradingControl
@@ -28,11 +30,15 @@ from quant.core.ports import (
     Context, EventSink, Notifier, OrderSink, RiskManager, Strategy, TickLogger,
 )
 from quant.core.models import (
-    Fill, Order, OrderState, Side, Signal, SignalAction, market_of_symbol,
+    Fill, Order, OrderState, Quote, Side, Signal, SignalAction, market_of_symbol,
 )
 from quant.core.portfolio.portfolio import to_krw
 from quant.trade.risk.books import StrategyBooks
 from quant.trade.risk.manager import MARKET_CLOSED_MARKER
+from quant.trade.watch_conditions import Rule as WatchRule
+from quant.trade.watch_conditions import apply_cooldown as apply_watch_cooldown
+from quant.trade.watch_conditions import evaluate as evaluate_watch_conditions
+from quant.trade.watch_conditions import parse_rules as parse_watch_rules
 
 class EngineSettings(Protocol):
     """루프가 설정에게 실제로 요구하는 것 전부 — 부채 상환(2026-08-24)으로
@@ -63,6 +69,8 @@ _CYCLE_LATENCY_HISTORY_SIZE = 20  # 하트비트 "최근 N회 최대" 계산에 
 # 봉 캐시 적중률 INFO 로그 주기(초). 캐시가 실제로 먹히는지 운영 로그에서 확인할 수
 # 없으면 "넣었으니 되겠지"가 된다 — 히트율이 떨어지면 곧바로 rate limit으로 돌아온다.
 _BAR_CACHE_LOG_INTERVAL_SEC = 300
+# 워치 조건 rsi2/rsi14/change_pct 계산용 일봉 개수 — rsi14 워밍업(15개) + 여유.
+_WATCH_DAILY_BAR_COUNT = 30
 
 DEFAULT_HEARTBEAT_PATH = Path("data/state/heartbeat.json")
 
@@ -1613,6 +1621,16 @@ async def run_paper_loop(
     telegram_position_report = bool(engine_cfg.get("telegram_position_report", False))
     slow_cycle_warn_ms = float(engine_cfg.get("slow_cycle_warn_ms", _DEFAULT_SLOW_CYCLE_WARN_MS))
 
+    # 워치 조건(알림 전용, quant/trade/watch_conditions.py) — settings.yaml
+    # watch_conditions 블록. 미지 metric/op는 parse_watch_rules가 여기서(부팅 시)
+    # ValueError로 거부한다 — 오타가 조용히 무시되지 않는다.
+    watch_cfg = settings.raw.get("watch_conditions", {})
+    watch_rules: list[WatchRule] = (
+        parse_watch_rules(watch_cfg.get("rules", [])) if watch_cfg.get("enabled", False) else []
+    )
+    watch_cooldown_sec = float(watch_cfg.get("cooldown_minutes", 60)) * 60
+    watch_last_hit_mono: dict[str, float] = {}  # rule name -> 마지막 알림 시각(monotonic)
+
     cycle_count = 0
     loop_started_mono = time.monotonic()  # 하트비트 가동시간 표시용(재시작 감지)
     consecutive_failures = 0
@@ -1867,6 +1885,35 @@ async def run_paper_loop(
                         timings.total_ms, slow_cycle_warn_ms, timings.strategy_ms,
                         timings.risk_approve_ms, timings.broker_place_order_ms, timings.sinks_ms,
                     )
+
+        # 워치 조건(알림 전용, 2026-08-30) — 전략 평가 다음, 주문 경로와 무관한
+        # 자리 1곳에서만 판정한다. quote/일봉 조회 실패는 그 심볼만 건너뛰고(evaluate가
+        # None으로 스킵), 이 블록 전체 실패도 사이클을 죽이지 않는다 — 관찰용 알림이
+        # 거래를 막으면 안 된다.
+        if watch_rules and notifier is not None:
+            try:
+                watch_quotes: dict[str, Quote | None] = {}
+                watch_bars: dict[str, pd.DataFrame | None] = {}
+                watch_bar_symbols = {r.symbol for r in watch_rules if r.metric != "price"}
+                for _wsym in {r.symbol for r in watch_rules}:
+                    try:
+                        watch_quotes[_wsym] = ctx.data.quote(_wsym)
+                    except Exception:
+                        watch_quotes[_wsym] = None
+                    if _wsym in watch_bar_symbols:
+                        try:
+                            watch_bars[_wsym] = ctx.data.history(_wsym, "1d", _WATCH_DAILY_BAR_COUNT)
+                        except Exception:
+                            watch_bars[_wsym] = None
+                watch_now = ctx.clock.now()
+                watch_hits = evaluate_watch_conditions(watch_rules, watch_quotes, watch_bars, watch_now)
+                for hit in apply_watch_cooldown(watch_hits, watch_last_hit_mono, watch_cooldown_sec, now_mono):
+                    notifier.send(
+                        f"👁 워치: {hit.rule_name} — {hit.value:.2f} {hit.op} {hit.threshold:g} "
+                        f"({_display(hit.symbol)}, {watch_now:%Y-%m-%d %H:%M:%S})"
+                    )
+            except Exception:
+                logger.exception("워치 조건 평가 실패 — 거래는 계속한다")
 
         # 봉 캐시 적중률 — 느린 사이클 경고와 같은 자리에서 본다. 사이클이 느려졌을 때
         # "소스를 몇 번이나 때리고 있나"가 바로 옆에 있어야 원인을 짚을 수 있다.

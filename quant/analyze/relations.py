@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import re
 
-KINDS = ("beneficiary", "supplier", "competitor")
 _KIND_KO = {"수혜주": "beneficiary", "공급사": "supplier", "경쟁사": "competitor"}
 MIN_EVIDENCE = 50
 MAX_REASON_CHARS = 120

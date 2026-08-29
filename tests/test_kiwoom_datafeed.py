@@ -153,7 +153,6 @@ def test_kiwoom_rt_route_serves_before_toss_when_alive():
     assert q is not None
     assert q.price == 51.0  # kiwoom_rt 응답이 사용됨
     assert toss.calls == []  # toss는 불리지 않음
-    assert svc.provenance("TQQQ", Capability.QUOTE) == "kiwoom_rt"
 
 
 def test_stale_kiwoom_rt_falls_back_to_toss_and_marks_degraded(caplog):
@@ -178,7 +177,6 @@ def test_stale_kiwoom_rt_falls_back_to_toss_and_marks_degraded(caplog):
     assert q is not None
     assert q.price == 52.5  # toss로 폴백됨
     assert toss.calls == ["TQQQ"]
-    assert svc.provenance("TQQQ", Capability.QUOTE) == "toss"
 
     health = svc.health()
     # 폴백이 성공했으므로 degraded는 False(2026-08-12 정의 변경). kiwoom_rt의 실패
@@ -206,4 +204,3 @@ def test_disconnected_kiwoom_rt_falls_back_to_toss():
 
     assert q is not None
     assert q.price == 52.5
-    assert svc.provenance("TQQQ", Capability.QUOTE) == "toss"

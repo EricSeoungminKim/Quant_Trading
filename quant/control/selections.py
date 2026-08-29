@@ -211,23 +211,6 @@ def append(rows: list[dict], path: Path) -> int:
     return added + len(upgrades)
 
 
-def existing_keys(path: Path) -> set[tuple]:
-    """이미 기록된 (날짜, 시장, 종목, producer). 깨진 줄은 건너뛴다."""
-    if not path.exists():
-        return set()
-    out: set[tuple] = set()
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        out.add(_natural_key(row))
-    return out
-
-
 def load(path: Path) -> list[dict]:
     """원장 전체. 깨진 줄은 건너뛴다 — 일부 손상이 분석 전체를 죽이면 안 된다."""
     if not path.exists():
@@ -263,27 +246,3 @@ def rewrite(rows: list[dict], path: Path) -> int:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     tmp.replace(path)
     return len(rows)
-
-
-def pending_outcomes(rows: list[dict], today: str, min_age_days: int = 1) -> list[dict]:
-    """전방 수익률을 아직 못 채운, 그리고 채울 만큼 시간이 지난 행들.
-
-    `min_age_days` 미만이면 아직 D+1이 오지 않았다는 뜻이라 건너뛴다.
-    """
-    from datetime import date
-
-    try:
-        today_d = date.fromisoformat(today)
-    except (TypeError, ValueError):
-        return []
-    out = []
-    for row in rows:
-        if row.get("outcome_filled"):
-            continue
-        try:
-            age = (today_d - date.fromisoformat(row["date"])).days
-        except (TypeError, ValueError, KeyError):
-            continue
-        if age >= min_age_days:
-            out.append(row)
-    return out

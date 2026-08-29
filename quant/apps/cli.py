@@ -3186,25 +3186,13 @@ def cmd_param_propose(args: argparse.Namespace) -> None:
     print(result["note"])
 
 
-# ALLOWED 키(quant.control.governor) → config/settings.yaml 안의 경로.
-#
-# **전수 확인 결과(2026-08-28, 거버너 배선 착수 시점):** ALLOWED 의 7개 이름 중
-# 어느 것도 config/settings.yaml 에 없다 — grep -rn 으로 저장소 전체를 훑어 확인:
-#   min_articles       → quant/analyze/render.py 모듈 상수 MIN_ARTICLES (하드코딩)
-#   min_streak         → quant/analyze/render.py 모듈 상수 MIN_STREAK (하드코딩)
-#   news_hot           → quant/analyze/symbol_score.py 모듈 상수 NEWS_HOT (하드코딩)
-#   rank_top           → quant/analyze/trending_score.py 모듈 상수 RANK_TOP (하드코딩)
-#   vol_surge_ratio    → quant/analyze/trending_score.py 모듈 상수 VOL_SURGE_RATIO (하드코딩)
-#   vol_elevated_ratio → quant/analyze/trending_score.py 모듈 상수 VOL_ELEVATED_RATIO (하드코딩)
-#   trending_min       → 코드 어디에도 없음 (governor 화이트리스트에만 존재하는 고아 이름)
-# 즉 이 7개는 지금 settings.yaml 이 아니라 quant/analyze/ 평면의 파이썬 모듈
-# 상수다. config/auto_params.yaml 오버레이는 settings.yaml 위에만 병합되므로,
-# 이 매핑이 채워지기 전까지는(= 저 상수들을 settings.yaml 에서 읽도록 analyze
-# 모듈을 고치는 별도 작업 전까지는) 어떤 제안도 실제로 반영될 수 없다 — 이건
-# 버그가 아니라 "매핑 없는 이름은 거부한다"(아래 cmd_governor_apply) 원칙의
-# 정직한 결과다. FORBIDDEN 목록이 문을 걸어 잠그듯, 매핑 부재도 같은 역할을
-# 한다: 실수로 analyze 모듈 상수를 몰래 바꾸는 대신 거부하고 기록에 남긴다.
-GOVERNOR_SETTINGS_PATH: dict[str, tuple[str, ...]] = {}
+# (2026-08-30) 예전엔 여기에 GOVERNOR_SETTINGS_PATH — governor.ALLOWED 의 이름
+# (analyze 평면 모듈 상수)을 config/settings.yaml 경로로 잇는 매핑 테이블 — 이
+# 있었지만 매핑이 채워진 적이 없었다(2026-08-28 실측: ALLOWED 7개 중 어느 것도
+# settings.yaml에 없었다). governor.ALLOWED 재정의(quant/control/governor.py)로
+# 이름 자체가 이제 settings.yaml 의 점(.) 표기 경로다 — 별도 매핑이 필요 없어
+# 이 테이블은 삭제했다. `name.split(".")` 가 바로 `_write_overlay` 가 요구하는
+# path_tuple 이다(아래 cmd_governor_apply).
 
 
 def _load_recent_governor_proposals(path, today, window_days: int) -> list:
@@ -3316,21 +3304,117 @@ def _realized_performance_deltas(root: Path, decisions: list[dict], min_samples:
     return out
 
 
+def _meta_update(name: str, today_iso: str | None) -> tuple[str, tuple]:
+    """`config/auto_params.yaml` 의 `_meta.<name>.applied_at` 갱신용 update 엔트리.
+
+    `_meta` 는 실제 settings 트리와 분리된 예약 최상위 키다 — 반영값 자체(리프)
+    옆에 메타데이터를 끼워 넣으면 그 값이 그대로 전략 params 로 흘러들어가
+    오염된다(예: `strategies.vol_breakout.params.applied_at` 같은 존재하지 않는
+    키가 생김). `_meta` 는 `Settings` 의 어떤 접근자도 읽지 않으므로 병합돼도
+    무해하다 — 사람이 auto_params.yaml 을 열어 "언제 반영됐나"를 바로 보라고
+    두는 감사용 사이드카일 뿐이다. `today_iso=None` 이면 되돌리기(삭제)다."""
+    value = {"applied_at": today_iso} if today_iso is not None else None
+    return f"_meta:{name}", (("_meta", name), value)
+
+
+def _apply_live_gate(decisions: list, live: bool) -> None:
+    """`--live` 없이(기본값) 실행되면 governor 6~7층을 통과한 결정도 오버레이엔
+    안 쓴다 — "자동 반영은 ALLOWED 범위 안만, 나머지는 전부 제안"(소유자 승인,
+    2026-08-30)의 CLI 쪽 표현.
+
+    accepted 를 실제로 내려야 하는 이유(단순히 쓰기를 건너뛰는 것으로는 부족한
+    이유): `decisions.jsonl` 의 accepted=True 는 `governor.last_change()` 가
+    "이 파라미터가 실제로 반영된 날"로 읽어 층 3(냉각)의 기준점이 된다. 미반영을
+    accepted=True 로 남기면 다음 실행이 "이미 최근에 바뀌었다"고 오판해 근거
+    없는 냉각을 건다 — 아무것도 안 바뀌었는데 말이다."""
+    if live:
+        return
+    for d in decisions:
+        if d.accepted:
+            d.accepted = False
+            d.applied_value = None
+            d.layer = "not-live"
+            d.reason = f"{d.reason} — 그러나 --live 없이 실행돼 제안만(실반영 보류)"
+
+
+def _governor_revert(key: str, overlay_path: Path, decisions_path: Path, today,
+                      *, dry_run: bool) -> None:
+    """`governor-apply --revert <key>` — 자동 반영분을 사람이 한 줄로 되돌린다.
+
+    `key` 는 `governor.ALLOWED` 의 이름(=settings.yaml 점 표기 경로)이어야 한다
+    — 거버너가 애초에 건드릴 권한이 없던 키를 이 문으로 우회해 건드리게 하지
+    않는다. 오버레이에서 그 키(와 `_meta` 의 applied_at)를 지우면 다음 핫
+    리로드부터 settings.yaml 의 원래 값으로 자연 복귀한다 — `_write_overlay`
+    의 "값이 None이면 삭제" 관례를 그대로 재사용한다(config.py 모듈 docstring
+    "되돌리기는 그 파일에서 키를 지우는 것뿐" 원칙)."""
+    from quant.control import governor
+
+    if key not in governor.ALLOWED:
+        logger.error("governor-apply --revert: %s 는 governor.ALLOWED 에 없음 — 되돌릴 수 없음", key)
+        return
+
+    if not overlay_path.exists():
+        logger.info("governor-apply --revert: 오버레이 파일 없음 — %s 는 이미 반영 상태가 아님", key)
+        return
+
+    import yaml as _yaml
+
+    overlay = _yaml.safe_load(overlay_path.read_text(encoding="utf-8")) or {}
+    node: object = overlay
+    for part in key.split("."):
+        node = node.get(part) if isinstance(node, dict) else None
+        if node is None:
+            break
+    if node is None:
+        logger.info("governor-apply --revert: %s 는 오버레이에 없음 — 이미 settings.yaml 기본값", key)
+        return
+    current_overlay_value = node
+
+    if dry_run:
+        print(f"[dry-run] governor-apply --revert: {key} = {current_overlay_value} "
+              "→ 오버레이에서 제거(settings.yaml 기본값으로 복귀 예정)")
+        return
+
+    path_tuple = tuple(key.split("."))
+    meta_name, meta_update = _meta_update(key, None)
+    _write_overlay(overlay_path, {key: (path_tuple, None), meta_name: meta_update})
+
+    decision = governor.Decision(
+        proposal=governor.Proposal(
+            name=key, current=current_overlay_value, proposed=0.0,
+            samples=0, expected_improvement=0.0, rationale="사람이 --revert 로 수동 되돌림"),
+        accepted=True,
+        reason="수동 되돌림 — 오버레이에서 제거, settings.yaml 기본값으로 복귀",
+        applied_value=None, layer="revert",
+    )
+    governor.record([decision], today, decisions_path)
+    print(f"governor-apply --revert: {key} 제거 완료 (오버레이 값 {current_overlay_value} "
+          "→ settings.yaml 기본값)")
+
+
 def cmd_governor_apply(args: argparse.Namespace) -> None:
-    """파라미터 자동 반영 심사 + 적용 — 거버너 배선 (2026-08-28).
+    """파라미터 자동 반영 심사 + 적용 — 거버너 배선 (2026-08-28, ALLOWED
+    재정의·--live/--revert 2026-08-30).
 
     `quant/control/governor.py` 는 완성돼 있었지만 이걸 부르는 프로덕션 코드가
     없었다(제안은 나오는데 아무도 심사·반영하지 않는 열린 루프). 이 커맨드가
     그 마지막 칸을 채운다: 최근 제안(`data/ledger/param_proposals.jsonl`,
     기본 `--window-days`일)을 `governor.Proposal` 로 변환해 `governor.decide()`
-    에 태우고, **수락분만** `config/auto_params.yaml` 오버레이에 반영한다.
-    settings.yaml 은 절대 직접 쓰지 않는다(이유는 `GOVERNOR_SETTINGS_PATH`
-    바로 위 주석 참고).
+    에 태우고, ALLOWED 범위(방향·봉투·보폭·냉각) 안에서 6층을 통과한 것만
+    `config/auto_params.yaml` 오버레이에 반영한다. settings.yaml 은 절대 직접
+    쓰지 않는다 — governor.ALLOWED 의 이름이 이제 그 경로 자체다
+    (`name.split(".")` 가 곧 `_write_overlay` 의 path_tuple).
 
-    `--dry-run` 이면 심사만 하고 파일(오버레이·decisions.jsonl)을 쓰지 않는다.
-    수락 0건(또는 전부 매핑 없어 거부)이면 조용히 종료한다 — 거부 사유는
-    `decisions.jsonl`(dry-run이 아닐 때)과 로그에 남지, 매일 조용한 게 기본값인
-    이 저장소의 다른 크론과 같은 관례를 따른다.
+    **`--live` 없이는(기본값) 실반영하지 않는다** — 6층을 통과한 결정도
+    decisions.jsonl 에 accepted=False, layer='not-live' 로 "제안"으로만 남는다
+    (`_apply_live_gate` 참고). `--dry-run` 은 `--live` 보다 항상 우선한다 —
+    심사만 하고 파일(오버레이·decisions.jsonl) 자체를 안 건드린다.
+
+    `--revert <key>` 를 주면 위 심사를 건너뛰고 그 키 하나만 오버레이에서
+    제거한다(`_governor_revert`).
+
+    수락(그리고 실반영) 0건이면 조용히 종료한다 — 매일 조용한 게 기본값인 이
+    저장소의 다른 크론과 같은 관례를 따른다.
     """
     from datetime import date as _date
     from pathlib import Path
@@ -3340,9 +3424,14 @@ def cmd_governor_apply(args: argparse.Namespace) -> None:
 
     root = Path(args.root) if args.root else REPO_ROOT
     today = _date.fromisoformat(args.date) if args.date else _date.today()
-    proposals_path = root / "data" / "ledger" / "param_proposals.jsonl"
     decisions_path = root / "data" / "ledger" / "decisions.jsonl"
     overlay_path = root / "config" / "auto_params.yaml"
+
+    if getattr(args, "revert", None):
+        _governor_revert(args.revert, overlay_path, decisions_path, today, dry_run=args.dry_run)
+        return
+
+    proposals_path = root / "data" / "ledger" / "param_proposals.jsonl"
 
     proposals = _load_recent_governor_proposals(proposals_path, today, args.window_days)
     if not proposals:
@@ -3350,24 +3439,22 @@ def cmd_governor_apply(args: argparse.Namespace) -> None:
         return
 
     decisions = governor.decide(proposals, today, ledger_path=decisions_path)
+    # 아래 _apply_live_gate 가 accepted 를 내리기 전에, "governor 가 실제로
+    # 뭐라고 판단했는가"를 사람이 보는 요약용으로 먼저 굳혀 둔다 — --live 여부와
+    # 무관하게 항상 진짜 판정을 보여준다.
+    would_apply = any(d.accepted for d in decisions)
+    report_lines = [governor.summary(decisions)]
 
-    # 수락분 중 settings 매핑이 없는 이름은 여기서 다시 거부 처리한다 —
-    # governor 층들은 통과했어도 "어디에 쓸지 모르면 안 쓴다"는 배선 층의
-    # 원칙이다. **조용히 무시하지 않는다** — accepted 를 뒤집고 사유를 남긴다.
+    _apply_live_gate(decisions, args.live)
+
     updates: dict[str, tuple] = {}
     for d in decisions:
         if not d.accepted:
             continue
-        path_tuple = GOVERNOR_SETTINGS_PATH.get(d.proposal.name)
-        if path_tuple is None:
-            logger.warning(
-                "governor-apply: 매핑 없음 — %s 는 심사는 통과했지만 반영 불가", d.proposal.name)
-            d.accepted = False
-            d.applied_value = None
-            d.layer = "mapping"
-            d.reason = f"settings 매핑 없음: {d.proposal.name} (GOVERNOR_SETTINGS_PATH 미등재)"
-            continue
+        path_tuple = tuple(d.proposal.name.split("."))
         updates[d.proposal.name] = (path_tuple, d.applied_value)
+        meta_name, meta_update = _meta_update(d.proposal.name, today.isoformat())
+        updates[meta_name] = meta_update
 
     if not args.dry_run:
         if updates:
@@ -3379,38 +3466,50 @@ def cmd_governor_apply(args: argparse.Namespace) -> None:
     realized = _realized_performance_deltas(root, full_history, governor.MIN_SAMPLES)
     candidates = governor.rollback_candidates(full_history, realized)
     rollback_decisions: list[governor.Decision] = []
-    if candidates:
+    for c in candidates:
+        name = c["name"]
+        if name not in governor.ALLOWED:
+            logger.warning("governor-apply: 롤백 대상 %s 가 ALLOWED 밖 — 되돌릴 곳이 없다", name)
+            continue
+        prev_value = c.get("current")
+        rollback_decisions.append(governor.Decision(
+            proposal=governor.Proposal(
+                name=name, current=c.get("applied"), proposed=prev_value,
+                samples=0, expected_improvement=0.0,
+                rationale=f"자동 롤백: 반영 후 실현 변화율 {c['realized_change']:+.1%}"),
+            accepted=True,
+            reason=(f"자동 롤백 — 반영 후 {c['realized_change']:+.1%} 악화 "
+                    f"(임계 {governor.ROLLBACK_DEGRADE:.0%})"),
+            applied_value=prev_value, layer="6-rollback",
+        ))
+
+    if rollback_decisions:
+        report_lines.append(governor.summary(rollback_decisions))
+        _apply_live_gate(rollback_decisions, args.live)
+
         rollback_updates: dict[str, tuple] = {}
-        for c in candidates:
-            name = c["name"]
-            path_tuple = GOVERNOR_SETTINGS_PATH.get(name)
-            if path_tuple is None:
-                logger.warning("governor-apply: 롤백 대상 %s 도 매핑이 없어 되돌릴 곳이 없다", name)
+        for d in rollback_decisions:
+            if not d.accepted:
                 continue
-            prev_value = c.get("current")
-            rollback_updates[name] = (path_tuple, prev_value)
-            rollback_decisions.append(governor.Decision(
-                proposal=governor.Proposal(
-                    name=name, current=c.get("applied"), proposed=prev_value,
-                    samples=0, expected_improvement=0.0,
-                    rationale=f"자동 롤백: 반영 후 실현 변화율 {c['realized_change']:+.1%}"),
-                accepted=True,
-                reason=(f"자동 롤백 — 반영 후 {c['realized_change']:+.1%} 악화 "
-                        f"(임계 {governor.ROLLBACK_DEGRADE:.0%})"),
-                applied_value=prev_value, layer="6-rollback",
-            ))
-        if rollback_updates and not args.dry_run:
-            _write_overlay(overlay_path, rollback_updates)
+            name = d.proposal.name
+            path_tuple = tuple(name.split("."))
+            rollback_updates[name] = (path_tuple, d.applied_value)
+            meta_name, meta_update = _meta_update(name, None)  # 롤백=삭제라 메타도 지운다
+            rollback_updates[meta_name] = meta_update
+
+        if not args.dry_run:
+            if rollback_updates:
+                _write_overlay(overlay_path, rollback_updates)
             governor.record(rollback_decisions, today, decisions_path)
 
-    accepted_now = [d for d in decisions if d.accepted] + rollback_decisions
-    if not accepted_now:
+    if not would_apply and not rollback_decisions:
         logger.info("governor-apply: 수락 0건 — 침묵")
         return
 
-    print(governor.summary(decisions))
-    if rollback_decisions:
-        print(governor.summary(rollback_decisions))
+    if not args.live:
+        report_lines.append("⚠️ --live 없이 실행 — 위 ✅ 는 반영 대기(제안) 상태다. "
+                             "오버레이(config/auto_params.yaml)는 건드리지 않았다.")
+    print("\n".join(report_lines))
 
 
 def _capital_stats_from_trips(trips: list[dict]) -> list:
@@ -4354,13 +4453,22 @@ def main() -> None:
 
     p_ga = sub.add_parser(
         "governor-apply",
-        help="파라미터 자동 반영 심사(6층 방어) + config/auto_params.yaml 오버레이 반영. "
-             "기본은 실반영 — 관찰 기간에는 --dry-run.",
+        help="파라미터 자동 반영 심사(6층 방어 + 방향 제약) — ALLOWED 범위 안(리스크를 "
+             "줄이는 방향)만 config/auto_params.yaml 오버레이에 실반영, 범위 밖은 전부 "
+             "제안만. 기본은 제안만(파일 미변경) — 실반영은 --live.",
     )
     p_ga.add_argument("--root", default=None, help="기본: 저장소 루트")
     p_ga.add_argument("--date", default=None, help="오늘로 볼 날짜 (YYYY-MM-DD)")
     p_ga.add_argument("--window-days", type=int, default=7, help="최근 N일 제안만 심사 (기본 7)")
-    p_ga.add_argument("--dry-run", action="store_true", help="심사만 하고 파일을 쓰지 않는다")
+    p_ga.add_argument("--dry-run", action="store_true",
+                       help="심사만 하고 파일(오버레이·decisions.jsonl)을 전혀 쓰지 않는다. --live 보다 항상 우선한다")
+    p_ga.add_argument("--live", action="store_true",
+                       help="ALLOWED 범위 안에서 통과한 결정을 실제로 config/auto_params.yaml에 반영한다. "
+                            "기본(미지정)은 심사·기록만 하고 오버레이는 건드리지 않는다(제안만)")
+    p_ga.add_argument("--revert", default=None, metavar="KEY",
+                       help="governor.ALLOWED 의 이름(예: strategies.vol_breakout.params.min_stop_bp) "
+                            "하나를 오버레이에서 제거해 settings.yaml 기본값으로 되돌린다. 지정하면 "
+                            "그 외 심사는 건너뛴다")
     p_ga.set_defaults(func=cmd_governor_apply)
 
     p_cap = sub.add_parser(

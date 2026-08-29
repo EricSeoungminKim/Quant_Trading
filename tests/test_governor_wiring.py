@@ -1,7 +1,8 @@
-"""거버너 배선(2026-08-28) — governor.py 는 완성돼 있었지만 부르는 프로덕션
-코드가 없었다. 이 테스트는 배선 자체(오버레이 병합, 제안 원장 왕복, 매핑 없는
-이름 거부, dry-run)를 고정한다. `tests/report/test_governor.py`(governor.py
-자체의 6층 방어)는 건드리지 않는다.
+"""거버너 배선(2026-08-28, ALLOWED 재정의·--live/--revert 2026-08-30) —
+governor.py 는 완성돼 있었지만 부르는 프로덕션 코드가 없었다. 이 테스트는
+배선 자체(오버레이 병합, 제안 원장 왕복, 스키마 대조, --live 게이트, dry-run,
+--revert)를 고정한다. `tests/report/test_governor.py`(governor.py 자체의
+6~7층 방어)는 건드리지 않는다.
 """
 from __future__ import annotations
 
@@ -12,14 +13,12 @@ from datetime import date
 import yaml
 
 from quant.apps.config import _deep_merge, _read_merged, load_settings
-from quant.apps.cli import (
-    GOVERNOR_SETTINGS_PATH,
-    _load_recent_governor_proposals,
-    cmd_governor_apply,
-)
+from quant.apps.cli import _load_recent_governor_proposals, cmd_governor_apply
 from quant.control import governor
 
-TODAY = date(2026, 8, 28)
+TODAY = date(2026, 8, 30)
+
+VOL_BREAKOUT_STOP = "strategies.vol_breakout.params.min_stop_bp"  # raise_only, 40~120
 
 
 # --- ① 깊은 병합 --------------------------------------------------------
@@ -119,8 +118,8 @@ def _write_jsonl(path, rows):
 def test_governor_schema_rows_round_trip_to_proposal(tmp_path):
     path = tmp_path / "param_proposals.jsonl"
     _write_jsonl(path, [{
-        "date": "2026-08-27", "strategy": "donchian", "name": "min_articles",
-        "current": 2, "proposed": 3, "samples": 50, "expected_improvement": 0.20,
+        "date": "2026-08-27", "strategy": "donchian", "name": VOL_BREAKOUT_STOP,
+        "current": 40, "proposed": 60, "samples": 50, "expected_improvement": 0.20,
         "rationale": "표본 근거", "llm": "claude-cli",
     }])
     props = _load_recent_governor_proposals(path, TODAY, window_days=7)
@@ -128,7 +127,7 @@ def test_governor_schema_rows_round_trip_to_proposal(tmp_path):
     p = props[0]
     assert isinstance(p, governor.Proposal)
     assert (p.name, p.current, p.proposed, p.samples, p.expected_improvement) == (
-        "min_articles", 2, 3, 50, 0.20)
+        VOL_BREAKOUT_STOP, 40, 60, 50, 0.20)
 
 
 def test_old_schema_rows_from_param_proposer_are_skipped_not_crashed(tmp_path):
@@ -147,8 +146,8 @@ def test_old_schema_rows_from_param_proposer_are_skipped_not_crashed(tmp_path):
 def test_proposals_outside_window_are_excluded(tmp_path):
     path = tmp_path / "param_proposals.jsonl"
     _write_jsonl(path, [{
-        "date": "2026-08-01", "strategy": "donchian", "name": "min_articles",
-        "current": 2, "proposed": 3, "samples": 50, "expected_improvement": 0.20,
+        "date": "2026-08-01", "strategy": "donchian", "name": VOL_BREAKOUT_STOP,
+        "current": 40, "proposed": 60, "samples": 50, "expected_improvement": 0.20,
         "rationale": "너무 오래됨",
     }])
     assert _load_recent_governor_proposals(path, TODAY, window_days=7) == []
@@ -158,85 +157,182 @@ def test_missing_proposals_file_returns_empty_list(tmp_path):
     assert _load_recent_governor_proposals(tmp_path / "nope.jsonl", TODAY, window_days=7) == []
 
 
-# --- ④ 매핑 없는 이름은 거부 ----------------------------------------------
+# --- ④ ALLOWED 경로가 실제 config/settings.yaml 에 실재 --------------------
 
-def _governor_args(root, *, dry_run=False, window_days=7):
+def test_allowed_paths_all_exist_in_real_settings_yaml():
+    """2026-08-28 실측 결함 고정: 그때의 ALLOWED 7개는 하나도 config/settings.yaml
+    에 없었다(analyze 평면의 파이썬 모듈 상수였다) — 제안은 나와도 반영될 곳이
+    없어 거버너 전체가 죽은 코드였다. 2026-08-30 재정의 후 ALLOWED 의 이름
+    자체가 config/settings.yaml 의 점(.) 표기 경로다. 이 테스트는 저장소의
+    **실제** config/settings.yaml 을 읽어 그 불변식을 매 실행마다 강제한다 —
+    누가 ALLOWED 에 있지도 않은 경로를 추가하면 여기서 바로 잡힌다."""
+    from quant.adapters.env import REPO_ROOT
+
+    settings = load_settings(str(REPO_ROOT / "config" / "settings.yaml"))
+    assert governor.ALLOWED, "ALLOWED 가 비어 있다 — 재정의가 통째로 날아갔다"
+    for name in governor.ALLOWED:
+        node = settings.raw
+        for key in name.split("."):
+            assert isinstance(node, dict) and key in node, (
+                f"{name} 경로가 config/settings.yaml 에 없음(막힌 지점: {key!r})")
+            node = node[key]
+        assert isinstance(node, (int, float)) and not isinstance(node, bool), (
+            f"{name} 의 리프가 숫자가 아님: {node!r}")
+
+
+# --- ⑤ --live 없이는(기본값) 제안만, 오버레이는 안 쓴다 --------------------
+
+def _governor_args(root, *, dry_run=False, live=False, window_days=7, revert=None):
     return argparse.Namespace(root=str(root), date=TODAY.isoformat(),
-                              window_days=window_days, dry_run=dry_run)
+                              window_days=window_days, dry_run=dry_run, live=live,
+                              revert=revert)
 
 
-def test_current_allowed_names_have_no_settings_mapping_yet():
-    """전수 확인 사실 고정: ALLOWED 의 어떤 이름도 지금 settings.yaml 경로가
-    없다(analyze 평면 모듈 상수라서). 이 상태가 바뀌면(=매핑이 채워지면) 이
-    테스트가 깨져서 알려준다 — 그때 이 테스트를 지우고 실제 매핑 테스트로
-    바꾸면 된다."""
-    assert GOVERNOR_SETTINGS_PATH == {}
-
-
-def test_accepted_proposal_without_mapping_is_rejected_and_recorded(tmp_path):
-    """governor 의 6층은 다 통과해도 GOVERNOR_SETTINGS_PATH 에 없으면 반영하지
-    않고, 그 사실을 decisions.jsonl 에 accepted=False, layer='mapping' 으로
-    남긴다 — 조용한 무시 금지."""
+def test_proposal_within_allowed_range_is_recorded_but_not_written_without_live(tmp_path):
+    """6~7층은 통과해도 --live 없이는(기본값) 오버레이에 안 쓴다 — decisions.jsonl
+    에는 accepted=False, layer='not-live' 로 남는다. accepted=True 로 남기지
+    않는 이유: governor.last_change() 가 그걸 "실제로 반영된 날"로 읽어 냉각
+    (층3)의 기준으로 삼는다 — 미반영을 accepted=True 로 적으면 다음 실행에서
+    근거 없는 냉각이 걸린다."""
     root = tmp_path
     _write_jsonl(root / "data" / "ledger" / "param_proposals.jsonl", [{
-        "date": "2026-08-27", "strategy": "donchian", "name": "min_articles",
-        "current": 2, "proposed": 3, "samples": 50, "expected_improvement": 0.20,
+        "date": "2026-08-27", "strategy": "vol_breakout", "name": VOL_BREAKOUT_STOP,
+        "current": 40, "proposed": 60, "samples": 50, "expected_improvement": 0.20,
         "rationale": "표본 근거",
     }])
 
     cmd_governor_apply(_governor_args(root))
 
     overlay_path = root / "config" / "auto_params.yaml"
-    assert not overlay_path.exists(), "매핑 없는 제안이 오버레이에 반영돼 버렸다"
+    assert not overlay_path.exists(), "--live 없이 오버레이가 반영돼 버렸다"
 
     decisions_path = root / "data" / "ledger" / "decisions.jsonl"
     rows = [json.loads(x) for x in decisions_path.read_text(encoding="utf-8").splitlines()]
     assert len(rows) == 1
     assert rows[0]["accepted"] is False
-    assert rows[0]["layer"] == "mapping"
-    assert rows[0]["name"] == "min_articles"
+    assert rows[0]["layer"] == "not-live"
+    assert rows[0]["name"] == VOL_BREAKOUT_STOP
 
 
-# --- ⑤ dry-run 은 파일을 쓰지 않는다 --------------------------------------
+def test_proposal_within_allowed_range_is_applied_with_live(tmp_path):
+    """--live 를 주면 실제로 config/auto_params.yaml 에 반영되고, _meta 에
+    applied_at 이 남는다(사람이 --revert 로 되돌릴 때 근거)."""
+    root = tmp_path
+    _write_jsonl(root / "data" / "ledger" / "param_proposals.jsonl", [{
+        "date": "2026-08-27", "strategy": "vol_breakout", "name": VOL_BREAKOUT_STOP,
+        "current": 40, "proposed": 60, "samples": 50, "expected_improvement": 0.20,
+        "rationale": "표본 근거",
+    }])
 
-def test_dry_run_writes_neither_overlay_nor_decisions(tmp_path, monkeypatch):
-    monkeypatch.setitem(GOVERNOR_SETTINGS_PATH, "min_articles", ("test_section", "min_articles"))
-    try:
-        root = tmp_path
-        _write_jsonl(root / "data" / "ledger" / "param_proposals.jsonl", [{
-            "date": "2026-08-27", "strategy": "donchian", "name": "min_articles",
-            "current": 2, "proposed": 3, "samples": 50, "expected_improvement": 0.20,
-            "rationale": "표본 근거",
-        }])
+    cmd_governor_apply(_governor_args(root, live=True))
 
-        cmd_governor_apply(_governor_args(root, dry_run=True))
+    overlay = yaml.safe_load(
+        (root / "config" / "auto_params.yaml").read_text(encoding="utf-8"))
+    assert overlay["strategies"]["vol_breakout"]["params"]["min_stop_bp"] == 60
+    assert overlay["_meta"][VOL_BREAKOUT_STOP]["applied_at"] == TODAY.isoformat()
 
-        assert not (root / "config" / "auto_params.yaml").exists()
-        assert not (root / "data" / "ledger" / "decisions.jsonl").exists()
-    finally:
-        GOVERNOR_SETTINGS_PATH.pop("min_articles", None)
+    decisions_path = root / "data" / "ledger" / "decisions.jsonl"
+    rows = [json.loads(x) for x in decisions_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1 and rows[0]["accepted"] is True and rows[0]["applied"] == 60
 
 
-def test_without_dry_run_the_same_proposal_is_actually_applied(tmp_path, monkeypatch):
-    """dry-run 을 떼면(=기본값) 매핑이 있는 제안은 실제로 오버레이에 쓰인다 —
-    ④/⑤가 서로 대칭임을 왕복으로 확인한다."""
-    monkeypatch.setitem(GOVERNOR_SETTINGS_PATH, "min_articles", ("test_section", "min_articles"))
-    try:
-        root = tmp_path
-        _write_jsonl(root / "data" / "ledger" / "param_proposals.jsonl", [{
-            "date": "2026-08-27", "strategy": "donchian", "name": "min_articles",
-            "current": 2, "proposed": 3, "samples": 50, "expected_improvement": 0.20,
-            "rationale": "표본 근거",
-        }])
+def test_dry_run_writes_neither_overlay_nor_decisions_even_with_live(tmp_path):
+    """--dry-run 은 --live 보다 항상 우선한다 — 심사만, 파일은 안 건드린다."""
+    root = tmp_path
+    _write_jsonl(root / "data" / "ledger" / "param_proposals.jsonl", [{
+        "date": "2026-08-27", "strategy": "vol_breakout", "name": VOL_BREAKOUT_STOP,
+        "current": 40, "proposed": 60, "samples": 50, "expected_improvement": 0.20,
+        "rationale": "표본 근거",
+    }])
 
-        cmd_governor_apply(_governor_args(root, dry_run=False))
+    cmd_governor_apply(_governor_args(root, dry_run=True, live=True))
 
-        overlay = yaml.safe_load(
-            (root / "config" / "auto_params.yaml").read_text(encoding="utf-8"))
-        assert overlay == {"test_section": {"min_articles": 3}}
+    assert not (root / "config" / "auto_params.yaml").exists()
+    assert not (root / "data" / "ledger" / "decisions.jsonl").exists()
 
-        decisions_path = root / "data" / "ledger" / "decisions.jsonl"
-        rows = [json.loads(x) for x in decisions_path.read_text(encoding="utf-8").splitlines()]
-        assert len(rows) == 1 and rows[0]["accepted"] is True and rows[0]["applied"] == 3
-    finally:
-        GOVERNOR_SETTINGS_PATH.pop("min_articles", None)
+
+def test_out_of_allowed_range_proposal_is_proposal_only_even_with_live(tmp_path):
+    """봉투 밖(600bp)은 --live 여부와 무관하게 절대 반영되지 않는다 — governor
+    층 1이 막는다. "범위 밖이면 전부 제안만"의 왕복 확인."""
+    root = tmp_path
+    _write_jsonl(root / "data" / "ledger" / "param_proposals.jsonl", [{
+        "date": "2026-08-27", "strategy": "vol_breakout", "name": VOL_BREAKOUT_STOP,
+        "current": 40, "proposed": 600, "samples": 50, "expected_improvement": 0.20,
+        "rationale": "표본 근거",
+    }])
+
+    cmd_governor_apply(_governor_args(root, live=True))
+
+    assert not (root / "config" / "auto_params.yaml").exists()
+    decisions_path = root / "data" / "ledger" / "decisions.jsonl"
+    rows = [json.loads(x) for x in decisions_path.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["accepted"] is False
+    assert rows[0]["layer"] == "1-envelope"
+
+
+def test_wrong_direction_proposal_is_proposal_only_even_with_live(tmp_path):
+    """min_stop_bp 는 raise_only — 손절을 좁히는 제안은 --live 를 줘도 반영 안 됨."""
+    root = tmp_path
+    _write_jsonl(root / "data" / "ledger" / "param_proposals.jsonl", [{
+        "date": "2026-08-27", "strategy": "vol_breakout", "name": VOL_BREAKOUT_STOP,
+        "current": 60, "proposed": 40, "samples": 50, "expected_improvement": 0.20,
+        "rationale": "표본 근거",
+    }])
+
+    cmd_governor_apply(_governor_args(root, live=True))
+
+    assert not (root / "config" / "auto_params.yaml").exists()
+    decisions_path = root / "data" / "ledger" / "decisions.jsonl"
+    rows = [json.loads(x) for x in decisions_path.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["accepted"] is False
+    assert rows[0]["layer"] == "0-direction"
+
+
+# --- ⑥ --revert -------------------------------------------------------
+
+def test_revert_removes_the_overlay_key_and_records_a_manual_decision(tmp_path):
+    root = tmp_path
+    (root / "config").mkdir(parents=True)
+    (root / "config" / "auto_params.yaml").write_text(
+        "strategies:\n  vol_breakout:\n    params:\n      min_stop_bp: 60\n"
+        "_meta:\n  " + VOL_BREAKOUT_STOP + ":\n    applied_at: '2026-08-27'\n",
+        encoding="utf-8",
+    )
+
+    cmd_governor_apply(_governor_args(root, revert=VOL_BREAKOUT_STOP))
+
+    overlay = yaml.safe_load(
+        (root / "config" / "auto_params.yaml").read_text(encoding="utf-8")) or {}
+    assert "min_stop_bp" not in overlay.get("strategies", {}).get(
+        "vol_breakout", {}).get("params", {})
+    assert VOL_BREAKOUT_STOP not in overlay.get("_meta", {})
+
+    decisions_path = root / "data" / "ledger" / "decisions.jsonl"
+    rows = [json.loads(x) for x in decisions_path.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["layer"] == "revert"
+    assert rows[-1]["accepted"] is True
+    assert rows[-1]["name"] == VOL_BREAKOUT_STOP
+
+
+def test_revert_of_unknown_key_is_refused(tmp_path):
+    """governor.ALLOWED 밖 이름은 --revert 로도 못 건드린다 — 거버너가 애초에
+    권한 없던 키를 이 문으로 우회하게 두지 않는다."""
+    root = tmp_path
+    cmd_governor_apply(_governor_args(root, revert="strategies.made_up.params.x"))
+    assert not (root / "data" / "ledger" / "decisions.jsonl").exists()
+
+
+def test_revert_dry_run_does_not_touch_files(tmp_path):
+    root = tmp_path
+    (root / "config").mkdir(parents=True)
+    (root / "config" / "auto_params.yaml").write_text(
+        "strategies:\n  vol_breakout:\n    params:\n      min_stop_bp: 60\n",
+        encoding="utf-8",
+    )
+
+    cmd_governor_apply(_governor_args(root, revert=VOL_BREAKOUT_STOP, dry_run=True))
+
+    overlay = yaml.safe_load(
+        (root / "config" / "auto_params.yaml").read_text(encoding="utf-8"))
+    assert overlay["strategies"]["vol_breakout"]["params"]["min_stop_bp"] == 60
+    assert not (root / "data" / "ledger" / "decisions.jsonl").exists()

@@ -121,7 +121,6 @@ class CrossMomentumStrategy:
         self._session_date: dict[str, dtdate] = {}
         self._last_rebalance_week: dict[str, str] = {}  # 시장별 — 2026-08-19, 상단 docstring 참고
         self._pending: dict[str, dict] = {}
-        self._current_top: set[str] = set()
 
     def _owns(self, pos: Position) -> bool:
         """orb_scan.py의 _owns와 동일 구현(2026-08-11 랏 도입 포함) — 소유권 없는
@@ -208,7 +207,6 @@ class CrossMomentumStrategy:
 
         ranked = sorted(returns.items(), key=lambda kv: kv[1], reverse=True)
         top = {sym for sym, _ in ranked[: self.top_n]}
-        self._current_top = top
 
         # 청산 — 보유 중인데 상위권에서 빠짐. 이 회차를 트리거한 시장의 심볼만
         # 청산한다(다른 시장 포지션은 자기 시장 트리거를 기다린다 — 상단

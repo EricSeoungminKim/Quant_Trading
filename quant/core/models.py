@@ -137,17 +137,6 @@ class SignalAction(str, Enum):
 
 
 @dataclass(frozen=True)
-class Instrument:
-    symbol: str
-    market: Market
-    currency: str  # "USD" | "KRW"
-
-    @property
-    def fractional_ok(self) -> bool:
-        return self.market is Market.US
-
-
-@dataclass(frozen=True)
 class Bar:
     """완성된 OHLCV 봉. 미완성(forming) 봉은 이 타입으로 존재해선 안 된다."""
     symbol: str

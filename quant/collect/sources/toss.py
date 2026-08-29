@@ -189,28 +189,6 @@ def fetch_rankings(market: str) -> dict:
     return {"ranked_at": ranked_at, "boards": boards}
 
 
-def fetch_warnings(symbols: list[str]) -> dict[str, list[dict]]:
-    """종목별 시장경고 조회. 경고 없는 종목은 빈 리스트. 심볼당 실패는 건너뛴다."""
-    out: dict[str, list[dict]] = {}
-    with client() as c:
-        for symbol in symbols:
-            try:
-                warnings = _request(c, f"/api/v1/stocks/{symbol}/warnings")
-            except Exception:
-                out[symbol] = []
-                continue
-            out[symbol] = [
-                {
-                    "type": w["warningType"],
-                    "label": _warning_label(w["warningType"]),
-                    "start": w.get("startDate"),
-                    "end": w.get("endDate"),
-                }
-                for w in warnings
-            ]
-    return out
-
-
 def _investor_net(record: dict, key: str) -> int:
     return int(record[key]["buyAmount"]) - int(record[key]["sellAmount"])
 
@@ -234,11 +212,3 @@ def fetch_investor_trading() -> dict:
                 "institution_net": _investor_net(record, "institution"),
             }
     return out
-
-
-def fetch_usd_krw() -> dict:
-    with client() as c:
-        data = _request(c, "/api/v1/exchange-rate", params={
-            "baseCurrency": "USD", "quoteCurrency": "KRW",
-        })
-    return {"rate": float(data["rate"])}

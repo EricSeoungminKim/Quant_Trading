@@ -232,29 +232,6 @@ def collect_once(market: str, root: Path, now: datetime | None = None) -> dict:
     }
 
 
-def window_articles(root: Path, market: str, since: datetime,
-                    until: datetime | None = None, days_back: int = 4) -> list[dict]:
-    """세션 창 안의 기사. 리포트 빌드가 이걸 읽는다(피드를 다시 긁지 않는다).
-
-    발행시각을 모르는 기사는 **수집시각으로 판정**한다 — 버리지 않되, 어느 근거로
-    통과했는지 `published_known` 으로 구분해 남긴다.
-    """
-    until = until or datetime.now(timezone.utc)
-    start_day = since.astimezone(timezone(timedelta(hours=9))).date()
-    out: list[dict] = []
-    for back in range(days_back + 1):
-        day = start_day + timedelta(days=back)
-        for row in load_store(store_path(root, market, day)).values():
-            raw = row.get("published") if row.get("published_known") else row.get("first_seen")
-            try:
-                ts = datetime.fromisoformat(raw)
-            except (TypeError, ValueError):
-                continue
-            if since <= ts <= until:
-                out.append(row)
-    return sorted(out, key=lambda r: r.get("published") or r["first_seen"], reverse=True)
-
-
 def prune(root: Path, market: str, today: date, keep_days: int = RETENTION_DAYS) -> int:
     """보존 기간이 지난 일자 파일을 지운다. 지운 파일 수 반환."""
     base = root / "data" / "news" / market

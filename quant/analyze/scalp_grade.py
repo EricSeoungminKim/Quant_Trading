@@ -43,10 +43,6 @@ GRADE_HOLD = "단타 보류"
 GRADE_ENTER = "단타 진입"
 GRADE_AGGRESSIVE = "단타 적극 진입"
 
-# 등급 문자열 → 서수(정렬용). 미달(숨김)은 `grade_scalp`가 `None`을 반환하므로
-# 여기 없다 — 굳이 0을 넣어 "미달도 등급이다"로 오해할 여지를 만들지 않는다.
-GRADE_ORDER: dict[str, int] = {GRADE_HOLD: 1, GRADE_ENTER: 2, GRADE_AGGRESSIVE: 3}
-
 TELEGRAM_MENTION_THRESHOLD = 2  # 텔레그램 언급 ≥2건 — 적극 진입의 대체 경로 중 하나
 SECTOR_HOT_THRESHOLD = 3  # 섹터 호재 히트 ≥3건 — 적극 진입의 대체 경로 중 하나
 

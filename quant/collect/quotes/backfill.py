@@ -52,10 +52,6 @@ def _as_utc_ts(ts: datetime) -> pd.Timestamp:
     return t.tz_localize("UTC") if t.tzinfo is None else t
 
 
-def _month_key(ts: pd.Timestamp) -> tuple[int, int]:
-    return ts.year, ts.month
-
-
 def _month_bounds(year: int, month: int) -> tuple[pd.Timestamp, pd.Timestamp]:
     start = pd.Timestamp(year=year, month=month, day=1, tz="UTC")
     end = start + pd.DateOffset(months=1) - pd.Timedelta(microseconds=1)

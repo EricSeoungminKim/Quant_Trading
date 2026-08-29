@@ -134,18 +134,16 @@ def test_primary_source_failure_stays_visible_through_a_real_trading_cycle(
     assert capture.fills[0].side is Side.BUY
     assert primary.quote_calls > 0 or primary.history_calls > 0  # 조용히 건너뛴 게 아니라 실제로 1차부터 시도했다
 
-    # 그러나 그 사실이 조용히 묻히면 안 된다 — health/provenance/로그 3중으로 확인한다.
+    # 그러나 그 사실이 조용히 묻히면 안 된다 — health/로그 2중으로 확인한다.
     health = data.health()
     # degraded는 2026-08-12부터 "끝내 데이터를 못 받았다"는 뜻이다. 여기서는 폴백이
-    # 성공해 체결까지 났으므로 False가 맞다 — 가시성은 아래 소스별 상태·provenance·
+    # 성공해 체결까지 났으므로 False가 맞다 — 가시성은 아래 소스별 상태·
     # 경고 로그가 담당한다(이 테스트의 원래 의도는 '조용히 묻히지 않는가'이고,
     # 그 의도는 그대로 유지된다). 폴백 성공을 장애로 집계하던 옛 정의는 US 세션
     # 내내 오보를 냈다.
     assert health.degraded is False
     assert health.sources["toss"].healthy is False
     assert health.sources["history"].healthy is True
-    assert data.provenance(_SYMBOL, Capability.QUOTE) == "history"
-    assert data.provenance(_SYMBOL, Capability.BARS) == "history"
     assert any("toss" in rec.message for rec in caplog.records)
 
 
@@ -171,7 +169,5 @@ def test_when_primary_is_healthy_it_is_not_falsely_reported_degraded(make_breako
 
     health = data.health()
     assert health.degraded is False
-    assert data.provenance(_SYMBOL, Capability.QUOTE) == "toss"
-    assert data.provenance(_SYMBOL, Capability.BARS) == "toss"
     assert unused_fallback.quote_calls == 0
     assert unused_fallback.history_calls == 0

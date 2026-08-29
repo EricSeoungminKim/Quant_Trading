@@ -1105,6 +1105,8 @@ approval:
   # 충분하고 상태 파일이 무한히 커지지 않는다.
   prune_after_seconds: 86400
 
+# 코드 미소비 — Config.banker 프로퍼티는 2026-08-30 사망 코드 정리로 삭제됐다.
+# 이 블록을 읽는 파이썬 코드가 없다(사망 코드 전수조사 확인).
 banker:
   enabled: true
   daily_report_hour_kst: 7 # 매일 아침 실계좌 진단 리포트
@@ -1171,3 +1173,26 @@ ai_trader:
   # **켜는 조건은 사람이 판단한다**: 16:20 장마감 리포트 리더보드에서
   # ai_trader 생산자가 promote 판정(다중검정 보정 통과)을 받은 뒤.
   tag_source_enabled: false
+
+# 알림 전용 워치 조건 — 트레이딩뷰 알림의 우리판(2026-08-30). 주문·시그널을
+# 만들지 않는다(quant/trade/watch_conditions.py 참고) — 조건이 발동하면
+# 텔레그램 알림만 보낸다. 유니버스 밖 심볼도 지정 가능하다(전략 배정과 무관).
+watch_conditions:
+  enabled: true
+  cooldown_minutes: 60 # 같은 조건 재알림 최소 간격
+  rules:
+    - name: "QQQ 과매도(RSI2)"
+      symbol: "QQQ"
+      metric: rsi2 # rsi2 | rsi14 | change_pct(당일 등락%) | price
+      op: "<"
+      threshold: 10
+    - name: "KODEX200 과매도(RSI2)"
+      symbol: "069500"
+      metric: rsi2
+      op: "<"
+      threshold: 10
+    - name: "TQQQ 급락 관찰"
+      symbol: "TQQQ"
+      metric: change_pct
+      op: "<"
+      threshold: -3.0

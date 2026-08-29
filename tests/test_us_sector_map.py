@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from quant.analyze.us_sector_map import (
-    GICS_SECTORS,
     KR_BENEFICIARIES,
     classify_sector,
     map_us_news_to_kr,
@@ -36,10 +35,6 @@ def test_classify_sector_no_keyword_match_returns_none():
 
 def test_classify_sector_empty_title_returns_none():
     assert classify_sector("") is None
-
-
-def test_kr_beneficiaries_covers_all_gics_sectors():
-    assert set(KR_BENEFICIARIES.keys()) == set(GICS_SECTORS)
 
 
 def test_kr_beneficiaries_symbols_are_6_digit_codes():

@@ -96,11 +96,6 @@ class TossRankingUniverse:
         return list(fresh)
 
 
-def _parse_watchlist(raw: object) -> list[str]:
-    """(하위호환 래퍼) 심볼 목록만 필요할 때."""
-    return _parse_watchlist_with_names(raw)[0]
-
-
 def _parse_watchlist_with_names(raw: object) -> tuple[list[str], dict[str, str], dict[str, list[str]]]:
     """watchlist.yaml 본문 → (심볼 목록, 이름 매핑, 태그 매핑). 형식이 아예 다르면 ValueError.
 

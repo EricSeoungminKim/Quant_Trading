@@ -100,29 +100,6 @@ def diverging_bars(
     return "".join(parts)
 
 
-def streak_strip(flags: list[bool], w: float = 108, h: float = 14) -> str:
-    """종목이 최근 N일 중 언제 뉴스에 등장했는지. 왼쪽이 과거, 오른쪽이 오늘.
-
-    연속 등장을 눈으로 잡게 하는 게 목적이다 — 숫자 '3일'보다 띄엄띄엄인지
-    연달아인지가 한눈에 들어온다.
-    """
-    if not flags:
-        return ""
-    cell = w / len(flags)
-    parts = [
-        f'<svg class="streak" width="{_n(w)}" height="{_n(h)}" viewBox="0 0 {_n(w)} {_n(h)}" '
-        f'role="img" aria-label="최근 뉴스 등장 이력">'
-    ]
-    for i, on in enumerate(flags):
-        fill = UP if on else "var(--rule)"
-        op = "1" if on else "0.55"
-        parts.append(
-            f'<rect x="{_n(i * cell + 0.6)}" y="0" width="{_n(cell - 1.2)}" '
-            f'height="{_n(h)}" fill="{fill}" opacity="{op}" rx="1.5"/>'
-        )
-    return "".join(parts) + "</svg>"
-
-
 def event_axis(events: list[dict], horizon: int = 14, w: float = 560.0) -> str:
     """시간 척추의 미래 구간. NOW(0일)에서 horizon일까지 이벤트를 배치한다.
 

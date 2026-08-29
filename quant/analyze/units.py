@@ -50,10 +50,6 @@ def meta(symbol: str) -> dict:
     return SYMBOL_META.get(symbol, _UNKNOWN_META)
 
 
-def category_of(symbol: str) -> str:
-    return meta(symbol)["category"]
-
-
 def group_quotes(quotes: dict) -> list[tuple[str, list[tuple[str, dict]]]]:
     """quotes({심볼: quote}) 를 카테고리별로 묶는다.
 

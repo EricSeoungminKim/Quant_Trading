@@ -86,16 +86,6 @@ def test_diverging_bars_labels_and_values_use_separate_columns():
     assert vx > lx + 100
 
 
-def test_streak_strip_marks_only_active_days():
-    svg = charts.streak_strip([True, False, True])
-    assert svg.count("<rect") == 3
-    assert svg.count("var(--up)") == 2
-
-
-def test_streak_strip_empty_is_empty_string():
-    assert charts.streak_strip([]) == ""
-
-
 def test_event_axis_keeps_uniform_aspect():
     """preserveAspectRatio='none' 이면 원이 타원이 되고 D-day 글자가 뭉개진다."""
     svg = charts.event_axis([{"days_ahead": 2, "dday": "D-2", "high_impact": True}])

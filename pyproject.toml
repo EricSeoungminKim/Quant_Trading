@@ -37,9 +37,12 @@ dev = [
 # 파라미터 최적화/walk-forward 검증(quant_engine/research/) 전용 — 선택 의존성.
 # AWS 배포는 거래 엔진(quant_engine.run paper)만 돌리므로 이 그룹 없이도 동작해야
 # 한다. optuna/quantstats는 항상 함수 내부에서 지연 임포트한다.
+# scikit-learn: 로컬 맥 ML 학습 하네스(quant/research/ml_train.py, 2026-08-30
+# local/ml/run.sh 전용) — joblib은 scikit-learn 의존성으로 함께 들어온다.
 research = [
     "optuna>=4.0",
     "quantstats>=0.0.62",
+    "scikit-learn>=1.5",
 ]
 
 [tool.pytest.ini_options]

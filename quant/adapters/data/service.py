@@ -12,8 +12,7 @@ Toss는 시세는 있지만 1분봉 히스토리가 며칠뿐이고 웹소켓이
   모델(Quote)/문서화된 OHLCV DataFrame 형태로 변환해서 넘겨준다고 가정한다.
 - 라우팅은 벤더 이름이 아니라 캐퍼빌리티(Capability)와 SourceRoute 선언(symbols/
   intervals)으로만 결정한다.
-- provenance()/health()로 "누가 응답했는지"와 "폴백이 조용히 일어나지 않았는지"를
-  항상 드러낸다.
+- health()로 "폴백이 조용히 일어나지 않았는지"를 항상 드러낸다.
 - history()는 클록 기준으로 완성되지 않은 봉을 마지막 방어선으로 한 번 더 걸러낸다
   (소스가 sloppy해도 look-ahead가 새어나가지 않게).
 - quote()/history() 모두 사이클 내 공유 캐시를 갖는다 — 전략이 여러 개 붙어도
@@ -147,8 +146,8 @@ class _BarCacheEntry:
 class MarketDataService:
     """domain.interfaces.DataFeed를 구현하는 Anti-Corruption Layer.
 
-    호출자는 심볼/interval만 요청한다 — 어떤 소스가 응답했는지는 provenance()/health()로만
-    드러난다. 1차 소스가 실패하면 우선순위대로 다음 소스로 폴백하되, 조용히 넘어가지 않고
+    호출자는 심볼/interval만 요청한다 — 어떤 소스가 응답했는지는 health()로만 드러난다.
+    1차 소스가 실패하면 우선순위대로 다음 소스로 폴백하되, 조용히 넘어가지 않고
     경고 로그 + health() 상태로 남긴다.
     """
 
@@ -165,7 +164,6 @@ class MarketDataService:
         self._routes = list(routes)
         self._clock = clock
         self._health: dict[str, SourceHealth] = {r.name: SourceHealth(name=r.name) for r in self._routes}
-        self._provenance: dict[tuple[str, Capability], str] = {}
         # 가장 최근 요청이 **어떤 소스로도** 서빙되지 못했는가. health().degraded의
         # 근거다 — 소스 하나의 실패가 아니라 최종 데이터 손실만 알람 대상이다.
         # 기동 직후엔 아직 요청이 없으므로 False(정상)에서 시작한다.
@@ -226,7 +224,6 @@ class MarketDataService:
                 )
                 continue
             self._record_success(route.name)
-            self._provenance[(symbol, Capability.QUOTE)] = route.name
             self._last_unserved = False  # 폴백이었더라도 끝내 받았으면 정상이다
             return None if result is None else _normalize_quote(result)
         # 후보 소스를 전부 소진 — 이때만 데이터 손실이다.
@@ -341,15 +338,10 @@ class MarketDataService:
                 )
                 continue
             self._record_success(route.name)
-            self._provenance[(symbol, Capability.BARS)] = route.name
             self._last_unserved = False
             return _normalize_frame(result)
         self._last_unserved = True
         return pd.DataFrame(columns=_OHLCV_COLUMNS)
-
-    def provenance(self, symbol: str, capability: Capability) -> str | None:
-        """가장 최근에 해당 심볼/캐퍼빌리티를 실제로 서빙한 소스 이름 (없으면 None)."""
-        return self._provenance.get((symbol, capability))
 
     def health(self) -> ServiceHealth:
         """소스별 현재 상태 스냅샷과 전체 degraded 여부.

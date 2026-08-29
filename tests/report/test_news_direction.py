@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from quant.analyze.news_direction import bearish_marker, news_is_vetoed, scan
+from quant.analyze.news_direction import bearish_marker, scan
 from quant.analyze.render import bearish_markers, candidates_line, is_candidate
 
 # 전부 우리 저장소에 실제로 들어온 제목이다 (2026-08-13 KR).
@@ -59,13 +59,6 @@ def test_positive_earnings_wording_alone_does_not_trigger():
 def test_empty_and_none_titles_are_safe():
     assert bearish_marker("") is None
     assert scan([]) == [] and scan(None) == []
-    assert news_is_vetoed([]) is False
-
-
-def test_one_bearish_headline_vetoes_a_pile_of_good_ones():
-    """대신증권이 정확히 이 모양이었다 — 호재 다섯에 하향 하나."""
-    titles = REAL_NEUTRAL + ["대신증권, 목표주가 '하향' 이유는?"]
-    assert news_is_vetoed(titles) is True
 
 
 def test_scan_deduplicates_but_keeps_order():

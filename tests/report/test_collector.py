@@ -15,7 +15,6 @@ from quant.collect.collector import (
     prune,
     render_vault,
     store_path,
-    window_articles,
 )
 
 UTC = timezone.utc
@@ -144,30 +143,6 @@ def test_undated_article_records_collection_time_separately(tmp_path, monkeypatc
     assert row["published"] is None
     assert row["published_known"] is False
     assert row["first_seen"].startswith("2026-08-13T05:00")
-
-
-# --- 세션 창 조회 (리포트가 읽는 경로) ---
-
-def test_window_uses_published_when_known(tmp_path, monkeypatch):
-    _fake_feed(monkeypatch, {"A": [
-        _item("창 안", "https://x.com/1", "Wed, 13 Aug 2026 09:00:00 +0900"),   # 00:00 UTC
-        _item("창 밖", "https://x.com/2", "Tue, 12 Aug 2026 09:00:00 +0900"),   # 전날
-    ]})
-    collect_once("KR", tmp_path, now=datetime(2026, 8, 13, 3, 0, tzinfo=UTC))
-    got = window_articles(tmp_path, "KR",
-                          since=datetime(2026, 8, 12, 20, 0, tzinfo=UTC),
-                          until=datetime(2026, 8, 13, 3, 0, tzinfo=UTC))
-    assert [r["title"] for r in got] == ["창 안"]
-
-
-def test_window_falls_back_to_collection_time_for_undated(tmp_path, monkeypatch):
-    """날짜 미상 기사를 버리지 않는다 — 버리면 그 피드가 통째로 사라진 것과 같다."""
-    _fake_feed(monkeypatch, {"A": [_item("날짜없음", "https://x.com/1", published=None)]})
-    collect_once("KR", tmp_path, now=datetime(2026, 8, 13, 1, 0, tzinfo=UTC))
-    got = window_articles(tmp_path, "KR",
-                          since=datetime(2026, 8, 13, 0, 0, tzinfo=UTC),
-                          until=datetime(2026, 8, 13, 3, 0, tzinfo=UTC))
-    assert len(got) == 1
 
 
 # --- 보존 ---

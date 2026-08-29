@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install test backtest paper report fetch lint deploy
+.PHONY: help install test backtest paper report fetch lint deploy ml
 
 help: ## 사용 가능한 타겟 목록
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -28,3 +28,6 @@ lint: ## ruff가 설치돼 있으면 실행, 아니면 no-op (현재 린터 미�
 
 deploy: ## EC2에 배포 (QT_SSH_HOST=ubuntu@<ElasticIP> make deploy). 절차: docs/runbooks/deploy.md
 	./server/scripts/deploy.sh
+
+ml: ## 로컬 맥 원버튼 ML 파이프라인 — EC2 동기화 → 표본 게이트 → (충족시) 학습 (local/ml/README.md)
+	./local/ml/run.sh

@@ -113,7 +113,6 @@ class TossClient:
         self._limiter = _RateLimiter()
         self._access_token: str | None = None
         self._expires_at: float = 0.0
-        self._trading_day_cache: dict[tuple[str, str], bool] = {}
 
     # ------------------------------------------------------------------ auth
     def _load_token_cache(self) -> dict | None:
@@ -340,22 +339,6 @@ class TossClient:
         if date_ is not None:
             params = {"date": date_.isoformat() if isinstance(date_, date) else date_}
         return self._request("GET", path, "MARKET_INFO", params=params)
-
-    def is_trading_day(self, market: str, date_: date | str) -> bool:
-        # memoized per (market, date): status is immutable for a given date,
-        # and the run loop asks every cycle — without this it's +1 HTTP per 10s
-        key = (_mkt(market), str(date_))
-        cached = self._trading_day_cache.get(key)
-        if cached is not None:
-            return cached
-        today = self.market_calendar(market, date_)["today"]
-        if _mkt(market) == "KR":
-            result = today.get("integrated") is not None
-        else:
-            result = any(today.get(k) is not None
-                         for k in ("dayMarket", "preMarket", "regularMarket", "afterMarket"))
-        self._trading_day_cache[key] = result
-        return result
 
     def rankings(
         self, type: str, market_country: str, *,
