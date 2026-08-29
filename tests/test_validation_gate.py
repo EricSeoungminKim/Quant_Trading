@@ -97,11 +97,14 @@ def test_production_settings_yaml_passes_the_gate_as_intended():
     다 시도해보자 … 다 긁어서 병렬로 돌려야 의미가 있지" — 4종(8-25) → 7종(8-28)
     → 11종. 시행 횟수 재신고는 tests/test_strategy_registry_new_branches.py 와
     settings.yaml 주석(`--trials 8`)에 있다.
+    2026-08-30: llm_trader 추가로 12종 체제(소유자 승인 — LLM 판단 실험 레인,
+    KR 전용). KR 레인이 6 → 7로 늘어 균등 배분이 1/6 → 1/7로 바뀐다. US는
+    llm_trader의 US capital_fraction이 0이라 8레인·0.125 그대로 불변.
 
     배분표 설계(균등 대회 체제): 전 레인 burn_in 이라 캡 0.2 가 먼저 걸리고,
     캡 합이 1.0 을 넘는 시장은 **비례 축소가 전 레인을 균등하게 눌러** 결과적으로
     시장별 활성 레인이 같은 자본으로 출발한다 — 소유자의 대회 원칙("같은 자본으로
-    리셋해서 병렬로") 그 자체다. KR 6레인 → 각 1/6, US 8레인 → 각 0.125.
+    리셋해서 병렬로") 그 자체다. KR 7레인 → 각 1/7, US 8레인 → 각 0.125.
     declared(1.0 등)는 승격 시 도달할 목표 선언이라는 기존 관례 그대로다.
 
     검산 두 개(안전 invariant):
@@ -116,13 +119,13 @@ def test_production_settings_yaml_passes_the_gate_as_intended():
     fractions = validated_capital_fractions(cfg)
 
     kr_lanes = ("news_momentum", "close_bet", "frgn_accumulate",
-                "scalp_1m", "vol_breakout", "rsi2_dip")
+                "scalp_1m", "vol_breakout", "rsi2_dip", "llm_trader")
     us_lanes = ("scalp_1m", "pullback_impulse", "mr_vwap_quiet", "overnight_drift",
                 "vol_breakout", "intraday_momentum", "gap_fade", "rsi2_dip")
 
     for sid in kr_lanes:
-        assert abs(fractions[sid]["KR"] - 1.0 / 6) < 1e-9, (
-            f"KR {sid} 런타임 {fractions[sid]['KR']} != 1/6 — 균등 대회 전제가 깨졌다"
+        assert abs(fractions[sid]["KR"] - 1.0 / 7) < 1e-9, (
+            f"KR {sid} 런타임 {fractions[sid]['KR']} != 1/7 — 균등 대회 전제가 깨졌다"
         )
     for sid in us_lanes:
         assert abs(fractions[sid]["US"] - 0.125) < 1e-9, (

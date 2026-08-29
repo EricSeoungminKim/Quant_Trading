@@ -8,6 +8,7 @@ from quant.trade.strategy.donchian import DonchianStrategy, DonchianPureShell
 from quant.trade.strategy.close_bet import CloseBetPureShell, CloseBetStrategy
 from quant.trade.strategy.frgn_accumulate import FrgnAccumulatePureShell, FrgnAccumulateStrategy
 from quant.trade.strategy.intraday_scan import IntradayScanStrategy
+from quant.trade.strategy.llm_trader import LlmTraderStrategy
 from quant.trade.strategy.mean_reversion import MeanReversionStrategy
 from quant.trade.strategy.news_momentum import NewsMomentumPureShell, NewsMomentumStrategy
 from quant.trade.strategy.news_scalp import NewsScalpStrategy
@@ -78,6 +79,12 @@ STRATEGY_REGISTRY = {
     "intraday_momentum": IntradayMomentumShell,  # SSRN 4824172 — 하방은 인버스 ETF 매수로 표현(하락장 레인)
     "gap_fade": GapFadeShell,               # 갭하락 되돌림(근거 혼재 — 소액 출전)
     "rsi2_dip": Rsi2DipShell,               # Connors RSI(2) 눌림 — 오버나이트 보유형
+    # LLM 트레이더(2026-08-30 소유자 승인) — 12번째 전략, LLM 판단 실험 레인.
+    # "LLM 자체에게 전략과 판단을 맡기는 게 하나의 전략이 되는 것, 똑같이
+    # 1,000만원 모의, 기존 시스템 위에, 한 달 테스트." 결정은 별도 프로세스가
+    # data/state/llm_trader_inbox.jsonl 에 쓰고 이 전략은 읽기만 한다 — LLM은
+    # 거래 핫패스에 없다. 근거·가드레일은 llm_trader.py 모듈 docstring.
+    "llm_trader": LlmTraderStrategy,
 }
 
 
@@ -156,14 +163,21 @@ def describe_tags(tags: list[str]) -> str:
 def build_strategies(
     cfg: dict, leverage_of: dict[str, float] | None = None,
     tags_of: dict[str, list[str]] | None = None,
+    inbox_reader=None,
 ) -> list:
     """cfg["strategies"] 블록을 읽어 활성화된 전략 인스턴스 리스트를 만든다.
 
     `leverage_of`는 `MeanReversionStrategy`처럼 레버리지 정보를 생성자에서 받는
     전략에만, `tags_of`는 `NewsMomentumStrategy`/`NewsScalpStrategy`/
     `FrgnAccumulateStrategy`처럼 관심종목 태그(EVENT/EVENT_SCALP/FRGN 등)를
-    생성자에서 받는 전략에만 전달한다 — 다른 전략 클래스는 이 kwarg를 모르므로
-    무조건 넘기면 TypeError가 난다."""
+    생성자에서 받는 전략에만, `inbox_reader`는 `LlmTraderStrategy`처럼 LLM 판단
+    인박스를 읽는 콜러블을 생성자에서 받는 전략에만 전달한다 — 다른 전략 클래스는
+    이 kwarg를 모르므로 무조건 넘기면 TypeError가 난다.
+
+    `inbox_reader`가 `None`이면 `LlmTraderStrategy`가 자체 기본값(항상 빈 목록)을
+    쓴다 — 실제 파일 I/O는 이 함수가 아니라 `quant/apps/assembly.py`(composition
+    root)가 주입한다. 이 함수는 `quant/trade/` 소속이라 파일 I/O를 모른다
+    (`quant/trade/strategy/CLAUDE.md`)."""
     markets = market_of(cfg.get("universe", {}))
     strategies = []
     # 순수 껍질도 같은 태그 소비자다 — **누락하면 `tags_of`가 전달되지 않아 후보가
@@ -174,6 +188,7 @@ def build_strategies(
         NewsMomentumStrategy, NewsScalpStrategy, FrgnAccumulateStrategy, CloseBetStrategy,
         NewsMomentumPureShell, FrgnAccumulatePureShell, CloseBetPureShell,
     )
+    _INBOX_READER_CONSUMERS = (LlmTraderStrategy,)
     for strat_id, strat_cfg in cfg.get("strategies", {}).items():
         if not strat_cfg.get("enabled", True):
             continue
@@ -185,5 +200,7 @@ def build_strategies(
             kwargs["leverage_of"] = leverage_of
         if cls in _TAGS_OF_CONSUMERS:
             kwargs["tags_of"] = tags_of
+        if cls in _INBOX_READER_CONSUMERS:
+            kwargs["inbox_reader"] = inbox_reader
         strategies.append(cls(symbols=symbols, params=strat_cfg["params"], market=market, id=strat_id, **kwargs))
     return strategies

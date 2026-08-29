@@ -922,6 +922,27 @@ strategies:
       trend_gate_mode: shadow
       adx_min: 25.0 # QuantConnect #407(Cross-Sectional Momentum with Trend Filter) 근거값 — 이 저장소 실데이터로 검증되지 않음
       max_atr_ratio: 0.10 # QuantConnect #478(Quantum Walk BQP) 변동성 억제기 근거값 — 이 저장소 실데이터로 검증되지 않음
+  # ── LLM 트레이더 (2026-08-30 소유자 승인) ────────────────────────────────
+  # "LLM 자체에게 전략과 판단을 맡기는 게 하나의 전략이 되는 것, 똑같이
+  # 1,000만원 모의, 기존 시스템 위에, 한 달 테스트." 12번째 참가자 — 다른 11개는
+  # 사람이 정한 규칙(돌파·평균회귀·모멘텀 등)의 코드화이고, 이것만 규칙 자체를
+  # LLM 판단에 맡긴다. LLM 판단 프로세스는 별도(server/ 소관, 이 저장소 밖)이고,
+  # 결정은 data/state/llm_trader_inbox.jsonl 에 append된다 — 엔진은 읽기만 한다
+  # (거래 핫패스에 LLM 호출 없음, 루트 CLAUDE.md "절대 하지 말 것"). 상세 계약·
+  # 가드레일은 quant/trade/strategy/llm_trader.py 모듈 docstring.
+  llm_trader:
+    class: llm_trader
+    enabled: true
+    symbols: [] # 인박스가 유니버스를 대신한다 — universe: watchlist 가 아니다
+    capital_fraction:
+      KR: 1.0 # KR 전용 — 인박스가 KR 6자리 심볼만 받는다(llm_trader.py 가드레일 1번)
+      US: 0.0
+    validation:
+      status: burn_in # 신규 실험 레인 — 백테스트 표본 0(LLM 판단은 리플레이 불가). paper 번인이 유일한 검증 경로, 한 달 테스트(소유자 지시)
+    params:
+      max_positions: 5
+      max_weight_per_position: 0.34
+      stop_pct: 5.0
 
 risk:
   # 확장 세션 허용 목록 (2026-08-18, 사용자 결정: 프리마켓 직접 진입 찬성).

@@ -124,6 +124,47 @@ def _save_kr_etf(symbols: set[str], path: Path | None = None) -> None:
         logger.warning("KR ETF 분류 캐시 저장 실패(거래는 계속): %s", e)
 
 
+# llm_trader 인박스 경로(2026-08-30) — 별도 프로세스(판단 스크립트, server/
+# 소관)가 LLM 판단을 여기 append한다. 엔진은 읽기만 한다(quant/trade/strategy/
+# llm_trader.py 모듈 docstring "아키텍처" 절 — data/watchlist.yaml과 같은 패턴).
+LLM_TRADER_INBOX_PATH = Path("data/state/llm_trader_inbox.jsonl")
+
+
+def _read_llm_trader_inbox(path: Path = LLM_TRADER_INBOX_PATH) -> list[dict]:
+    """`LlmTraderStrategy`에 주입되는 인박스 리더 — 실제 파일 I/O는 여기(composition
+    root)에만 있다. `FileWatchlistUniverse`와 달리 **세션당 캐시하지 않고 사이클마다
+    다시 읽는다** — 새 주문이 아무 때나 append될 수 있어 하루 1회 스냅샷이 안
+    맞는다(전략 쪽 ts 필터가 "오늘" 여부를 걸러 주므로 매 사이클 재읽기 비용은
+    로컬 파일 하나 read + JSON 파싱뿐이다).
+
+    형식은 JSON Lines(한 줄에 결정 하나 — `llm_trader.py` 모듈 docstring의 스키마).
+    깨진 줄은 건너뛰고 경고만 남긴다(watchlist 파싱 관례와 동일 — 한 줄이
+    이상하다고 나머지 주문을 통째로 버리지 않는다). 파일이 없으면 빈 목록(아직
+    아무 판단도 들어오지 않은 정상 상태 — 경고하지 않는다)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        logger.warning("llm_trader 인박스 조회 실패 (%s): %s: %s", path, type(e).__name__, e)
+        return []
+    out: list[dict] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as e:
+            logger.warning("llm_trader 인박스 %s:%d 파싱 실패: %s", path, lineno, e)
+            continue
+        if isinstance(row, dict):
+            out.append(row)
+        else:
+            logger.warning("llm_trader 인박스 %s:%d 행이 객체가 아님: %r", path, lineno, row)
+    return out
+
+
 class MissingCredentials(RuntimeError):
     """실데이터가 필요한 경로인데 자격증명이 없다. 조용히 stub으로 내려가지 않는다."""
 
@@ -669,6 +710,7 @@ def rebuild_strategies(
     cfg: dict, universe=None, held_symbols: list[str] | None = None,
     leverage_of: dict[str, float] | None = None,
     tags_of: dict[str, list[str]] | None = None,
+    inbox_reader: Callable[[], list[dict]] | None = None,
 ):
     """유니버스 심볼을 반영해 전략을 (재)조립한다 → (strategies, markets, active_markets).
 
@@ -703,7 +745,15 @@ def rebuild_strategies(
     세션 롤마다 다시 읽어도 비용이 없고, 오히려 그래야 그 세션에 새로 등록된
     EVENT 태그가 바로 반영된다(스냅샷을 재사용하면 태그가 세션 하나만큼
     지연된다). `NewsMomentumStrategy`가 이 값을 받는다.
+
+    `inbox_reader`도 명시적으로 넘기지 않으면 이 함수가 기본값
+    `_read_llm_trader_inbox`(실제 파일 읽기)로 채운다 — tags_of와 같은 이유
+    (매 호출마다 다시 읽어도 비용이 로컬 파일 하나뿐이다). `LlmTraderStrategy`가
+    이 값을 받는다. 테스트에서 파일 I/O 없이 부르려면 `inbox_reader=lambda: []`
+    등 명시적으로 넘기면 된다.
     """
+    if inbox_reader is None:
+        inbox_reader = _read_llm_trader_inbox
     markets = market_of(cfg.get("universe", {}))
     universe_symbols = list(universe.symbols()) if universe is not None else []
     if tags_of is None and universe is not None:

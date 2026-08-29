@@ -89,8 +89,15 @@ def test_enabled_in_real_config_now_that_tag_wiring_is_done():
     # intraday_momentum(SSRN 4824172 — 하락장 레인, 인버스 ETF 매수로 표현),
     # gap_fade(야간-주간 반전 문헌, 근거 혼재 고지), rsi2_dip(Connors, 오버나이트).
     # 시행 횟수 재신고: 스캘핑/단기 레인 8개 → `strategy-report --trials 8`.
+    # 2026-08-30: **소유자 승인으로 12종 체제** — llm_trader 추가. "LLM 자체에게
+    # 전략과 판단을 맡기는 게 하나의 전략이 되는 것, 똑같이 1,000만원 모의, 기존
+    # 시스템 위에, 한 달 테스트." 다른 11개와 달리 사람이 정한 규칙이 아니라 LLM
+    # 판단 자체를 실험하는 레인이라 다중검정(--trials) 모집단에는 넣지 않는다 —
+    # 같은 규칙을 반복 시행해 우연한 승자를 고르는 문제(스캘핑 8개 레인)와는
+    # 성격이 다르다(quant/trade/strategy/llm_trader.py 모듈 docstring).
     assert ids == {
         "news_momentum", "scalp_1m", "close_bet", "frgn_accumulate",
         "pullback_impulse", "mr_vwap_quiet", "overnight_drift",
         "vol_breakout", "intraday_momentum", "gap_fade", "rsi2_dip",
+        "llm_trader",
     }, "활성 전략 목록이 바뀌었다 — 늘리려면 소유자 결정 + 시행 횟수 재신고"

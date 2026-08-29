@@ -75,6 +75,19 @@
 # 텔레그램 침묵(로그만) — 2026-08-28 실측 거래일 10일뿐이라 지금은 매일 이 경로다.
 22 8 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/ml_scorer.sh KR >> data/ml_scorer.log 2>&1
 
+# 평일 09:05~15:15 KST, 10분 간격(38회/일) — llm_trader 판단 레인(2026-08-30
+# 신규, 엔진 밖 별도 프로세스; 2026-08-30 소유자 지시로 30분→10분 간격 전진).
+# headless `claude -p` 가 오늘 KR 리포트 요약 + 자기 포지션 + 참고 시세
+# 데이터(peek 프리페치) + 최근 주문 이력만 보고 buy/sell/무거래 + horizon
+# (단타/스윙/장기)을 판단해 data/state/llm_trader_inbox.jsonl 에 append 한다 —
+# 이 스크립트는 주문을 내지 않는다. 주문 집행은 엔진(별도 소비 전략)의 몫이고,
+# 매도 타이밍도 전적으로 이 판단의 몫이다(엔진은 -5% 하드레일만). 호출당
+# 타임아웃 240초, 실패/결근은 조용히 넘어간다(무거래도 유효한 판단이라 경보
+# 없음). Max 구독 사용량을 하루 38회 쓴다 — 비용 상세·도구 허용 방식(WebSearch/
+# WebFetch만, Bash 전면 차단)은 llm_trader.sh 상단 주석.
+5,15,25,35,45,55 9-14 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/llm_trader.sh >> data/llm_trader.log 2>&1
+5,15 15 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/llm_trader.sh >> data/llm_trader.log 2>&1
+
 # (2026-08-10 09:05 검증 통과로 제거됨 — 실전 서버 실시간 틱 수신 확인 후
 #  kiwoom.realtime.enabled: true. 스크립트는 재검증용으로 남겨둔다:
 #  ./server/scripts/kiwoom_ws_check.sh)

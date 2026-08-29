@@ -4121,6 +4121,79 @@ def cmd_spread_sample(args: argparse.Namespace) -> None:
         print(f"조회 실패: {len(syms)}종목 {len(failed)}건 {syms} (사유 예: {failed[0][1]})")
 
 
+_PEEK_MAX_N = 200
+
+
+def cmd_peek(args: argparse.Namespace) -> None:
+    """읽기 전용 시세 조회 — 현재가 + 최근 봉 n개를 JSON으로 stdout에 낸다.
+
+    2026-08-30 소유자 지시: LLM 판단 프로세스(server/ 소관, 이 저장소 밖)가
+    "우리가 만든 데이터 API를 다른 전략들과 공정하게 활용"할 수 있게 하는 읽기
+    전용 진입점. **주문 경로가 전혀 없다** — `quote()`/`history()` 조회뿐이고,
+    브로커/리스크/체결 어느 것도 조립하지 않는다.
+
+    ## 왜 `build_market_data`(엔진과 동일 라우팅)를 그대로 쓰지 않았나
+
+    Kiwoom 실시간 웹소켓은 **계정당 세션이 하나**다(`cmd_kiwoom_probe` 경고 —
+    "quant-engine이 실행 중이면 그쪽 실시간 시세가 이 프로브 동안 끊긴다").
+    `peek`는 LLM 판단 루프가 장중 반복 호출할 것을 전제하는데, `build_market_data`
+    가 여는 Kiwoom 라우트를 그대로 썼다가는 매 호출이 라이브 엔진의 웹소켓을
+    끊을 위험이 있다. 그래서 이 명령은 **Toss REST 단독**(`TossDataFeed`)만
+    쓴다 — 기본 설정(`kiwoom.realtime.enabled: false`)에서는 엔진 자신도 이
+    경로로 폴백하므로, 대부분의 시간에 엔진이 실제로 보는 것과 같은 소스다.
+
+    `--n`은 `_PEEK_MAX_N`(200)으로 상한한다(남용 방지) — 넘겨도 에러 없이 잘라서
+    진행하고 경고만 남긴다.
+    """
+    import json as _json
+
+    from quant.adapters.brokers.toss.datafeed import TossDataFeed
+    from quant.apps.assembly import MissingCredentials, build_toss_client
+
+    load_settings()  # .env/.env.local 로드(TOSS_CLIENT_ID 등)
+
+    n = args.n
+    if n <= 0:
+        raise SystemExit("--n은 1 이상이어야 합니다.")
+    if n > _PEEK_MAX_N:
+        logger.warning("peek: --n %d은 상한 %d으로 잘린다", n, _PEEK_MAX_N)
+        n = _PEEK_MAX_N
+
+    try:
+        client = build_toss_client()
+    except MissingCredentials as e:
+        logger.error("peek: %s", e)
+        raise SystemExit(2)
+
+    feed = TossDataFeed(client, symbols=[args.symbol])
+    quote = feed.quote(args.symbol)
+
+    out: dict = {
+        "symbol": args.symbol,
+        "interval": args.interval,
+        "quote": (
+            {"price": quote.price, "ts": quote.ts.isoformat()} if quote is not None else None
+        ),
+    }
+    try:
+        bars = feed.history(args.symbol, args.interval, n)
+    except Exception as e:  # noqa: BLE001 — 조회 실패도 "결과"다, JSON으로 그대로 드러낸다
+        out["bars"] = None
+        out["bars_error"] = f"{type(e).__name__}: {e}"
+    else:
+        out["bars"] = [
+            {
+                "ts": ts.isoformat(),
+                "open": float(row["open"]), "high": float(row["high"]),
+                "low": float(row["low"]), "close": float(row["close"]),
+                "volume": float(row["volume"]),
+            }
+            for ts, row in bars.iterrows()
+        ]
+
+    print(_json.dumps(out, ensure_ascii=False, indent=2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="quant")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -4568,6 +4641,15 @@ def main() -> None:
                           help="호출 간 최소 간격(초). 0.2 미만은 5 TPS 상한으로 잘린다")
     p_spread.add_argument("--root", default=None)
     p_spread.set_defaults(func=cmd_spread_sample)
+
+    p_peek = sub.add_parser(
+        "peek",
+        help="읽기 전용 시세 조회(현재가+최근 봉 n개, JSON) — 주문 경로 없음. LLM 판단 프로세스용",
+    )
+    p_peek.add_argument("--symbol", required=True, help="예: 005930 (KR), TQQQ (US)")
+    p_peek.add_argument("--interval", default="5m", help="1m|5m|15m|1d (기본 5m)")
+    p_peek.add_argument("--n", type=int, default=40, help=f"봉 개수 (상한 {_PEEK_MAX_N})")
+    p_peek.set_defaults(func=cmd_peek)
 
     args = parser.parse_args()
     args.func(args)

@@ -103,6 +103,7 @@ _STRATEGY_LABELS = {
     "intraday_momentum": "일중 모멘텀(양방향)",
     "gap_fade": "갭하락 되돌림",
     "rsi2_dip": "RSI2 눌림 매수",
+    "llm_trader": "LLM 트레이더(실험)",
 }
 
 
@@ -1089,6 +1090,11 @@ _OVERNIGHT_STRATEGIES = frozenset({
     # rsi2_dip(2026-08-29): 마감 직전 매수 → 며칠 보유(RSI 회복/시간/하드레일
     # 청산)가 전략 정의다. overnight_drift 와 같은 이유로 누락 시 무효화된다.
     "rsi2_dip",
+    # llm_trader(2026-08-30, 소유자 승인): "LLM이 청산도 스스로 판단하는 실험" —
+    # 오버나이트 허용이 설계 자체다. EoD 강제청산이 걸리면 LLM의 보유 판단이
+    # 매일 마감에 무효화된다. 하드 손절(stop_pct)만 엔진이 지킨다(llm_trader.py
+    # 모듈 docstring "방어선" 절).
+    "llm_trader",
 })
 
 
