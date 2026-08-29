@@ -21,12 +21,15 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 from quant.core.ports import EventSink
 from quant.core.models import Fill, Signal
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_LEDGER_PATH = Path("data/state/trades.jsonl")
+DEFAULT_EQUITY_CURVE_PATH = Path("data/ledger/equity_curve.jsonl")
 
 # 종결 트립 30건 미만이면 승률 표준오차가 너무 커서(이항비율 CI 폭이 대략
 # ±1/sqrt(n) 규모) 자본배분 근거로 쓸 수 없다 — 30은 이 저장소가 실무적으로
@@ -583,3 +586,95 @@ def filter_recent(trips: list[dict], days: int) -> list[dict]:
             return None
 
     return [t for t in trips if (ts := _ts(t)) is not None and ts >= cutoff]
+
+
+def load_equity_curve_rows(path: Path | str = DEFAULT_EQUITY_CURVE_PATH) -> list[dict]:
+    """`cli equity-snapshot`이 append하는 원장을 읽는다. 깨진 줄은 건너뛴다 —
+    `load_trades`와 같은 계약(원장 일부 손상이 전체 리포트를 죽이면 안 된다)."""
+    path = Path(path)
+    if not path.exists():
+        return []
+    out: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+            if isinstance(row, dict) and row.get("date") and row.get("market"):
+                out.append(row)
+        except ValueError:
+            continue
+    return out
+
+
+def daily_equity_series_by_market(
+    path: Path | str = DEFAULT_EQUITY_CURVE_PATH,
+) -> dict[str, pd.Series]:
+    """자본 곡선 원장 → 시장별 일별 자본(KRW) pd.Series (quantstats 티어시트용).
+
+    이 파일이 quant/research/가 아니라 여기(control/ledger.py)에 있는 이유: 이 저장소의
+    quant/research/ 모듈(walkforward.py, pathstats.py 등)은 전부 **순수 계산**만 하고
+    파일을 직접 읽지 않는다(호출부가 데이터를 만들어 넘긴다) — 이 함수는 반대로
+    JSONL을 직접 열어 읽는 I/O 코드라서, 파일 I/O를 이미 하고 있는 이 모듈
+    (load_trades와 같은 결)에 넣는 게 기존 관례에 맞는다.
+
+    하루에 여러 번 마크가 찍힐 수 있다(장중 재실행 등, 예: 2026-08-24 KR 03:20 +
+    15:40). 같은 (market, date)는 **원장에 쓰인 순서상 마지막 것이 이긴다** —
+    `cmd_performance`/`cmd_equity_snapshot`/`control.alpha.daily_returns`가 이미 쓰는
+    것과 동일한 관례("재실행은 append이지 덮어쓰기가 아니고, 읽는 쪽이 마지막만
+    쓴다"). pandas로는 groupby(date).last()가 그 관례를 그대로 구현한다 — JSONL이
+    항상 시간순으로 append되므로 원본 순서를 보존하는 groupby().last()가 정확히
+    "마지막 기록"이 된다.
+
+    결측일(휴장일 포함)은 채우지 않는다 — 원장에 없는 날은 시리즈에도 없다.
+    total_krw가 없거나 0 이하인 행은 깨진 마크로 보고 제외한다(alpha.py의
+    `_as_float` 필터와 동일한 판단).
+    """
+    rows = load_equity_curve_rows(path)
+    if not rows:
+        return {}
+    df = pd.DataFrame(rows)
+    df = df[pd.to_numeric(df["total_krw"], errors="coerce") > 0]
+    if df.empty:
+        return {}
+    df = df.assign(date=pd.to_datetime(df["date"], errors="coerce"))
+    df = df.dropna(subset=["date"])
+
+    out: dict[str, pd.Series] = {}
+    for market, g in df.groupby("market"):
+        s = g.groupby("date")["total_krw"].last().sort_index()
+        s = s.astype(float)
+        s.index.name = "date"
+        out[str(market)] = s
+    return out
+
+
+def daily_benchmark_series_by_market(
+    path: Path | str = DEFAULT_EQUITY_CURVE_PATH,
+) -> dict[str, pd.Series]:
+    """자본 곡선 원장의 동반 기록(`benchmark_close`, 2026-08-28~) → 시장별 일별
+    벤치마크 종가 pd.Series. `daily_equity_series_by_market`와 같은
+    groupby(date).last() 원칙 + 결측일 미보간을 따른다.
+
+    `benchmark_close`가 없거나(구버전 행) 0 이하인 행은 그 날짜에 기여하지
+    않는다 — 없는 벤치마크 값을 지어내지 않는다."""
+    rows = load_equity_curve_rows(path)
+    if not rows:
+        return {}
+    df = pd.DataFrame(rows)
+    if "benchmark_close" not in df.columns:
+        return {}
+    df = df[pd.to_numeric(df["benchmark_close"], errors="coerce") > 0]
+    if df.empty:
+        return {}
+    df = df.assign(date=pd.to_datetime(df["date"], errors="coerce"))
+    df = df.dropna(subset=["date"])
+
+    out: dict[str, pd.Series] = {}
+    for market, g in df.groupby("market"):
+        s = g.groupby("date")["benchmark_close"].last().sort_index()
+        s = s.astype(float)
+        s.index.name = "date"
+        out[str(market)] = s
+    return out

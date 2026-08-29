@@ -5,6 +5,8 @@ import pytest
 
 from quant.control.ledger import (
     TradeLedgerSink,
+    daily_benchmark_series_by_market,
+    daily_equity_series_by_market,
     frgn_accumulate_promotion_verdict,
     load_trades,
     news_scalp_promotion_verdict,
@@ -410,3 +412,90 @@ def test_fill_row_without_reason_writes_empty_string(tmp_path):
 
     row = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
     assert row["reason"] == ""
+
+
+# --- 자본 곡선(equity_curve.jsonl) → quantstats 티어시트용 일별 시리즈 어댑터 ---
+# 행 형식은 quant/apps/cli.py::cmd_equity_snapshot 이 실제로 쓰는 그대로다
+# (tests/test_alpha.py::_equity_row 와 동일한 관례).
+
+def _eq_row(day: str, market: str, total: float, *, recorded_at: str,
+            bench_symbol: str | None = None, bench_close: float | None = None) -> dict:
+    row = {
+        "date": day, "market": market, "total_krw": total,
+        "books": {"donchian": total}, "marked": 1, "degraded": [],
+        "recorded_at": recorded_at,
+    }
+    if bench_symbol is not None:
+        row["benchmark_symbol"] = bench_symbol
+        row["benchmark_close"] = bench_close
+    return row
+
+
+def test_daily_equity_series_takes_last_mark_of_the_day(tmp_path):
+    """하루 여러 번 마크(장중 재실행) → 그날의 마지막 값만 시리즈에 남는다."""
+    import json
+
+    path = tmp_path / "equity_curve.jsonl"
+    rows = [
+        _eq_row("2026-08-24", "KR", 7_722_657.8, recorded_at="2026-08-24T03:20:45+09:00"),
+        _eq_row("2026-08-24", "KR", 7_382_105.34, recorded_at="2026-08-24T15:40:01+09:00"),
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+    out = daily_equity_series_by_market(path)
+    assert list(out.keys()) == ["KR"]
+    s = out["KR"]
+    assert len(s) == 1
+    assert s.iloc[0] == pytest.approx(7_382_105.34)
+
+
+def test_daily_equity_series_splits_by_market(tmp_path):
+    """같은 날짜라도 시장이 다르면 서로 다른 시리즈로 분리된다 — 섞으면 안 된다."""
+    import json
+
+    path = tmp_path / "equity_curve.jsonl"
+    rows = [
+        _eq_row("2026-08-24", "KR", 7_382_105.34, recorded_at="2026-08-24T15:40:01+09:00"),
+        _eq_row("2026-08-24", "US", 7_353_040.09, recorded_at="2026-08-25T06:15:01+09:00"),
+        _eq_row("2026-08-25", "KR", 7_402_050.48, recorded_at="2026-08-25T15:40:02+09:00"),
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+    out = daily_equity_series_by_market(path)
+    assert set(out.keys()) == {"KR", "US"}
+    assert len(out["KR"]) == 2
+    assert len(out["US"]) == 1
+    # 결측일을 채우지 않는다 — US 시리즈에는 08-25가 없다(휴장/미기록이라 지어내지 않음).
+    assert list(out["US"].index.date.astype(str)) == ["2026-08-24"]
+
+
+def test_daily_benchmark_series_reads_companion_field(tmp_path):
+    """benchmark_close 동반 기록이 있는 행에서만 벤치마크 시리즈를 뽑는다."""
+    import json
+
+    path = tmp_path / "equity_curve.jsonl"
+    rows = [
+        # 구버전 행(벤치마크 동반 기록 없음) — 벤치마크 시리즈에 기여하지 않는다.
+        _eq_row("2026-08-24", "US", 7_353_040.09, recorded_at="2026-08-25T06:15:01+09:00"),
+        _eq_row("2026-08-28", "US", 7_224_272.21, recorded_at="2026-08-29T06:15:02+09:00",
+                bench_symbol="QQQ", bench_close=716.72),
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+    out = daily_benchmark_series_by_market(path)
+    assert list(out.keys()) == ["US"]
+    s = out["US"]
+    assert len(s) == 1
+    assert s.iloc[0] == pytest.approx(716.72)
+
+
+def test_daily_equity_series_empty_file_returns_empty_dict(tmp_path):
+    """파일이 없거나 비어 있으면 에러가 아니라 빈 dict — 표본 없음은 정상 상태다."""
+    missing = tmp_path / "does_not_exist.jsonl"
+    assert daily_equity_series_by_market(missing) == {}
+    assert daily_benchmark_series_by_market(missing) == {}
+
+    empty = tmp_path / "equity_curve.jsonl"
+    empty.write_text("", encoding="utf-8")
+    assert daily_equity_series_by_market(empty) == {}
+    assert daily_benchmark_series_by_market(empty) == {}

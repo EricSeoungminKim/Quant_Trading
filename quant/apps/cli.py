@@ -1129,6 +1129,51 @@ def cmd_performance(args: argparse.Namespace) -> None:
     print("\n※ 샤프는 무위험 이자율 0 가정 — 과대평가 방향. MDD 를 수익률보다 먼저 보라.")
 
 
+def cmd_tearsheet(args: argparse.Namespace) -> None:
+    """자본 곡선 원장(`data/ledger/equity_curve.jsonl`) → quantstats HTML 티어시트.
+
+    `performance`(`cli performance`)가 gs-quant econometrics 상당의 숫자 요약을
+    찍는다면, 이건 그 시각화 버전이다 — 어댑터(`quant.control.ledger.
+    daily_equity_series_by_market`)로 시장별 일별 자본 시리즈를 뽑아
+    `quant.research.report.render_html`(walk-forward 리포트가 이미 쓰는 그
+    경로)에 태운다. `render_html`은 `WalkForwardResult.oos_equity`(pd.Series)만
+    보므로, 다른 필드는 기본값(빈 값)인 채로 `oos_equity`만 채워 넘긴다.
+
+    quantstats 미설치 시 `render_html`이 이미 우아하게 저하한다(경고 로그 +
+    False 반환) — 여기서 별도 예외 처리를 하지 않는다."""
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.control.ledger import DEFAULT_EQUITY_CURVE_PATH, daily_equity_series_by_market
+    from quant.research.report import render_html
+    from quant.research.walkforward import WalkForwardResult
+
+    path = REPO_ROOT / DEFAULT_EQUITY_CURVE_PATH
+    series = daily_equity_series_by_market(path).get(args.market)
+    if series is None or series.empty:
+        print(f"[{args.market}] 표본 없음 — 자본 곡선 원장에 이 시장 행이 없다 "
+              f"(`cli equity-snapshot` 이 아직 안 돌았다)")
+        return
+
+    n = len(series)
+    # 임계 30: 연율화 지표(CAGR/샤프)는 짧은 표본에서 수학적으로 폭주한다 —
+    # 실측: 5일 표본이 CAGR -98%/샤프 -8.7 로 나왔다(2026-08-29). 그 5일짜리가
+    # 경고 없이 통과했던 임계(<5)를 문구("30일 이상 권장")와 일치시킨다.
+    if n < 30:
+        print(f"표본 부족({n}일) — 티어시트는 30일 이상 권장. 연율화 지표(CAGR/샤프)는 "
+              f"이 표본에서 무의미하게 부풀려진다. 그래도 생성은 한다(정직 표기).")
+
+    out_path = Path(args.out) if args.out else REPO_ROOT / "out" / f"tearsheet_{args.market}.html"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    result = WalkForwardResult(oos_equity=series)
+    ok = render_html(result, str(out_path), strategy_id=f"{args.market} 실전 자본곡선")
+    if ok:
+        print(f"티어시트 생성: {out_path} ({n}일 표본, {series.index.min().date()} ~ {series.index.max().date()})")
+    else:
+        print("quantstats 미설치 — HTML 생략(`uv sync --group research`로 설치)")
+
+
 def _wrap_equity_points(path, market: str, on) -> list[dict]:
     """자본 곡선에서 `market`·`on 이하` 점만, (date) 중복은 마지막 기록이 이긴다
     (`cmd_performance` 와 같은 관례). 날짜 오름차순."""
@@ -4116,6 +4161,14 @@ def main() -> None:
                          help="생략하면 KR·US 둘 다")
     p_alpha.add_argument("--days", type=int, default=30, help="최근 N 거래일 (0=전체)")
     p_alpha.set_defaults(func=cmd_alpha_report)
+
+    p_tearsheet = sub.add_parser(
+        "tearsheet",
+        help="자본 곡선 → quantstats HTML 티어시트 (performance 의 시각화 버전, quantstats 미설치 시 우아하게 저하)",
+    )
+    p_tearsheet.add_argument("--market", required=True, choices=["KR", "US"])
+    p_tearsheet.add_argument("--out", default=None, help="기본값: out/tearsheet_{market}.html")
+    p_tearsheet.set_defaults(func=cmd_tearsheet)
 
     p_wrap = sub.add_parser(
         "daily-wrap",
