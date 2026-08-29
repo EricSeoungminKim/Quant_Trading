@@ -468,6 +468,29 @@ def _env() -> Environment:
     return env
 
 
+def link_to_symbols(cont: dict[str, dict]) -> dict[str, list[dict]]:
+    """기사 링크 → 그 기사를 언급한 종목 목록(이름 오름차순) 역인덱스.
+
+    오늘의 시황/오늘의 뉴스 흐름 불릿에 "관련 종목" 칩을 달기 위한 순수 조회
+    헬퍼(2026-08-29 소유자 피드백 — 기사 나열을 종목과 이어 보이게). `cont`
+    (뉴스 연속성 사전)가 이미 갖고 있는 `c["titles"]`([{title, link}, ...])
+    만 뒤집는다 — 새 수집도 LLM 호출도 없다. 링크가 없는 기사(기존에도
+    존재하는 케이스)는 건너뛴다.
+    """
+    out: dict[str, list[dict]] = {}
+    for symbol, c in cont.items():
+        for t in c.get("titles") or []:
+            link = t.get("link")
+            if not link:
+                continue
+            entries = out.setdefault(link, [])
+            if not any(e["symbol"] == symbol for e in entries):
+                entries.append({"symbol": symbol, "name": c.get("name", symbol)})
+    for entries in out.values():
+        entries.sort(key=lambda e: e["name"])
+    return out
+
+
 def rank(cont: dict[str, dict], limit: int = 10) -> list[tuple[str, dict]]:
     """노출이 많고 연속된 종목이 위로.
 
@@ -662,6 +685,9 @@ def render(
     usnews_headlines: list[dict] | None = None,
     us_kr_bridge: dict | None = None,
     us_wrap: dict | None = None,
+    index_outlook: dict | None = None,
+    holiday_synthesis: dict | None = None,
+    symbol_payload: dict[str, dict] | None = None,
 ) -> str:
     from quant.analyze.indicators import describe
 
@@ -790,6 +816,19 @@ def render(
         # 전일 미국장 마감 종합(uswrap, 2026-08-25) — KR 아침판 전용, 전날
         # 새벽 US_wrap.json 을 그대로 읽어온 것. None 이면 카드 생략(같은 관례).
         us_wrap=us_wrap,
+        # 지수별 전망(index_outlook)/휴장 기간 종합(holiday_synthesis) — 소유자
+        # 요청(2026-08-29). 둘 다 report_cli._emit 이 payload 에 이미 얹어 둔
+        # 값을 그대로 받는다(계산은 quant.report.collect 몫, 여기는 표시만).
+        # None 이면 템플릿이 해당 섹션을 생략한다(us_kr_bridge 와 같은 관례).
+        index_outlook=index_outlook,
+        holiday_synthesis=holiday_synthesis,
+        # 뉴스 노출 상위 종목 카드의 "점수 내역" 접힘에서 트렌딩 요인을 보여주기
+        # 위한 심볼별 machine_payload 조회. 없으면(호출부 하위호환) 트렌딩
+        # 내역 없이 AI 점수 내역만 보인다.
+        symbol_payload=symbol_payload or {},
+        # 오늘의 시황/오늘의 뉴스 흐름 불릿의 "관련 종목" 칩(2026-08-29 소유자
+        # 피드백) — cont 에서 파생한 순수 조회(link_to_symbols), 새 데이터 아님.
+        link_symbols=link_to_symbols(cont),
         r=lambda k: snap.results.get(k),
         d=lambda k: _ok(snap, k),
     )
@@ -813,6 +852,7 @@ def write_html(
     telegram_view_kr=None, telegram_view_us=None, telegram_prose=None, telegram_image_desc=None,
     agent_interpret_view=None, midterm_view=None, us_news_kr_view=None,
     usnews_headlines=None, us_kr_bridge=None, us_wrap=None,
+    index_outlook=None, holiday_synthesis=None, symbol_payload=None,
 ) -> Path:
     path = _dated_dir(root, snap) / f"{snap.market}_report.html"
     path.write_text(
@@ -830,7 +870,9 @@ def write_html(
                telegram_prose=telegram_prose, telegram_image_desc=telegram_image_desc,
                agent_interpret_view=agent_interpret_view, midterm_view=midterm_view,
                us_news_kr_view=us_news_kr_view, usnews_headlines=usnews_headlines,
-               us_kr_bridge=us_kr_bridge, us_wrap=us_wrap),
+               us_kr_bridge=us_kr_bridge, us_wrap=us_wrap,
+               index_outlook=index_outlook, holiday_synthesis=holiday_synthesis,
+               symbol_payload=symbol_payload),
         encoding="utf-8",
     )
     return path

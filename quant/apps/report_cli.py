@@ -55,6 +55,7 @@ from quant.report.collect.close import (
     _build_close_ranking_view,
 )
 from quant.report.collect.core import _derive
+from quant.report.collect.holiday_synthesis import _apply_holiday_synthesis
 from quant.report.collect.intraday import (
     _INTRADAY_PRODUCER, _INTRADAY_PRODUCER_CLOSE, _build_intraday_view, _candidate_symbols,
     _theme_change_pct, _visible_intraday,
@@ -451,6 +452,13 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
     # candidates.txt·HTML 의 AUTO_WATCH 문자열이 모두 이 payload 를 공유하므로,
     # 휴장 기간 후보가 자동편입 경로(own_brief → watch-score)에도 그대로 실린다.
     payload = _apply_carryover(payload, snap, root, out_root)
+    # 휴장 기간 종합(소유자 요청 2026-08-29) — 오늘이 휴장 뒤 첫 개장일 아침일
+    # 때만 값이 들어간다(그 외엔 None, `us_kr_bridge`와 같은 관례로 키는 남긴다).
+    # 산문은 위에서 이미 만든 quality_narrator 를 재사용한다 — 새 레인을
+    # 만들지 않는다(아침 빌드 LLM 예산: 최대 4곳+1곳, 짧게).
+    payload["holiday_synthesis"] = _apply_holiday_synthesis(
+        snap, root, out_root, snap_root, narrator=quality_narrator,
+    )
     carried_candidates = [
         s for s in payload.get("symbols") or []
         if isinstance(s, dict) and "carried_from" in s
@@ -475,6 +483,12 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         midterm_view=midterm_view, us_news_kr_view=us_news_kr_view,
         usnews_headlines=usnews_headlines, us_kr_bridge=us_kr_bridge,
         us_wrap=us_wrap,
+        # 지수별 전망/휴장 기간 종합(소유자 요청 2026-08-29) — 둘 다 위에서
+        # payload 에 이미 얹혔다(index_outlook: core._derive, holiday_synthesis:
+        # 바로 위). 같은 값을 렌더 모델에도 실어야 report.html.j2 가 표시한다
+        # (us_kr_bridge/us_wrap 과 같은 관례 — payload 키와 모델 필드 이중 유지).
+        index_outlook=payload.get("index_outlook"),
+        holiday_synthesis=payload.get("holiday_synthesis"),
     )
     hp, jp, cp = write_open_report(model, snap, out_root)
     print(f"HTML   {hp}\n엔진   {jp}\n후보   {cp}")

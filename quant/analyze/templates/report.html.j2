@@ -100,6 +100,14 @@ hm flat
 {%- set hi_events = (cal.events | selectattr('high_impact') | list) if cal else [] -%}
 {%- set other_count = (cal.events | length) - (hi_events | length) if cal else 0 -%}
 {%- set mkt = d('market') -%}
+{#- 시세 스냅샷 기준 시각(2026-08-29 소유자 피드백, 실기기 확인) — 독자가
+   "이 등락률이 언제 찍힌 값인지" 알 수 없다는 지적. render.py 컨텍스트에
+   실제로 있는 필드만 쓴다: market 소스가 정상이면 그 SourceResult.fetched_at
+   (시세를 실제로 가져온 시각)을 "시세 기준"으로, 아니면 snap.generated_at
+   (리포트 조립 시각)을 정직하게 다른 문구("리포트 생성 ... 기준")로 구분해
+   쓴다 — 없는 필드를 지어내지 않는다. #}
+{%- set _mkt_result = r('market') -%}
+{%- set quote_time_label = ('시세 기준 ' ~ _mkt_result.fetched_at.strftime('%H:%M') ~ ' KST') if (mkt and _mkt_result) else ('리포트 생성 ' ~ snap.generated_at.strftime('%H:%M') ~ ' KST 기준') -%}
 <!doctype html>
 <html lang="ko" data-market="{{ snap.market }}">
 <head>
@@ -210,7 +218,8 @@ body{
 .stance-line{font-size:var(--fs-xl);line-height:1.62;font-weight:550;letter-spacing:-.005em}
 .stance-factors{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
 .fac{font-family:var(--font-mono);font-size:var(--fs-2xs);padding:3px 10px;
-  border-radius:var(--radius-pill);border:1px solid var(--rule);color:var(--body)}
+  border-radius:var(--radius-pill);border:1px solid var(--rule);color:var(--body);
+  white-space:nowrap}
 .fac.p{border-color:var(--up);color:var(--up)}
 .fac.m{border-color:var(--alert);color:var(--alert)}
 @media(max-width:640px){.stance{grid-template-columns:1fr}
@@ -268,12 +277,13 @@ body{
   .wrap{padding:24px 16px 64px}
   .cons{gap:10px 12px}
   .cons-item .v{font-size:var(--fs-xs)}
-  .sym{grid-template-columns:1fr}
-  .sym > div:nth-child(2){text-align:left !important}
-  .sym-scalp{grid-template-columns:1fr}
-  .sym-scalp > div:last-child{text-align:left !important}
   .stance-line{font-size:var(--fs-md)}
 }
+/* 2026-08-29 실기기(iPhone) 확인: 위 .sym/.sym-scalp 1열 붕괴 규칙이 여기(파일
+   앞부분)에 있었지만 뒤(약 430행대)의 본 정의가 캐스케이드 동률 규칙(같은
+   우선순위면 나중 선언이 이긴다)에 따라 항상 이겨서 실제로는 한 번도 적용된
+   적이 없었다 — 미디어쿼리 자체는 매치돼도 무효화됐다. 본 정의보다 뒤에 있는
+   전용 모바일 블록(파일 끝부분, .sym/.sym-scalp 재정의 참고)으로 옮긴다. */
 @media(max-width:840px){.mod.half{grid-column:span 12}
   .spine{grid-template-columns:1fr}.spine-now{width:auto;height:3px}
   }
@@ -430,23 +440,37 @@ a.hm{cursor:pointer}
 
 /* 종목 카드 */
 .sym{display:grid;grid-template-columns:1fr auto;gap:6px 16px;padding:17px 0;
-  border-bottom:1px solid var(--hair)}
+  border-bottom:1px solid var(--hair);min-width:0}
 .sym:last-child{border-bottom:0}
-/* 단타 후보 카드의 3칸 변형(2026-08-18, scalp_grade) — 왼쪽 등급 배지 ·
-   가운데 종목+핵심 근거 칩 · 오른쪽 점수·수급 요약. 이 절 전용 변형이라
-   별도 클래스로 뺀다 — `.sym`(1fr auto)을 시스템 전체에서 바꾸면 다른 모든
-   카드 섹션(AI 심층 해석·관심 종목 등)이 흔들린다. */
-.sym-scalp{display:grid;grid-template-columns:auto 1fr auto;gap:6px 16px;
-  padding:17px 0;border-bottom:1px solid var(--hair);align-items:start}
+.sym > div{min-width:0}
+/* 단타 후보 카드(2026-08-18, scalp_grade) — 등급 배지+순위+종목명+점수를
+   한 머리 줄(.scalp-head, flex-wrap)로, 근거 칩은 그 아래 별도 줄로 둔다.
+   2026-08-29 소유자가 실기기(iPhone, 375px)에서 확인: 예전엔 grid(auto 1fr
+   auto) 3칸이었는데, 좁은 화면에서 그리드를 1열로 붕괴시키는 미디어쿼리가
+   캐스케이드 동률 규칙에 밀려 한 번도 적용되지 않아 가운데 칸이 쥐어짜여
+   칩 글자가 한 자씩 줄바꿈됐다(실측 버그) — grid 자체를 버리고 모든 폭에서
+   똑같이 동작하는 flex-wrap 한 줄로 바꾼다(별도 모바일 오버라이드가 필요
+   없어져 이 종류의 버그 자체가 재발하지 않는다). */
+.sym-scalp{padding:17px 0;border-bottom:1px solid var(--hair)}
 .sym-scalp:last-child{border-bottom:0}
-.sym-nm{font-size:var(--fs-lg);font-weight:700;letter-spacing:-.005em}
-.sym-nm-plain{font-size:var(--fs-sm);color:var(--body)}
+.scalp-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.scalp-head .sym-link{display:inline-flex;align-items:baseline;gap:0;
+  flex:1 1 auto;min-width:0}
+.scalp-score{flex:0 0 auto;margin-left:auto;white-space:nowrap}
+.sym-scalp .sym-meta{margin-top:8px}
+.sym-nm{font-size:var(--fs-lg);font-weight:700;letter-spacing:-.005em;word-break:keep-all}
+.sym-nm-plain{font-size:var(--fs-sm);color:var(--body);word-break:keep-all}
 .sym-cd{font-family:var(--font-mono);font-size:var(--fs-2xs);color:var(--mute);margin-left:7px}
 .sym-link{color:inherit;text-decoration:none}
 .sym-link:hover .sym-nm{text-decoration:underline}
 .sym-meta{grid-column:1/-1;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+/* 칩/배지류(.chip/.grade-badge/.badge-carry/.fac 공용 원칙, 2026-08-29 실기기
+   확인) — 알약 배지는 한 줄로 읽혀야 한다. white-space:nowrap 이 없으면 좁은
+   flex 컨테이너 안에서 한글이 글자 단위로 줄바꿈된다(CJK 기본 줄바꿈 규칙).
+   flex-shrink:0 은 옆 요소(종목명 등)가 늘어나며 칩을 짓누르지 못하게 한다. */
 .chip{font-family:var(--font-mono);font-size:var(--fs-2xs);font-weight:700;
-  letter-spacing:0;padding:3px 10px;border-radius:var(--radius-pill);border:1px solid var(--rule);color:var(--mute)}
+  letter-spacing:0;padding:3px 10px;border-radius:var(--radius-pill);border:1px solid var(--rule);
+  color:var(--mute);white-space:nowrap;flex-shrink:0}
 .chip.on{background:var(--up);border-color:var(--up);color:#fff}
 .chip.down{background:var(--down);border-color:var(--down);color:#fff}
 .chip.anchor{background:var(--ink);border-color:var(--ink);color:var(--paper)}
@@ -455,7 +479,7 @@ a.hm{cursor:pointer}
    진한 초록. 숫자가 클수록 진입 확신이 크다는 걸 색 농도로도 드러낸다. */
 .grade-badge{font-family:var(--font-mono);font-size:var(--fs-2xs);font-weight:700;
   letter-spacing:0;padding:3px 10px;border-radius:var(--radius-pill);color:#fff;
-  background:var(--mute)}
+  background:var(--mute);white-space:nowrap;flex-shrink:0;display:inline-block}
 .grade-badge[data-g="3"]{background:var(--accent)}
 .grade-badge[data-g="4"]{background:var(--grade4)}
 .grade-badge[data-g="5"]{background:var(--grade5)}
@@ -468,7 +492,7 @@ a.hm{cursor:pointer}
 /* 개장일 집계(G Task 3) — 휴장 기간에서 이월된 후보 표시 */
 .badge-carry{font-family:var(--font-mono);font-size:var(--fs-2xs);font-weight:700;
   letter-spacing:0;padding:3px 10px;border-radius:var(--radius-pill);border:1px solid var(--rule);
-  color:var(--mute);margin-left:7px}
+  color:var(--mute);margin-left:7px;white-space:nowrap;flex-shrink:0;display:inline-block}
 .sym-arts{grid-column:1/-1;margin-top:4px}
 .sym-arts a{display:block;font-size:var(--fs-xs);color:var(--accent);text-decoration:none;
   padding:2px 0 2px 11px;border-left:2px solid var(--hair)}
@@ -543,10 +567,116 @@ a{color:inherit}
   .engine{background:#fff;color:#000;border:1px solid #000}
   .engine code,.engine h2{color:#000}
 }
+
+/* ── 챕터(읽는 흐름 재구성, 2026-08-29) ──────────────────────────────
+   28개 섹션이 데이터 소스 순으로 나열돼 흐름이 끊긴다는 소유자 피드백
+   (2026-08-29) — 위→아래 한 호흡으로 읽히도록 8장으로 묶고, 장 머리마다
+   번호+제목을 준다. 개별 .mod 섹션 마크업/데이터는 건드리지 않고 배치만
+   바꾼다(정보 소실 금지). */
+.toc{display:flex;gap:8px 16px;flex-wrap:wrap;align-items:center;font-size:var(--fs-xs);
+  padding:12px 18px;background:var(--card);border:1px solid var(--rule);
+  border-radius:var(--radius-md);margin:20px 0 0}
+.toc b{color:var(--mute);font-weight:650;margin-right:2px}
+.toc a{color:var(--accent);text-decoration:none;font-weight:600}
+.toc a:hover{text-decoration:underline}
+.chapter-head{display:flex;align-items:baseline;gap:12px;margin:44px 0 18px;
+  padding-bottom:10px;border-bottom:2px solid var(--ink);scroll-margin-top:16px}
+.chapter-head:first-of-type{margin-top:32px}
+.chapter-no{font-family:var(--font-mono);font-size:var(--fs-xl);font-weight:700;
+  color:var(--mute)}
+.chapter-title{font-size:var(--fs-xl);font-weight:700;letter-spacing:-.005em}
+/* ── 핵심 숫자 줄(1장, daily_wrap.py 의 .key 박스 스타일 차용) ── */
+.key{background:var(--paper);border:1px solid var(--rule);border-radius:var(--radius-md);
+  padding:14px 18px;margin:16px 0 8px;display:flex;flex-wrap:wrap;gap:10px 26px}
+.key .kv{display:flex;flex-direction:column;gap:2px}
+.key .kv .k{font-size:var(--fs-2xs);color:var(--mute);font-weight:650}
+.key .kv .v{font-size:var(--fs-md);font-weight:700;font-variant-numeric:tabular-nums}
+.key-note{flex-basis:100%;font-size:var(--fs-2xs);color:var(--mute)}
+/* 시세 스냅샷 기준 시각 캡션(2026-08-29 소유자 피드백) — 1장 핵심 숫자 줄·
+   6장 종목 후보 머리·부록 시세 표 머리 3곳에서 재사용한다. */
+.quote-time{font-size:var(--fs-2xs);color:var(--mute);font-family:var(--font-mono)}
+/* ── 지수별 전망 카드(3장, index_outlook) ── */
+.idx-outlook-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+  gap:16px;margin-top:14px}
+.idx-outlook-card .v{font-size:var(--fs-xl)}
+/* ── 부록(8장) 접힘 — .engine/.sector 의 기존 details 패턴 재사용 ── */
+.appendix{border:1px solid var(--rule);border-radius:var(--radius-lg);
+  padding:22px 26px;margin-top:8px}
+.appendix>summary{cursor:pointer;font-weight:650;font-size:var(--fs-md);
+  list-style:none;display:flex;align-items:baseline;gap:8px}
+.appendix>summary::-webkit-details-marker{display:none}
+.appendix>summary::after{content:"▸";margin-left:auto;font-size:var(--fs-2xs);color:var(--mute)}
+.appendix[open]>summary::after{content:"▾"}
+.appendix>.grid,.appendix>section{margin-top:18px}
+/* ── 점수 내역 접힘(6장 종목 후보 카드) ── */
+.score-breakdown{grid-column:1/-1;margin-top:6px}
+.score-breakdown summary{cursor:pointer;font-size:var(--fs-xs);font-weight:650;
+  color:var(--body);list-style:none}
+.score-breakdown summary::-webkit-details-marker{display:none}
+
+/* ── 뉴스 불릿 리스트(시황 다이제스트·뉴스 흐름 두 절 공용, 2026-08-29
+   소유자 피드백) ── 산문 덩어리로 붙어 읽히던 기사 나열을 기사 단위 불릿으로
+   쪼갠다. 데이터는 기존 두 절이 이미 받던 항목 그대로다(제목·링크·매체·시각·
+   중복배지) — 여기 더해지는 "관련 종목" 칩만 cont(뉴스 종목 사전)의 기존
+   링크를 역인덱스한 순수 조회(link_to_symbols, render.py)다. 추가 LLM 호출·
+   추가 수집 없음. */
+.news-list{list-style:none;margin:0;padding:0}
+.news-list li{padding:2px 0 10px 14px;border-left:2px solid var(--hair);margin-bottom:10px}
+.news-list li:last-child{margin-bottom:0}
+.news-meta{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:5px}
+/* 헤드라인 앵커는 클래스를 안 단다 — 오늘의 시황 테스트(test_render.py)가
+   `<a href="..." target="_blank" rel="noopener">제목</a>` 를 속성 추가 없이
+   그대로 단언한다. 대신 구조(li 바로 아래 a)로만 골라 스타일한다 — .news-syms
+   안의 종목 칩 a 는 div 한 겹 아래라 이 셀렉터에 안 걸린다. */
+.news-list li > a{display:block;font-size:var(--fs-sm);line-height:1.55;
+  color:var(--accent);text-decoration:none;overflow-wrap:anywhere}
+.news-list li > a:hover{color:var(--accent-active);text-decoration:underline}
+.news-syms{margin-top:6px;display:flex;gap:5px;flex-wrap:wrap}
+.news-syms a{font-family:var(--font-mono);font-size:var(--fs-2xs);padding:1px 8px;
+  border-radius:var(--radius-pill);border:1px solid var(--rule);color:var(--mute);
+  text-decoration:none}
+.news-syms a:hover{color:var(--accent);border-color:var(--accent)}
+
+/* ── 모바일 반응형 전면 재점검(2026-08-29 소유자 피드백) ── 375px 폭에서
+   페이지 가로 스크롤이 절대 없어야 한다. 원칙: (1) 넓은 표는 이미 .tw/.stack
+   이 자체 스크롤을 갖는다(daily_wrap.py 의 .scroll>table 관례와 동일 — 표만
+   옆으로 밀리고 페이지는 안 밀린다). (2) 다열 그리드는 auto-fit/auto-fill 로
+   이미 1열로 붕괴하지만, AAII 카드 하나만 인라인 스타일로 고정 2열
+   (grid-column span 을 2 로 강제)을 걸어 실제 가로 스크롤의 원인이었다 —
+   클래스로 옮겨 좁은 화면에서 1열로 되돌린다. (3) html 에 overflow-x:hidden 을 겹으로 걸어
+   두 번째 방어선을 둔다(위 규칙이 실패해도 스크롤바 자체가 생기지 않는다). */
+html{overflow-x:hidden}
+.mkt-tab-bar{flex-wrap:wrap}
+.chapter-head{flex-wrap:wrap}
+.card.card-wide{grid-column:span 2}
+@media(max-width:640px){
+  .card.card-wide{grid-column:span 1}
+  /* .sym 카드(뉴스 노출 상위·중기 관심·AI 심층 해석 등 여러 절이 공유하는
+     카드) 모바일 1열 붕괴 — 이 규칙은 본 정의(.sym, 위 434행 부근)보다 뒤에
+     있어야 캐스케이드 동률에서 이긴다(2026-08-29 실기기 확인, .sym-scalp 와
+     같은 원인의 버그를 같은 방식으로 고친다 — 자세한 사연은 .sym-scalp 규칙
+     옆 주석 참고). 1열이 되면 이름·가격·요인 칩(.sym-meta)·점수 내역 접힘이
+     모두 카드 전체 폭을 그대로 받아 좁은 화면에서도 칩이 쥐어짜이지 않는다. */
+  .sym{grid-template-columns:1fr}
+  .sym > div:nth-child(2){text-align:left !important}
+}
+@media(max-width:480px){
+  :root{--fs-display:24px;--fs-2xl:19px;--fs-xl:16px}
+  .wrap{padding:20px 12px 56px}
+  .mod{padding:20px 16px}
+  .appendix{padding:16px 14px}
+  .spine-past,.spine-future{padding:16px 14px}
+  .trend-row{gap:8px}
+  .trend-row .nm{width:56px;font-size:var(--fs-2xs)}
+  .trend-row .vl{width:76px;font-size:var(--fs-xs)}
+  .trend-row .pc{width:52px}
+  .key{padding:12px 14px;gap:8px 18px}
+  .toc{padding:10px 14px;gap:6px 12px}
+  .stance{padding:20px 18px}
+}
 </style>
 </head>
 <body><div class="wrap">
-
 <header class="masthead">
   <div>
     <div class="eyebrow">개장 60분 전 브리핑</div>
@@ -561,6 +691,19 @@ a{color:inherit}
   </div>
 </header>
 
+<nav class="toc">
+  <b>목차</b>
+  <a href="#ch1">1. 한눈 요약</a>
+  {% if holiday_synthesis %}<a href="#ch2">2. 휴장 기간 종합</a>{% endif %}
+  <a href="#ch3">3. 오늘의 지수 전망</a>
+  <a href="#ch4">4. 시장 흐름</a>
+  {% if top_movers or sector_view %}<a href="#ch5">5. 섹터·테마</a>{% endif %}
+  <a href="#ch6">6. 종목 후보</a>
+  <a href="#ch7">7. 우리 시스템의 대응</a>
+  <a href="#ch8">8. 부록</a>
+</nav>
+
+<div class="chapter-head" id="ch1"><span class="chapter-no">1</span><h2 class="chapter-title">한눈 요약</h2></div>
 {# ── Executive Summary(서브프로젝트 L, L-1) ── 리포트 최상단 통합 요약.
    quant.analyze.exec_summary.summarize 가 상위 사건 본문 + 수급 수치를
    근거로 세 문단(시장 흐름/수급/주요 재료)을 만든다. narrator 없음/실패/
@@ -579,6 +722,66 @@ a{color:inherit}
 </section>
 {% endif %}
 
+{% if view or spine %}
+<div class="key">
+  {% if view and view.label %}
+  <div class="kv"><span class="k">오늘 스탠스</span>
+    <span class="v">{{ view.label }} · {{ view.score100 }}점</span></div>
+  {% endif %}
+  {% for sym, q in spine[:2] %}
+  <div class="kv"><span class="k">{{ q.label }}</span>
+    <span class="v {{ 'up' if q.change_pct > 0 else ('down' if q.change_pct < 0 else 'flat') }}">
+      {{ '{:+.2f}'.format(q.change_pct) }}%</span></div>
+  {% endfor %}
+  <div class="kv"><span class="k">결측 소스</span>
+    <span class="v">{% if snap.missing() %}{{ snap.missing()|length }}건{% else %}없음{% endif %}</span></div>
+  <div class="key-note">{{ quote_time_label }}</div>
+</div>
+{% endif %}
+
+{% if holiday_synthesis %}
+
+<div class="chapter-head" id="ch2"><span class="chapter-no">2</span><h2 class="chapter-title">휴장 기간 종합</h2></div>
+
+{% endif %}
+
+{% if holiday_synthesis %}
+<section class="mod">
+  <h2>휴장 {{ holiday_synthesis.gap_days }}일 종합<span class="sub">마지막 개장일 {{ holiday_synthesis.last_open }} 이후 · {{ holiday_synthesis.window_dates|join(', ') }}</span></h2>
+  <p class="idx-sub">지난 휴장 동안 쌓인 리포트 데이터를 오늘 개장 아침에 종합한 것이다 — 휴장 기간 흐름이 오늘 개장에 갖는 의미와, 우리 시스템이 어떻게 대응하는지를 함께 본다.</p>
+  {% if holiday_synthesis.prose %}
+  <p class="foot"><span class="chip">AI 요약</span></p>
+  <p class="exec-p">{{ holiday_synthesis.prose }}</p>
+  {% endif %}
+  {% if holiday_synthesis.theme_freq %}
+  <h3 class="cat">휴장 기간 상위 테마</h3>
+  <div class="sym-arts">
+    {% for t in holiday_synthesis.theme_freq %}<span class="chip">{{ t.theme }} {{ t.count }}</span>{% endfor %}
+  </div>
+  {% endif %}
+  {% if holiday_synthesis.new_symbols %}
+  <h3 class="cat">휴장 기간 신규 편입 후보 {{ holiday_synthesis.new_symbols|length }}건</h3>
+  <div class="sym-arts">
+    {% for s in holiday_synthesis.new_symbols %}
+    <a class="sym-link" href="{{ sym_link(s.symbol) }}" target="_blank" rel="noopener">{{ s.name }} <span class="idx-sub">{{ s.first_seen }}</span></a>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if holiday_synthesis.stance_trend %}
+  <h3 class="cat">스탠스 점수 추이</h3>
+  <p class="idx-sub">{% for t in holiday_synthesis.stance_trend %}{{ t.date }} {{ t.score100 }}점{% if not loop.last %} → {% endif %}{% endfor %}</p>
+  {% endif %}
+  {% if holiday_synthesis.high_impact_events %}
+  <h3 class="cat">휴장 중 주요 이벤트</h3>
+  <p class="idx-sub">{% for e in holiday_synthesis.high_impact_events %}{{ e.date }} {{ term(e.name) }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  {% endif %}
+  {% if holiday_synthesis.missing_engine_days %}
+  <p class="foot">일부 결손 — {{ holiday_synthesis.missing_engine_days|join(', ') }} 데이터 없음(부분 집계).</p>
+  {% endif %}
+</section>
+{% endif %}
+
+<div class="chapter-head" id="ch3"><span class="chapter-no">3</span><h2 class="chapter-title">오늘의 지수 전망</h2></div>
 {% if view %}
 <section class="stance" data-s="{{ view.label }}">
   <div class="stance-eyebrow eyebrow">엔진 예측</div>
@@ -603,6 +806,44 @@ a{color:inherit}
 </section>
 {% endif %}
 
+{% set idx_names = {"kospi": "코스피", "kosdaq": "코스닥", "sp500": "S&P500", "nasdaq": "나스닥"} %}
+{% if index_outlook %}
+<section class="mod">
+  <h2>지수별 전망<span class="sub">코스피/코스닥 또는 S&amp;P500/나스닥 · 점수 + 경험적 상승확률</span></h2>
+  <p class="idx-sub">
+    <b>점수</b>는 오늘 조건(지수 모멘텀·수급·VIX·앵커·임박 이벤트)을 규칙으로 가감한 것이고,
+    <b>확률</b>은 과거 같은 조건일 때 실제로 다음날 오른 비율을 센 경험적 빈도다 — 서로 다른 근거이니 함께 참고한다.
+  </p>
+  <div class="idx-outlook-grid">
+    {% for key, idx in index_outlook.items() %}
+    <div class="card idx-outlook-card">
+      <div class="k">{{ idx_names.get(key, key) }}</div>
+      {% if idx.score100 is not none %}
+      <div class="v">{{ idx.score100 }}점 <span class="idx-sub">{{ idx.label }}</span></div>
+      {% else %}
+      <div class="v idx-sub">판단 근거 부족</div>
+      {% endif %}
+      {% if idx.positives or idx.negatives %}
+      <div class="stance-factors" style="margin-top:8px">
+        {% for f in idx.positives %}<span class="fac p">{{ f }}</span>{% endfor %}
+        {% for f in idx.negatives %}<span class="fac m">{{ f }}</span>{% endfor %}
+      </div>
+      {% endif %}
+      <div class="note" style="margin-top:10px">
+        {% if idx.probability.prob is not none %}
+        상승 확률 <b>{{ '{:.0%}'.format(idx.probability.prob) }}</b>
+        <span class="idx-sub">({{ idx.probability.method }})</span>
+        {% else %}
+        상승 확률 <span class="idx-sub">산출 불가 — {{ idx.probability.reason }}</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<div class="chapter-head" id="ch4"><span class="chapter-no">4</span><h2 class="chapter-title">시장 흐름</h2></div>
 {# ── 오늘의 시황 — 사건 단위(서브프로젝트 I) ── 한국장 뉴스 요약 + 미국발
    뉴스의 한국 증시 영향. market_digest.build_digest 가 사건 단위(다매체
    중복 제거) 대표를 dup_count 내림차순 상위로 뽑아 국내/미국발로 나눈다.
@@ -617,12 +858,23 @@ a{color:inherit}
       <p class="foot"><span class="chip">AI 요약</span> {{ digest_prose.domestic_prose }}</p>
       {% endif %}
       {% if digest.domestic %}
-      <div class="sym-arts">
+      <ul class="news-list">
         {% for item in digest.domestic %}
-        <a href="{{ item.link }}" target="_blank" rel="noopener">{{ item.title }}</a>
-        {% if item.dup_count and item.dup_count >= 2 %}<span class="chip">외 {{ item.dup_count - 1 }}개 매체</span>{% endif %}
+        <li>
+          <div class="news-meta">
+            {% if item.outlet %}<span class="chip">{{ item.outlet }}</span>{% endif %}
+            {% if item.dup_count and item.dup_count >= 2 %}<span class="chip">외 {{ item.dup_count - 1 }}개 매체</span>{% endif %}
+          </div>
+          <a href="{{ item.link }}" target="_blank" rel="noopener">{{ item.title }}</a>
+          {% set related = link_symbols.get(item.link) %}
+          {% if related %}
+          <div class="news-syms">
+            {% for s in related %}<a href="{{ sym_link(s.symbol) }}" target="_blank" rel="noopener">{{ s.name }}</a>{% endfor %}
+          </div>
+          {% endif %}
+        </li>
         {% endfor %}
-      </div>
+      </ul>
       {% else %}
       <p style="color:var(--mute);font-size:12px">오늘 국내 뉴스 없음</p>
       {% endif %}
@@ -633,12 +885,23 @@ a{color:inherit}
       <p class="foot"><span class="chip">AI 요약</span> {{ digest_prose.us_prose }}</p>
       {% endif %}
       {% if digest.us_impact %}
-      <div class="sym-arts">
+      <ul class="news-list">
         {% for item in digest.us_impact %}
-        <a href="{{ item.link }}" target="_blank" rel="noopener">{{ item.title }}</a>
-        {% if item.dup_count and item.dup_count >= 2 %}<span class="chip">외 {{ item.dup_count - 1 }}개 매체</span>{% endif %}
+        <li>
+          <div class="news-meta">
+            {% if item.outlet %}<span class="chip">{{ item.outlet }}</span>{% endif %}
+            {% if item.dup_count and item.dup_count >= 2 %}<span class="chip">외 {{ item.dup_count - 1 }}개 매체</span>{% endif %}
+          </div>
+          <a href="{{ item.link }}" target="_blank" rel="noopener">{{ item.title }}</a>
+          {% set related = link_symbols.get(item.link) %}
+          {% if related %}
+          <div class="news-syms">
+            {% for s in related %}<a href="{{ sym_link(s.symbol) }}" target="_blank" rel="noopener">{{ s.name }}</a>{% endfor %}
+          </div>
+          {% endif %}
+        </li>
         {% endfor %}
-      </div>
+      </ul>
       {% else %}
       <p style="color:var(--mute);font-size:12px">오늘 미국발 뉴스 없음</p>
       {% endif %}
@@ -650,7 +913,6 @@ a{color:inherit}
   {% endif %}
 </section>
 {% endif %}
-
 {# ── 오늘의 뉴스 흐름(리포트 UX 2차 요구 1) ── 시황 다이제스트는 경제지
    큐레이션 + 대표 8건이라 "여러 매체 뉴스가 풍성하게" 라는 느낌이 사라졌다는
    피드백(2026-08-17) — 여기는 econ 필터도 TOP_N 자름도 없이 그날 전체를
@@ -658,35 +920,52 @@ a{color:inherit}
 {% if news_flow %}
 <section class="mod">
   <h2>오늘의 뉴스 흐름<span class="sub">전 매체 · 사건 단위 · 다매체 보도량 순</span></h2>
-  <div class="sym-arts">
+  <ul class="news-list">
     {% for item in news_flow[:12] %}
-    <a href="{{ item.link }}" target="_blank" rel="noopener">
-      {% if item.published_hhmm %}<span class="mono" style="color:var(--mute)">{{ item.published_hhmm }}</span>{% endif %}
-      <span class="chip">{{ item.outlet if item.outlet else '출처 미상' }}</span>
-      {{ item.title }}
-      {% if item.dup_count and item.dup_count >= 2 %}<span class="chip">외 {{ item.dup_count - 1 }}개 매체</span>{% endif %}
-    </a>
-    {% endfor %}
-    {% if news_flow|length > 12 %}
-    {# 상위 12건만 바로 보이지만, 나머지는 details 안에 전량 그대로 남는다 —
-       "정보 소실 금지"(스펙 §1)를 지키는 자리. #}
-    <details>
-      <summary>…외 {{ news_flow|length - 12 }}개 사건 — 전체</summary>
-      {% for item in news_flow[12:] %}
-      <a href="{{ item.link }}" target="_blank" rel="noopener">
+    <li>
+      <div class="news-meta">
         {% if item.published_hhmm %}<span class="mono" style="color:var(--mute)">{{ item.published_hhmm }}</span>{% endif %}
         <span class="chip">{{ item.outlet if item.outlet else '출처 미상' }}</span>
-        {{ item.title }}
         {% if item.dup_count and item.dup_count >= 2 %}<span class="chip">외 {{ item.dup_count - 1 }}개 매체</span>{% endif %}
-      </a>
+      </div>
+      <a href="{{ item.link }}" target="_blank" rel="noopener">{{ item.title }}</a>
+      {% set related = link_symbols.get(item.link) %}
+      {% if related %}
+      <div class="news-syms">
+        {% for s in related %}<a href="{{ sym_link(s.symbol) }}" target="_blank" rel="noopener">{{ s.name }}</a>{% endfor %}
+      </div>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% if news_flow|length > 12 %}
+  {# 상위 12건만 바로 보이지만, 나머지는 details 안에 전량 그대로 남는다 —
+     "정보 소실 금지"(스펙 §1)를 지키는 자리. #}
+  <details>
+    <summary>…외 {{ news_flow|length - 12 }}개 사건 — 전체</summary>
+    <ul class="news-list">
+      {% for item in news_flow[12:] %}
+      <li>
+        <div class="news-meta">
+          {% if item.published_hhmm %}<span class="mono" style="color:var(--mute)">{{ item.published_hhmm }}</span>{% endif %}
+          <span class="chip">{{ item.outlet if item.outlet else '출처 미상' }}</span>
+          {% if item.dup_count and item.dup_count >= 2 %}<span class="chip">외 {{ item.dup_count - 1 }}개 매체</span>{% endif %}
+        </div>
+        <a href="{{ item.link }}" target="_blank" rel="noopener">{{ item.title }}</a>
+        {% set related = link_symbols.get(item.link) %}
+        {% if related %}
+        <div class="news-syms">
+          {% for s in related %}<a href="{{ sym_link(s.symbol) }}" target="_blank" rel="noopener">{{ s.name }}</a>{% endfor %}
+        </div>
+        {% endif %}
+      </li>
       {% endfor %}
-    </details>
-    {% endif %}
-  </div>
+    </ul>
+  </details>
+  {% endif %}
   <p class="foot">모든 수집 매체의 사건 단위 흐름 — 시황 다이제스트(경제지 큐레이션)와 달리 전 매체를 보여준다</p>
 </section>
 {% endif %}
-
 {# ── 시간 척추: 과거 흐름 │NOW│ 예정 이벤트 ── #}
 <section class="spine">
   <div class="spine-past">
@@ -749,7 +1028,6 @@ a{color:inherit}
     {% endif %}
   </div>
 </section>
-
 {# ── 오늘 확인할 것 ── #}
 {% if brief %}
 <section class="brief">
@@ -761,470 +1039,6 @@ a{color:inherit}
   {% endfor %}
 </section>
 {% endif %}
-
-<div class="grid">
-
-{# ── 반도체 앵커 (KR 고정) ── #}
-{% if mkt and mkt.anchors %}
-<section class="mod half">
-  <h2>반도체 앵커<span class="sub">고정 편입</span></h2>
-  {% for key, a in mkt.anchors.items() %}
-  <div class="sym">
-    <div>
-      <a class="sym-link" href="{{ sym_link(a.symbol) }}" target="_blank" rel="noopener"><span class="sym-nm">{{ a.label }}</span><span class="sym-cd">{{ a.symbol }}</span></a>
-    </div>
-    <div style="text-align:right">
-      <span class="num" style="font-size:15px;font-weight:650">{{ '{:,.0f}'.format(a.close) }}</span>
-      <span class="num {{ 'up' if a.change_pct > 0 else ('down' if a.change_pct < 0 else 'flat') }}"
-            style="margin-left:8px">{{ '{:+.2f}'.format(a.change_pct) }}%</span>
-    </div>
-    <div class="sym-meta">{{ sparkline(a.history, w=300, h=32) }}</div>
-  </div>
-  {% endfor %}
-  <p style="font-size:11.5px;color:var(--mute);margin-top:10px">
-    뉴스 노출과 무관하게 항상 싣는다 — 한국 시장 판단의 기준축이기 때문.</p>
-</section>
-{% endif %}
-
-{# ── 투자자 수급 ── #}
-{% set flow = d('kospi_flow') %}
-{% if flow and flow.rows %}
-{% set row = flow.rows[0] %}
-<section class="mod half">
-  <h2>투자자 수급<span class="sub">KOSPI · {{ row.date }} · 억원</span></h2>
-  {{ diverging_bars([('개인', eok(row.개인), row.개인),
-                     ('외국인', eok(row.외국인), row.외국인),
-                     ('기관계', eok(row.기관계), row.기관계),
-                     ('금융투자', eok(row.금융투자), row.금융투자),
-                     ('투신', eok(row.투신), row.투신),
-                     ('연기금등', eok(row.연기금등), row.연기금등)], w=360) }}
-  {% if delta.flow %}
-  <div class="tw">
-  <table style="margin-top:12px">
-    <tr><th>주체</th><th class="num">이번</th><th class="num">직전</th><th>변화</th></tr>
-    {% for actor, f in delta.flow.items() %}
-    <tr><td>{{ actor }}</td>
-      <td class="num {{ 'up' if f.current > 0 else 'down' }}">{{ eok(f.current) }}</td>
-      <td class="num" style="color:var(--mute)">{{ eok(f.previous) }}</td>
-      <td>{% if f.flipped %}<span class="chip on">방향 전환</span>{% endif %}</td></tr>
-    {% endfor %}
-  </table>
-  </div>
-  {% endif %}
-  <div class="src">{{ r('kospi_flow').url }}</div>
-</section>
-{% elif r('kospi_flow') %}
-<section class="mod half miss">
-  <h2>투자자 수급<span class="sub">결측</span></h2>
-  <p class="why">{{ r('kospi_flow').error }}</p>
-</section>
-{% endif %}
-
-{# ── 뉴스 노출 상위 종목 ── #}
-<section class="mod">
-  <h2>뉴스 노출 상위 종목</h2>
-  {% if ranked %}
-  {% for sym, c in ranked %}
-  <div class="sym">
-    <div>
-      <a class="sym-link" href="{{ sym_link(sym) }}" target="_blank" rel="noopener"><span class="sym-nm">{{ c.name }}</span><span class="sym-cd">{{ sym }}</span></a>
-    </div>
-    <div style="text-align:right">
-      {# 10칸 히스토리 박스는 2026-08-17 사용자 피드백(J)으로 제거 — 직관적이지
-         않고 중요하지 않았다. 그 자리는 가격(현재가+전일 대비)이 대신한다:
-         현재가를 크게, 변동률은 색으로, 기준을 캡션 한 줄로 밝힌다. #}
-      {% set pq = sym_quotes.get(sym) %}
-      {% if pq %}
-      <div>
-        <span class="num" style="font-size:var(--fs-xl);font-weight:700">{{ '{:,.0f}'.format(pq.close) }}</span>
-        <span class="num {{ 'up' if pq.change_pct > 0 else ('down' if pq.change_pct < 0 else 'flat') }}"
-              style="margin-left:6px;font-weight:650">{{ '{:+.2f}'.format(pq.change_pct) }}%</span>
-      </div>
-      <div class="idx-sub">전일 종가 대비</div>
-      {% endif %}
-    </div>
-    <div class="sym-meta">
-      {# '2일 연속'/'신규' 칩은 2026-08-17 사용자 피드백(J)으로 제거 — 뉴스
-         맥락은 '뉴스 오늘 N건' 하나로 축약한다. #}
-      {% if c.today_articles > 0 %}
-      <span class="chip{% if c.today_articles >= 3 %} on{% endif %}">뉴스 오늘 {{ c.today_articles }}건</span>
-      {% endif %}
-    </div>
-    {% set sc = scores.get(sym) %}
-    {% set det = details.get(sym) %}
-    {% if sc or det %}
-    {% set cs = det.consensus if det else none %}
-    <div class="cons">
-      {% if sc %}
-      <div class="cons-item"><span class="k">엔진 점수</span>
-        <span class="v"><span class="opin ai" data-a="{{ sc.label }}">{{ sc.label }}</span>
-          <span class="idx-sub">{{ sc.score100 }}점 / 100점</span></span></div>
-      {% endif %}
-      {% if cs %}
-      <div class="cons-item"><span class="k">증권사 애널리스트 의견</span>
-        <span class="v"><span class="opin" data-o="{{ cs.opinion_label }}">{{ cs.opinion_label }}</span>
-          <span class="idx-sub">{{ cs.opinion_score }}/5.0 · {{ cs.analyst_count }}곳</span></span></div>
-      {% if cs.target_price %}
-      <div class="cons-item"><span class="k">목표주가</span>
-        <span class="v">{{ '{:,}'.format(cs.target_price) }}원</span></div>
-      {% endif %}
-      {% if det.upside_pct is not none %}
-      <div class="cons-item"><span class="k">상승여력</span>
-        <span class="v {{ 'up' if det.upside_pct > 0 else 'down' }}">{{ '{:+.1f}'.format(det.upside_pct) }}%</span></div>
-      {% endif %}
-      {% if cs.per %}
-      <div class="cons-item"><span class="k">PER</span><span class="v">{{ cs.per }}배</span></div>
-      {% endif %}
-      {% endif %}
-      {% set fs = det.flow_summary %}
-      {% set fp = flow_periods(flow_rows, sym, snap.session_date.isoformat()) %}
-      {% if fp %}
-      {% for w in fp.windows %}
-      {# '전체 누적'은 보유량처럼 읽혀서 문제였다(2026-08-17 사용자 피드백 J)
-         — 실제로 쌓인 일수를 라벨에 그대로 박아 자기설명적으로 바꾼다. #}
-      <div class="cons-item"><span class="k">{{ (w.n_days ~ '일 순매수 합') if w.days is none else w.days ~ '일 수급' }}</span>
-        <span class="v">
-          <span class="{{ 'up' if w.foreign > 0 else 'down' }}">외 {{ shares(w.foreign) }}</span> ·
-          <span class="{{ 'up' if w.inst > 0 else 'down' }}">기 {{ shares(w.inst) }}</span>
-          {% if w.days is not none %}<span class="idx-sub">(원장에 {{ w.days }}일 중 {{ w.n_days }}일 기록)</span>{% endif %}
-        </span></div>
-      {% endfor %}
-      <div class="cons-item"><span class="k">수급 원장</span>
-        <span class="v idx-sub">{{ fp.coverage.n_days }}일치 축적({{ fp.coverage.first_date }} 부터)</span></div>
-      {% elif fs %}
-      <div class="cons-item"><span class="k">외국인 5일</span>
-        <span class="v {{ 'up' if fs.foreign_net_5d > 0 else 'down' }}">{{ shares(fs.foreign_net_5d) }}</span></div>
-      <div class="cons-item"><span class="k">기관 5일</span>
-        <span class="v {{ 'up' if fs.inst_net_5d > 0 else 'down' }}">{{ shares(fs.inst_net_5d) }}</span></div>
-      {% if fs.foreign_buy_streak >= 2 or fs.inst_buy_streak >= 2 %}
-      <div class="cons-item"><span class="k">연속 순매수</span>
-        <span class="v idx-sub">외국인 {{ fs.foreign_buy_streak }}일 · 기관 {{ fs.inst_buy_streak }}일</span></div>
-      {% endif %}
-      {% elif snap.market == 'KR' %}
-      {# US 는 이 줄 자체를 안 그린다 — "축적 전"은 곧 원장이 채워진다는 거짓
-         약속이었다. 원장은 KR 랭킹 상위 6종목만 쌓으므로(control/flows.py),
-         KR 도 "축적 전"이 아니라 애초에 대상이 아닐 수 있다는 걸 밝힌다. #}
-      <div class="cons-item"><span class="k">수급</span><span class="v idx-sub">수급 미수집(랭킹 상위 6종목만 수집)</span></div>
-      {% endif %}
-      {% if fp or fs %}
-      {# 각주 하나로 '음수 = 보유량 아님'을 밝힌다(2026-08-17 사용자 피드백 J:
-         "전체 누적 외 +276만주 · 기 -679만주"가 보유량처럼 읽힌다는 지적). #}
-      <div class="idx-sub" style="flex-basis:100%;margin-top:2px">순매수 = 매수 − 매도. 음수는 판 물량이 더 많았다는 뜻 — 보유량이 아니다.</div>
-      {% endif %}
-    </div>
-    {% if sc and sc.factors %}
-    <div class="facs">
-      {% for f in sc.factors %}
-      <span class="fac {{ 'p' if f.delta > 0 else 'm' }}">{{ f.text }} {{ '{:+d}'.format(f.delta) }}</span>
-      {% endfor %}
-    </div>
-    {% endif %}
-    {% endif %}
-    {% if c.titles %}
-    <div class="sym-arts">
-      {% for t in c.title_reps[:3] %}
-      <a href="{{ t.link }}" target="_blank" rel="noopener">{{ t.title }}</a>
-      {% if t.dup_count and t.dup_count >= 2 %}<span class="chip">외 {{ t.dup_count - 1 }}개 매체</span>{% endif %}
-      {% endfor %}
-      {% if c.titles|length > 3 or c.title_reps|length < c.titles|length %}
-      {# 대표만 위에 보이므로(같은 사건 다매체는 배지로 압축) 접힌 목록은 원본
-         전량을 다시 보여준다 — 클러스터로 가려진 기사도 정보가 소실되면 안
-         된다(H-2 Task 3). #}
-      <details>
-        <summary>{% if c.titles|length > 3 %}{{ c.titles|length - 3 }}건 더{% else %}중복 매체 전체{% endif %}</summary>
-        {% for t in c.titles %}
-        <a href="{{ t.link }}" target="_blank" rel="noopener">{{ t.title }}</a>
-        {% endfor %}
-      </details>
-      {% endif %}
-    </div>
-    {% endif %}
-    {% set dis = disclosures.get(sym) %}
-    {% if dis %}
-    <div class="sym-arts">
-      <span class="chip on">공시</span>
-      {% if dis|length > 3 %}
-      <details>
-        <summary>{{ dis|length }}건</summary>
-        {% for d in dis %}
-        <div>{{ d }}{% set dtag = classify_report(d) %}{% if dtag %} <span class="chip">{{ dtag }}</span>{% endif %}</div>
-        {% endfor %}
-      </details>
-      {% else %}
-      {% for d in dis %}
-      <div>{{ d }}{% set dtag = classify_report(d) %}{% if dtag %} <span class="chip">{{ dtag }}</span>{% endif %}</div>
-      {% endfor %}
-      {% endif %}
-      {# 사용자 원칙 3(2026-08-17): DART 공시는 후발주자 리스크(퍼블릭 공개
-         전 정보 유출 가능성) — 전략 파라미터를 건드리지 않고 안내 문구로만
-         반영한다. #}
-      <p style="font-size:11px;color:var(--mute);margin-top:4px">공시발 재료는 퍼블릭 후발 리스크 — 진입 시 손절·익절 박스를 좁게 (2026-08-17 사용자 원칙)</p>
-    </div>
-    {% endif %}
-    {% set res = research.get(sym) %}
-    {% if res %}
-    <div class="sym-arts">
-      <span class="chip on">리포트</span>
-      {% if res|length > 3 %}
-      <details>
-        <summary>{{ res|length }}건</summary>
-        {% for r_line in res %}
-        <div>{{ r_line }}</div>
-        {% endfor %}
-      </details>
-      {% else %}
-      {% for r_line in res %}
-      <div>{{ r_line }}</div>
-      {% endfor %}
-      {% endif %}
-    </div>
-    {% endif %}
-    {{ rel_tree(relation_items(cont, relations, sym)) }}
-  </div>
-  {% endfor %}
-  <p style="font-size:11.5px;color:var(--mute);margin-top:12px">
-    노출 빈도 순. 연속 등장은 <b>근거의 누적</b>을 뜻할 뿐 호재/악재 판정이 아니다 —
-    판정은 다음 단계에서 붙는다.</p>
-  <p class="foot">
-    <b>출처 표기</b> 네이버가 큐레이션한 테마 편입 사유(사실) ·
-    <b>근거점수</b> 최근 뉴스에서 두 종목이 함께 언급된 정도(0~100, 우리 추정) ·
-    <b>외</b>=외국인·<b>기</b>=기관 순매수(주식 수) ·
-    <b>N일치 축적</b> 우리 원장에 쌓인 실측 일수
-  </p>
-  {% else %}
-  <p style="color:var(--mute);font-size:12.5px">오늘 뉴스에서 추출된 상장 종목이 없다.</p>
-  {% endif %}
-</section>
-
-{# ── 뉴스 미노출 종목 증권사 리포트(H-2 Task 5 확장, P1 2026-08-19) ──
-   위 카드는 cont(오늘 뉴스에 잡힌 종목) 기준이라, 뉴스에 안 걸렸지만
-   증권사 리포트가 나온 종목은 카드가 없어 리서치 배지를 못 붙인다.
-   research_badges 는 그 나머지를 "N건(증권사...)" 사실만 최소 노출한다 —
-   제목·투자의견은 원장에 없으니 지어내지 않는다. #}
-{% if research_badges %}
-<section class="mod">
-  <h2>오늘 증권사 리포트<span class="sub">뉴스 미노출 종목 · 사실 표기만</span></h2>
-  <div class="sym-arts">
-    {% for r in research_badges %}
-    <span class="chip on">{{ r.name }} {{ r.count }}건{% if r.brokers %} ({{ r.brokers|join('·') }}){% endif %}</span>
-    {% endfor %}
-  </div>
-</section>
-{% endif %}
-
-{# ── 휴장 기간 이월 후보(개장일 집계, G Task 3) ──
-   `carried_from` 은 병합된 machine payload 의 symbols 에만 실린다 — 위 카드는
-   `cont`(뉴스 연속성 사전)에서 그려지므로 거기엔 이 필드가 없다. 카드 구조를
-   확장하는 대신 별도의 최소 목록으로 노출한다. #}
-{% if carried_candidates %}
-<section class="mod">
-  <h2>휴장 기간 이월 후보<span class="sub">마지막 개장일 이후 engine.json 병합 · 업종별</span></h2>
-  {% for grp in carried_by_sector %}
-  <h3 class="cat">{{ grp.name }}</h3>
-  <div class="hm-grid">
-    {% for s in grp.tiles %}
-    <a class="{{ hm_class(s.change_pct) }}" href="{{ sym_link(s.symbol) }}" target="_blank" rel="noopener">
-      <span class="hm-nm">{{ s.name }}</span>
-      <span class="hm-pc">{% if s.change_pct is not none %}{{ pct(s.change_pct) }}%{% else %}미확인{% endif %}</span>
-      <span class="badge-carry">{{ s.carried_from[5:] }} 발</span>
-    </a>
-    {% endfor %}
-  </div>
-  {% endfor %}
-</section>
-{% endif %}
-
-{# ── 외국인 수급 추종(서브프로젝트 I, 2026-08-17 사용자 원칙) ──
-   "한국주식은 기관 매수세는 노이즈 — 메인 리서치와 비리 없는 매수는 오로지
-   외국인 매수 추세." 한국장 메인 로직이므로 업종별 시세보다 위에 둔다. #}
-{% if foreign_view %}
-<section class="mod">
-  <h2>외국인 수급 추종<span class="sub">탑다운 업종 → 종목 · 일별 근거</span></h2>
-  {% if foreign_view.market_foreign_net is not none %}
-  <p class="idx-sub">코스피 종합 외국인
-    <span class="num {{ 'up' if foreign_view.market_foreign_net > 0 else ('down' if foreign_view.market_foreign_net < 0 else 'flat') }}">
-      {{ eok(foreign_view.market_foreign_net) }}</span>
-    {% if foreign_view.market_date %}<span style="color:var(--mute)"> · {{ foreign_view.market_date }}</span>{% endif %}
-    <span style="color:var(--mute)"> · 참고(관찰 명단 전체 스탠스)</span>
-  </p>
-  {% endif %}
-  {% for s in foreign_view.sectors %}
-  <details class="sector" open>
-    <summary>
-      <b>{{ s.name }}</b>
-      <span class="idx-sub">업종 내 외국인 순유입 합 {{ shares(s.net_sum) }}</span>
-    </summary>
-    {% for row in s.rows %}
-    <div class="sym">
-      <div>
-        <a class="sym-link" href="{{ sym_link(row.symbol) }}" target="_blank" rel="noopener"><span class="sym-nm">{{ row.name }}</span><span class="sym-cd">{{ row.symbol }}</span></a>
-      </div>
-      <div style="text-align:right">
-        {{ daily_bars(row.series | map(attribute='foreign_net') | list, w=110, h=30) }}
-      </div>
-      <div class="sym-meta">
-        <span class="chip{% if row.label == '매수 시그널(재유입)' %} on{% elif row.label == '이탈 추세(부분 매도/중립 고려)' %} down{% endif %}">{{ row.label }}</span>
-        <span style="font-size:11.5px;color:var(--mute)">잔여 {{ shares(row.residual) }} · {{ row.days }}일 근거</span>
-        {% if row.inst_follows %}<span class="chip">기관 동행(참고)</span>{% endif %}
-      </div>
-    </div>
-    {% endfor %}
-  </details>
-  {% endfor %}
-  <p class="foot">
-    메인 로직은 외국인 매수세 — 기관 매수세는 참고용(2026-08-17 사용자 원칙).
-    전 저점·현 고점 맥락(개미 털기성 하락 구간 가능성)은 이 리포트가 차트를
-    다시 그리지 않는다 — 종목명을 눌러 네이버에서 직접 확인한다.
-  </p>
-</section>
-{% endif %}
-
-{# ── 당일 단타 후보(서브프로젝트 K + 행동 등급, 2026-08-18) ──
-   뉴스·수급·트렌딩·촉매를 하나의 점수로 묶은 실험적 스코어러(quant/analyze/
-   intraday_score.py) 위에 결정론 3단계 행동 등급(quant/analyze/scalp_grade.py)
-   을 얹는다. 이 스코어러는 진입을 결정하지 않는다 — 순위·등급만 보여주고,
-   검증 하네스(intraday_verify)가 과거 재현 선정의 적중률을 실측해 가중치
-   조정 근거를 만든다. **여기 오는 항목은 이미 등급이 있는 것만이다** —
-   등급 미달(호재/수급/섹터 신호가 전혀 없는 후보)은 report_cli._emit이
-   표시 직전에 걸러낸다(원장·engine.json은 미달 포함 전체를 유지, `_build_
-   intraday_view` docstring). #}
-{% if intraday_view %}
-<section class="mod">
-  <h2>당일 단타 후보<span class="sub">뉴스·수급·트렌딩·촉매 통합 점수 + 행동 등급 · 상위 {{ intraday_view|length }}</span></h2>
-  <p class="idx-sub">
-    뉴스·수급·트렌딩·촉매를 하나의 점수로, 그 위에 "지금 사도 되는지" 3단계
-    등급(보류/진입/적극 진입)을 얹었다 — 등급 미달은 표시하지 않는다.
-    검증 하네스(intraday_verify)가 적중률을 계속 실측한다. 공시발 재료는
-    박스(손절·익절)를 좁게.
-  </p>
-  {% for it in intraday_view %}
-  <div class="sym-scalp">
-    <div><span class="grade-badge" data-sg="{{ it.grade }}">{{ it.grade }}</span></div>
-    <div>
-      <div>
-        <span style="color:var(--mute);font-size:var(--fs-xs);margin-right:6px">{{ loop.index }}</span>
-        <a class="sym-link" href="{{ sym_link(it.symbol) }}" target="_blank" rel="noopener"><span class="sym-nm">{{ it.name }}</span><span class="sym-cd">{{ it.symbol }}</span></a>
-      </div>
-      {% if it.grade_reasons %}
-      <div class="sym-meta" style="margin-top:6px">
-        {% for reason in it.grade_reasons %}<span class="chip on">{{ reason }}</span>{% endfor %}
-      </div>
-      {% endif %}
-    </div>
-    <div style="text-align:right">
-      <span class="num" style="font-size:var(--fs-2xl);font-weight:700">{{ it.score100 }}</span>
-      <span class="idx-sub">/ 100점</span>
-      <div class="sym-meta" style="justify-content:flex-end;margin-top:6px">
-        {% for f in it.factors %}
-        <span class="chip{% if f.pts > 0 %} on{% endif %}">{{ f.name }} +{{ f.pts }}</span>
-        {% endfor %}
-        {% if it.foreign_label %}<span class="chip">{{ it.foreign_label }}</span>{% endif %}
-      </div>
-    </div>
-    <div class="idx-sub" style="grid-column:1/-1">
-      {% for f in it.factors %}{{ f.evidence }}{% if not loop.last %} · {% endif %}{% endfor %}
-    </div>
-  </div>
-  {% endfor %}
-  <p class="foot">
-    등급은 진입을 보장하지 않는다 — 결정론 규칙(종목/섹터 호재·섹터 상승·
-    외국인 수급)이 매긴 참고 지표다(quant/analyze/scalp_grade.py). 요인
-    배점(score100) 자체는 초기값이다 — 과거 재현 선정이 실제로 가격·거래량이
-    올랐는지를 검증 하네스(intraday_verify)로 실측해야 가중치를 고칠 근거가
-    생긴다. 여기 오른 종목은 관심종목 자동 편입(AUTO_WATCH) 경로에 접촉하지
-    않는다 — 편입 여부는 검증 수치가 쌓인 뒤 사람이 결정한다.
-  </p>
-</section>
-{% endif %}
-
-{# ── AI 심층 해석(서브프로젝트 U) ──
-   단타 스코어러(K) top-5 후보에 툴콜링 에이전트가 수급·뉴스·공시·텔레그램·
-   과거 성적을 조회해 만든 "왜 지금 이 종목인가" 산문 + 방향·확신 판정.
-   실패한 종목은 조용히 빠진다(전멸 방지) — 데이터가 없으면 섹션 자체를
-   그리지 않는다. #}
-{% if agent_interpret_view %}
-<section class="mod">
-  <h2>🤖 AI 심층 해석<span class="sub">도구 조회 기반 · 상위 {{ agent_interpret_view|length }}</span></h2>
-  <p class="idx-sub">
-    단타 스코어러 후보에 대해 AI가 수급·뉴스·공시·텔레그램·과거 성적을 직접
-    조회해 종합한 해석이다. 방향·확신 태그는 실현 수익률로 계속 채점된다
-    (get_track_record 가 그 실측치를 다음 판단에 되먹인다).
-  </p>
-  {% for it in agent_interpret_view %}
-  <div class="sym">
-    <div>
-      <span style="color:var(--mute);font-size:var(--fs-xs);margin-right:6px">{{ loop.index }}</span>
-      <a class="sym-link" href="{{ sym_link(it.symbol) }}" target="_blank" rel="noopener"><span class="sym-nm">{{ it.name }}</span><span class="sym-cd">{{ it.symbol }}</span></a>
-    </div>
-    <div style="text-align:right">
-      {% if it.direction %}
-      <span class="chip{% if it.direction == 'bullish' %} on{% elif it.direction == 'bearish' %} down{% endif %}">
-        {% if it.direction == 'bullish' %}상승 근거{% elif it.direction == 'bearish' %}하락 경계{% else %}중립{% endif %}
-      </span>
-      {% endif %}
-      {% if it.confidence %}<span class="chip">확신 {{ it.confidence }}/5</span>{% endif %}
-    </div>
-    <p class="idx-sub" style="grid-column:1/-1">{{ it.prose }}</p>
-    {% if it.tools_used %}
-    <div class="sym-meta" style="grid-column:1/-1">
-      {% for tool in it.tools_used %}<span class="chip">{{ tool }}</span>{% endfor %}
-    </div>
-    {% endif %}
-  </div>
-  {% endfor %}
-  <p class="foot">
-    AI 해석은 진입을 결정하지 않는다 — 표시와 원장 기록뿐이고 관심종목 자동
-    편입(AUTO_WATCH) 경로에 접촉하지 않는다. 방향·확신 판정은 선정 원장에
-    producer=agent_interpret_v1 로 남아 기존 채점 크론이 그대로 실측한다.
-  </p>
-</section>
-{% endif %}
-
-{# ── 중기 관심 종목(투자 추천, 서브프로젝트 W part 3) ──
-   텔레그램 언급(최근 3일, ≥2회) + 외국인 수급 + 호재/악재로 진입 등급을 매긴
-   "앞으로 투자하기 좋아 보이는 종목". 등급은 결정론(entry_grade.py) — AI는
-   전망 산문만 얹는다(등급에는 관여하지 않는다). #}
-{% if midterm_view %}
-<section class="mod">
-  <h2>🔭 중기 관심 종목<span class="sub">텔레그램 언급 · 외국인 수급 · 진입 등급 · 상위 {{ midterm_view|length }}</span></h2>
-  <p class="idx-sub">
-    텔레그램 공개 채널에서 최근 3일간 2회 이상 언급된 종목에 외국인 수급·
-    호재/악재로 진입 시점(1 관망 ~ 5 적극 매수)을 매겼다. 등급은 결정론
-    규칙(entry_grade)이 정하고, AI는 전망 산문만 보탠다.
-  </p>
-  {% for it in midterm_view %}
-  <div class="sym">
-    <div>
-      <span style="color:var(--mute);font-size:var(--fs-xs);margin-right:6px">{{ loop.index }}</span>
-      <a class="sym-link" href="{{ sym_link(it.symbol) }}" target="_blank" rel="noopener"><span class="sym-nm">{{ it.name }}</span><span class="sym-cd">{{ it.symbol }}</span></a>
-    </div>
-    <div style="text-align:right">
-      <span class="grade-badge" data-g="{{ it.grade }}">{{ it.grade }} · {{ it.grade_label }}</span>
-    </div>
-    <div class="sym-meta">
-      <span class="chip">언급 {{ it.mentions }}건</span>
-      {% for reason in it.reasons %}<span class="chip">{{ reason }}</span>{% endfor %}
-    </div>
-    {% if it.prose %}
-    <p class="watch-prose">{{ it.prose }}</p>
-    {% endif %}
-    {# 스니펫은 1개·90자만 — 채널 원문은 노이즈가 커서 카드가 길어진다
-       (2026-08-25 소유자: "간결하지만 핵심만"). 원문 전체는 텔레그램 인사이트
-       섹션에 이미 있다. #}
-    {% if it.telegram_snippets %}
-    <div class="idx-sub" style="grid-column:1/-1">“{{ it.telegram_snippets[0]|truncate(90, True, '…') }}”</div>
-    {% endif %}
-  </div>
-  {% endfor %}
-  <p class="foot">
-    등급은 진입을 보장하지 않는다 — 결정론 규칙(외국인 수급 추세 + 호재/악재
-    마커)이 매긴 참고 지표다. 선정 원장에 producer=midterm_watch_v1 로 남아
-    채점 크론이 실측한다. 관심종목 자동 편입(AUTO_WATCH) 경로에는 접촉하지
-    않는다.
-  </p>
-</section>
-{% endif %}
-
 {# ── 🌆 전일 미국장 마감 요약(uswrap, KR 아침판 전용, 2026-08-25) ──
    05:10 KST 에 발행된 US_wrap.json(전날 새벽 미국장 마감 직후 종합)을 그대로
    읽어와 보여준다 — 아래 us_kr_bridge 카드와 달리 이 카드는 그 시점에 이미
@@ -1287,7 +1101,6 @@ a{color:inherit}
   {% endif %}
 </section>
 {% endif %}
-
 {# ── 🌙 어젯밤 미국장 → 오늘 한국장(KR 아침판 전용, 2026-08-21) ──
    미국 정규장은 KST 새벽에 끝나고 같은 날 아침 한국장이 열린다. 방금 끝난
    미국 세션의 섹터 등락(S&P 섹터 ETF 11종)과, GICS 섹터→산업 매핑으로 연결된
@@ -1332,47 +1145,6 @@ a{color:inherit}
   </p>
 </section>
 {% endif %}
-
-{# ── 🇺🇸→🇰🇷 미국발 섹터 수혜주(KR 리포트 전용) ──
-   텔레그램 usnews tier(walterbloomberg·financialjuice) 헤드라인을 GICS
-   섹터로 분류(us_sector_map.classify_sector)해, 그 섹터에 연동되는 국내
-   수혜주(정적 큐레이션)에 같은 진입 등급을 매긴다. #}
-{% if us_news_kr_view %}
-<section class="mod">
-  <h2>🇺🇸→🇰🇷 미국발 섹터 수혜주<span class="sub">텔레그램 미국 헤드라인 · 섹터별 국내 수혜주</span></h2>
-  <p class="idx-sub">
-    텔레그램 미국 뉴스 채널(walterbloomberg·financialjuice) 헤드라인을 GICS
-    섹터로 분류해, 그 섹터에 연동되는 국내 수혜주에 진입 등급을 매겼다.
-  </p>
-  {% for s in us_news_kr_view %}
-  <details class="sector">
-    <summary>
-      <b>{{ s.sector }}</b>
-      <span class="idx-sub">헤드라인 {{ s.hits }}건</span>
-    </summary>
-    {% if s.sample_headlines %}
-    <p class="idx-sub">{% for h in s.sample_headlines %}{{ h }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
-    {% endif %}
-    {% for st in s.stocks %}
-    <div class="sym">
-      <div>
-        <a class="sym-link" href="{{ sym_link(st.symbol) }}" target="_blank" rel="noopener"><span class="sym-nm" style="font-size:var(--fs-sm)">{{ st.name }}</span><span class="sym-cd">{{ st.symbol }}</span></a>
-      </div>
-      <div style="text-align:right">
-        <span class="grade-badge" data-g="{{ st.grade }}">{{ st.grade }} · {{ st.grade_label }}</span>
-      </div>
-      <p class="idx-sub" style="grid-column:1/-1">{{ st.why }}</p>
-    </div>
-    {% endfor %}
-  </details>
-  {% endfor %}
-  <p class="foot">
-    수혜주 매핑은 정적 큐레이션(us_sector_map.KR_BENEFICIARIES)이다 — 특정
-    시점의 투자 추천이 아니라 통상적으로 알려진 업종 대표주 매핑이다.
-  </p>
-</section>
-{% endif %}
-
 {# ── 🇺🇸 실시간 헤드라인(US 리포트 전용) ──
    텔레그램 usnews tier 채널 최신 12건 — 별도 해석 없이 원문 그대로. #}
 {% if usnews_headlines %}
@@ -1388,7 +1160,68 @@ a{color:inherit}
   </div>
 </section>
 {% endif %}
+<div class="grid">
+{# ── 반도체 앵커 (KR 고정) ── #}
+{% if mkt and mkt.anchors %}
+<section class="mod half">
+  <h2>반도체 앵커<span class="sub">고정 편입</span></h2>
+  {% for key, a in mkt.anchors.items() %}
+  <div class="sym">
+    <div>
+      <a class="sym-link" href="{{ sym_link(a.symbol) }}" target="_blank" rel="noopener"><span class="sym-nm">{{ a.label }}</span><span class="sym-cd">{{ a.symbol }}</span></a>
+    </div>
+    <div style="text-align:right">
+      <span class="num" style="font-size:15px;font-weight:650">{{ '{:,.0f}'.format(a.close) }}</span>
+      <span class="num {{ 'up' if a.change_pct > 0 else ('down' if a.change_pct < 0 else 'flat') }}"
+            style="margin-left:8px">{{ '{:+.2f}'.format(a.change_pct) }}%</span>
+    </div>
+    <div class="sym-meta">{{ sparkline(a.history, w=300, h=32) }}</div>
+  </div>
+  {% endfor %}
+  <p style="font-size:11.5px;color:var(--mute);margin-top:10px">
+    뉴스 노출과 무관하게 항상 싣는다 — 한국 시장 판단의 기준축이기 때문.</p>
+</section>
+{% endif %}
+{# ── 투자자 수급 ── #}
+{% set flow = d('kospi_flow') %}
+{% if flow and flow.rows %}
+{% set row = flow.rows[0] %}
+<section class="mod half">
+  <h2>투자자 수급<span class="sub">KOSPI · {{ row.date }} · 억원</span></h2>
+  {{ diverging_bars([('개인', eok(row.개인), row.개인),
+                     ('외국인', eok(row.외국인), row.외국인),
+                     ('기관계', eok(row.기관계), row.기관계),
+                     ('금융투자', eok(row.금융투자), row.금융투자),
+                     ('투신', eok(row.투신), row.투신),
+                     ('연기금등', eok(row.연기금등), row.연기금등)], w=360) }}
+  {% if delta.flow %}
+  <div class="tw">
+  <table style="margin-top:12px">
+    <tr><th>주체</th><th class="num">이번</th><th class="num">직전</th><th>변화</th></tr>
+    {% for actor, f in delta.flow.items() %}
+    <tr><td>{{ actor }}</td>
+      <td class="num {{ 'up' if f.current > 0 else 'down' }}">{{ eok(f.current) }}</td>
+      <td class="num" style="color:var(--mute)">{{ eok(f.previous) }}</td>
+      <td>{% if f.flipped %}<span class="chip on">방향 전환</span>{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% endif %}
+  <div class="src">{{ r('kospi_flow').url }}</div>
+</section>
+{% elif r('kospi_flow') %}
+<section class="mod half miss">
+  <h2>투자자 수급<span class="sub">결측</span></h2>
+  <p class="why">{{ r('kospi_flow').error }}</p>
+</section>
+{% endif %}
+</div>
 
+{% if top_movers or sector_view %}
+
+<div class="chapter-head" id="ch5"><span class="chapter-no">5</span><h2 class="chapter-title">섹터·테마</h2></div>
+
+{% endif %}
 {# ── 업종상위/테마상위: 네이버 금융 홈 패리티 카드(H-1c Task 3) ──
    리포트 UX 2차(Task 3): 상위 3행 표 대신 상위 6 히트맵 타일로. top_movers.sectors/
    themes 는 대표 종목이 붙은 상위 3개뿐이라(sector_view.build_top_movers 계약),
@@ -1467,7 +1300,6 @@ a{color:inherit}
   </div>
 </section>
 {% endif %}
-
 {# ── 테마(업종) 시세: 오늘 오르는 섹터 → 소속 종목 → 수혜주 ── #}
 {% if sector_view %}
 <section class="mod">
@@ -1528,6 +1360,467 @@ a{color:inherit}
 </section>
 {% endif %}
 
+<div class="chapter-head" id="ch6"><span class="chapter-no">6</span><h2 class="chapter-title">종목 후보</h2></div>
+
+<p class="quote-time" style="margin:-10px 0 8px">{{ quote_time_label }}</p>
+
+<p class="foot" style="margin:-6px 0 18px">
+  <b>점수는 이렇게 계산됩니다</b> — 아래 단타 스코어러 점수(100점 만점)는 뉴스 38 · 외국인 수급 28 ·
+  트렌딩 13 · 촉매(공시/테마) 13 · 텔레그램 8 로 나뉜 결정론 규칙 점수다. 뉴스 노출 상위 종목의
+  "AI 점수"·"트렌딩 점수"는 각각 별도 채점기이고, 카드를 펼치면 요인별 가감을
+  확인할 수 있다 — 세 점수는 서로 다른 잣대라 직접 비교하지 않는다.
+</p>
+{# ── 뉴스 노출 상위 종목 ── #}
+<section class="mod">
+  <h2>뉴스 노출 상위 종목</h2>
+  {% if ranked %}
+  {% for sym, c in ranked %}
+  <div class="sym">
+    <div>
+      <a class="sym-link" href="{{ sym_link(sym) }}" target="_blank" rel="noopener"><span class="sym-nm">{{ c.name }}</span><span class="sym-cd">{{ sym }}</span></a>
+    </div>
+    <div style="text-align:right">
+      {# 10칸 히스토리 박스는 2026-08-17 사용자 피드백(J)으로 제거 — 직관적이지
+         않고 중요하지 않았다. 그 자리는 가격(현재가+전일 대비)이 대신한다:
+         현재가를 크게, 변동률은 색으로, 기준을 캡션 한 줄로 밝힌다. #}
+      {% set pq = sym_quotes.get(sym) %}
+      {% if pq %}
+      <div>
+        <span class="num" style="font-size:var(--fs-xl);font-weight:700">{{ '{:,.0f}'.format(pq.close) }}</span>
+        <span class="num {{ 'up' if pq.change_pct > 0 else ('down' if pq.change_pct < 0 else 'flat') }}"
+              style="margin-left:6px;font-weight:650">{{ '{:+.2f}'.format(pq.change_pct) }}%</span>
+      </div>
+      <div class="idx-sub">전일 종가 대비</div>
+      {% endif %}
+    </div>
+    <div class="sym-meta">
+      {# '2일 연속'/'신규' 칩은 2026-08-17 사용자 피드백(J)으로 제거 — 뉴스
+         맥락은 '뉴스 오늘 N건' 하나로 축약한다. #}
+      {% if c.today_articles > 0 %}
+      <span class="chip{% if c.today_articles >= 3 %} on{% endif %}">뉴스 오늘 {{ c.today_articles }}건</span>
+      {% endif %}
+    </div>
+    {% set sc = scores.get(sym) %}
+    {% set det = details.get(sym) %}
+    {% set sp = symbol_payload.get(sym) %}
+    {% if sc or det %}
+    {% set cs = det.consensus if det else none %}
+    <div class="cons">
+      {% if sc %}
+      <div class="cons-item"><span class="k">엔진 점수</span>
+        <span class="v"><span class="opin ai" data-a="{{ sc.label }}">{{ sc.label }}</span>
+          <span class="idx-sub">{{ sc.score100 }}점 / 100점</span></span></div>
+      {% endif %}
+      {% if cs %}
+      <div class="cons-item"><span class="k">증권사 애널리스트 의견</span>
+        <span class="v"><span class="opin" data-o="{{ cs.opinion_label }}">{{ cs.opinion_label }}</span>
+          <span class="idx-sub">{{ cs.opinion_score }}/5.0 · {{ cs.analyst_count }}곳</span></span></div>
+      {% if cs.target_price %}
+      <div class="cons-item"><span class="k">목표주가</span>
+        <span class="v">{{ '{:,}'.format(cs.target_price) }}원</span></div>
+      {% endif %}
+      {% if det.upside_pct is not none %}
+      <div class="cons-item"><span class="k">상승여력</span>
+        <span class="v {{ 'up' if det.upside_pct > 0 else 'down' }}">{{ '{:+.1f}'.format(det.upside_pct) }}%</span></div>
+      {% endif %}
+      {% if cs.per %}
+      <div class="cons-item"><span class="k">PER</span><span class="v">{{ cs.per }}배</span></div>
+      {% endif %}
+      {% endif %}
+      {% set fs = det.flow_summary %}
+      {% set fp = flow_periods(flow_rows, sym, snap.session_date.isoformat()) %}
+      {% if fp %}
+      {% for w in fp.windows %}
+      {# '전체 누적'은 보유량처럼 읽혀서 문제였다(2026-08-17 사용자 피드백 J)
+         — 실제로 쌓인 일수를 라벨에 그대로 박아 자기설명적으로 바꾼다. #}
+      <div class="cons-item"><span class="k">{{ (w.n_days ~ '일 순매수 합') if w.days is none else w.days ~ '일 수급' }}</span>
+        <span class="v">
+          <span class="{{ 'up' if w.foreign > 0 else 'down' }}">외 {{ shares(w.foreign) }}</span> ·
+          <span class="{{ 'up' if w.inst > 0 else 'down' }}">기 {{ shares(w.inst) }}</span>
+          {% if w.days is not none %}<span class="idx-sub">(원장에 {{ w.days }}일 중 {{ w.n_days }}일 기록)</span>{% endif %}
+        </span></div>
+      {% endfor %}
+      <div class="cons-item"><span class="k">수급 원장</span>
+        <span class="v idx-sub">{{ fp.coverage.n_days }}일치 축적({{ fp.coverage.first_date }} 부터)</span></div>
+      {% elif fs %}
+      <div class="cons-item"><span class="k">외국인 5일</span>
+        <span class="v {{ 'up' if fs.foreign_net_5d > 0 else 'down' }}">{{ shares(fs.foreign_net_5d) }}</span></div>
+      <div class="cons-item"><span class="k">기관 5일</span>
+        <span class="v {{ 'up' if fs.inst_net_5d > 0 else 'down' }}">{{ shares(fs.inst_net_5d) }}</span></div>
+      {% if fs.foreign_buy_streak >= 2 or fs.inst_buy_streak >= 2 %}
+      <div class="cons-item"><span class="k">연속 순매수</span>
+        <span class="v idx-sub">외국인 {{ fs.foreign_buy_streak }}일 · 기관 {{ fs.inst_buy_streak }}일</span></div>
+      {% endif %}
+      {% elif snap.market == 'KR' %}
+      {# US 는 이 줄 자체를 안 그린다 — "축적 전"은 곧 원장이 채워진다는 거짓
+         약속이었다. 원장은 KR 랭킹 상위 6종목만 쌓으므로(control/flows.py),
+         KR 도 "축적 전"이 아니라 애초에 대상이 아닐 수 있다는 걸 밝힌다. #}
+      <div class="cons-item"><span class="k">수급</span><span class="v idx-sub">수급 미수집(랭킹 상위 6종목만 수집)</span></div>
+      {% endif %}
+      {% if fp or fs %}
+      {# 각주 하나로 '음수 = 보유량 아님'을 밝힌다(2026-08-17 사용자 피드백 J:
+         "전체 누적 외 +276만주 · 기 -679만주"가 보유량처럼 읽힌다는 지적). #}
+      <div class="idx-sub" style="flex-basis:100%;margin-top:2px">순매수 = 매수 − 매도. 음수는 판 물량이 더 많았다는 뜻 — 보유량이 아니다.</div>
+      {% endif %}
+    </div>
+    {% set trending_factors = sp.trending_factors if sp else none %}
+    {% if (sc and sc.factors) or trending_factors %}
+    <details class="score-breakdown">
+      <summary>점수 내역 보기</summary>
+      {% if sc and sc.factors %}
+      <div class="facs">
+        <span class="idx-sub" style="flex-basis:100%">AI 점수 요인</span>
+        {% for f in sc.factors %}
+        <span class="fac {{ 'p' if f.delta > 0 else 'm' }}">{{ f.text }} {{ '{:+d}'.format(f.delta) }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% if trending_factors %}
+      <div class="facs" style="margin-top:6px">
+        <span class="idx-sub" style="flex-basis:100%">트렌딩 요인{% if sp.trending_score100 is defined %} ({{ sp.trending_score100 }}점){% endif %}</span>
+        {% for tf in trending_factors %}<span class="chip">{{ tf }}</span>{% endfor %}
+      </div>
+      {% endif %}
+    </details>
+    {% endif %}
+    {% endif %}
+    {% if c.titles %}
+    <div class="sym-arts">
+      {% for t in c.title_reps[:3] %}
+      <a href="{{ t.link }}" target="_blank" rel="noopener">{{ t.title }}</a>
+      {% if t.dup_count and t.dup_count >= 2 %}<span class="chip">외 {{ t.dup_count - 1 }}개 매체</span>{% endif %}
+      {% endfor %}
+      {% if c.titles|length > 3 or c.title_reps|length < c.titles|length %}
+      {# 대표만 위에 보이므로(같은 사건 다매체는 배지로 압축) 접힌 목록은 원본
+         전량을 다시 보여준다 — 클러스터로 가려진 기사도 정보가 소실되면 안
+         된다(H-2 Task 3). #}
+      <details>
+        <summary>{% if c.titles|length > 3 %}{{ c.titles|length - 3 }}건 더{% else %}중복 매체 전체{% endif %}</summary>
+        {% for t in c.titles %}
+        <a href="{{ t.link }}" target="_blank" rel="noopener">{{ t.title }}</a>
+        {% endfor %}
+      </details>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% set dis = disclosures.get(sym) %}
+    {% if dis %}
+    <div class="sym-arts">
+      <span class="chip on">공시</span>
+      {% if dis|length > 3 %}
+      <details>
+        <summary>{{ dis|length }}건</summary>
+        {% for d in dis %}
+        <div>{{ d }}{% set dtag = classify_report(d) %}{% if dtag %} <span class="chip">{{ dtag }}</span>{% endif %}</div>
+        {% endfor %}
+      </details>
+      {% else %}
+      {% for d in dis %}
+      <div>{{ d }}{% set dtag = classify_report(d) %}{% if dtag %} <span class="chip">{{ dtag }}</span>{% endif %}</div>
+      {% endfor %}
+      {% endif %}
+      {# 사용자 원칙 3(2026-08-17): DART 공시는 후발주자 리스크(퍼블릭 공개
+         전 정보 유출 가능성) — 전략 파라미터를 건드리지 않고 안내 문구로만
+         반영한다. #}
+      <p style="font-size:11px;color:var(--mute);margin-top:4px">공시발 재료는 퍼블릭 후발 리스크 — 진입 시 손절·익절 박스를 좁게 (2026-08-17 사용자 원칙)</p>
+    </div>
+    {% endif %}
+    {% set res = research.get(sym) %}
+    {% if res %}
+    <div class="sym-arts">
+      <span class="chip on">리포트</span>
+      {% if res|length > 3 %}
+      <details>
+        <summary>{{ res|length }}건</summary>
+        {% for r_line in res %}
+        <div>{{ r_line }}</div>
+        {% endfor %}
+      </details>
+      {% else %}
+      {% for r_line in res %}
+      <div>{{ r_line }}</div>
+      {% endfor %}
+      {% endif %}
+    </div>
+    {% endif %}
+    {{ rel_tree(relation_items(cont, relations, sym)) }}
+  </div>
+  {% endfor %}
+  <p style="font-size:11.5px;color:var(--mute);margin-top:12px">
+    노출 빈도 순. 연속 등장은 <b>근거의 누적</b>을 뜻할 뿐 호재/악재 판정이 아니다 —
+    판정은 다음 단계에서 붙는다.</p>
+  <p class="foot">
+    <b>출처 표기</b> 네이버가 큐레이션한 테마 편입 사유(사실) ·
+    <b>근거점수</b> 최근 뉴스에서 두 종목이 함께 언급된 정도(0~100, 우리 추정) ·
+    <b>외</b>=외국인·<b>기</b>=기관 순매수(주식 수) ·
+    <b>N일치 축적</b> 우리 원장에 쌓인 실측 일수
+  </p>
+  {% else %}
+  <p style="color:var(--mute);font-size:12.5px">오늘 뉴스에서 추출된 상장 종목이 없다.</p>
+  {% endif %}
+</section>
+{# ── 외국인 수급 추종(서브프로젝트 I, 2026-08-17 사용자 원칙) ──
+   "한국주식은 기관 매수세는 노이즈 — 메인 리서치와 비리 없는 매수는 오로지
+   외국인 매수 추세." 한국장 메인 로직이므로 업종별 시세보다 위에 둔다. #}
+{% if foreign_view %}
+<section class="mod">
+  <h2>외국인 수급 추종<span class="sub">탑다운 업종 → 종목 · 일별 근거</span></h2>
+  {% if foreign_view.market_foreign_net is not none %}
+  <p class="idx-sub">코스피 종합 외국인
+    <span class="num {{ 'up' if foreign_view.market_foreign_net > 0 else ('down' if foreign_view.market_foreign_net < 0 else 'flat') }}">
+      {{ eok(foreign_view.market_foreign_net) }}</span>
+    {% if foreign_view.market_date %}<span style="color:var(--mute)"> · {{ foreign_view.market_date }}</span>{% endif %}
+    <span style="color:var(--mute)"> · 참고(관찰 명단 전체 스탠스)</span>
+  </p>
+  {% endif %}
+  {% for s in foreign_view.sectors %}
+  <details class="sector" open>
+    <summary>
+      <b>{{ s.name }}</b>
+      <span class="idx-sub">업종 내 외국인 순유입 합 {{ shares(s.net_sum) }}</span>
+    </summary>
+    {% for row in s.rows %}
+    <div class="sym">
+      <div>
+        <a class="sym-link" href="{{ sym_link(row.symbol) }}" target="_blank" rel="noopener"><span class="sym-nm">{{ row.name }}</span><span class="sym-cd">{{ row.symbol }}</span></a>
+      </div>
+      <div style="text-align:right">
+        {{ daily_bars(row.series | map(attribute='foreign_net') | list, w=110, h=30) }}
+      </div>
+      <div class="sym-meta">
+        <span class="chip{% if row.label == '매수 시그널(재유입)' %} on{% elif row.label == '이탈 추세(부분 매도/중립 고려)' %} down{% endif %}">{{ row.label }}</span>
+        <span style="font-size:11.5px;color:var(--mute)">잔여 {{ shares(row.residual) }} · {{ row.days }}일 근거</span>
+        {% if row.inst_follows %}<span class="chip">기관 동행(참고)</span>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </details>
+  {% endfor %}
+  <p class="foot">
+    메인 로직은 외국인 매수세 — 기관 매수세는 참고용(2026-08-17 사용자 원칙).
+    전 저점·현 고점 맥락(개미 털기성 하락 구간 가능성)은 이 리포트가 차트를
+    다시 그리지 않는다 — 종목명을 눌러 네이버에서 직접 확인한다.
+  </p>
+</section>
+{% endif %}
+{# ── 당일 단타 후보(서브프로젝트 K + 행동 등급, 2026-08-18) ──
+   뉴스·수급·트렌딩·촉매를 하나의 점수로 묶은 실험적 스코어러(quant/analyze/
+   intraday_score.py) 위에 결정론 3단계 행동 등급(quant/analyze/scalp_grade.py)
+   을 얹는다. 이 스코어러는 진입을 결정하지 않는다 — 순위·등급만 보여주고,
+   검증 하네스(intraday_verify)가 과거 재현 선정의 적중률을 실측해 가중치
+   조정 근거를 만든다. **여기 오는 항목은 이미 등급이 있는 것만이다** —
+   등급 미달(호재/수급/섹터 신호가 전혀 없는 후보)은 report_cli._emit이
+   표시 직전에 걸러낸다(원장·engine.json은 미달 포함 전체를 유지, `_build_
+   intraday_view` docstring). #}
+{% if intraday_view %}
+<section class="mod">
+  <h2>당일 단타 후보<span class="sub">뉴스·수급·트렌딩·촉매 통합 점수 + 행동 등급 · 상위 {{ intraday_view|length }}</span></h2>
+  <p class="idx-sub">
+    뉴스·수급·트렌딩·촉매를 하나의 점수로, 그 위에 "지금 사도 되는지" 3단계
+    등급(보류/진입/적극 진입)을 얹었다 — 등급 미달은 표시하지 않는다.
+    검증 하네스(intraday_verify)가 적중률을 계속 실측한다. 공시발 재료는
+    박스(손절·익절)를 좁게.
+  </p>
+  {% for it in intraday_view %}
+  <div class="sym-scalp">
+    <div class="scalp-head">
+      <span class="grade-badge" data-sg="{{ it.grade }}">{{ it.grade }}</span>
+      <span style="color:var(--mute);font-size:var(--fs-xs)">{{ loop.index }}</span>
+      <a class="sym-link" href="{{ sym_link(it.symbol) }}" target="_blank" rel="noopener"><span class="sym-nm">{{ it.name }}</span><span class="sym-cd">{{ it.symbol }}</span></a>
+      <span class="scalp-score">
+        <span class="num" style="font-size:var(--fs-2xl);font-weight:700">{{ it.score100 }}</span>
+        <span class="idx-sub">/ 100점</span>
+      </span>
+    </div>
+    {% if it.grade_reasons %}
+    <div class="sym-meta">
+      {% for reason in it.grade_reasons %}<span class="chip on">{{ reason }}</span>{% endfor %}
+    </div>
+    {% endif %}
+    <div class="sym-meta">
+      {% for f in it.factors %}
+      <span class="chip{% if f.pts > 0 %} on{% endif %}">{{ f.name }} +{{ f.pts }}</span>
+      {% endfor %}
+      {% if it.foreign_label %}<span class="chip">{{ it.foreign_label }}</span>{% endif %}
+    </div>
+    <div class="idx-sub">
+      {% for f in it.factors %}{{ f.evidence }}{% if not loop.last %} · {% endif %}{% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+  <p class="foot">
+    등급은 진입을 보장하지 않는다 — 결정론 규칙(종목/섹터 호재·섹터 상승·
+    외국인 수급)이 매긴 참고 지표다(quant/analyze/scalp_grade.py). 요인
+    배점(score100) 자체는 초기값이다 — 과거 재현 선정이 실제로 가격·거래량이
+    올랐는지를 검증 하네스(intraday_verify)로 실측해야 가중치를 고칠 근거가
+    생긴다. 여기 오른 종목은 관심종목 자동 편입(AUTO_WATCH) 경로에 접촉하지
+    않는다 — 편입 여부는 검증 수치가 쌓인 뒤 사람이 결정한다.
+  </p>
+</section>
+{% endif %}
+{# ── 중기 관심 종목(투자 추천, 서브프로젝트 W part 3) ──
+   텔레그램 언급(최근 3일, ≥2회) + 외국인 수급 + 호재/악재로 진입 등급을 매긴
+   "앞으로 투자하기 좋아 보이는 종목". 등급은 결정론(entry_grade.py) — AI는
+   전망 산문만 얹는다(등급에는 관여하지 않는다). #}
+{% if midterm_view %}
+<section class="mod">
+  <h2>🔭 중기 관심 종목<span class="sub">텔레그램 언급 · 외국인 수급 · 진입 등급 · 상위 {{ midterm_view|length }}</span></h2>
+  <p class="idx-sub">
+    텔레그램 공개 채널에서 최근 3일간 2회 이상 언급된 종목에 외국인 수급·
+    호재/악재로 진입 시점(1 관망 ~ 5 적극 매수)을 매겼다. 등급은 결정론
+    규칙(entry_grade)이 정하고, AI는 전망 산문만 보탠다.
+  </p>
+  {% for it in midterm_view %}
+  <div class="sym">
+    <div>
+      <span style="color:var(--mute);font-size:var(--fs-xs);margin-right:6px">{{ loop.index }}</span>
+      <a class="sym-link" href="{{ sym_link(it.symbol) }}" target="_blank" rel="noopener"><span class="sym-nm">{{ it.name }}</span><span class="sym-cd">{{ it.symbol }}</span></a>
+    </div>
+    <div style="text-align:right">
+      <span class="grade-badge" data-g="{{ it.grade }}">{{ it.grade }} · {{ it.grade_label }}</span>
+    </div>
+    <div class="sym-meta">
+      <span class="chip">언급 {{ it.mentions }}건</span>
+      {% for reason in it.reasons %}<span class="chip">{{ reason }}</span>{% endfor %}
+    </div>
+    {% if it.prose %}
+    <p class="watch-prose">{{ it.prose }}</p>
+    {% endif %}
+    {# 스니펫은 1개·90자만 — 채널 원문은 노이즈가 커서 카드가 길어진다
+       (2026-08-25 소유자: "간결하지만 핵심만"). 원문 전체는 텔레그램 인사이트
+       섹션에 이미 있다. #}
+    {% if it.telegram_snippets %}
+    <div class="idx-sub" style="grid-column:1/-1">“{{ it.telegram_snippets[0]|truncate(90, True, '…') }}”</div>
+    {% endif %}
+  </div>
+  {% endfor %}
+  <p class="foot">
+    등급은 진입을 보장하지 않는다 — 결정론 규칙(외국인 수급 추세 + 호재/악재
+    마커)이 매긴 참고 지표다. 선정 원장에 producer=midterm_watch_v1 로 남아
+    채점 크론이 실측한다. 관심종목 자동 편입(AUTO_WATCH) 경로에는 접촉하지
+    않는다.
+  </p>
+</section>
+{% endif %}
+{# ── AI 심층 해석(서브프로젝트 U) ──
+   단타 스코어러(K) top-5 후보에 툴콜링 에이전트가 수급·뉴스·공시·텔레그램·
+   과거 성적을 조회해 만든 "왜 지금 이 종목인가" 산문 + 방향·확신 판정.
+   실패한 종목은 조용히 빠진다(전멸 방지) — 데이터가 없으면 섹션 자체를
+   그리지 않는다. #}
+{% if agent_interpret_view %}
+<section class="mod">
+  <h2>🤖 AI 심층 해석<span class="sub">도구 조회 기반 · 상위 {{ agent_interpret_view|length }}</span></h2>
+  <p class="idx-sub">
+    단타 스코어러 후보에 대해 AI가 수급·뉴스·공시·텔레그램·과거 성적을 직접
+    조회해 종합한 해석이다. 방향·확신 태그는 실현 수익률로 계속 채점된다
+    (get_track_record 가 그 실측치를 다음 판단에 되먹인다).
+  </p>
+  {% for it in agent_interpret_view %}
+  <div class="sym">
+    <div>
+      <span style="color:var(--mute);font-size:var(--fs-xs);margin-right:6px">{{ loop.index }}</span>
+      <a class="sym-link" href="{{ sym_link(it.symbol) }}" target="_blank" rel="noopener"><span class="sym-nm">{{ it.name }}</span><span class="sym-cd">{{ it.symbol }}</span></a>
+    </div>
+    <div style="text-align:right">
+      {% if it.direction %}
+      <span class="chip{% if it.direction == 'bullish' %} on{% elif it.direction == 'bearish' %} down{% endif %}">
+        {% if it.direction == 'bullish' %}상승 근거{% elif it.direction == 'bearish' %}하락 경계{% else %}중립{% endif %}
+      </span>
+      {% endif %}
+      {% if it.confidence %}<span class="chip">확신 {{ it.confidence }}/5</span>{% endif %}
+    </div>
+    <p class="idx-sub" style="grid-column:1/-1">{{ it.prose }}</p>
+    {% if it.tools_used %}
+    <div class="sym-meta" style="grid-column:1/-1">
+      {% for tool in it.tools_used %}<span class="chip">{{ tool }}</span>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+  <p class="foot">
+    AI 해석은 진입을 결정하지 않는다 — 표시와 원장 기록뿐이고 관심종목 자동
+    편입(AUTO_WATCH) 경로에 접촉하지 않는다. 방향·확신 판정은 선정 원장에
+    producer=agent_interpret_v1 로 남아 기존 채점 크론이 그대로 실측한다.
+  </p>
+</section>
+{% endif %}
+{# ── 🇺🇸→🇰🇷 미국발 섹터 수혜주(KR 리포트 전용) ──
+   텔레그램 usnews tier(walterbloomberg·financialjuice) 헤드라인을 GICS
+   섹터로 분류(us_sector_map.classify_sector)해, 그 섹터에 연동되는 국내
+   수혜주(정적 큐레이션)에 같은 진입 등급을 매긴다. #}
+{% if us_news_kr_view %}
+<section class="mod">
+  <h2>🇺🇸→🇰🇷 미국발 섹터 수혜주<span class="sub">텔레그램 미국 헤드라인 · 섹터별 국내 수혜주</span></h2>
+  <p class="idx-sub">
+    텔레그램 미국 뉴스 채널(walterbloomberg·financialjuice) 헤드라인을 GICS
+    섹터로 분류해, 그 섹터에 연동되는 국내 수혜주에 진입 등급을 매겼다.
+  </p>
+  {% for s in us_news_kr_view %}
+  <details class="sector">
+    <summary>
+      <b>{{ s.sector }}</b>
+      <span class="idx-sub">헤드라인 {{ s.hits }}건</span>
+    </summary>
+    {% if s.sample_headlines %}
+    <p class="idx-sub">{% for h in s.sample_headlines %}{{ h }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+    {% endif %}
+    {% for st in s.stocks %}
+    <div class="sym">
+      <div>
+        <a class="sym-link" href="{{ sym_link(st.symbol) }}" target="_blank" rel="noopener"><span class="sym-nm" style="font-size:var(--fs-sm)">{{ st.name }}</span><span class="sym-cd">{{ st.symbol }}</span></a>
+      </div>
+      <div style="text-align:right">
+        <span class="grade-badge" data-g="{{ st.grade }}">{{ st.grade }} · {{ st.grade_label }}</span>
+      </div>
+      <p class="idx-sub" style="grid-column:1/-1">{{ st.why }}</p>
+    </div>
+    {% endfor %}
+  </details>
+  {% endfor %}
+  <p class="foot">
+    수혜주 매핑은 정적 큐레이션(us_sector_map.KR_BENEFICIARIES)이다 — 특정
+    시점의 투자 추천이 아니라 통상적으로 알려진 업종 대표주 매핑이다.
+  </p>
+</section>
+{% endif %}
+{# ── 뉴스 미노출 종목 증권사 리포트(H-2 Task 5 확장, P1 2026-08-19) ──
+   위 카드는 cont(오늘 뉴스에 잡힌 종목) 기준이라, 뉴스에 안 걸렸지만
+   증권사 리포트가 나온 종목은 카드가 없어 리서치 배지를 못 붙인다.
+   research_badges 는 그 나머지를 "N건(증권사...)" 사실만 최소 노출한다 —
+   제목·투자의견은 원장에 없으니 지어내지 않는다. #}
+{% if research_badges %}
+<section class="mod">
+  <h2>오늘 증권사 리포트<span class="sub">뉴스 미노출 종목 · 사실 표기만</span></h2>
+  <div class="sym-arts">
+    {% for r in research_badges %}
+    <span class="chip on">{{ r.name }} {{ r.count }}건{% if r.brokers %} ({{ r.brokers|join('·') }}){% endif %}</span>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<div class="chapter-head" id="ch7"><span class="chapter-no">7</span><h2 class="chapter-title">우리 시스템의 대응</h2></div>
+{# ── 휴장 기간 이월 후보(개장일 집계, G Task 3) ──
+   `carried_from` 은 병합된 machine payload 의 symbols 에만 실린다 — 위 카드는
+   `cont`(뉴스 연속성 사전)에서 그려지므로 거기엔 이 필드가 없다. 카드 구조를
+   확장하는 대신 별도의 최소 목록으로 노출한다. #}
+{% if carried_candidates %}
+<section class="mod">
+  <h2>휴장 기간 이월 후보<span class="sub">마지막 개장일 이후 engine.json 병합 · 업종별</span></h2>
+  {% for grp in carried_by_sector %}
+  <h3 class="cat">{{ grp.name }}</h3>
+  <div class="hm-grid">
+    {% for s in grp.tiles %}
+    <a class="{{ hm_class(s.change_pct) }}" href="{{ sym_link(s.symbol) }}" target="_blank" rel="noopener">
+      <span class="hm-nm">{{ s.name }}</span>
+      <span class="hm-pc">{% if s.change_pct is not none %}{{ pct(s.change_pct) }}%{% else %}미확인{% endif %}</span>
+      <span class="badge-carry">{{ s.carried_from[5:] }} 발</span>
+    </a>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
 {# ── 엔진 판독값 ── #}
 {# 기계용 블록은 접어 둔다 — 사람이 읽는 문단과 같은 무게로 펼쳐져 있으면
    비전문가 독자에게는 그냥 소음이다(제목 옆에 '기계 판독용'이라고 써 있어도). #}
@@ -1545,10 +1838,20 @@ a{color:inherit}
   </details>
 </section>
 
+<div class="chapter-head" id="ch8"><span class="chapter-no">8</span><h2 class="chapter-title">부록</h2></div>
+
+{% set appendix_has_content = mkt or d('toss_rankings') or (d('kr_funding') and d('kr_funding').funding)
+   or d('sentiment') or d('vix_term') or d('sectors') or d('breadth') or d('macro') or themes
+   or telegram_view_kr or telegram_view_us or youtube_kr or youtube_us or blog or snap.missing() %}
+{% if appendix_has_content %}
+<details class="appendix">
+  <summary>부록 펼치기 — 시세표 · 랭킹 스냅샷 · 뉴스 흐름 · 수급 체력 · 시장 심리 · 기술적 지표 · 유동성 · 텔레그램 · 유튜브/블로그 · 결측 소스</summary>
+  <div class="grid">
 {# ── 시세: 카테고리별로 나눠 읽는다. 한 표에 다 넣으면 정신없다 ── #}
 {% if mkt %}
 <section class="mod">
   <h2>시세<span class="sub">야후 파이낸스 · 지난 1년</span></h2>
+  <p class="quote-time" style="margin:-10px 0 14px">{{ quote_time_label }}</p>
   {% for cat, items in quote_groups %}
   <h3 class="cat">{{ cat }}</h3>
   {# 좁은 화면에서는 가로 스크롤 대신 한 종목을 카드로 쌓는다 — 옆으로 밀어야만
@@ -1594,7 +1897,6 @@ a{color:inherit}
   <div class="src">{{ r('market').url }}</div>
 </section>
 {% endif %}
-
 {# ── 뉴스 흐름: 무엇이 이야기되는지 빈도로. '왜'는 다음 단계(LLM) 몫 ── #}
 {% if themes %}
 <section class="mod">
@@ -1619,7 +1921,6 @@ a{color:inherit}
   <div class="src">{{ r('news').url }}</div>
 </section>
 {% endif %}
-
 {# ── 토스 랭킹: 시장 전체 vs 토스 사용자. 후자는 개인 관심의 직접 신호다 ── #}
 {% set tr = d('toss_rankings') %}
 {% if tr and tr.boards %}
@@ -1660,7 +1961,6 @@ a{color:inherit}
   <div class="src">{{ r('toss_rankings').url }}</div>
 </section>
 {% endif %}
-
 {# ── 한국 수급 체력 ── #}
 {% set krf = d('kr_funding') %}
 {% if krf and krf.funding %}
@@ -1689,7 +1989,6 @@ a{color:inherit}
   <div class="src">{{ r('kr_funding').url }}</div>
 </section>
 {% endif %}
-
 {# ── 시장 심리 ── #}
 {% set sent = d('sentiment') %}
 {% if sent %}
@@ -1719,7 +2018,7 @@ a{color:inherit}
     {% endif %}
     {% if sent.aaii %}
     {% set aa = sent.aaii %}
-    <div class="card" style="grid-column:span 2">
+    <div class="card card-wide">
       <div class="k">AAII 개인투자자 심리</div>
       <div class="v {{ 'up' if aa.spread > 0 else 'down' }}">{{ '{:+.1f}'.format(aa.spread) }}%p</div>
       <div class="dlt">강세 {{ aa.bull_pct }}% · 중립 {{ aa.neutral_pct }}% · 약세 {{ aa.bear_pct }}%</div>
@@ -1736,7 +2035,6 @@ a{color:inherit}
   <div class="src">{{ r('sentiment').url }}</div>
 </section>
 {% endif %}
-
 {# ── 기술적 지표 ── #}
 {% set vt = d('vix_term') %}
 {% set sec = d('sectors') %}
@@ -1803,7 +2101,6 @@ a{color:inherit}
   <div class="src">{{ (r('vix_term') or r('sectors')).url }}</div>
 </section>
 {% endif %}
-
 {# ── 유동성 ── #}
 {# ── 유동성·금리: 숫자만으론 뜻을 모른다. 카드 + 추세 + 해석 라벨 ── #}
 {% set macro = d('macro') %}
@@ -1866,6 +2163,7 @@ a{color:inherit}
 </section>
 {% endif %}
 
+  </div>
 {# ── 시황 브리핑 유튜브(§Task 7): 리포트 최하단 고정 칸. 채널 목록은
    quant/collect/sources/youtube_brief.py 의 BRIEF_CHANNELS/BRIEF_CHANNEL_MARKET
    만 바꾸면 된다. KR/US 고정 탭(2026-08-18, 텔레그램 인사이트와 같은 요구) —
@@ -1918,7 +2216,6 @@ a{color:inherit}
   <p class="foot">선정 채널의 최신 영상 링크 — 내용 검증 없음, 참고용.</p>
 </section>
 {% endif %}
-
 {# ── 고정 브리핑 네이버 블로그(2026-08-17, 사용자 지정): 유튜브 브리핑 바로
    아래 고정 칸. 블로그 목록은 quant/collect/sources/blog_brief.py 의
    BLOG_FEEDS 만 바꾸면 된다. ── #}
@@ -1939,7 +2236,6 @@ a{color:inherit}
   <p class="foot">선정 블로그의 최신 글 링크 — 내용 검증 없음, 참고용.</p>
 </section>
 {% endif %}
-
 {# ── 텔레그램 인사이트(서브프로젝트 S part 2): 공개 채널 12방, 채널별 최신
    5개(quant/analyze/telegram_view.py 가 조립). 채널 목록은 quant/collect/
    sources/telegram_channels.py 의 CHANNELS 만 바꾸면 된다. 방별 카드에
@@ -2004,7 +2300,6 @@ a{color:inherit}
   사진은 텔레그램 원문 링크로만 연결한다(외부 이미지 임베드 없음) — "AI 해석"은 사진 최대 3장에 대한 선택적 요약이다.</p>
 </section>
 {% endif %}
-
 {# ── 결측 ── #}
 {% if snap.missing() %}
 <section class="mod half miss">
@@ -2022,7 +2317,8 @@ a{color:inherit}
 </section>
 {% endif %}
 
-</div>
+</details>
+{% endif %}
 
 <div class="legend">
   <span><b class="up">■</b> 상승 &nbsp; <b class="down">■</b> 하락 — 한국 관례(적=상승)를 따른다. 미국 표기와 반대다.</span>

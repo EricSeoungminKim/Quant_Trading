@@ -21,6 +21,7 @@ from quant.collect.sources.market import fetch_symbol_quotes
 from quant.collect.sources.stock_detail import fetch_many
 
 from quant.report.paths import _load_artifact, _paths
+from quant.report.collect.index_outlook import build_index_outlook
 from quant.report.collect.ledger import _log_overlap, _record_flows, _record_frgn_flow
 
 
@@ -225,6 +226,13 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
         snap, cont, delta, brief, sym_quotes, details, view, scores, trending,
         relations, sectors, baselines, volume_watch=merged_watch,
     )
+    # 지수별 전망(코스피/코스닥, US=S&P500/나스닥) — 소유자 요청(2026-08-29).
+    # 기존 stance(시장당 지수 1개)와 완전히 별개인 새 payload 키만 얹는다.
+    # 실패해도 리포트 발행을 막지 않는다(이 파이프라인의 기존 관례와 동일).
+    try:
+        payload["index_outlook"] = build_index_outlook(snap, root)
+    except Exception as e:  # noqa: BLE001
+        print(f"지수별 전망 생략: {type(e).__name__}: {e}", file=sys.stderr)
     # 합류 종목(뉴스 언급 없이 감시 축으로만 들어온)도 선정 원장에 남긴다 —
     # payload["symbols"] 는 cont 에서만 만들어져 이 종목들이 채점 표본에서
     # 통째로 빠져 있었다(2026-08-26 감사). ledger.py 의 함수가 사유를 설명한다.

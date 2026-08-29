@@ -20,6 +20,14 @@ from quant.report.model import CloseReportModel, ReportModel
 def write_open_report(model: ReportModel, snap: Snapshot, out_root: Path) -> tuple[Path, Path, Path]:
     """아침 리포트 3종 산출물(HTML/engine.json/candidates.txt) — `_emit`이 쓰던
     `write_html`/`write_machine`/`write_candidates` 호출을 모델 하나로 감싼다."""
+    # 뉴스 노출 상위 종목 카드의 "점수 내역" 접힘(트렌딩 요인)이 심볼별
+    # machine_payload 항목을 찾아볼 수 있게 symbol -> entry 사전을 만든다.
+    # model.payload["symbols"] 는 이미 write_machine 이 그대로 쓰는 값이라
+    # 새 계산 없이 조회만 한다.
+    symbol_payload = {
+        s["symbol"]: s for s in (model.payload.get("symbols") or [])
+        if isinstance(s, dict) and s.get("symbol")
+    }
     hp = _render.write_html(
         snap, out_root, model.cont, model.delta, model.brief, model.payload["auto_watch"],
         model.sym_quotes, model.details, model.view, model.scores,
@@ -37,6 +45,8 @@ def write_open_report(model: ReportModel, snap: Snapshot, out_root: Path) -> tup
         agent_interpret_view=model.agent_interpret_view, midterm_view=model.midterm_view,
         us_news_kr_view=model.us_news_kr_view, usnews_headlines=model.usnews_headlines,
         us_kr_bridge=model.us_kr_bridge, us_wrap=model.us_wrap,
+        index_outlook=model.index_outlook, holiday_synthesis=model.holiday_synthesis,
+        symbol_payload=symbol_payload,
     )
     jp = _render.write_machine(model.payload, snap, out_root)
     cp = _render.write_candidates(model.payload["auto_watch"], snap, out_root)

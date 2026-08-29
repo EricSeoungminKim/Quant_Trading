@@ -2194,3 +2194,429 @@ def test_missing_hint_explains_known_failure_shapes():
     assert "시간외" in missing_hint("ValueError: 키움 시간외단일가 순위를 하나도 못 가져왔다")
     assert missing_hint("ValueError: 알 수 없는 새 실패") is None
     assert missing_hint(None) is None
+
+
+# ── 읽는 흐름 재구성(2026-08-29) — 목차·챕터 헤더 ─────────────────────────
+
+
+def test_toc_lists_chapters_in_order():
+    html = render(_snap(), _cont())
+    assert html.index('href="#ch1"') < html.index('href="#ch3"')
+    assert html.index('href="#ch3"') < html.index('href="#ch6"')
+    assert html.index('href="#ch6"') < html.index('href="#ch7"')
+    assert html.index('href="#ch7"') < html.index('href="#ch8"')
+
+
+def test_chapter_headers_render_in_order():
+    html = render(_snap(), _cont())
+    assert html.index('id="ch1"') < html.index('id="ch3"')
+    assert html.index('id="ch3"') < html.index('id="ch4"')
+    assert html.index('id="ch4"') < html.index('id="ch6"')
+    assert html.index('id="ch6"') < html.index('id="ch7"')
+    assert html.index('id="ch7"') < html.index('id="ch8"')
+
+
+def test_exec_summary_still_precedes_stance_after_reorg():
+    """L-1 스펙(엔진 예측보다 먼저)이 챕터 재구성 후에도 유지된다."""
+    view = {"label": "약한 상승 신호", "score100": 60, "line": "line",
+            "positives": [], "negatives": []}
+    html = render(_snap(), _cont(), view=view, exec_summary=_exec_summary())
+    assert html.index("Executive Summary") < html.index("엔진 예측")
+
+
+# ── 지수별 전망(index_outlook, 소유자 요청 2026-08-29) ────────────────────
+
+
+def _index_outlook():
+    return {
+        "kospi": {
+            "score": 2, "span": 3, "score100": 83, "label": "강한 상승 신호",
+            "positives": ["KOSPI +1.20%", "외국인 +3,500억 순매수"],
+            "negatives": [],
+            "probability": {
+                "prob": 0.62, "n": 145, "reason": None,
+                "method": "최근 3.2년 유사 조건일 145회 중 상승 90회",
+            },
+            "proxy_symbol": "069500",
+        },
+        "kosdaq": {
+            "score": 0, "span": 0, "score100": None, "label": None,
+            "positives": [], "negatives": [],
+            "probability": {"prob": None, "n": 0, "method": None, "reason": "표본 부족"},
+            "proxy_symbol": "229200",
+        },
+    }
+
+
+def test_index_outlook_section_renders_score_and_probability():
+    html = render(_snap(), _cont(), index_outlook=_index_outlook())
+    assert "지수별 전망" in html
+    assert "코스피" in html and "코스닥" in html
+    assert "83점" in html
+    assert "강한 상승 신호" in html
+    assert "KOSPI +1.20%" in html
+    assert "62%" in html
+    assert "최근 3.2년 유사 조건일 145회 중 상승 90회" in html
+
+
+def test_index_outlook_section_shows_reason_when_probability_missing():
+    html = render(_snap(), _cont(), index_outlook=_index_outlook())
+    assert "표본 부족" in html
+
+
+def test_index_outlook_section_shows_insufficient_basis_when_score_none():
+    html = render(_snap(), _cont(), index_outlook=_index_outlook())
+    assert "판단 근거 부족" in html
+
+
+def test_index_outlook_section_omitted_when_none():
+    html = render(_snap(), _cont())
+    assert 'class="idx-outlook-grid"' not in html
+
+
+def test_index_outlook_section_omitted_when_empty_dict():
+    html = render(_snap(), _cont(), index_outlook={})
+    assert 'class="idx-outlook-grid"' not in html
+
+
+def test_index_outlook_explains_score_vs_probability_distinction():
+    html = render(_snap(), _cont(), index_outlook=_index_outlook())
+    assert "서로 다른 근거" in html
+
+
+def test_index_outlook_us_market_uses_sp500_nasdaq_labels():
+    outlook = {
+        "sp500": {
+            "score": 1, "span": 1, "score100": 75, "label": "약한 상승 신호",
+            "positives": ["S&P500 +0.80%"], "negatives": [],
+            "probability": {"prob": None, "n": 0, "method": None, "reason": "일봉 부족"},
+            "proxy_symbol": "SPY",
+        },
+        "nasdaq": {
+            "score": -1, "span": 1, "score100": 25, "label": "약한 하락 신호",
+            "positives": [], "negatives": ["반도체(SOXX) 평균 -2.1%"],
+            "probability": {"prob": None, "n": 0, "method": None, "reason": "일봉 부족"},
+            "proxy_symbol": "QQQ",
+        },
+    }
+    html = render(_snap_us(), _cont_us(), index_outlook=outlook)
+    assert "S&amp;P500" in html and "나스닥" in html
+
+
+# ── 휴장 기간 종합(holiday_synthesis, 소유자 요청 2026-08-29) ─────────────
+
+
+def _holiday_synthesis(prose="반도체 강세가 이어졌다."):
+    return {
+        "market": "KR", "last_open": "2026-08-14", "gap_days": 2,
+        "window_dates": ["2026-08-15", "2026-08-16"],
+        "theme_freq": [{"theme": "반도체", "count": 2}],
+        "new_symbols": [{"symbol": "005930", "name": "삼성전자", "first_seen": "2026-08-15"}],
+        "stance_trend": [
+            {"date": "2026-08-15", "score100": 48, "label": "중립"},
+            {"date": "2026-08-16", "score100": 53, "label": "중립"},
+        ],
+        "high_impact_events": [{"date": "2026-08-15", "name": "Consumer Price Index"}],
+        "missing_engine_days": [],
+        "prose": prose,
+    }
+
+
+def test_holiday_synthesis_section_renders_when_present():
+    html = render(_snap(), _cont(), holiday_synthesis=_holiday_synthesis())
+    assert "휴장 기간 종합" in html
+    assert "휴장 2일 종합" in html
+    assert "2026-08-14" in html
+    assert "반도체" in html
+    assert "삼성전자" in html
+    assert "반도체 강세가 이어졌다." in html
+
+
+def test_holiday_synthesis_section_omitted_when_none():
+    html = render(_snap(), _cont())
+    assert "휴장 기간 종합" not in html
+
+
+def test_holiday_synthesis_shows_missing_days_note():
+    view = _holiday_synthesis()
+    view["missing_engine_days"] = ["2026-08-15"]
+    html = render(_snap(), _cont(), holiday_synthesis=view)
+    assert "일부 결손" in html
+    assert "2026-08-15" in html[html.index("일부 결손"):]
+
+
+def test_holiday_synthesis_omits_prose_block_when_none():
+    view = _holiday_synthesis(prose=None)
+    html = render(_snap(), _cont(), holiday_synthesis=view)
+    assert "휴장 기간 종합" in html
+    assert "반도체" in html  # theme_freq 는 그대로 나온다
+
+
+# ── 뉴스 노출 상위 종목 점수 내역 접힘(symbol_payload, 소유자 요청 2026-08-29) ──
+
+
+def test_ranked_card_score_breakdown_shows_trending_factors():
+    html = render(
+        _snap(), _cont(), scores=_score(),
+        symbol_payload={"005930": {
+            "symbol": "005930", "trending_score100": 73,
+            "trending_factors": ["board:거래대금"],
+        }},
+    )
+    assert "점수 내역 보기" in html
+    assert "트렌딩 요인" in html
+    assert "board:거래대금" in html
+    assert "73점" in html
+
+
+def test_ranked_card_score_breakdown_omitted_without_scores_or_trending():
+    html = render(_snap(), _cont())
+    assert "점수 내역 보기" not in html
+
+
+def test_ranked_card_score_breakdown_has_no_extra_details_when_symbol_payload_absent():
+    """symbol_payload 를 안 넘겨도(하위호환) 기존 동작이 그대로다."""
+    html = render(_snap(), _cont_with_titles(2))
+    assert html.count("<details>") == 1  # '엔진 판독값' 뿐
+
+
+# ── 부록(8장) 접힘 — 소유자 요청 2026-08-29 ────────────────────────────────
+
+
+def test_appendix_omitted_when_no_reference_data():
+    """시세·랭킹·심리·기술지표 등 근거 데이터가 하나도 없으면 부록 자체를
+    그리지 않는다 — 빈 접힘 상자를 남기지 않는다."""
+    html = render(_snap(), _cont())
+    assert 'class="appendix"' not in html
+
+
+def test_appendix_renders_when_missing_sources_present():
+    snap = Snapshot(SCHEMA_VERSION, "KR", date(2026, 8, 12), _AT, {
+        "market": SourceResult(
+            key="market", ok=False, data=None, error="타임아웃",
+            url="https://example.com", fetched_at=_AT, latency_ms=1,
+        ),
+    })
+    html = render(snap, _cont())
+    assert 'class="appendix"' in html
+    assert "결측 소스" in html
+
+
+# ── 모바일 반응형(소유자 피드백 2026-08-29) — grid-column:span 2 고정폭 제거 ──
+
+
+def _snap_with_aaii() -> Snapshot:
+    return Snapshot(SCHEMA_VERSION, "KR", date(2026, 8, 12), _AT, {
+        "sentiment": SourceResult(
+            key="sentiment", ok=True,
+            data={"aaii": {"spread": 12.3, "bull_pct": 40, "neutral_pct": 30,
+                            "bear_pct": 30, "as_of": "2026-08-11"}},
+            error=None, url="https://aaii.com", fetched_at=_AT, latency_ms=1,
+        ),
+    })
+
+
+def test_aaii_card_uses_class_not_inline_grid_column_style():
+    """375px 모바일 가로 스크롤의 실제 원인 — 인라인
+    style="grid-column:span 2" 는 좁은 화면에서 카드 그리드가 강제로 2열을
+    만들어 페이지 전체가 옆으로 밀렸다. 클래스로 옮겨 미디어쿼리로 되돌릴 수
+    있어야 한다."""
+    html = render(_snap_with_aaii(), _cont())
+    assert 'style="grid-column:span 2"' not in html
+    assert 'class="card card-wide"' in html
+
+
+def test_mobile_media_query_collapses_card_wide_to_single_column():
+    html = render(_snap_with_aaii(), _cont())
+    style = html[html.index("<style>"):html.index("</style>")]
+    assert "@media(max-width:640px){\n  .card.card-wide{grid-column:span 1}" in style
+
+
+def test_html_has_overflow_x_hidden_backstop():
+    """어떤 규칙이 실패해도 페이지 자체에 가로 스크롤바가 생기지 않도록 하는
+    2차 방어선."""
+    html = render(_snap(), _cont())
+    style = html[html.index("<style>"):html.index("</style>")]
+    assert "html{overflow-x:hidden}" in style
+
+
+# ── 기사 불릿 리스트 + 관련 종목 칩(소유자 피드백 2026-08-29) ──────────────
+
+
+def test_link_to_symbols_reverse_indexes_article_links():
+    from quant.analyze.render import link_to_symbols
+
+    cont = {
+        "005930": {"name": "삼성전자", "titles": [
+            {"title": "삼성전자 HBM4", "link": "https://a/1"},
+        ]},
+        "000660": {"name": "SK하이닉스", "titles": [
+            {"title": "SK하이닉스도 HBM4", "link": "https://a/1"},
+            {"title": "단독 기사", "link": "https://a/2"},
+        ]},
+    }
+    out = link_to_symbols(cont)
+    assert {e["symbol"] for e in out["https://a/1"]} == {"005930", "000660"}
+    assert [e["symbol"] for e in out["https://a/2"]] == ["000660"]
+
+
+def test_link_to_symbols_dedupes_same_symbol_multiple_titles_same_link():
+    cont = {"005930": {"name": "삼성전자", "titles": [
+        {"title": "제목1", "link": "https://a/1"},
+        {"title": "제목1 중복 표기", "link": "https://a/1"},
+    ]}}
+    from quant.analyze.render import link_to_symbols
+    out = link_to_symbols(cont)
+    assert len(out["https://a/1"]) == 1
+
+
+def test_link_to_symbols_skips_titles_without_link():
+    cont = {"005930": {"name": "삼성전자", "titles": [{"title": "링크 없음"}]}}
+    from quant.analyze.render import link_to_symbols
+    assert link_to_symbols(cont) == {}
+
+
+def test_digest_section_renders_bullet_list_not_flat_block():
+    digest = _digest(
+        domestic=[{"title": "삼성전자, 3나노 파운드리 수주", "link": "https://a", "dup_count": 1}],
+    )
+    html = render(_snap(), _cont(), digest=digest)
+    assert '<ul class="news-list">' in html
+    assert "<li>" in html
+
+
+def test_digest_bullet_shows_related_symbol_chip_from_cont_links():
+    cont = _cont()  # 005930 has titles=[] by default; give it a matching link
+    cont["005930"]["titles"] = [{"title": "삼성전자, HBM4 양산", "link": "https://a"}]
+    digest = _digest(domestic=[{"title": "삼성전자, HBM4 양산", "link": "https://a", "dup_count": 1}])
+    html = render(_snap(), cont, digest=digest)
+    assert 'class="news-syms"' in html
+    assert "삼성전자" in html[html.index('class="news-syms"'):html.index('class="news-syms"') + 300]
+
+
+def test_digest_bullet_omits_related_symbol_block_when_no_match():
+    digest = _digest(domestic=[{"title": "무관 기사", "link": "https://unrelated", "dup_count": 1}])
+    html = render(_snap(), _cont(), digest=digest)
+    assert 'class="news-syms"' not in html
+
+
+def test_digest_bullet_shows_outlet_chip_outside_anchor():
+    digest = _digest(domestic=[
+        {"title": "삼성전자 기사", "link": "https://a", "dup_count": 1, "outlet": "한국경제"},
+    ])
+    html = render(_snap(), _cont(), digest=digest)
+    assert '<span class="chip">한국경제</span>' in html
+    # 앵커 태그 자체는 여전히 속성 추가 없이 정확히 이 형태다(기존 계약 유지).
+    assert '<a href="https://a" target="_blank" rel="noopener">삼성전자 기사</a>' in html
+
+
+def test_news_flow_bullet_shows_related_symbol_chip():
+    cont = _cont()
+    cont["005930"]["titles"] = [{"title": "삼성전자 기사", "link": "https://a"}]
+    news_flow = [_flow_item("삼성전자 기사", "https://a", outlet="한국경제")]
+    html = render(_snap(), cont, news_flow=news_flow)
+    assert 'class="news-syms"' in html
+
+
+def test_news_flow_renders_as_bullet_list():
+    news_flow = [_flow_item("사건", "https://a", outlet="한국경제")]
+    html = render(_snap(), _cont(), news_flow=news_flow)
+    assert '<ul class="news-list">' in html
+
+
+# ── 실기기(iPhone) 확인 2건(2026-08-29) — .sym-scalp/.sym 카드 모바일 붕괴 ──
+
+
+def test_sym_scalp_uses_flex_header_not_grid():
+    """옛 grid(auto 1fr auto) 3칸 레이아웃을 버리고, 모든 폭에서 동일하게
+    동작하는 flex-wrap 머리 줄(.scalp-head)로 바꿨다 — 별도 모바일 오버라이드가
+    필요 없어야 캐스케이드 동률 버그가 재발하지 않는다."""
+    html = render(_snap(), _cont(), intraday_view=_intraday_view())
+    assert 'class="scalp-head"' in html
+    assert 'class="scalp-score"' in html
+    style = html[html.index("<style>"):html.index("</style>")]
+    assert ".sym-scalp{display:grid" not in style
+
+
+def test_chip_and_grade_badge_css_prevents_character_wrap():
+    """칩/배지가 white-space:nowrap 없이 좁은 flex 컨테이너에 놓이면 한글이
+    글자 단위로 줄바꿈된다(CJK 기본 줄바꿈 규칙) — 실기기에서 확인된 버그."""
+    html = render(_snap(), _cont(), intraday_view=_intraday_view())
+    style = html[html.index("<style>"):html.index("</style>")]
+    chip_rule = style[style.index(".chip{"):style.index(".chip.on{")]
+    assert "white-space:nowrap" in chip_rule
+    assert "flex-shrink:0" in chip_rule
+    badge_rule = style[style.index(".grade-badge{"):style.index('.grade-badge[data-g="3"]')]
+    assert "white-space:nowrap" in badge_rule
+
+
+def test_sym_nm_uses_keep_all_word_break():
+    """종목명(한글)이 좁은 칸에서 두 줄로 쪼개지는 건 괜찮지만, 글자 단위로
+    쪼개지면 안 된다 — word-break:keep-all 로 한글 단어 경계만 허용한다."""
+    html = render(_snap(), _cont(), intraday_view=_intraday_view())
+    style = html[html.index("<style>"):html.index("</style>")]
+    assert "word-break:keep-all" in style[style.index(".sym-nm{"):style.index(".sym-nm-plain{")]
+
+
+def test_sym_mobile_collapse_rule_is_placed_after_base_rule():
+    """캐스케이드 동률 버그 재발 방지 — .sym 1열 붕괴 미디어쿼리가 .sym 본
+    정의보다 소스 순서상 뒤에 있어야 실제로 이긴다."""
+    html = render(_snap(), _cont())
+    style = html[html.index("<style>"):html.index("</style>")]
+    base_idx = style.index(".sym{display:grid")
+    media_idx = style.index("@media(max-width:640px){\n  .card.card-wide{grid-column:span 1}")
+    assert base_idx < media_idx
+
+
+# ── 시세 스냅샷 기준 시각 표기(2026-08-29 소유자 피드백) ────────────────────
+
+
+def _snap_with_market_fetched_at(fetched_hhmm: str) -> Snapshot:
+    fetched = datetime(2026, 8, 12, int(fetched_hhmm[:2]), int(fetched_hhmm[3:]), tzinfo=KST)
+    return Snapshot(SCHEMA_VERSION, "KR", date(2026, 8, 12), _AT, {
+        "market": SourceResult(
+            key="market", ok=True,
+            data={"quotes": {"^KS11": {"label": "KOSPI", "close": 3000.0, "change_pct": 1.0,
+                                        "history": []}}, "anchors": {},
+                  "crosscheck": {"checked": [], "warnings": []}},
+            error=None, url="https://finance.yahoo.com", fetched_at=fetched, latency_ms=10,
+        ),
+    })
+
+
+def test_quote_time_label_uses_market_fetched_at_when_present():
+    """지수 등락률이 실제로 찍힌 시각(SourceResult.fetched_at)을 쓴다 —
+    스냅샷 조립 시각(generated_at, 08:00)과 다른 값으로 구분해서 확인한다."""
+    html = render(_snap_with_market_fetched_at("07:52"), _cont())
+    assert "시세 기준 07:52 KST" in html
+
+
+def test_quote_time_label_falls_back_to_generated_at_when_market_missing():
+    """market 소스가 없으면(또는 실패하면) 지어내지 않고 리포트 생성 시각을
+    다른 문구로 정직하게 구분해서 쓴다."""
+    html = render(_snap(), _cont())  # _snap()은 market 소스가 없다
+    assert "리포트 생성 08:00 KST 기준" in html
+    assert "시세 기준" not in html
+
+
+def test_quote_time_label_appears_in_key_box():
+    html = render(_snap_with_market_fetched_at("07:52"), _cont(), view=_view_for_key_box())
+    zone = html[html.index('class="key"'):html.index('class="key"') + 800]
+    assert "시세 기준 07:52 KST" in zone
+
+
+def _view_for_key_box():
+    return {"label": "약한 상승 신호", "score100": 60, "line": "line",
+            "positives": [], "negatives": []}
+
+
+def test_quote_time_label_appears_in_candidates_chapter_head():
+    html = render(_snap_with_market_fetched_at("07:52"), _cont())
+    zone = html[html.index('id="ch6"'):html.index('id="ch6"') + 400]
+    assert "시세 기준 07:52 KST" in zone
+
+
+def test_quote_time_label_appears_in_appendix_quote_table():
+    html = render(_snap_with_market_fetched_at("07:52"), _cont())
+    zone = html[html.index("<h2>시세<span"):html.index("<h2>시세<span") + 300]
+    assert "시세 기준 07:52 KST" in zone

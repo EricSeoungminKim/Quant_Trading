@@ -61,6 +61,14 @@ class ReportModel:
     # 새벽에 발행된 US_wrap.json 을 그대로 읽어온 것. None 이면 렌더가 카드를
     # 생략한다. report.collect.uswrap.load_latest_us_wrap 결과.
     us_wrap: dict | None = None
+    # 지수별 전망(index_outlook, 2026-08-29) — payload["index_outlook"]과 같은
+    # 값(report.collect.index_outlook.build_index_outlook). None 이면 렌더가
+    # "지수별 전망" 카드를 생략한다(us_kr_bridge 와 같은 관례).
+    index_outlook: dict | None = None
+    # 휴장 기간 종합(holiday_synthesis, 2026-08-29) — payload["holiday_synthesis"]
+    # 와 같은 값. 오늘이 휴장 뒤 첫 개장일 아침이 아니면 None — 렌더가 섹션
+    # 자체를 생략한다.
+    holiday_synthesis: dict | None = None
 
 
 @dataclass
