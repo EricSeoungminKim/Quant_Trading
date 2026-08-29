@@ -11,11 +11,14 @@
 from __future__ import annotations
 
 from quant.control.cost_model import (
+    ASSUMED_ROUND_TRIP_BP,
     FALLBACK_ROUND_TRIP_BP,
+    MAX_SPREAD_SAMPLE_GAP_SECONDS,
     MIN_LEGS_FOR_SLIPPAGE,
     MIN_TRIPS_FOR_FEE,
     by_market,
     by_strategy,
+    compare_spread_cost,
     effective_round_trip_bp,
     measure,
 )
@@ -163,3 +166,114 @@ def test_effective_bp_labels_full_measurement():
     bp, label = effective_round_trip_bp(cost)
     assert bp == 30.0
     assert label.startswith("실측")
+
+
+# ── compare_spread_cost — spread.jsonl 기반 왕복 비교 (2026-08-30) ─────────
+#
+# tca.py의 intent 슬리피지와 달리 spread.jsonl(spread_sample.sh, 10분 간격)은
+# paper/live 무관하게 항상 표본이 쌓인다 — daily_wrap "체결 비용" 절이 이걸 쓴다.
+
+def _spread_trip(entry_ts, exit_ts, notional=1_000_000.0, fees=2_000.0,
+                 symbol="TQQQ", market="US") -> dict:
+    """`ledger.round_trips()` 출력 + `compare_spread_cost`가 읽는
+    entry_ts/exit_ts를 더한 최소 형태."""
+    return {
+        "symbol": symbol, "market": market, "notional": notional, "fees": fees,
+        "entry_ts": entry_ts, "exit_ts": exit_ts,
+    }
+
+
+def _spread_row(symbol, ts, spread_bp) -> dict:
+    return {"symbol": symbol, "ts": ts, "spread_bp": spread_bp}
+
+
+def test_no_spread_rows_at_all_returns_none():
+    """스프레드 표본이 하나도 없으면 수수료만으로는 이 함수의 계약을 만족 못한다 — None."""
+    trips = [_spread_trip("2026-08-30T00:00:00+00:00", "2026-08-30T00:05:00+00:00")]
+    assert compare_spread_cost(trips, [], assumed_bp=26.0) is None
+
+
+def test_observed_bp_averages_entry_and_exit_spread_plus_fee():
+    """fee_bp(2,000/1,000,000*1e4=20) + entry/exit 스프레드 평균((10+6)/2=8) = 28."""
+    trips = [_spread_trip("2026-08-30T00:00:00+00:00", "2026-08-30T00:10:00+00:00",
+                          notional=1_000_000.0, fees=2_000.0)]
+    rows = [
+        _spread_row("TQQQ", "2026-08-30T00:00:30+00:00", 10.0),  # entry 근접
+        _spread_row("TQQQ", "2026-08-30T00:09:30+00:00", 6.0),   # exit 근접
+    ]
+    cmp = compare_spread_cost(trips, rows, assumed_bp=26.0)
+    assert cmp is not None
+    assert cmp.observed_bp == 28.0
+    assert cmp.n_trips == 1 and cmp.n_priced == 1
+
+
+def test_one_sided_spread_sample_still_produces_an_estimate():
+    """청산 시점 표본이 없으면 진입 시점 값을 그대로 쓴다(절반씩 두 번 더하는 것과 동일)."""
+    trips = [_spread_trip("2026-08-30T00:00:00+00:00", "2026-08-30T00:10:00+00:00",
+                          notional=1_000_000.0, fees=2_000.0)]
+    rows = [_spread_row("TQQQ", "2026-08-30T00:00:10+00:00", 10.0)]
+    cmp = compare_spread_cost(trips, rows, assumed_bp=26.0)
+    assert cmp is not None
+    assert cmp.observed_bp == 30.0  # fee 20 + spread 10
+    assert cmp.n_priced == 1
+
+
+def test_sample_beyond_max_gap_is_ignored():
+    """수집 주기(10분)보다 훨씬 먼 표본은 "당시 스프레드"로 보지 않는다."""
+    trips = [_spread_trip("2026-08-30T00:00:00+00:00", "2026-08-30T00:10:00+00:00")]
+    far_ts = "2026-08-30T05:00:00+00:00"  # entry_ts로부터 5시간
+    rows = [_spread_row("TQQQ", far_ts, 10.0)]
+    assert compare_spread_cost(trips, rows, assumed_bp=26.0,
+                               max_gap_seconds=MAX_SPREAD_SAMPLE_GAP_SECONDS) is None
+
+
+def test_symbol_mismatch_is_never_joined():
+    trips = [_spread_trip("2026-08-30T00:00:00+00:00", "2026-08-30T00:10:00+00:00", symbol="TQQQ")]
+    rows = [_spread_row("SQQQ", "2026-08-30T00:00:10+00:00", 10.0)]  # 다른 심볼
+    assert compare_spread_cost(trips, rows, assumed_bp=26.0) is None
+
+
+def test_verdict_optimistic_when_observed_costs_more_than_assumed():
+    """실측이 가정보다 비싸면 "가정이 낙관적이었다" = 낙관."""
+    trips = [_spread_trip("2026-08-30T00:00:00+00:00", "2026-08-30T00:10:00+00:00",
+                          notional=1_000_000.0, fees=2_000.0)]
+    rows = [_spread_row("TQQQ", "2026-08-30T00:00:10+00:00", 40.0)]  # fee 20 + spread 40 = 60bp
+    cmp = compare_spread_cost(trips, rows, assumed_bp=26.0)
+    assert cmp is not None
+    assert cmp.verdict == "낙관"
+
+
+def test_verdict_conservative_when_observed_costs_less_than_assumed():
+    trips = [_spread_trip("2026-08-30T00:00:00+00:00", "2026-08-30T00:10:00+00:00",
+                          notional=1_000_000.0, fees=200.0)]
+    rows = [_spread_row("TQQQ", "2026-08-30T00:00:10+00:00", 1.0)]  # fee 2 + spread 1 = 3bp
+    cmp = compare_spread_cost(trips, rows, assumed_bp=26.0)
+    assert cmp is not None
+    assert cmp.verdict == "보수"
+
+
+def test_verdict_near_within_tolerance():
+    trips = [_spread_trip("2026-08-30T00:00:00+00:00", "2026-08-30T00:10:00+00:00",
+                          notional=1_000_000.0, fees=2_000.0)]
+    rows = [_spread_row("TQQQ", "2026-08-30T00:00:10+00:00", 6.5)]  # fee 20 + spread 6.5 = 26.5bp
+    cmp = compare_spread_cost(trips, rows, assumed_bp=26.0, near_pct=0.1)
+    assert cmp is not None
+    assert cmp.verdict == "근접"
+
+
+def test_assumed_round_trip_bp_has_the_three_named_buckets():
+    """전략 docstring들이 인용해 온 세 값(overnight_drift.py/rsi2_dip.py) —
+    daily_wrap 6절의 대조 기준."""
+    assert ASSUMED_ROUND_TRIP_BP == {"US": 26.0, "KR_ETF": 4.0, "KR_STOCK": 30.0}
+
+
+def test_n_trips_counts_dustless_trips_even_when_unpriced():
+    """n_trips는 명목 0을 뺀 전체 트립 수, n_priced는 그중 스프레드를 찾은 것만."""
+    trips = [
+        _spread_trip("2026-08-30T00:00:00+00:00", "2026-08-30T00:10:00+00:00", symbol="TQQQ"),
+        _spread_trip("2026-08-30T01:00:00+00:00", "2026-08-30T01:10:00+00:00", symbol="SQQQ"),
+    ]
+    rows = [_spread_row("TQQQ", "2026-08-30T00:00:10+00:00", 10.0)]  # SQQQ 표본 없음
+    cmp = compare_spread_cost(trips, rows, assumed_bp=26.0)
+    assert cmp is not None
+    assert cmp.n_trips == 2 and cmp.n_priced == 1

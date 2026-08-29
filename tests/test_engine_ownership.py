@@ -125,6 +125,23 @@ def test_flatten_all_never_targets_user_manual_holdings(mixed_account):
     assert {s.symbol for s in sink.signals} == {ENGINE_SYMBOL}
 
 
+def test_flatten_cancels_open_orders_before_selling(mixed_account):
+    """flatten 직전 미체결 주문을 먼저 취소한다(2026-08-30) — 늦게 체결된 매수
+    주문이 방금 청산한 포지션을 되살리는 사고를 막는다."""
+    client, broker = mixed_account
+    client.orders.return_value = {"orders": [
+        {"orderId": "stale-1", "symbol": ENGINE_SYMBOL, "side": "BUY", "quantity": "5",
+         "orderedAt": "2026-01-05T09:00:00+09:00"},
+    ]}
+    client.cancel_order.return_value = {"orderId": "cancel-op-1"}
+    ctx = Context(clock=_Clock(), data=_Data(), broker=broker)
+    sink = _Sink()
+
+    _flatten_all(ctx, _risk(), sink, notifier=None)
+
+    client.cancel_order.assert_called_once_with("stale-1")
+
+
 # ------------------------------------------------------ 2겹: 리스크 레이어 상한
 
 def test_risk_blocks_exit_for_holding_the_engine_never_bought(mixed_account):

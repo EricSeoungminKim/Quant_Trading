@@ -15,7 +15,7 @@ from quant.core.fx import FixedFxProvider, FxProvider
 from quant.core.ports import DataFeed
 from quant.core import oms
 from quant.core.models import (
-    Fill, Order, OrderState, Position, Side, market_of_symbol,
+    Fill, OpenOrder, Order, OrderState, Position, Side, market_of_symbol,
 )
 from quant.core.portfolio.portfolio import Portfolio, to_krw
 
@@ -246,3 +246,13 @@ class PaperBroker:
 
     def cash(self) -> float:
         return self.portfolio.cash
+
+    def cancel_order(self, order_id: str) -> bool:
+        """paper는 즉시 체결 모델이라 미체결 주문이 존재할 수 없다 — 취소할 대상이
+        없으므로 항상 False(가짜 성공 금지)."""
+        return False
+
+    def open_orders(self) -> list[OpenOrder]:
+        """paper는 place_order가 그 자리에서 체결/거부로 끝나 미체결 상태를 만들지
+        않는다 — 항상 빈 리스트다."""
+        return []

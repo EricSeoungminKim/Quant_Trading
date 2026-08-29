@@ -39,14 +39,20 @@ from datetime import date, datetime
 from html import escape as _esc
 
 from quant.control import alpha as _alpha
+from quant.control import cost_model as _cost_model
+from quant.control import exposure as _exposure
 from quant.control.ledger import MIN_TRIPS_FOR_JUDGEMENT
 
 # 절 제목 — 소유자가 지정한 순서 그대로. 순서를 바꾸지 않는다. "지수 대비 성적"은
 # 2026-08-29에 추가됐다(`alpha.py` 모듈 docstring — "항상 지수 위에서 노는 것").
 # 기존 1~4절 번호를 그대로 두려고 맨 끝에 붙였다 — 4절(변경된 점)은 git 을 못
 # 읽으면 절 자체가 생략되므로, 그 경우 번호가 3 → 5로 건너뛸 수 있다(기존에도
-# 4절이 조건부로 사라지는 설계라 새 사실이 아니다).
-SECTION_TITLES = ("오늘의 실적", "지분 변경", "문제 발견 및 개선", "변경된 점", "지수 대비 성적")
+# 4절이 조건부로 사라지는 설계라 새 사실이 아니다). "체결 비용"은 2026-08-30에
+# 같은 이유로(조건부 절 번호 흔들림 회피) 맨 끝에 붙었다.
+SECTION_TITLES = (
+    "오늘의 실적", "지분 변경", "문제 발견 및 개선", "변경된 점", "지수 대비 성적",
+    "체결 비용",
+)
 
 
 # ── 포맷 ────────────────────────────────────────────────────────────────
@@ -148,9 +154,57 @@ def build_performance(pnl: dict | None, trips: list[dict],
 
 # ── 2. 지분 변경 ────────────────────────────────────────────────────────
 
+def _lots_from_positions(positions: dict) -> tuple[dict, dict]:
+    """portfolio.json positions(그 시장만 필터된 상태) → exposure.build_report가
+    원하는 `(lots, prices)`. `lots`는 심볼 → {전략id: 수량}, `prices`는 심볼 →
+    평단가(이 리포트는 "읽기만 한다"는 계약이라 실시간 시세를 새로 조회하지
+    않는다 — cmd_daily_wrap docstring과 동일 원칙).
+
+    `meta["lots"]`가 없는 레거시 포지션(전략별 lot 구조 이전)은 소유 전략을
+    "?"로 담아 그래도 노출에 넣는다 — 모르는 전략이라고 노출 자체를 숨기면
+    안 된다(quant.trade.loop._build_exposure_snapshot과 동일 원칙)."""
+    lots: dict[str, dict[str, float]] = {}
+    prices: dict[str, float] = {}
+    for symbol, p in (positions or {}).items():
+        qty = float(p.get("qty", 0) or 0)
+        if qty <= 0:
+            continue
+        meta = p.get("meta") or {}
+        active = {
+            sid: float(lot.get("qty", 0.0))
+            for sid, lot in (meta.get("lots") or {}).items()
+            if float(lot.get("qty", 0.0)) > 0
+        }
+        if not active:
+            active = {str(meta.get("strategy") or "?"): qty}
+        lots[symbol] = active
+        prices[symbol] = float(p.get("avg_cost", 0) or 0)
+    return lots, prices
+
+
+def build_exposure_summary(positions: dict, capital_krw: float | None,
+                           leverage_of: dict[str, float] | None = None) -> str:
+    """2절 꼬리 — 전략 간 합산 노출 한 줄(그 시장 보유분 기준, 2026-08-30).
+
+    `capital_mode: per_strategy`에서 리스크 상한이 전부 전략별 장부 기준이라
+    안 보이는 사각지대(quant/control/exposure.py 모듈 docstring)를 마감
+    리포트에서도 드러낸다. 시세는 평단가로 저하한다 — 방향(중복·상쇄 존재
+    여부)은 시세와 무관하게 정확하다. `leverage_of`가 없으면(오프라인 리포트,
+    네트워크 조회 없음) 알려진 상쇄 쌍만 내장 배수로 보강된다
+    (`exposure._KNOWN_PAIR_LEVERAGE`)."""
+    lots, prices = _lots_from_positions(positions)
+    report = _exposure.build_report(
+        lots=lots, prices=prices, leverage_of=leverage_of, capital_krw=capital_krw,
+    )
+    return report.summary_line()
+
+
 def build_positions(positions: dict, session_trades: list[dict],
-                    names: dict[str, str]) -> dict:
-    """2절 — 오늘 늘어난/줄어든/청산된 포지션 + 현재 보유 목록(종목명 필수).
+                    names: dict[str, str], *,
+                    capital_krw: float | None = None,
+                    leverage_of: dict[str, float] | None = None) -> dict:
+    """2절 — 오늘 늘어난/줄어든/청산된 포지션 + 현재 보유 목록(종목명 필수) +
+    전략 간 합산 노출 요약(2026-08-30).
 
     전일 스냅샷을 따로 두지 않는다. 오늘 체결의 순증감(`net`)과 현재 수량으로
     직전 수량을 역산할 수 있어서다: `qty_before = qty_now - net`. 스냅샷 파일을
@@ -198,7 +252,10 @@ def build_positions(positions: dict, session_trades: list[dict],
         }
         for sym, qty in sorted(held.items())
     ]
-    return {"changes": changes, "holdings": holdings}
+    return {
+        "changes": changes, "holdings": holdings,
+        "exposure_summary": build_exposure_summary(positions, capital_krw, leverage_of),
+    }
 
 
 def _market_of(symbol: str) -> str:
@@ -244,28 +301,77 @@ def build_alpha(series: list[tuple], market: str) -> dict:
     return _alpha.wrap_section(series, market)
 
 
+# ── 6. 체결 비용 ────────────────────────────────────────────────────────
+
+def build_cost_section(trips: list[dict], spread_rows: list[dict], market: str,
+                       kr_etf: set[str] | None = None) -> dict:
+    """6절 — 오늘 종결된 왕복의 실측 비용(수수료 + 당시 스프레드) vs 우리 비용
+    가정(`cost_model.ASSUMED_ROUND_TRIP_BP`) — 가정이 낙관인지 보수인지
+    (2026-08-30, `quant.control.cost_model.compare_spread_cost` 재사용).
+
+    US는 단일 가정(그룹 하나), KR은 ETF/개별주로 갈라 각각 대조한다(세율이
+    갈리므로 하나로 뭉개면 판정 자체가 무의미해진다) — `kr_etf`가 없으면
+    (cmd_daily_wrap은 네트워크를 쓰지 않아 보통 캐시 파일에서 온다) 전부
+    개별주로 본다("모르면 안전한 쪽", assembly.py의 kr_etf 판정과 동일 원칙).
+    그룹별로 스프레드 표본이 없으면 그 그룹은 `comparison=None`("표본 없음")."""
+    kr_etf = kr_etf or set()
+    groups: list[dict] = []
+    if market == "KR":
+        etf_trips = [t for t in trips if str(t.get("symbol")) in kr_etf]
+        stock_trips = [t for t in trips if str(t.get("symbol")) not in kr_etf]
+        for label, group_trips, key in (
+            ("KR ETF", etf_trips, "KR_ETF"), ("KR 개별주", stock_trips, "KR_STOCK"),
+        ):
+            cmp = (
+                _cost_model.compare_spread_cost(
+                    group_trips, spread_rows, _cost_model.ASSUMED_ROUND_TRIP_BP[key], scope=label,
+                ) if group_trips else None
+            )
+            groups.append({"label": label, "comparison": cmp.to_dict() if cmp else None})
+    else:
+        cmp = (
+            _cost_model.compare_spread_cost(
+                trips, spread_rows, _cost_model.ASSUMED_ROUND_TRIP_BP["US"], scope=market,
+            ) if trips else None
+        )
+        groups.append({"label": market, "comparison": cmp.to_dict() if cmp else None})
+    return {"groups": groups}
+
+
 def build_sections(*, market: str, on: date, pnl: dict | None, trips: list[dict],
                    equity_points: list[dict], positions: dict,
                    session_trades: list[dict], names: dict[str, str],
                    issues: list[str], commits: list[str] | None,
                    deferred: list[dict] | None = None,
-                   alpha_series: list[tuple] | None = None) -> dict:
-    """5개 절을 소유자가 지정한 순서(실적→지분→이상→변경→지수 대비 성적)로
-    조립한다.
+                   alpha_series: list[tuple] | None = None,
+                   leverage_of: dict[str, float] | None = None,
+                   spread_rows: list[dict] | None = None,
+                   kr_etf: set[str] | None = None) -> dict:
+    """6개 절을 소유자가 지정한 순서(실적→지분→이상→변경→지수 대비 성적→체결
+    비용)로 조립한다.
 
     `commits`가 `None`이면 "git 을 못 읽었다"는 뜻 — 4절 자체를 생략한다(빈
     리스트는 "오늘 배포 없음"이라 절을 남긴다. 둘을 뭉개지 않는다).
     `alpha_series`는 없으면(`None`/빈 시퀀스) 5절이 "표본 없음"으로 나온다 —
-    5절 자체는 항상 있다(계산 불가와 절 부재는 다른 뜻이라 뭉개지 않는다)."""
+    5절 자체는 항상 있다(계산 불가와 절 부재는 다른 뜻이라 뭉개지 않는다).
+    `leverage_of`는 2절 꼬리 합산 노출 요약(build_exposure_summary)에만 쓰인다 —
+    없으면(cmd_daily_wrap은 네트워크를 쓰지 않아 보통 없다) 알려진 상쇄 쌍만
+    내장 배수로 보강된다. `spread_rows`/`kr_etf`는 6절(build_cost_section)
+    재료 — 둘 다 없으면(`None`/빈 리스트) 6절이 그룹별로 "표본 없음"을 낸다."""
+    performance = build_performance(pnl, trips, equity_points, market)
     return {
         "market": market,
         "date": on.isoformat(),
-        "performance": build_performance(pnl, trips, equity_points, market),
-        "positions": build_positions(positions, session_trades, names),
+        "performance": performance,
+        "positions": build_positions(
+            positions, session_trades, names,
+            capital_krw=performance.get("equity_krw"), leverage_of=leverage_of,
+        ),
         "issues": list(issues),
         "deferred": build_deferred(deferred or []),
         "commits": None if commits is None else list(commits)[:10],
         "alpha": build_alpha(list(alpha_series or []), market),
+        "cost": build_cost_section(trips, list(spread_rows or []), market, kr_etf),
     }
 
 
@@ -393,6 +499,9 @@ def _render_positions(pos: dict) -> str:
                 _esc(fmt_amount(h["avg_cost"], h["market"], signed=False)),
             ] for h in holdings],
         ))
+    out.append(
+        f'<p class="muted">전략 간 합산 노출: {_esc(pos["exposure_summary"])}</p>'
+    )
     return "".join(out)
 
 
@@ -434,6 +543,23 @@ def _render_alpha(sec: dict) -> str:
             ] for r in rows],
         ))
     return "".join(out)
+
+
+def _render_cost(sec: dict) -> str:
+    """6절 — 그룹별(US 단일 / KR은 ETF·개별주) 한 줄 판정. 표본 없는 그룹은
+    "표본 없음"만 낸다(지어내지 않는다)."""
+    items = []
+    for g in sec.get("groups", []):
+        cmp = g.get("comparison")
+        label = _esc(str(g.get("label", "")))
+        if cmp is None:
+            items.append(f'<li>{label}: <span class="muted">표본 없음</span></li>')
+            continue
+        items.append(
+            f'<li>{label}: 실측 {cmp["observed_bp"]:.1f}bp vs 가정 {cmp["assumed_bp"]:.1f}bp'
+            f' ({cmp["n_priced"]}/{cmp["n_trips"]}건) — 가정이 {_esc(cmp["verdict"])}적</li>'
+        )
+    return "<ul>" + "".join(items) + "</ul>"
 
 
 def render_html(sections: dict) -> str:
@@ -484,5 +610,7 @@ def render_html(sections: dict) -> str:
                      else "<ul>" + "".join(f"<li>{_esc(c)}</li>" for c in commits) + "</ul>")
     parts.append(f"<h2>5. {SECTION_TITLES[4]}</h2>")
     parts.append(_render_alpha(sections.get("alpha") or {"lines": [], "rows": []}))
+    parts.append(f"<h2>6. {SECTION_TITLES[5]}</h2>")
+    parts.append(_render_cost(sections.get("cost") or {"groups": []}))
     parts.append("</body></html>")
     return "".join(parts)

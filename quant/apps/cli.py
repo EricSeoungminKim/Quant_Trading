@@ -261,6 +261,7 @@ def cmd_paper(args: argparse.Namespace) -> None:
         approval_cfg=rt.approval_cfg, reconciler=rt.reconciler, regime=rt.regime,
         universe=rt.universe, rebuild_strategies=_rebuild if rt.universe is not None else None,
         name_of=rt.name_of, books=rt.books, tick_logger=rt.tick_logger,
+        exposure_check=rt.exposure_check,
     ))
 
 
@@ -1197,6 +1198,30 @@ def _wrap_equity_points(path, market: str, on) -> list[dict]:
     return [latest[d] for d in sorted(latest)]
 
 
+def _wrap_spread_rows(root, on) -> list[dict]:
+    """6절(체결 비용) 재료 — `data/ledger/spread.jsonl`(spread_sample.sh가 10분마다
+    수집) 중 `on` 날짜(ts 앞 10자리, ledger.py의 날짜 문자열 비교 관례와 동일)만.
+    파일이 없으면 빈 리스트 — 6절이 "표본 없음"으로 정직하게 답한다."""
+    import json as _json
+
+    path = root / "data" / "ledger" / "spread.jsonl"
+    if not path.exists():
+        return []
+    today = on.isoformat()
+    rows: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = _json.loads(line)
+        except ValueError:
+            continue
+        if str(r.get("ts") or "")[:10] == today:
+            rows.append(r)
+    return rows
+
+
 def _wrap_issues(root, on) -> list[str]:
     """3절 재료 — **오늘 실제로 관측된 것만**. 없으면 빈 목록(호출부가 "없음").
 
@@ -1447,7 +1472,7 @@ def cmd_daily_wrap(args: argparse.Namespace) -> None:
     from zoneinfo import ZoneInfo
 
     from quant.adapters.env import REPO_ROOT
-    from quant.apps.assembly import _load_symbol_names
+    from quant.apps.assembly import _load_kr_etf, _load_symbol_names
     from quant.control import daily_wrap as DW
     from quant.control.ledger import (
         load_trades, round_trips, session_pnl_summary, session_window, trades_in_session,
@@ -1489,6 +1514,8 @@ def cmd_daily_wrap(args: argparse.Namespace) -> None:
         names=_load_symbol_names(root / "data" / "state" / "symbol_names.json"),
         issues=_wrap_issues(root, on), commits=_wrap_commits(root, on),
         deferred=deferred, alpha_series=_wrap_alpha_series(root, market, on),
+        spread_rows=_wrap_spread_rows(root, on),
+        kr_etf=_load_kr_etf(root / "data" / "state" / "kr_etf.json"),
     )
 
     out_path = (root / "out" / f"{on.year:04d}" / f"{on.month:02d}" / f"{on.day:02d}"

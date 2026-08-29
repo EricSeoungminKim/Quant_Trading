@@ -275,6 +275,20 @@ class Order:
 
 
 @dataclass(frozen=True)
+class OpenOrder:
+    """`Broker.open_orders()`가 돌려주는 서버 기준 미체결 주문 1건의 최소 뷰.
+
+    브로커별 부가 필드(호가유형/TIF 등)는 담지 않는다 — 이 타입의 유일한
+    용도는 대사(reconcile)가 **나이(age)**로 stale 주문을 판정하는 것이라
+    `submitted_at` 이 핵심이다(나머지는 취소/알림에 필요한 최소 식별 정보)."""
+    order_id: str
+    symbol: str
+    side: Side
+    qty: float
+    submitted_at: datetime  # tz-aware — 브로커 주문 시각 그대로
+
+
+@dataclass(frozen=True)
 class Fill:
     symbol: str
     side: Side

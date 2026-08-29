@@ -16,6 +16,10 @@ engine:
   position_report_minutes: 5
   max_consecutive_cycle_failures: 3 # 연속 사이클 실패 허용 횟수 — 넘으면 신규진입 자동 중단(halt)
   cycle_failure_alert_cooldown_minutes: 10 # 사이클 실패 알림 재전송 최소 간격(분) — 스팸 방지
+  # 전략 간 합산 노출 경고(risk.cross_strategy_leverage_alert_pct) 재전송 최소
+  # 간격(분, 2026-08-30) — 계산 자체(로그)는 position_report_minutes 주기로
+  # 계속 돌고, 이 쿨다운은 텔레그램 알림에만 적용된다.
+  exposure_alert_cooldown_minutes: 60
   max_consecutive_stale_data: 3 # 연속 데이터 조회 실패(전 소스 degraded) 허용 횟수 — 넘으면 경고 알림
   # 보유 종목의 현재가를 이 시간(초) 이상 못 받으면 알림. 전략의 손절 판정은
   # `quote is None`이면 조용히 건너뛰므로, 시세가 끊긴 동안은 손절이 아예 작동하지
@@ -58,6 +62,10 @@ engine:
   # 엔진 소유 원장 vs 브로커 실보유를 대조한다. 불일치 시 신규 진입만 halt하고
   # 청산은 계속 동작한다. 엔진 소유 원장을 노출하는 브로커에서만 활성.
   reconcile_interval_minutes: 5
+  # 미체결 주문 나이 감시(초, 2026-08-30 실계좌 방어선) — 위 대사 주기마다 브로커
+  # open_orders() 중 이 값 이상 된 주문을 자동 취소 시도한다. 시장가 위주 운용이라
+  # 평시엔 거의 항상 빈 목록이지만, 브로커가 주문을 물고 있는 장애 시나리오의 방어선.
+  stale_order_seconds: 120
   # 틱 로거(2026-08-28 소유자 지시) — Toss 1분봉이 4거래일 롤링이라 소급이 안 되므로
   # 엔진이 사이클마다 읽는 시세를 초 단위로 data/ticks/{market}/{YYYY-MM-DD}.jsonl에
   # 남긴다. 파동 스캘핑 전략의 재료. 거래 핫패스에는 메모리 버퍼 append만 하고,
@@ -1009,6 +1017,14 @@ risk:
   # 실질 9배 단일 팩터 노출이다. leverage_of(부팅 시 stock_info로 조회)가 없으면
   # 이 레일은 판정 불가로 완전히 비활성(백테스트/테스트 영향 없음). 0 = 비활성.
   max_leveraged_exposure_pct: 50
+  # 전략 간 합산 노출 감시(2026-08-30, 관측+경고 — 자동 차단 아님). 위 두 상한은
+  # capital_mode: per_strategy에서 전부 그 전략의 독립 장부 기준이라, 다른
+  # 전략이 이미 같은 심볼을 들고 있거나(중복 보유) 레버리지 ETF 롱 + 그
+  # 인버스 롱을 동시에 들고 있어도(TQQQ+SQQQ 등, 상쇄 쌍) 안 보인다. 여기는
+  # 계좌 전체(실제 자본) 기준으로 별도 감시한다 — quant/control/exposure.py
+  # (순수 계산) + quant/trade/loop.py(주기 체크) + quant/apps/assembly.py(배선).
+  cross_strategy_leverage_alert_pct: 100 # 합산 레버리지가중 노출이 실제 총자본의 이 비율을 넘으면 경고 대상
+  # 경고(텔레그램) 재발송 쿨다운은 engine.exposure_alert_cooldown_minutes(위 참고).
 
 execution:
   broker: toss # toss | kiwoom

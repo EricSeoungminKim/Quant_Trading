@@ -43,12 +43,16 @@ from quant.control.forensics import DEFAULT_ROUND_TRIP_BP
 from quant.control.ledger import DUST_NOTIONAL_KRW, DUST_NOTIONAL_USD
 
 __all__ = [
+    "ASSUMED_ROUND_TRIP_BP",
     "FALLBACK_ROUND_TRIP_BP",
+    "MAX_SPREAD_SAMPLE_GAP_SECONDS",
     "MIN_LEGS_FOR_SLIPPAGE",
     "MIN_TRIPS_FOR_FEE",
     "RoundTripCost",
+    "SpreadCostComparison",
     "by_market",
     "by_strategy",
+    "compare_spread_cost",
     "effective_round_trip_bp",
     "measure",
 ]
@@ -205,4 +209,143 @@ def effective_round_trip_bp(cost: RoundTripCost | None) -> tuple[float, str]:
         cost.total_bp,
         f"실측 {cost.total_bp:.1f}bp = 수수료 {cost.fee_bp:.1f} + "
         f"슬리피지 {cost.slippage_bp:.1f} ({cost.n_trips}트립 / {cost.n_slippage_legs}leg)",
+    )
+
+
+# ── 호가 스프레드 실측(spread.jsonl) 기반 비교 (2026-08-30) ────────────────
+#
+# 위 `measure()`의 슬리피지는 `tca.py`의 intent-vs-fill 매칭에서 온다 — 그
+# intent 행은 **TossBroker(실주문 경로)만** 남긴다(`tca.py` 모듈 docstring).
+# 이 저장소가 지금 paper로만 도는 동안은 그 슬리피지 표본이 항상 0이다.
+#
+# `data/ledger/spread.jsonl`(`server/scripts/spread_sample.sh`가 10분마다
+# 수집하는 실측 호가 스프레드)은 paper/live 무관하게 항상 쌓인다 — 그래서
+# daily_wrap의 "체결 비용" 절은 이 원장을 대신 쓴다: 왕복 실측 = 수수료(fee_bp)
+# + 진입·청산 시점에 가장 가까운 스프레드 표본의 절반씩(entry half + exit
+# half). 우리가 이미 인용해 온 비용 가정(전략 docstring들 — overnight_drift.py:
+# "US ETF ≈26bp·KR 개별주 ≈30bp", rsi2_dip.py: "KR ETF 4bp")과 대조해 그
+# 가정이 낙관인지 보수인지 한 줄로 판정한다.
+
+# 수집 주기(10분)의 1.5배 여유 — 이보다 먼 표본은 "당시 스프레드"로 보지
+# 않는다(지어내지 않는다).
+MAX_SPREAD_SAMPLE_GAP_SECONDS = 900
+
+# 전략 docstring들이 실측으로 인용해 온 왕복 비용 가정(bp) — daily_wrap
+# "체결 비용" 절의 대조 기준값. 여기 한 곳에 모아 그 인용들과 어긋나지 않게 한다.
+ASSUMED_ROUND_TRIP_BP: dict[str, float] = {"US": 26.0, "KR_ETF": 4.0, "KR_STOCK": 30.0}
+
+
+def _nearest_spread_bp(rows: list[dict], ts: object, max_gap_seconds: float) -> float | None:
+    """`ts`(체결 원장의 entry_ts/exit_ts)에 가장 가까운 `rows`(이미 그 심볼로
+    필터된 spread.jsonl 행)의 `spread_bp`. 표본이 없거나 가장 가까운 표본도
+    `max_gap_seconds`보다 멀면 None — 없는 정밀도를 지어내지 않는다."""
+    if not ts or not rows:
+        return None
+    from datetime import datetime
+
+    try:
+        target = datetime.fromisoformat(str(ts))
+    except ValueError:
+        return None
+
+    best_bp: float | None = None
+    best_gap: float | None = None
+    for row in rows:
+        raw_ts = row.get("ts")
+        if not raw_ts:
+            continue
+        try:
+            cand = datetime.fromisoformat(str(raw_ts))
+        except ValueError:
+            continue
+        # tz 유무가 서로 다르면 뺄셈 자체가 TypeError다 — 섞인 표본은 비교하지
+        # 않고 건너뛴다(임의로 tz를 붙이면 오차를 지어내는 셈이다).
+        if (target.tzinfo is None) != (cand.tzinfo is None):
+            continue
+        gap = abs((cand - target).total_seconds())
+        if best_gap is None or gap < best_gap:
+            best_gap, best_bp = gap, row.get("spread_bp")
+
+    if best_gap is None or best_gap > max_gap_seconds or best_bp is None:
+        return None
+    try:
+        return float(best_bp)
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass(frozen=True)
+class SpreadCostComparison:
+    """왕복 실측(수수료 + 당시 스프레드) vs 가정 — daily_wrap 6절 재료."""
+
+    scope: str
+    observed_bp: float
+    assumed_bp: float
+    n_trips: int  # 대상 트립 수(명목 0 제외)
+    n_priced: int  # 스프레드 표본을 찾아 observed_bp 계산에 실제로 들어간 트립 수
+    verdict: str  # "낙관" | "보수" | "근접" — 가정이 실측 대비 어느 쪽인지
+
+    def to_dict(self) -> dict:
+        return {
+            "scope": self.scope,
+            "observed_bp": round(self.observed_bp, 2),
+            "assumed_bp": round(self.assumed_bp, 2),
+            "n_trips": self.n_trips,
+            "n_priced": self.n_priced,
+            "verdict": self.verdict,
+        }
+
+
+def compare_spread_cost(
+    trips: list[dict],
+    spread_rows: list[dict],
+    assumed_bp: float,
+    *,
+    scope: str = "전체",
+    max_gap_seconds: float = MAX_SPREAD_SAMPLE_GAP_SECONDS,
+    near_pct: float = 0.1,
+) -> SpreadCostComparison | None:
+    """`trips`(`ledger.round_trips()` 출력) + `spread_rows`(`spread.jsonl` 행) →
+    왕복 실측 vs `assumed_bp` 비교. 스프레드 표본을 하나도 못 찾으면(모든 트립이
+    `n_priced=0`) **None**(표본 없음) — 수수료만으로는 "스프레드까지 실측했다"는
+    이 함수의 계약을 만족하지 않는다.
+
+    entry/exit 양쪽 표본이 다 있으면 평균, 한쪽만 있으면 그 값을 그대로 쓴다
+    (entry half + exit half의 산술과 동일 — `_nearest_spread_bp`가 돌려주는
+    `spread_bp`는 이미 "전체 스프레드"이므로 절반씩 두 번 더하나 평균 내나
+    같은 값이 된다). `near_pct`(기본 10%) 이내 차이는 "근접"으로 판정한다."""
+    by_symbol: dict[str, list[dict]] = {}
+    for row in spread_rows:
+        by_symbol.setdefault(str(row.get("symbol") or ""), []).append(row)
+
+    observed_bps: list[float] = []
+    for t in trips:
+        notional = float(t.get("notional") or 0.0)
+        if notional <= 0:
+            continue
+        rows = by_symbol.get(str(t.get("symbol") or "")) or []
+        entry_spread = _nearest_spread_bp(rows, t.get("entry_ts"), max_gap_seconds)
+        exit_spread = _nearest_spread_bp(rows, t.get("exit_ts"), max_gap_seconds)
+        legs = [s for s in (entry_spread, exit_spread) if s is not None]
+        if not legs:
+            continue
+        fee_bp = float(t.get("fees") or 0.0) / notional * 1e4
+        spread_cost_bp = sum(legs) / len(legs)
+        observed_bps.append(fee_bp + spread_cost_bp)
+
+    if not observed_bps:
+        return None
+
+    observed = sum(observed_bps) / len(observed_bps)
+    diff_pct = abs(observed - assumed_bp) / assumed_bp if assumed_bp else 0.0
+    if diff_pct <= near_pct:
+        verdict = "근접"
+    elif observed > assumed_bp:
+        verdict = "낙관"  # 실측이 가정보다 비싸다 = 가정이 낙관적이었다
+    else:
+        verdict = "보수"  # 실측이 가정보다 싸다 = 가정이 보수적이었다
+
+    return SpreadCostComparison(
+        scope=scope, observed_bp=observed, assumed_bp=assumed_bp,
+        n_trips=len(trips), n_priced=len(observed_bps), verdict=verdict,
     )

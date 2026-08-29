@@ -71,6 +71,9 @@ _CYCLE_LATENCY_HISTORY_SIZE = 20  # 하트비트 "최근 N회 최대" 계산에 
 _BAR_CACHE_LOG_INTERVAL_SEC = 300
 # 워치 조건 rsi2/rsi14/change_pct 계산용 일봉 개수 — rsi14 워밍업(15개) + 여유.
 _WATCH_DAILY_BAR_COUNT = 30
+# 전략 간 합산 노출 경고(2026-08-30) 재발송 최소 간격 — 평시엔 로그만, 임계
+# 초과/상쇄 쌍 존재가 계속돼도 이 간격보다 자주 텔레그램을 보내지 않는다.
+_DEFAULT_EXPOSURE_ALERT_COOLDOWN_MINUTES = 60
 
 DEFAULT_HEARTBEAT_PATH = Path("data/state/heartbeat.json")
 
@@ -698,6 +701,31 @@ def _cancel_approved(req: ApprovalRequest, why: str, notifier: Notifier | None) 
         notifier.send(f"🚫 승인된 진입을 취소했습니다\n\n📌 종목 {_display(req.symbol)}\n📕 사유 {why}")
 
 
+def _cancel_open_orders_before_flatten(broker) -> None:
+    """flatten 직전 미체결 주문을 먼저 취소한다 (2026-08-30, 실계좌 방어선).
+
+    미체결 주문이 남은 채로 전량 매도를 내면 서버에 먼저 가 있던 매수 주문이
+    뒤늦게 체결돼 방금 청산한 포지션이 되살아날 수 있다. `Broker.open_orders()`/
+    `cancel_order()`가 없는 브로커(PaperBroker 등)는 duck-typing으로 조용히
+    건너뛴다. **취소 실패해도 flatten 자체는 막지 않는다** — 청산이 취소보다
+    우선한다는 이 함수의 원칙과 동일하다."""
+    open_orders_fn = getattr(broker, "open_orders", None)
+    cancel_fn = getattr(broker, "cancel_order", None)
+    if not callable(open_orders_fn) or not callable(cancel_fn):
+        return
+    try:
+        orders = open_orders_fn()
+    except Exception as e:  # noqa: BLE001 — flatten을 막으면 안 된다
+        logger.warning("flatten 전 미체결 주문 조회 실패 — 취소 없이 진행: %s: %s", type(e).__name__, e)
+        return
+    for o in orders:
+        try:
+            cancel_fn(o.order_id)
+        except Exception as e:  # noqa: BLE001 — flatten을 막으면 안 된다
+            logger.warning("flatten 전 미체결 주문 취소 실패 (orderId=%s) — 진행: %s: %s",
+                            o.order_id, type(e).__name__, e)
+
+
 def _flatten_all(
     ctx: Context, risk: RiskManager, sinks: EventSink, notifier: Notifier | None,
     books: StrategyBooks | None = None,
@@ -711,6 +739,7 @@ def _flatten_all(
     이 게이트를 우회하지 않는다(닫힌 시장에 체결 가능한 가격이 없다는 사실은 flatten이라고
     바뀌지 않는다). 대신 여기서 우회하지 않는 대가로 **조용히 무시하지 않는다**: 게이트에
     막힌 종목은 한 번에 모아 "다음 개장까지 대기"임을 사용자에게 알린다."""
+    _cancel_open_orders_before_flatten(ctx.broker)
     positions = ctx.broker.positions()
     # 엔진 소유 원장을 노출하는 브로커면 **엔진이 진입한 종목만** 청산한다. 사용자가
     # 같은 계좌에서 손으로 산 물량은 kill switch의 대상이 아니다 — risk.approve와
@@ -1240,6 +1269,56 @@ def _position_report_text(ctx: Context, marks: dict[str, float], risk: RiskManag
     return "\n\n".join(blocks)
 
 
+def _build_exposure_snapshot(
+    ctx: Context, marks: dict[str, float],
+) -> tuple[dict[str, dict[str, float]], dict[str, float], float | None]:
+    """전략 간 합산 노출 감시(2026-08-30)에 넘길 스냅샷 —
+    `(symbol -> {strategy_id: qty}, symbol -> 현재가, 계좌 총자본원)` 3튜플.
+
+    `quant.control.exposure`(순수 계산)를 이 파일이 직접 임포트할 수 없으므로
+    (아키텍처 규칙: `quant.trade → quant.control` 금지) 여기서는 재료만 눌러
+    만들고, 실제 계산은 `run_paper_loop(exposure_check=...)`로 주입된 클로저
+    (조립 시점에 `quant.apps.assembly`가 만든다)가 담당한다.
+
+    시세는 이 사이클이 이미 만든 marks를 그대로 쓴다(추가 조회 없음) — 없으면
+    평단가로 저하한다(`_position_report_text`와 동일 원칙). 전략 소유가 안
+    잡힌 레거시 포지션(`meta["lots"]` 구조 이전)은 "?"로 담아 그래도 노출에
+    넣는다 — 모르는 전략이라고 노출 자체를 숨기면 안 된다.
+
+    총자본은 `portfolio.cash`를 노출하는 브로커(PaperBroker)에서만 계산한다
+    (`_position_report_text`의 헤더 잔고 계산과 동일) — 없으면(실거래 브로커)
+    `None`을 돌려주고, 호출부는 레버리지 비율(pct) 판단을 보류한다."""
+    positions = {s: p for s, p in ctx.broker.positions().items() if p.is_open}
+    lots: dict[str, dict[str, float]] = {}
+    prices: dict[str, float] = {}
+    for symbol, pos in positions.items():
+        active = {
+            sid: float(lot.get("qty", 0.0))
+            for sid, lot in (pos.meta.get("lots") or {}).items()
+            if float(lot.get("qty", 0.0)) > 0
+        }
+        if not active:
+            sid = pos.meta.get("strategy") or "?"
+            active = {sid: pos.qty}
+        lots[symbol] = active
+        price = marks.get(symbol)
+        prices[symbol] = price if price is not None else pos.avg_cost
+
+    portfolio = getattr(ctx.broker, "portfolio", None)
+    capital_krw: float | None = None
+    if portfolio is not None and hasattr(portfolio, "cash"):
+        fx = getattr(ctx.broker, "fx", None)
+        invested = 0.0
+        for symbol, pos in positions.items():
+            try:
+                invested += to_krw(prices[symbol] * pos.qty, market_of_symbol(symbol), fx)
+            except Exception:  # noqa: BLE001 — 환산 실패가 리포트를 죽이면 안 된다
+                invested += prices[symbol] * pos.qty
+        capital_krw = portfolio.cash + invested
+
+    return lots, prices, capital_krw
+
+
 def _write_heartbeat_file(path: Path, payload: dict) -> bool:
     """하트비트 상태 파일을 원자적으로 쓴다(control.py/Portfolio와 같은
     tmp-write-then-replace). 성공 여부를 bool로 돌려주고 **예외를 올리지 않는다**.
@@ -1575,6 +1654,7 @@ async def run_paper_loop(
     name_of: dict[str, str] | None = None,
     books: StrategyBooks | None = None,
     tick_logger: TickLogger | None = None,
+    exposure_check: Callable[[dict, dict, float | None], dict] | None = None,
 ) -> None:
     """paper 루프. control이 None이면 기본 경로(data/state/control.json)로 새로 만든다.
     regime(RegimeProvider)을 주면 KST 거래일이 바뀔 때 1회 refresh()로 국면을
@@ -1597,7 +1677,14 @@ async def run_paper_loop(
     워치리스트 전 심볼의 시세를 기록하고 사이클 끝에 flush_if_due를 호출한다 —
     None이면(호출부가 주입하지 않음) 관련 코드는 한 줄도 실행되지 않는다.
     engine.tick_log.enabled: false는 다른 경로다 — assembly.py가 TickLogger는
-    항상 주입하되 그 인스턴스의 enabled 플래그를 끈다(record/flush가 즉시 반환)."""
+    항상 주입하되 그 인스턴스의 enabled 플래그를 끈다(record/flush가 즉시 반환).
+    exposure_check(2026-08-30)를 주면 포지션 리포트와 같은 주기로 전략 간 합산
+    노출(중복 보유/레버리지 가중 노출/상쇄 쌍)을 계산해 평시엔 로그만, 임계
+    초과·상쇄 쌍 존재 시엔 쿨다운을 두고 텔레그램 1회 보낸다 — 자동 차단은
+    하지 않는다(가시화+경고가 목적). 이 파일은 `quant.control.exposure`(순수
+    계산)를 직접 임포트할 수 없어(아키텍처 규칙) 클로저로 주입받는다: 시그니처는
+    `(lots, prices, capital_krw) -> dict`이고 `quant.apps.assembly`가 조립한다.
+    None이면(호출부가 주입하지 않음) 관련 코드는 한 줄도 실행되지 않는다."""
     if control is None:
         control = TradingControl()
     if reconciler is not None:
@@ -1620,6 +1707,12 @@ async def run_paper_loop(
     telegram_heartbeat = bool(engine_cfg.get("telegram_heartbeat", False))
     telegram_position_report = bool(engine_cfg.get("telegram_position_report", False))
     slow_cycle_warn_ms = float(engine_cfg.get("slow_cycle_warn_ms", _DEFAULT_SLOW_CYCLE_WARN_MS))
+    # 전략 간 합산 노출 감시(2026-08-30) — 계산 자체는 position_report_sec와 같은
+    # 주기로 하되(위 telegram_position_report 스위치와는 무관하게 항상), 알림
+    # 발송만 별도 쿨다운을 둔다.
+    exposure_alert_cooldown_sec = float(
+        engine_cfg.get("exposure_alert_cooldown_minutes", _DEFAULT_EXPOSURE_ALERT_COOLDOWN_MINUTES)
+    ) * 60
 
     # 워치 조건(알림 전용, quant/trade/watch_conditions.py) — settings.yaml
     # watch_conditions 블록. 미지 metric/op는 parse_watch_rules가 여기서(부팅 시)
@@ -1640,6 +1733,8 @@ async def run_paper_loop(
     last_heartbeat = float("-inf")
     position_report_sec = float(engine_cfg.get("position_report_minutes", 1)) * 60
     last_position_report = float("-inf")
+    last_exposure_check = float("-inf")  # 계산 자체(로그)의 cadence — position_report_sec 재사용
+    last_exposure_alert = float("-inf")  # 알림(텔레그램) 발송의 별도 쿨다운
     meta_signature = ""  # 포지션 meta 영속화 트리거용 스냅샷
     # 표시명 이름표(코드 → "한화생명") — 텔레그램 메시지 전용, 거래 판단에 안 쓰인다.
     _SYMBOL_NAMES.update(name_of or {})
@@ -1989,6 +2084,32 @@ async def run_paper_loop(
             if report is not None:
                 last_position_report = now_mono
                 notifier.send(report)
+
+        # 전략 간 합산 노출 감시(2026-08-30) — capital_mode: per_strategy에서
+        # 리스크 상한이 전부 전략별 장부 기준이라, 다른 전략이 같은 심볼을
+        # 이미 들고 있거나(중복 보유) 레버리지 ETF 롱 + 그 인버스 롱을 동시에
+        # 들고 있어도(상쇄 쌍) 아무 상한도 그 사실을 모른다. 자동 차단은 하지
+        # 않는다 — 평시엔 로그만, 임계 초과·상쇄 쌍 존재 시에만(쿨다운) 텔레그램.
+        if exposure_check is not None and market_open and now_mono - last_exposure_check >= position_report_sec:
+            last_exposure_check = now_mono
+            try:
+                lots, ex_prices, capital_krw = _build_exposure_snapshot(ctx, marks)
+                exposure = exposure_check(lots, ex_prices, capital_krw)
+            except Exception:
+                logger.warning("합산 노출 계산 실패 — 건너뜀", exc_info=True)
+                exposure = None
+            if exposure is not None:
+                logger.info("합산 노출 감시: %s", exposure.get("summary", ""))
+                alert_text = exposure.get("alert_text")
+                if (
+                    alert_text and notifier is not None
+                    and now_mono - last_exposure_alert >= exposure_alert_cooldown_sec
+                ):
+                    last_exposure_alert = now_mono
+                    try:
+                        notifier.send(alert_text)
+                    except Exception:
+                        logger.warning("합산 노출 경고 발송 실패", exc_info=True)
 
         # 세션 마감 요약 — 시장별로 개장→마감 전환에서 정확히 1회.
         # 상태 갱신을 발송보다 **먼저** 한다: 요약 생성/전송이 실패해도 같은 마감을

@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pandas as pd
@@ -20,7 +20,9 @@ from quant.trade.control import TradingControl
 from quant.trade.loop import run_cycle
 from quant.trade.reconcile import Reconciler
 from quant.core.ports import Context
-from quant.core.models import Fill, Order, Position, Quote, Side, Signal, SignalAction
+from quant.core.models import (
+    Fill, OpenOrder, Order, Position, Quote, Side, Signal, SignalAction,
+)
 
 _OHLCV = ["open", "high", "low", "close", "volume"]
 
@@ -50,6 +52,31 @@ class _Broker:
         self.orders.append(order)
         return Fill(symbol=order.symbol, side=order.side, qty=order.qty, price=100.0,
                     ts=datetime.now(timezone.utc), strategy_id=order.strategy_id)
+
+
+class _BrokerWithOpenOrders(_Broker):
+    """TossBroker 상당 — 엔진 소유 원장에 더해 미체결 주문 목록/취소도 노출한다."""
+
+    def __init__(self, holdings, owned, open_orders=None):
+        super().__init__(holdings, owned)
+        self._open_orders = list(open_orders or [])
+        self.canceled_order_ids: list[str] = []
+        self.cancel_result = True
+
+    def open_orders(self) -> list[OpenOrder]:
+        return list(self._open_orders)
+
+    def cancel_order(self, order_id: str) -> bool:
+        self.canceled_order_ids.append(order_id)
+        return self.cancel_result
+
+
+class _FixedClock:
+    def __init__(self, now: datetime):
+        self._now = now
+
+    def now(self) -> datetime:
+        return self._now
 
 
 class _PlainBroker:
@@ -160,6 +187,78 @@ def test_reconciler_is_inactive_for_brokers_without_an_ownership_ledger(control)
     assert reconciler.supported is False
     assert reconciler.check(force=True).checked is False
     assert not control.is_halted()
+
+
+# --------------------------------------------------------- 미체결 주문 나이 감시(stale)
+
+def test_stale_open_order_triggers_auto_cancel_and_notification(control):
+    now = datetime(2026, 8, 30, 10, 0, 0, tzinfo=timezone.utc)
+    stale = OpenOrder(order_id="o1", symbol="TQQQ", side=Side.BUY, qty=5.0,
+                       submitted_at=now - timedelta(seconds=200))
+    broker = _BrokerWithOpenOrders(
+        holdings={"TQQQ": 10.0}, owned={"TQQQ": 10.0}, open_orders=[stale])
+    notifier = _Notifier()
+    reconciler = Reconciler(broker, control, notifier, clock=_FixedClock(now),
+                            stale_order_seconds=120)
+
+    reconciler.check(force=True)
+
+    assert broker.canceled_order_ids == ["o1"]
+    assert any("미체결 주문" in m for m in notifier.messages)
+
+
+def test_fresh_open_order_is_not_canceled(control):
+    now = datetime(2026, 8, 30, 10, 0, 0, tzinfo=timezone.utc)
+    fresh = OpenOrder(order_id="o2", symbol="TQQQ", side=Side.BUY, qty=5.0,
+                       submitted_at=now - timedelta(seconds=10))
+    broker = _BrokerWithOpenOrders(
+        holdings={"TQQQ": 10.0}, owned={"TQQQ": 10.0}, open_orders=[fresh])
+    reconciler = Reconciler(broker, control, clock=_FixedClock(now), stale_order_seconds=120)
+
+    reconciler.check(force=True)
+
+    assert broker.canceled_order_ids == []
+
+
+def test_stale_order_watchdog_can_be_disabled(control):
+    now = datetime(2026, 8, 30, 10, 0, 0, tzinfo=timezone.utc)
+    very_stale = OpenOrder(order_id="o3", symbol="TQQQ", side=Side.BUY, qty=5.0,
+                           submitted_at=now - timedelta(days=1))
+    broker = _BrokerWithOpenOrders(
+        holdings={"TQQQ": 10.0}, owned={"TQQQ": 10.0}, open_orders=[very_stale])
+    reconciler = Reconciler(broker, control, clock=_FixedClock(now), stale_order_seconds=None)
+
+    reconciler.check(force=True)
+
+    assert broker.canceled_order_ids == []
+
+
+def test_stale_order_cancel_failure_still_notifies(control):
+    now = datetime(2026, 8, 30, 10, 0, 0, tzinfo=timezone.utc)
+    stale = OpenOrder(order_id="o4", symbol="TQQQ", side=Side.BUY, qty=5.0,
+                       submitted_at=now - timedelta(seconds=200))
+    broker = _BrokerWithOpenOrders(
+        holdings={"TQQQ": 10.0}, owned={"TQQQ": 10.0}, open_orders=[stale])
+    broker.cancel_result = False
+    notifier = _Notifier()
+    reconciler = Reconciler(broker, control, notifier, clock=_FixedClock(now),
+                            stale_order_seconds=120)
+
+    reconciler.check(force=True)
+
+    assert broker.canceled_order_ids == ["o4"]
+    assert any("취소 실패" in m for m in notifier.messages)
+
+
+def test_broker_without_open_orders_support_is_skipped_gracefully(control):
+    """기존 _Broker 페이크(open_orders/cancel_order 없음)는 stale 감시가 조용히 no-op —
+    duck-typing이라 AttributeError로 대사 전체가 죽지 않는다."""
+    broker = _Broker(holdings={"TQQQ": 10.0}, owned={"TQQQ": 10.0})
+    reconciler = Reconciler(broker, control, stale_order_seconds=1)
+
+    report = reconciler.check(force=True)
+
+    assert report.ok
 
 
 # --------------------------------------------- 불일치 상태에서도 청산은 통과해야 한다

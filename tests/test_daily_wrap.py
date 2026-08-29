@@ -307,7 +307,10 @@ def test_alpha_section_renders_capture_and_recent_rows_with_sample():
     assert "누적 알파" in html
     assert "참여율" in html
     assert "방어율" in html
-    assert "표본 없음" not in html
+    # 알파 절(5절) 자체는 "표본 없음"으로 후퇴하지 않아야 한다 — 페이지 전체를
+    # 보면 6절(체결 비용)이 표본 없을 때 정직하게 같은 문구를 쓰므로(이 픽스처는
+    # trips/spread_rows를 안 준다), 알파 절의 재료(lines)만 본다.
+    assert not any("표본 없음" in str(line) for line in sec["alpha"]["lines"])
     # 최근 5일 표(alpha.wrap_section 계약 — rows는 최대 5개).
     assert len(sec["alpha"]["rows"]) == 5
     assert "알파pp" in html
@@ -404,3 +407,117 @@ def test_untrusted_strings_are_escaped():
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
     assert "&amp;" in html
+
+
+# ⑥ 전략 간 합산 노출 — 2절 꼬리 한 줄 (2026-08-30) ---------------------------
+
+def test_exposure_summary_says_no_holdings_when_flat():
+    sec = _sections(positions={})
+    assert sec["positions"]["exposure_summary"] == "보유 없음"
+    assert "전략 간 합산 노출: 보유 없음" in render_html(sec)
+
+
+def test_exposure_summary_flags_duplicate_strategy_holdings():
+    """meta.lots에 2개 전략이 같은 심볼을 들고 있으면 "중복 보유"가 찍힌다."""
+    positions = {
+        "TQQQ": {
+            "qty": 15.0, "avg_cost": 70.0, "market": "US",
+            "meta": {"lots": {"donchian": {"qty": 10.0}, "mean_reversion": {"qty": 5.0}}},
+        },
+    }
+    sec = _sections(market="US", positions=positions)
+    assert "중복 보유 TQQQ" in sec["positions"]["exposure_summary"]
+
+
+def test_exposure_summary_flags_offsetting_pair():
+    """TQQQ 롱 + SQQQ 롱 동시 보유 — 알려진 상쇄 쌍(내장 배수로 보강)."""
+    positions = {
+        "TQQQ": {"qty": 10.0, "avg_cost": 70.0, "market": "US",
+                 "meta": {"strategy": "donchian"}},
+        "SQQQ": {"qty": 20.0, "avg_cost": 10.0, "market": "US",
+                 "meta": {"strategy": "mean_reversion"}},
+    }
+    sec = _sections(market="US", positions=positions)
+    assert "상쇄 쌍 보유 TQQQ/SQQQ" in sec["positions"]["exposure_summary"]
+
+
+def test_exposure_summary_legacy_position_without_lots_still_counted():
+    """meta에 lots도 strategy도 없는 레거시 포지션도 "?"로 담아 노출에 넣는다 —
+    조용히 빠지면 노출 감시 자체가 사각지대가 된다. (KR 심볼을 써서 FX 환산
+    없이 명목을 바로 확인한다: 10주 x 70,000원 = 700,000원.)"""
+    positions = {"005930": {"qty": 10.0, "avg_cost": 70_000.0, "market": "KR"}}
+    sec = _sections(market="KR", positions=positions)
+    assert "700,000원" in sec["positions"]["exposure_summary"]
+
+
+# ⑦ 체결 비용 — 6절 (2026-08-30) ---------------------------------------------
+
+def _cost_trip(entry_ts, exit_ts, notional=1_000_000.0, fees=2_000.0,
+              symbol="TQQQ", market="US") -> dict:
+    return {"symbol": symbol, "market": market, "notional": notional, "fees": fees,
+            "entry_ts": entry_ts, "exit_ts": exit_ts}
+
+
+def test_cost_section_says_no_sample_without_spread_rows():
+    sec = _sections(market="US", trips=[_cost_trip("2026-08-28T00:00:00+00:00",
+                                                    "2026-08-28T00:10:00+00:00")])
+    html = render_html(sec)
+    body = html.split("6. 체결 비용</h2>", 1)[1]
+    assert "표본 없음" in body
+
+
+def test_cost_section_us_group_compares_observed_to_assumed():
+    trips = [_cost_trip("2026-08-28T00:00:00+00:00", "2026-08-28T00:10:00+00:00")]
+    spread_rows = [{"symbol": "TQQQ", "ts": "2026-08-28T00:00:10+00:00", "spread_bp": 10.0}]
+    sec = build_sections(
+        market="US", on=ON, pnl=None, trips=trips, equity_points=[], positions={},
+        session_trades=[], names={}, issues=[], commits=[],
+        spread_rows=spread_rows,
+    )
+    groups = sec["cost"]["groups"]
+    assert len(groups) == 1 and groups[0]["label"] == "US"
+    cmp = groups[0]["comparison"]
+    assert cmp is not None
+    assert cmp["observed_bp"] == 30.0  # fee 20 + spread 10
+    assert cmp["assumed_bp"] == 26.0
+    assert cmp["verdict"] == "낙관"
+    html = render_html(sec)
+    assert "US: 실측 30.0bp vs 가정 26.0bp (1/1건) — 가정이 낙관적" in html
+
+
+def test_cost_section_kr_splits_etf_and_stock():
+    trips = [
+        _cost_trip("2026-08-28T00:00:00+00:00", "2026-08-28T00:10:00+00:00",
+                  symbol="069500", market="KR"),  # ETF
+        _cost_trip("2026-08-28T01:00:00+00:00", "2026-08-28T01:10:00+00:00",
+                  symbol="005930", market="KR"),  # 개별주
+    ]
+    spread_rows = [
+        {"symbol": "069500", "ts": "2026-08-28T00:00:10+00:00", "spread_bp": 1.0},
+        {"symbol": "005930", "ts": "2026-08-28T01:00:10+00:00", "spread_bp": 5.0},
+    ]
+    sec = build_sections(
+        market="KR", on=ON, pnl=None, trips=trips, equity_points=[], positions={},
+        session_trades=[], names={}, issues=[], commits=[],
+        spread_rows=spread_rows, kr_etf={"069500"},
+    )
+    groups = {g["label"]: g["comparison"] for g in sec["cost"]["groups"]}
+    assert set(groups) == {"KR ETF", "KR 개별주"}
+    assert groups["KR ETF"]["assumed_bp"] == 4.0
+    assert groups["KR 개별주"]["assumed_bp"] == 30.0
+
+
+def test_cost_section_without_kr_etf_treats_all_kr_as_stock():
+    """kr_etf가 없으면(오프라인 리포트 흔한 경로) 전부 개별주로 본다 — 모르면
+    안전한 쪽(assembly.py의 kr_etf 판정과 동일 원칙)."""
+    trips = [_cost_trip("2026-08-28T00:00:00+00:00", "2026-08-28T00:10:00+00:00",
+                        symbol="069500", market="KR")]
+    spread_rows = [{"symbol": "069500", "ts": "2026-08-28T00:00:10+00:00", "spread_bp": 1.0}]
+    sec = build_sections(
+        market="KR", on=ON, pnl=None, trips=trips, equity_points=[], positions={},
+        session_trades=[], names={}, issues=[], commits=[],
+        spread_rows=spread_rows,  # kr_etf 미지정
+    )
+    groups = {g["label"]: g["comparison"] for g in sec["cost"]["groups"]}
+    assert groups["KR ETF"] is None  # 069500이 개별주 그룹으로 갔으므로 ETF 그룹은 표본 없음
+    assert groups["KR 개별주"] is not None

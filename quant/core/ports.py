@@ -12,7 +12,7 @@ from typing import Protocol, runtime_checkable
 
 import pandas as pd
 
-from .models import Fill, Order, OrderState, Position, Quote, Signal
+from .models import Fill, OpenOrder, Order, OrderState, Position, Quote, Signal
 
 
 @runtime_checkable
@@ -99,6 +99,26 @@ class Broker(Protocol):
 
     def cash(self) -> float:
         """기준 통화(KRW) 현금."""
+        ...
+
+    def cancel_order(self, order_id: str) -> bool:
+        """서버측 미체결 주문을 취소한다 (2026-08-30, 실계좌 방어선).
+
+        반환은 "취소를 시도해 위험이 해소됐다고 볼 수 있는가"다 — 취소가
+        접수됐거나(브로커별로 비동기일 수 있다) 애초에 취소할 게 없었으면
+        (이미 체결/이미 취소) True, 그 외 실패는 False. **가짜 성공을 반환하지
+        않는다** — 미체결 주문이 있는데 취소 여부를 확인 못 했으면 False다.
+
+        어댑터는 네트워크·API 예외를 여기서 삼키고 False를 반환한다 — raw
+        예외를 코어로 올리지 않는다(이 Protocol의 공통 규칙, place_order와 동일).
+        """
+        ...
+
+    def open_orders(self) -> list[OpenOrder]:
+        """현재 브로커에 남아 있는 미체결 주문 전부. 없으면 빈 리스트 — **가짜로
+        채우지 않는다.** 조회 자체가 실패해도 빈 리스트를 돌려준다(예외를 삼킨다) —
+        이 정보는 대사(reconcile)의 stale 주문 감시에 쓰이는 부가 정보라, 조회
+        실패가 매매 루프를 막으면 안 된다."""
         ...
 
 

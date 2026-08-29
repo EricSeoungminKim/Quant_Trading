@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,12 @@ logger = logging.getLogger(__name__)
 _QTY_TOLERANCE = 1e-6
 
 _DEFAULT_INTERVAL_MINUTES = 5.0
+
+# 미체결 주문 나이 감시 기본값(초) — 실계좌 방어선(2026-08-30). 시장가 위주 운용이라
+# 평시엔 open_orders()가 거의 항상 빈 리스트지만, 브로커가 주문을 물고 있는 장애
+# 시나리오(폴링 타임아웃 후 서버가 계속 PENDING을 돌려주는 등)에서 이 값을 넘긴
+# 주문은 방치하지 않고 자동 취소를 시도한다.
+_DEFAULT_STALE_ORDER_SECONDS = 120.0
 
 
 @dataclass
@@ -49,6 +56,7 @@ class Reconciler:
         interval_minutes: float = _DEFAULT_INTERVAL_MINUTES,
         clock=None,
         pending_qty=None,
+        stale_order_seconds: float | None = _DEFAULT_STALE_ORDER_SECONDS,
     ) -> None:
         # `pending_qty(symbol) -> float` — 엔진이 낸 주문 중 아직 안 채워진 수량
         # (Phase 6.5). 없으면 기존 동작 그대로다. duck-typing 은 이 모듈의 관례.
@@ -62,6 +70,8 @@ class Reconciler:
         self._manual_snapshot: dict[str, float] = {}
         # 같은 불일치가 사이클마다 반복되므로 알림은 최초 1회만 보낸다(로그는 매번 남긴다).
         self._mismatch_notified = False
+        # None/<=0 이면 stale 주문 감시 자체를 끈다.
+        self._stale_order_seconds = stale_order_seconds
 
     @property
     def supported(self) -> bool:
@@ -89,6 +99,8 @@ class Reconciler:
                 return report
         self._last_check_ts = now
         report.checked = True
+
+        self._check_stale_orders()
 
         try:
             broker_positions = self._broker.positions()
@@ -160,6 +172,58 @@ class Reconciler:
         except Exception as e:  # noqa: BLE001
             logger.warning("미체결 잔량 조회 실패(%s) — 0으로 본다: %s", symbol, e)
             return 0.0
+
+    def _check_stale_orders(self) -> None:
+        """미체결 주문 나이 감시 (2026-08-30, 실계좌 방어선).
+
+        `Broker.open_orders()`/`cancel_order()`를 노출하는 브로커에서만 동작한다
+        (duck-typing — 이 모듈의 관례, `supported`와 별개 판정이다: PaperBroker도
+        이제 이 둘을 구현하지만 항상 빈 리스트/False라 여기선 사실상 no-op다).
+        `stale_order_seconds`가 None/<=0이면 기능 자체를 끈다.
+
+        평시엔 시장가 위주 운용이라 open_orders()가 거의 항상 비어 있다 — 이
+        감시의 목적은 정상 경로가 아니라 브로커가 주문을 계속 물고 있는 장애
+        시나리오(폴링 타임아웃 이후에도 서버가 결론을 못 내는 경우)의 방어선이다.
+        """
+        if not self._stale_order_seconds or self._stale_order_seconds <= 0:
+            return
+        open_orders_fn = getattr(self._broker, "open_orders", None)
+        cancel_fn = getattr(self._broker, "cancel_order", None)
+        if not callable(open_orders_fn) or not callable(cancel_fn):
+            return
+        try:
+            orders = open_orders_fn()
+        except Exception as e:  # noqa: BLE001 — 감시 실패가 대사 자체를 죽이면 안 된다
+            logger.warning("미체결 주문 조회 실패 — stale 감시 스킵: %s: %s", type(e).__name__, e)
+            return
+        now = self._clock.now() if self._clock is not None else datetime.now(timezone.utc)
+        for o in orders:
+            try:
+                age = (now - o.submitted_at).total_seconds()
+            except TypeError:
+                # tz-naive 등 비교 불가한 값 — 값을 지어내지 않고 건너뛴다.
+                logger.warning("미체결 주문 나이 계산 불가 — 건너뜀 (orderId=%s)", o.order_id)
+                continue
+            if age < self._stale_order_seconds:
+                continue
+            logger.warning(
+                "미체결 주문 나이 초과(%.0f초 ≥ %.0f초) — 자동 취소 시도 "
+                "(orderId=%s symbol=%s side=%s qty=%s)",
+                age, self._stale_order_seconds, o.order_id, o.symbol, o.side.value, o.qty,
+            )
+            try:
+                canceled = cancel_fn(o.order_id)
+            except Exception as e:  # noqa: BLE001 — 취소 실패가 감시 루프를 죽이면 안 된다
+                logger.error("stale 주문 취소 중 예외 (orderId=%s): %s: %s",
+                             o.order_id, type(e).__name__, e)
+                canceled = False
+            if self._notifier is None:
+                continue
+            status = "취소 요청 접수" if canceled else "취소 실패 — 토스 앱에서 직접 확인할 것"
+            self._notifier.send(
+                f"⚠️ 미체결 주문이 {age:.0f}초째 남아 있어 자동 취소를 시도했습니다 ({status}).\n"
+                f"{o.symbol} {o.side.value} {o.qty:g}주 (orderId={o.order_id})"
+            )
 
     def _on_mismatch(self, report: ReconcileReport) -> None:
         detail = "; ".join(report.mismatches)

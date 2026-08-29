@@ -1333,3 +1333,78 @@ def test_heartbeat_and_position_report_default_to_telegram_silent(tmp_path):
 
     assert not any("엔진 상태 점검" in m for m in notifier.messages), "하트비트가 기본으로 채팅에 가면 안 된다"
     assert not any("보유 종목 현황" in m for m in notifier.messages), "포지션 현황이 기본으로 채팅에 가면 안 된다"
+
+
+# --------------------------------------------------------------------- 전략 간 합산 노출 감시 (2026-08-30)
+#
+# quant.control.exposure(순수 계산)를 실제로 쓴다 — loop.py는 그 모듈을 직접
+# 임포트할 수 없으므로(아키텍처 규칙), 이 클로저 주입 방식 자체가 배선이 맞는지
+# 검증하는 게 이 테스트들의 핵심이다(단위 테스트는 tests/test_exposure.py가 담당).
+
+def _make_exposure_check():
+    from quant.control.exposure import build_report
+
+    def _check(lots, prices, capital_krw):
+        return build_report(lots=lots, prices=prices, capital_krw=capital_krw).to_dict()
+
+    return _check
+
+
+def test_exposure_alert_fires_once_per_cooldown_for_offsetting_pair(tmp_path):
+    """TQQQ 롱 + SQQQ 롱 동시 보유(상쇄 쌍) — 매 사이클 조건이 계속 참이어도
+    쿨다운(기본 60분) 안에서는 텔레그램 알림이 한 번만 나가야 한다."""
+    positions = {
+        "TQQQ": Position(symbol="TQQQ", qty=10.0, avg_cost=70.0),
+        "SQQQ": Position(symbol="SQQQ", qty=20.0, avg_cost=10.0),
+    }
+    positions["TQQQ"].meta["lots"] = {"donchian": {"qty": 10.0}}
+    positions["SQQQ"].meta["lots"] = {"mean_reversion": {"qty": 20.0}}
+    broker = FakeBroker(positions=positions)
+    ctx = Context(clock=FakeClock(), data=FakeDataFeed(), broker=broker)
+    settings = make_settings(tmp_path, {"position_report_minutes": 0})
+    notifier = FakeNotifier()
+
+    asyncio.run(_drive_n_cycles(
+        5, strategies=[FakeStrategy()], ctx=ctx, risk=FakeRisk(), sinks=FakeSink(),
+        settings=settings, notifier=notifier,
+        exposure_check=_make_exposure_check(),
+    ))
+
+    alerts = [m for m in notifier.messages if m.startswith("⚠️ 전략 간 합산 노출 경고")]
+    assert len(alerts) == 1, "쿨다운 안에서는 5사이클이 지나도 한 번만 보내야 한다"
+    assert "상쇄 쌍 보유 TQQQ/SQQQ" in alerts[0]
+
+
+def test_exposure_check_silent_when_no_conflict(tmp_path):
+    """단일 전략의 단일 보유(중복도 상쇄도 없음)면 텔레그램 알림이 없어야 한다
+    — 평시엔 로그만이라는 설계 그대로."""
+    pos = Position(symbol="TQQQ", qty=10.0, avg_cost=70.0)
+    pos.meta["lots"] = {"donchian": {"qty": 10.0}}
+    broker = FakeBroker(positions={"TQQQ": pos})
+    ctx = Context(clock=FakeClock(), data=FakeDataFeed(), broker=broker)
+    settings = make_settings(tmp_path, {"position_report_minutes": 0})
+    notifier = FakeNotifier()
+
+    asyncio.run(_drive_n_cycles(
+        3, strategies=[FakeStrategy()], ctx=ctx, risk=FakeRisk(), sinks=FakeSink(),
+        settings=settings, notifier=notifier,
+        exposure_check=_make_exposure_check(),
+    ))
+
+    assert not any(m.startswith("⚠️ 전략 간 합산 노출 경고") for m in notifier.messages)
+
+
+def test_exposure_check_none_is_a_complete_noop(tmp_path):
+    """exposure_check를 안 주면(호출부가 주입하지 않음) 관련 코드가 한 줄도
+    안 돈다 — 기존 호출부(테스트 다수)가 그대로 통과해야 한다는 회귀 가드."""
+    broker = FakeBroker(positions={"TQQQ": Position(symbol="TQQQ", qty=10.0, avg_cost=70.0)})
+    ctx = Context(clock=FakeClock(), data=FakeDataFeed(), broker=broker)
+    settings = make_settings(tmp_path, {"position_report_minutes": 0})
+    notifier = FakeNotifier()
+
+    asyncio.run(_drive_n_cycles(
+        3, strategies=[FakeStrategy()], ctx=ctx, risk=FakeRisk(), sinks=FakeSink(),
+        settings=settings, notifier=notifier,
+    ))
+
+    assert not any("합산 노출" in m for m in notifier.messages)

@@ -18,7 +18,7 @@ import httpx
 from zoneinfo import ZoneInfo
 
 from quant.core import oms
-from quant.core.models import Fill, Order, OrderState, Position, Side
+from quant.core.models import Fill, OpenOrder, Order, OrderState, Position, Side
 from quant.core.portfolio.ownership import EngineOwnership
 from quant.core.portfolio.portfolio import Portfolio
 
@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 # (owner 지시 — Toss 문서상으론 execution.filledQuantity로 부분 체결을 구분할 수 있다지만
 # 여기선 단순하게 None을 반환하고, 다음 사이클의 positions() 조정을 안전망으로 둔다).
 _REJECTED_STATUSES = {"REJECTED", "CANCELED"}
+
+# cancel_order 호출이 이 코드로 실패하면 "취소를 못 했다"가 아니라 "취소할 게 이미
+# 없었다"는 뜻이다(docs/api/toss/openapi.json cancelOrder 409 응답) — 미체결 위험이
+# 남아 있지 않으므로 stale 주문 감시 입장에서는 성공(True)과 동치로 취급한다.
+_CANCEL_ALREADY_RESOLVED_CODES = {"already-canceled", "already-filled"}
 
 # KR 심볼은 6자리 숫자 문자열, 그 외는 US 티커로 취급한다 (Toss 스펙 자체가 심볼 형식만으로
 # 시장을 구분함 — market 파라미터가 별도로 없음).
@@ -551,3 +556,71 @@ class TossBroker:
             logger.warning("TossBroker.cash 조회 실패: %s: %s", type(e).__name__, e)
             return 0.0
         return float(data["cashBuyingPower"])
+
+    # ------------------------------------------------------------- 미체결 주문 관리
+    def cancel_order(self, order_id: str) -> bool:
+        """주문 취소 (POST /api/v1/orders/{orderId}/cancel).
+
+        **비동기다.** 200 응답은 "취소 요청이 접수됐다"는 뜻이지 "취소가 끝났다"는
+        뜻이 아니다 — 응답 자체는 취소 오퍼레이션 자체의 새 orderId를 돌려줄 뿐,
+        원 주문의 최종 상태(CANCELED)는 다음 폴링/대사가 확인한다
+        (docs/api/toss/QUICKREF.md 'Cancel order': "Result: {orderId} — new orderId
+        for the cancel operation"). 그래서 이 메서드의 True는 "취소를 접수시켰다"는
+        뜻이지 "포지션이 이제 안전하다"는 보장이 아니다.
+
+        이미 체결됐거나(already-filled) 이미 취소된(already-canceled) 주문에 대한
+        취소 시도는 409로 실패하지만, 어느 쪽이든 더 이상 미체결 위험이 없으므로
+        stale 주문 감시 관점에서는 성공과 동치로 True를 돌려준다.
+        """
+        if os.environ.get("MODE") != "live":
+            logger.warning("TossBroker.cancel_order 거부: MODE!=live (orderId=%s)", order_id)
+            return False
+        try:
+            self._client.cancel_order(order_id)
+            return True
+        except TossAPIError as e:
+            if e.code in _CANCEL_ALREADY_RESOLVED_CODES:
+                logger.info(
+                    "TossBroker.cancel_order: 이미 종결된 주문이라 취소 불필요 "
+                    "(orderId=%s, code=%s)", order_id, e.code,
+                )
+                return True
+            logger.error("TossBroker.cancel_order 실패 (orderId=%s): %s: %s",
+                          order_id, type(e).__name__, e)
+            return False
+        except (RuntimeError, httpx.TimeoutException, httpx.TransportError) as e:
+            logger.error("TossBroker.cancel_order 실패 (orderId=%s): %s: %s",
+                          order_id, type(e).__name__, e)
+            return False
+
+    def open_orders(self) -> list[OpenOrder]:
+        """서버 기준 미체결 주문 전체 (GET /api/v1/orders?status=OPEN).
+
+        우리 쪽에 별도 주문 레지스트리가 없다(place_order 폴링 타임아웃 시에도
+        order_id는 append-only 저널에만 남고 인메모리/영속 추적 대상이 아니다) —
+        그래서 서버가 유일한 소스 오브 트루스다. 조회 실패는 예외를 삼키고 빈
+        리스트로 — 이 정보는 대사(reconcile)의 부가 감시용이라 실패가 매매를
+        막으면 안 된다."""
+        try:
+            data = self._client.orders(status="OPEN")
+        except (TossAPIError, RuntimeError, httpx.TimeoutException, httpx.TransportError) as e:
+            logger.warning("TossBroker.open_orders 조회 실패: %s: %s", type(e).__name__, e)
+            return []
+        result: list[OpenOrder] = []
+        for item in data.get("orders", []):
+            try:
+                submitted_at = datetime.fromisoformat(item["orderedAt"])
+            except (KeyError, TypeError, ValueError) as e:
+                logger.warning(
+                    "TossBroker.open_orders: orderedAt 파싱 실패, 항목 건너뜀 "
+                    "(orderId=%s): %s: %s", item.get("orderId"), type(e).__name__, e,
+                )
+                continue
+            result.append(OpenOrder(
+                order_id=item["orderId"],
+                symbol=item["symbol"],
+                side=Side.BUY if item["side"] == "BUY" else Side.SELL,
+                qty=float(item["quantity"]),
+                submitted_at=submitted_at,
+            ))
+        return result

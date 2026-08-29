@@ -30,8 +30,11 @@ make ml
    종료한다(exit 0, 에러 아님).
 3. **학습** — 임계를 충족한 시장만 GradientBoosting을 purged walk-forward로
    학습·검증한다(`quant/research/ml_train.py`).
-4. **산출** — `local/ml/out/YYYY-MM-DD/`에 `report.md`(OOS 성적, 피처
-   중요도, 표본 수, 신고 사항), `model_<시장>.joblib`, `summary.json`을 낸다.
+4. **산출** — `local/ml/out/YYYY-MM-DD/`에 `report.md`(타깃별 OOS 성적, 보정
+   Brier, OOS 피처 중요도, 베이스라인 대결, 직전 실행 대비 델타, 다중검정
+   신고), `model_<시장>_<타깃>.joblib`(3개, 참고용·미배포), `summary.json`을
+   낸다. `local/ml/registry.jsonl`에도 이번 실행 한 줄이 추가된다(다음 실행의
+   델타 계산 근거).
 
 **자동 반영 없음.** `report.md` 맨 끝에 "참전 제안은 사람이 결정: 리포트를
 보고 판단하라"가 항상 붙는다 — 이 파이프라인은 운영 판단(`ml_scorer.py`,
@@ -68,13 +71,31 @@ QT_SSH_HOST=ubuntu@<IP> make ml   # 기본값(ubuntu@100.87.129.113)과 다른 �
 소비한다 — 나머지는 향후 피처 확장·수동 점검을 위해 로컬에 미리 놓아둔
 것이다.
 
-## 학습 하네스 설계 요약 (`quant/research/ml_train.py`)
+## 학습 하네스 설계 요약 v2 (`quant/research/ml_train.py`)
 
 - **피처**: `quant.analyze.ml_scorer.FEATURE_NAMES`(운영 채점기와 동일한 13개)를
   그대로 재사용한다.
-- **검증**: `quant/backtest/purged_cv.py`의 purge+embargo를 **거래일 단위**로
-  적용한다(같은 날 여러 종목 행이 fold 경계에서 섞이지 않게 한다).
-- **모델**: `sklearn.ensemble.GradientBoostingClassifier`(기본 하이퍼파라미터,
-  탐색 0회 — 표본이 작을 때 탐색 자체가 과최적합 위험이라 v1은 일부러
-  생략하고 그 사실을 리포트에 신고한다).
-- **지표**: fold별 OOS AUC/정밀도 + 기저율(D+1 양수 수익 비율) 대비.
+- **타깃 3개**: `d1_direction`(D+1 방향 분류), `d1_return_bps`(D+1 수익률 회귀),
+  `d5_direction`(D+5 방향 분류, 라벨 성숙분만). "달성 가능 이익"(MFE) 라벨은
+  `forward_return` 스키마에 구간 내 최고/최저가 컬럼이 없어 **구현하지
+  않았다** — 없는 라벨을 지어내지 않는다.
+- **검증**: `quant/backtest/purged_cv.py`의 purge+embargo를 **거래일 단위**로,
+  타깃별 `label_horizon`(D+1=1, D+5=5)에 맞춰 적용한다.
+- **모델**: `GradientBoostingClassifier`/`Regressor`. 하이퍼파라미터는
+  `d1_direction`에서만 8콤보 그리드 탐색(outer purged OOS 폴드로 직접 선택,
+  nested 아님 — 낙관 편향 있음을 신고), 나머지 두 타깃은 그 결과를 재사용한다.
+- **확률 보정**: `CalibratedClassifierCV`(표본 크기에 따라 sigmoid/isotonic),
+  Brier 점수로 보정 품질 신고.
+- **피처 중요도**: 각 fold의 **OOS** 테스트 세트에서 permutation importance를
+  구해 fold 평균(인샘플 impurity 중요도는 쓰지 않는다 — 오도 위험).
+- **베이스라인 head-to-head**: `d1_return_bps` OOS 예측과 `selections`의
+  규칙 채점기 점수(`baseline_score100`)를 같은 날·같은 종목에서
+  `quant.control.leaderboard.daily_rank_ic`(리더보드와 같은 지표)로 순위상관
+  비교 + 상위 N 평균 수익 비교. **2026-08-30 기준 MySQL `selection`
+  테이블에 `baseline_score100` 컬럼이 없어** 이 비교는 매일 "데이터 없음"으로
+  보고된다 — 스키마 마이그레이션 제안은 `ml_train.py` 모듈 docstring 참고.
+- **모델 레지스트리**: `local/ml/registry.jsonl`에 실행마다 한 줄 append
+  (ts/git_sha/시장별 표본·타깃별 성적/베이스라인 비교/하이퍼파라미터 탐색 수).
+  직전 줄과 비교한 "직전 실행 대비 델타" 절이 매 리포트에 붙는다.
+- **다중검정 신고**: 타깃 수 × 시장 수 + 하이퍼파라미터 탐색 콤보 수를 리포트
+  맨 위에 명시하고, `leaderboard.required_t`로 참고용 요구 t도 함께 낸다.

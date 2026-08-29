@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from quant.trade.approval import ApprovalGate
@@ -42,6 +43,7 @@ from quant.trade.universe import (
 )
 from quant.core.ports import Context, EventSink, Notifier, Strategy
 from quant.adapters.execution.paper import PaperBroker
+from quant.control.exposure import DEFAULT_ALERT_PCT, build_report as build_exposure_report
 from quant.control.ledger import TradeLedgerSink
 from quant.adapters.persistence.sink import ConsoleSink, JsonlSink, MultiSink
 from quant.core.portfolio.portfolio import Portfolio
@@ -66,6 +68,13 @@ logger = logging.getLogger(__name__)
 # 조회조차 안 된 것이었다. 한 번 알게 된 이름을 잃지 않으면 이 부류가 사라진다.
 _SYMBOL_NAME_CACHE_PATH = Path("data/state/symbol_names.json")
 
+# KR ETF 여부 영속 캐시(2026-08-30) — daily_wrap "체결 비용" 절이 KR 개별주
+# (매도세 20bp 붙음, 왕복 가정 30bp)와 KR ETF(가정 4bp)를 구분해야 하는데,
+# 그 리포트는 네트워크를 쓰지 않는다("읽기만 한다" 계약, cmd_daily_wrap
+# docstring). 분류 자체는 여기(부팅 시 securityType 조회)에서만 가능하므로
+# name_of와 같은 패턴으로 저장해 둔다 — 한 번 알게 된 분류는 잃지 않는다.
+_KR_ETF_CACHE_PATH = Path("data/state/kr_etf.json")
+
 
 def _load_symbol_names(path: Path | None = None) -> dict[str, str]:
     """캐시를 읽는다. 없거나 깨졌으면 빈 dict — 이름표가 없다고 기동을 막지 않는다."""
@@ -89,6 +98,30 @@ def _save_symbol_names(names: dict[str, str], path: Path | None = None) -> None:
         tmp.replace(p)
     except Exception as e:  # noqa: BLE001
         logger.warning("종목명 캐시 저장 실패(거래는 계속): %s", e)
+
+
+def _load_kr_etf(path: Path | None = None) -> set[str]:
+    """캐시를 읽는다. 없거나 깨졌으면 빈 set — 분류가 없다고 기동을 막지 않는다."""
+    p = path or _KR_ETF_CACHE_PATH
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(raw, list):
+        return set()
+    return {str(s) for s in raw if s}
+
+
+def _save_kr_etf(symbols: set[str], path: Path | None = None) -> None:
+    """원자적 tmp-replace. 쓰기 실패는 경고만 — 캐시 저장 실패가 거래를 막으면 안 된다."""
+    p = path or _KR_ETF_CACHE_PATH
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(sorted(symbols), ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(p)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("KR ETF 분류 캐시 저장 실패(거래는 계속): %s", e)
 
 
 class MissingCredentials(RuntimeError):
@@ -149,6 +182,10 @@ class PaperRuntime:
     # 인스턴스 내부의 enabled 플래그로 표현된다(TickLogger.__init__ 참고). loop.py는
     # quant.core.ports.TickLogger Protocol로만 받고 이 어댑터를 직접 임포트하지 않는다.
     tick_logger: "TickLogger | None" = None
+    # 전략 간 합산 노출 감시 클로저(2026-08-30) — loop.py는 quant.control을
+    # 직접 임포트할 수 없어(아키텍처 규칙) 여기서 quant.control.exposure를
+    # 감싸 넘긴다. 시그니처: (lots, prices, capital_krw) -> dict(ExposureReport.to_dict()).
+    exposure_check: "Callable[[dict, dict, float | None], dict] | None" = None
 
 
 def build_toss_client(mode: str | None = None):
@@ -830,6 +867,12 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
             except (TypeError, ValueError):
                 pass
     _save_symbol_names(name_of)
+    # 이 세션에서 새로 확인된 분류만 캐시에 **더한다**(합집합) — 위 kr_etf
+    # 변수 자체는 건드리지 않는다(브로커 수수료 판정에 쓰이는 실거래 경로라
+    # 이 조립 함수의 기존 동작을 그대로 유지한다). 저장 목적은 daily_wrap
+    # "체결 비용" 절(오프라인, 네트워크 없음)이 KR ETF/개별주를 구분하는
+    # 것뿐이다 — 그 리포트가 며칠 전 세션에서 확인된 종목도 알아보게 한다.
+    _save_kr_etf(_load_kr_etf() | kr_etf)
     logger.info(
         "종목명 %d개 확보(영속 캐시 포함) · KR ETF(매도 거래세 면제): %s · 레버리지 확인: %s",
         len(name_of), ", ".join(sorted(kr_etf)) or "없음",
@@ -988,6 +1031,22 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
     # TickLogger(enabled=False)를 그대로 넘긴다(항상 주입) — 켜고 끄는 것은 이
     # 인스턴스 내부의 enabled 플래그가 한다: record()/flush_if_due()/close() 전부
     # 즉시 반환이라 버퍼도 안 쌓고 디스크도 안 건드린다(흔적 없음).
+    # 전략 간 합산 노출 감시 클로저(2026-08-30) — quant/control/exposure.py(순수)를
+    # 여기서 감싸 loop.py에 주입한다(loop.py는 quant.control을 직접 임포트할 수
+    # 없다 — tests/test_architecture.py FORBIDDEN). 임계값은 risk_cfg의 퍼센트
+    # 표기(예: 100)를 코드 내부 표기(1.0)로 여기서 한 번만 나눈다 — 다른
+    # max_*_pct 값들과 같은 관례(risk/manager.py 참고).
+    exposure_alert_pct = float(
+        risk_cfg.get("cross_strategy_leverage_alert_pct", DEFAULT_ALERT_PCT * 100)
+    ) / 100
+
+    def _exposure_check(lots: dict, prices: dict, capital_krw: float | None) -> dict:
+        report = build_exposure_report(
+            lots=lots, prices=prices, leverage_of=leverage_of,
+            capital_krw=capital_krw, alert_threshold_pct=exposure_alert_pct, fx=fx,
+        )
+        return report.to_dict()
+
     tick_log_cfg = cfg.get("engine", {}).get("tick_log", {}) or {}
     tick_logger = TickLogger(
         Path("data/ticks"),
@@ -1026,6 +1085,7 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
         # "만든 것 ≠ 배선된 것" — 조립 지점을 끝까지 따라가지 않으면 절반만 켜진다.
         books=books,
         tick_logger=tick_logger,
+        exposure_check=_exposure_check,
     )
 
 
@@ -1036,8 +1096,9 @@ def build_reconciler(broker, control, notifier, cfg: dict,
     PaperBroker는 portfolio.json이 곧 엔진 소유라 대조할 상대가 없다 — None을
     돌려주고 루프는 대사가 없던 때와 100% 동일하게 동작한다."""
     interval_minutes = float(cfg.get("engine", {}).get("reconcile_interval_minutes", 5))
+    stale_order_seconds = float(cfg.get("engine", {}).get("stale_order_seconds", 120))
     reconciler = Reconciler(broker, control, notifier, interval_minutes=interval_minutes,
-                            pending_qty=pending_qty)
+                            pending_qty=pending_qty, stale_order_seconds=stale_order_seconds)
     if not reconciler.supported:
         logger.info("브로커 대사 비활성 — %s는 엔진 소유 원장을 노출하지 않는다", type(broker).__name__)
         return None
