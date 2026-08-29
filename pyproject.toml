@@ -32,6 +32,7 @@ dev = [
     "matplotlib>=3.9",
     "nbformat>=5.10",
     "nbconvert>=7.17.1",
+    "vulture>=2.16",
 ]
 # 파라미터 최적화/walk-forward 검증(quant_engine/research/) 전용 — 선택 의존성.
 # AWS 배포는 거래 엔진(quant_engine.run paper)만 돌리므로 이 그룹 없이도 동작해야
