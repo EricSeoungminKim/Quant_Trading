@@ -67,6 +67,17 @@ FETCH_OUT="$(timeout 300 "$PY" -m quant.apps.cli fetch \
 FETCH_RC=$?
 printf '%s\n' "$FETCH_OUT" >> "$LOG"
 
+# SPY 일봉 (2026-08-29 추가) — 소비자는 아침 리포트의 S&P 상승 확률
+# (quant/report/collect/index_outlook.py, "유사 조건일 기저율" 계산의 대리 심볼).
+# "왜 QQQ만인가" 원칙(위)의 예외를 하나 늘리는 것이므로 소비자를 명시한다.
+# 되짚기 판정은 QQQ 전용으로 둔다 — SPY가 낡으면 확률의 표본 구간이 며칠
+# 짧아질 뿐이고(method 문구에 연 수가 그대로 드러난다) 국면 사이징과 무관하다.
+log "백필 시작: SPY $INTERVAL from $START"
+SPY_OUT="$(timeout 300 "$PY" -m quant.apps.cli fetch \
+  --symbol SPY --interval "$INTERVAL" --source yfinance --start "$START" 2>&1)"
+[ $? -ne 0 ] && log "SPY 백필 종료코드 비정상 — 확률 표본이 낡을 수 있다"
+printf '%s\n' "$SPY_OUT" >> "$LOG"
+
 # --- 되짚기: 받았다고 믿지 않는다 ---
 #
 # exit 0 이 "봉이 최신이 됐다"를 뜻하지 않는다. 벤더가 빈 응답을 주면 fetch는
