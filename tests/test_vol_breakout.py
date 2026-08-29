@@ -249,6 +249,28 @@ def test_stop_loss_exit():
     assert "손절" in d.signals[0].reason
 
 
+def test_eod_flatten_exit_even_when_lot_has_no_stop():
+    """방어선이 반쪽인 랏(stop 없음)이라도 EoD 청산은 걸린다 — 하드레일(손절)
+    판정만 건너뛴다("지어내지 않는다"), 오버나잇 금지는 지켜진다."""
+    snap = _snap(price=TRIGGER + 1.0, mtc=6.0, cadence=5.0,
+                 lots={US_SYM: _lot(stop=None)})
+    d = _strategy().decide(snap, {})
+    assert len(d.signals) == 1
+    assert d.signals[0].action is SignalAction.EXIT_LONG
+    assert "EoD 청산" in d.signals[0].reason
+
+
+def test_session_rollover_forces_exit_even_when_lot_has_no_stop():
+    """방어선이 반쪽인 랏(stop 없음)이라도 세션 롤(오버나잇 금지) 강제청산은
+    걸린다."""
+    snap = _snap(price=TRIGGER + 1.0,
+                 lots={US_SYM: _lot(stop=None, session=PREV.isoformat())})
+    d = _strategy().decide(snap, {})
+    assert len(d.signals) == 1
+    assert d.signals[0].action is SignalAction.EXIT_LONG
+    assert "오버나잇 금지" in d.signals[0].reason
+
+
 # ============================================================ ⑥ 하루 1회 제한
 
 

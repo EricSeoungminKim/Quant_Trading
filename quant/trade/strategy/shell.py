@@ -17,11 +17,18 @@
 """
 from __future__ import annotations
 
+import logging
+from collections import Counter
+from datetime import datetime
 from typing import Any, Mapping
 
 from quant.core.models import Signal, market_of_symbol
 from quant.core.ports import Context
 from quant.core.strategy_api import PureStrategy, StrategySnapshot
+
+logger = logging.getLogger(__name__)
+
+_REJECT_SUMMARY_INTERVAL_SECONDS = 3600.0
 
 
 class PureStrategyShell:
@@ -38,12 +45,45 @@ class PureStrategyShell:
         # 하지 않는 것이 의도 — engine.py 참고). 그래서 두 시장을 무조건 다 묻지
         # 않고, 이 전략이 실제로 거래하는 심볼의 시장만 묻는다.
         self._markets = sorted({market_of_symbol(s) for s in self.symbols})
+        # 진단용: next_state["last_reject"](순수 전략이 남기는 거부 사유)는
+        # 원래 self._state 안에만 있어 로그/리포트에 안 보였다 — "필터의 정당한
+        # 침묵"과 "고장으로 전부 거부"를 구분하려면 로그가 필요하다. 사유가
+        # 바뀐 심볼만 로그해 스팸을 막는다(직전 사유 기억).
+        self._last_reject_reason: dict[str, str] = {}
+        self._reject_counts: Counter[str] = Counter()
+        self._reject_summary_since: datetime | None = None
 
     def on_cycle(self, ctx: Context) -> list[Signal]:
         snap = self._snapshot(ctx)
         decision = self.inner.decide(snap, self._state)
         self._state = decision.next_state
+        self._log_rejects(decision.next_state, snap.now)
         return list(decision.signals)
+
+    def _log_rejects(self, next_state: Mapping[str, Any], now: datetime) -> None:
+        last_reject = next_state.get("last_reject")
+        if not isinstance(last_reject, Mapping):
+            return  # 이 전략은 거부 사유를 남기지 않는다 — 무동작
+
+        for symbol, reason in last_reject.items():
+            self._reject_counts[reason] += 1
+            if self._last_reject_reason.get(symbol) != reason:
+                logger.info("[%s] 진입 거부 %s: %s", self.id, symbol, reason)
+                self._last_reject_reason[symbol] = reason
+
+        if self._reject_summary_since is None:
+            self._reject_summary_since = now
+            return
+        elapsed = (now - self._reject_summary_since).total_seconds()
+        if elapsed < _REJECT_SUMMARY_INTERVAL_SECONDS:
+            return
+        if self._reject_counts:
+            top5 = ", ".join(
+                f"{reason}={count}" for reason, count in self._reject_counts.most_common(5)
+            )
+            logger.info("[%s] 거부 요약(최근 1시간): %s", self.id, top5)
+            self._reject_counts.clear()
+        self._reject_summary_since = now
 
     def _snapshot(self, ctx: Context) -> StrategySnapshot:
         needs = self._needs

@@ -13,6 +13,7 @@ import pytest
 
 from quant.adapters.data.service import Capability, MarketDataService, SourceRoute
 from quant.core.models import Quote
+from quant.core.ports import DataSourceError
 
 _OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 
@@ -400,3 +401,105 @@ def test_history_when_market_closed_still_returns_n():
     out = svc.history("A", "1d", 21)
     assert len(out) == 21
     assert out.index[-1] == df.index[-1]
+
+
+# --------------------------------------------------- 사이클당 콜드 페치 예산
+
+_BUDGET_NOW = datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)
+
+
+def _budget_svc(cold_fetch_budget_per_cycle, src=None):
+    src = src or FakeSource(history_df=_bars("2024-06-03T13:00", 4))
+    svc = MarketDataService(
+        routes=[SourceRoute(name="s", source=src, capabilities=frozenset({Capability.BARS}))],
+        clock=FakeClock(_BUDGET_NOW),
+        cold_fetch_budget_per_cycle=cold_fetch_budget_per_cycle,
+    )
+    return svc, src
+
+
+def test_cold_fetch_within_budget_succeeds():
+    """예산 내 콜드 페치(캐시 미스)는 정상적으로 소스를 때리고 결과를 받는다."""
+    svc, src = _budget_svc(cold_fetch_budget_per_cycle=2)
+
+    out_a = svc.history("A", "15m", 3)
+    out_b = svc.history("B", "15m", 3)
+
+    assert not out_a.empty
+    assert not out_b.empty
+    assert len(src.history_calls) == 2
+
+
+def test_cold_fetch_over_budget_raises_without_calling_source():
+    """예산을 넘는 캐시 미스는 DataSourceError를 던지고 소스는 아예 호출하지 않는다."""
+    svc, src = _budget_svc(cold_fetch_budget_per_cycle=2)
+    svc.history("A", "15m", 3)
+    svc.history("B", "15m", 3)
+    assert len(src.history_calls) == 2  # 예산 소진 직전 상태
+
+    with pytest.raises(DataSourceError, match="콜드 페치 예산 초과"):
+        svc.history("C", "15m", 3)
+
+    assert len(src.history_calls) == 2, "예산 초과 시 소스를 때리면 안 된다"
+
+
+def test_cold_fetch_cache_hit_does_not_consume_budget():
+    """이미 캐시에 있는 심볼(히트)은 예산과 무관하게 계속 응답한다."""
+    svc, src = _budget_svc(cold_fetch_budget_per_cycle=1)
+
+    svc.history("A", "15m", 3)  # 미스 1회 — 예산 소진
+    assert len(src.history_calls) == 1
+
+    # 같은 (symbol, interval, 봉 경계)에 대한 반복 요청은 캐시 히트라 예산을 안 쓴다.
+    for _ in range(3):
+        out = svc.history("A", "15m", 3)
+        assert not out.empty
+    assert len(src.history_calls) == 1, "캐시 히트는 소스를 다시 때리면 안 된다"
+
+    # 새 심볼(B)은 예산이 이미 0이라 여전히 거부된다.
+    with pytest.raises(DataSourceError):
+        svc.history("B", "15m", 3)
+
+
+def test_cold_fetch_budget_recovers_after_cycle_reset():
+    """reset_cycle_budget() 이후엔 예산이 회복되어 이전엔 거부된 심볼도 다시 시도된다."""
+    svc, src = _budget_svc(cold_fetch_budget_per_cycle=1)
+
+    svc.history("A", "15m", 3)
+    with pytest.raises(DataSourceError):
+        svc.history("B", "15m", 3)
+    assert len(src.history_calls) == 1
+
+    svc.reset_cycle_budget()
+
+    out_b = svc.history("B", "15m", 3)
+    assert not out_b.empty
+    assert len(src.history_calls) == 2, "리셋 후엔 B도 소스를 때려야 한다"
+
+
+def test_cold_fetch_budget_unset_is_unlimited_by_default():
+    """cold_fetch_budget_per_cycle을 안 주면(기본 None) 기존 동작 그대로 무제한이다."""
+    svc, src = _budget_svc(cold_fetch_budget_per_cycle=None)
+    for i in range(10):
+        svc.history(f"SYM{i}", "15m", 3)
+    assert len(src.history_calls) == 10
+
+
+@pytest.mark.parametrize("bad_budget", [0, -1, -5])
+def test_cold_fetch_budget_rejects_non_positive(bad_budget):
+    """0/음수 예산은 "무제한"과 혼동되기 쉬운 값이라 생성자가 명시적으로 거부한다."""
+    with pytest.raises(ValueError):
+        MarketDataService(
+            routes=[SourceRoute(name="s", source=FakeSource(),
+                                capabilities=frozenset({Capability.BARS}))],
+            clock=FakeClock(_BUDGET_NOW),
+            cold_fetch_budget_per_cycle=bad_budget,
+        )
+
+
+def test_reset_cycle_budget_is_harmless_without_budget_configured():
+    """예산 미설정(None)이어도 reset_cycle_budget() 호출은 안전해야 한다(loop가 항상 부른다)."""
+    svc, src = _budget_svc(cold_fetch_budget_per_cycle=None)
+    svc.reset_cycle_budget()  # 예외 없이 통과해야 함
+    out = svc.history("A", "15m", 3)
+    assert not out.empty

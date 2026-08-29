@@ -365,6 +365,32 @@ def test_session_roll_forces_exit_no_overnight():
     assert "오버나잇 금지" in d.signals[0].reason
 
 
+def test_time_exit_still_fires_when_lot_has_no_stop_or_target():
+    """방어선이 반쪽인 랏(stop/target 없음)이라도 시간 청산은 걸린다 —
+    하드레일(손절·목표) 판정만 건너뛴다("지어내지 않는다")."""
+    lots = {US_SYM: _lot(entered_at=_us_now(10, 0), stop=None, target=None)}
+    timed_out = _decide(_strategy(), price=98.50, state=_held_state(),
+                         now=_us_now(10, 0) + timedelta(minutes=120), lots=lots)
+    assert len(timed_out.signals) == 1
+    assert "시간 청산" in timed_out.signals[0].reason
+
+
+def test_eod_flatten_exit_when_lot_has_no_stop_or_target():
+    lots = {US_SYM: _lot(entered_at=_us_now(10, 0), stop=None, target=None)}
+    snap = _snap(_us_now(15, 56), {US_SYM: _bars()}, {US_SYM: 98.50}, daily={},
+                 lots=lots, mtc=4.0, cadence=0.1)
+    d = _strategy().decide(snap, _held_state())
+    assert len(d.signals) == 1
+    assert "EoD 청산" in d.signals[0].reason
+
+
+def test_session_roll_forces_exit_when_lot_has_no_stop_or_target():
+    d = _decide(_strategy(), price=98.50, state=_held_state(),
+                lots={US_SYM: _lot(session=PREV.isoformat(), stop=None, target=None)})
+    assert len(d.signals) == 1
+    assert "오버나잇 금지" in d.signals[0].reason
+
+
 # ============================================================ ⑦ 전일 종가 확인 불가
 
 

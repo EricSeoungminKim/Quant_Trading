@@ -38,10 +38,15 @@ from __future__ import annotations
 from datetime import date, datetime
 from html import escape as _esc
 
+from quant.control import alpha as _alpha
 from quant.control.ledger import MIN_TRIPS_FOR_JUDGEMENT
 
-# 절 제목 — 소유자가 지정한 순서 그대로. 순서를 바꾸지 않는다.
-SECTION_TITLES = ("오늘의 실적", "지분 변경", "문제 발견 및 개선", "변경된 점")
+# 절 제목 — 소유자가 지정한 순서 그대로. 순서를 바꾸지 않는다. "지수 대비 성적"은
+# 2026-08-29에 추가됐다(`alpha.py` 모듈 docstring — "항상 지수 위에서 노는 것").
+# 기존 1~4절 번호를 그대로 두려고 맨 끝에 붙였다 — 4절(변경된 점)은 git 을 못
+# 읽으면 절 자체가 생략되므로, 그 경우 번호가 3 → 5로 건너뛸 수 있다(기존에도
+# 4절이 조건부로 사라지는 설계라 새 사실이 아니다).
+SECTION_TITLES = ("오늘의 실적", "지분 변경", "문제 발견 및 개선", "변경된 점", "지수 대비 성적")
 
 
 # ── 포맷 ────────────────────────────────────────────────────────────────
@@ -228,15 +233,30 @@ def build_deferred(rows: list[dict]) -> dict:
     return {"total": len(rows), "shown": shown}
 
 
+# ── 5. 지수 대비 성적 ──────────────────────────────────────────────────
+
+def build_alpha(series: list[tuple], market: str) -> dict:
+    """5절 — 지수 대비 초과수익(알파). 계산 자체는 `control.alpha.wrap_section()`
+    이 이미 순수하게 정의해 뒀다(그 모듈 docstring 통합 계약 그대로) — 여기서는
+    호출부(`apps/cli.py`)가 원장·벤치마크 일봉에서 만든 (날짜, 우리%, 지수%,
+    알파pp) 시퀀스를 그대로 넘길 뿐이다. 표본이 없으면(빈 시퀀스)
+    `wrap_section()`이 알아서 "표본 없음"을 낸다 — 여기서 지어내지 않는다."""
+    return _alpha.wrap_section(series, market)
+
+
 def build_sections(*, market: str, on: date, pnl: dict | None, trips: list[dict],
                    equity_points: list[dict], positions: dict,
                    session_trades: list[dict], names: dict[str, str],
                    issues: list[str], commits: list[str] | None,
-                   deferred: list[dict] | None = None) -> dict:
-    """4개 절을 소유자가 지정한 순서(실적→지분→이상→변경)로 조립한다.
+                   deferred: list[dict] | None = None,
+                   alpha_series: list[tuple] | None = None) -> dict:
+    """5개 절을 소유자가 지정한 순서(실적→지분→이상→변경→지수 대비 성적)로
+    조립한다.
 
     `commits`가 `None`이면 "git 을 못 읽었다"는 뜻 — 4절 자체를 생략한다(빈
-    리스트는 "오늘 배포 없음"이라 절을 남긴다. 둘을 뭉개지 않는다)."""
+    리스트는 "오늘 배포 없음"이라 절을 남긴다. 둘을 뭉개지 않는다).
+    `alpha_series`는 없으면(`None`/빈 시퀀스) 5절이 "표본 없음"으로 나온다 —
+    5절 자체는 항상 있다(계산 불가와 절 부재는 다른 뜻이라 뭉개지 않는다)."""
     return {
         "market": market,
         "date": on.isoformat(),
@@ -245,6 +265,7 @@ def build_sections(*, market: str, on: date, pnl: dict | None, trips: list[dict]
         "issues": list(issues),
         "deferred": build_deferred(deferred or []),
         "commits": None if commits is None else list(commits)[:10],
+        "alpha": build_alpha(list(alpha_series or []), market),
     }
 
 
@@ -396,6 +417,25 @@ def _render_deferred(deferred: dict) -> str:
     return f'<p class="muted">장중에 미뤄둔 알림 {total}건</p><ul>{items}</ul>{more}'
 
 
+def _render_alpha(sec: dict) -> str:
+    """5절 — 알파 핵심 줄(`sec["lines"]`) + 최근 5일 표(`sec["rows"]`, 비어 있으면
+    표를 그리지 않는다 — 표본 없음이면 lines 자체가 이미 그렇게 말한다)."""
+    lines = sec.get("lines") or []
+    out = ["<ul>" + "".join(f"<li>{_esc(str(line))}</li>" for line in lines) + "</ul>"]
+    rows = sec.get("rows") or []
+    if rows:
+        out.append(_table(
+            ["날짜", "우리%", "지수%", "알파pp"],
+            [[
+                _esc(str(r["date"])),
+                f'{r["our_pct"]:+.2f}',
+                f'{r["bench_pct"]:+.2f}',
+                f'<span class="{_cls(r["alpha_pp"])}">{r["alpha_pp"]:+.2f}</span>',
+            ] for r in rows],
+        ))
+    return "".join(out)
+
+
 def render_html(sections: dict) -> str:
     """4절 HTML 한 장. 외부 요청 0 — 스타일은 인라인, 이미지·스크립트 없음."""
     market, on = sections["market"], sections["date"]
@@ -442,5 +482,7 @@ def render_html(sections: dict) -> str:
         parts.append(f"<h2>4. {SECTION_TITLES[3]}</h2>")
         parts.append("<p>오늘 배포된 커밋 없음</p>" if not commits
                      else "<ul>" + "".join(f"<li>{_esc(c)}</li>" for c in commits) + "</ul>")
+    parts.append(f"<h2>5. {SECTION_TITLES[4]}</h2>")
+    parts.append(_render_alpha(sections.get("alpha") or {"lines": [], "rows": []}))
     parts.append("</body></html>")
     return "".join(parts)

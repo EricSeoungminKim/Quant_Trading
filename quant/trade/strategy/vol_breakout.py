@@ -365,9 +365,10 @@ class VolBreakoutPureStrategy:
         tz = market_tz(market)
         entry = float(lot["entry"])  # _my_lot 이 None 아님을 이미 보장한다
         stop_raw = lot.get("stop")
-        if stop_raw is None:
-            return None  # 방어선이 반쪽인 랏 — 지어내지 않는다
-        stop = float(stop_raw)
+        # 방어선이 반쪽인 랏(stop 없음)이라도 EoD·세션 롤 청산은 지켜야 한다 —
+        # intraday_momentum과 동일 정책: 하드레일(손절) 판정만 건너뛴다("지어내지
+        # 않는다"), 시간 기반(오버나잇/EoD) 청산은 아래에서 그대로 걸린다.
+        stop = float(stop_raw) if stop_raw is not None else None
 
         def _exit(reason: str) -> Signal:
             return Signal(
@@ -389,7 +390,7 @@ class VolBreakoutPureStrategy:
                 f"EoD 청산(마감 {self.eod_exit_min:g}분 전): entry={fmt_price(entry, symbol)} "
                 f"현재={fmt_price(price, symbol)}"
             )
-        if price <= stop:
+        if stop is not None and price <= stop:
             return _exit(
                 f"손절: entry={fmt_price(entry, symbol)} stop={fmt_price(stop, symbol)} "
                 f"현재={fmt_price(price, symbol)}"

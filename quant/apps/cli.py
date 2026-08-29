@@ -1314,6 +1314,55 @@ def _wrap_consume_queue(root, n_consumed: int) -> None:
         logger.warning("알림 큐 정리 실패(리포트는 이미 발행됨): %s: %s", type(e).__name__, e)
 
 
+def _wrap_alpha_series(root, market: str, on) -> list[tuple]:
+    """5절(지수 대비 성적) 재료 — 자본 곡선 원장 + 벤치마크 로컬 일봉을 읽어
+    `control.alpha.alpha_series()`가 원하는 (날짜, 우리%, 지수%, 알파pp) 시퀀스로
+    만든다. `on` 이후 미래 데이터는 쓰지 않는다(백필 재실행이 미래를 보면 안
+    된다 — `_wrap_equity_points`와 같은 원칙).
+
+    벤치마크 일봉은 `cmd_weekly_review._week_closes`와 같은 방식으로 로컬
+    parquet(`data/history/<symbol>/1d/*/*.parquet`)만 읽는다 — 이 커맨드는
+    "읽기만 한다"는 계약(`cmd_daily_wrap` docstring)이라 네트워크 조회를 새로
+    추가하지 않는다."""
+    import json as _json
+
+    from quant.control import alpha as ALPHA
+
+    eq_path = root / "data" / "ledger" / "equity_curve.jsonl"
+    equity_rows: list[dict] = []
+    if eq_path.exists():
+        for line in eq_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = _json.loads(line)
+            except ValueError:
+                continue
+            if str(r.get("date") or "") <= on.isoformat():
+                equity_rows.append(r)
+    ours = [(d, ret) for d, m, ret in ALPHA.daily_returns(equity_rows) if m == market]
+
+    bench_symbol = ALPHA.BENCHMARKS.get(market)
+    bars: list[tuple] = []
+    if bench_symbol:
+        base = root / "data" / "history" / bench_symbol / "1d"
+        if base.exists():
+            import pandas as pd
+
+            for part in sorted(base.glob("*/*.parquet")):
+                try:
+                    df = pd.read_parquet(part)
+                except Exception:  # noqa: BLE001 — 깨진 파케이 하나가 리포트를 죽이지 않는다
+                    continue
+                for ts, row in df.iterrows():
+                    d = ts.date() if hasattr(ts, "date") else None
+                    if d and d.isoformat() <= on.isoformat():
+                        bars.append((d, float(row["close"])))
+    bench = ALPHA.benchmark_returns(bars)
+    return ALPHA.alpha_series(ours, bench)
+
+
 def _wrap_commits(root, on) -> list[str] | None:
     """4절 재료 — 그날 커밋 제목 줄(최대 10). git 을 못 읽으면 `None`(절 생략).
 
@@ -1339,7 +1388,8 @@ def _wrap_commits(root, on) -> list[str] | None:
 
 
 def cmd_daily_wrap(args: argparse.Namespace) -> None:
-    """장 마감 하루 요약 HTML 한 장 — 실적/지분/문제/변경 (2026-08-28 소유자 지시).
+    """장 마감 하루 요약 HTML 한 장 — 실적/지분/문제/변경/지수 대비 성적
+    (2026-08-28 소유자 지시, 지수 대비 성적 절은 2026-08-29 통합).
 
     이 명령은 **읽기만** 한다: 거래 원장·자본 곡선·포트폴리오·종목명 캐시·ops
     로그·git. 시세 조회도 LLM 도 없다 — 마감 후 파일 하나를 만드는 일이
@@ -1393,7 +1443,7 @@ def cmd_daily_wrap(args: argparse.Namespace) -> None:
         positions=positions, session_trades=session_trades,
         names=_load_symbol_names(root / "data" / "state" / "symbol_names.json"),
         issues=_wrap_issues(root, on), commits=_wrap_commits(root, on),
-        deferred=deferred,
+        deferred=deferred, alpha_series=_wrap_alpha_series(root, market, on),
     )
 
     out_path = (root / "out" / f"{on.year:04d}" / f"{on.month:02d}" / f"{on.day:02d}"

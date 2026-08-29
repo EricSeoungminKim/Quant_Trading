@@ -452,9 +452,11 @@ class GapFadePureStrategy:
         tz = market_tz(market)
         entry = float(lot["entry"])  # _my_lot이 None 아님을 이미 보장한다
         stop_raw, target_raw = lot.get("stop"), lot.get("target")
-        if stop_raw is None or target_raw is None:
-            return None  # 방어선이 반쪽인 랏 — 지어내지 않는다
-        stop, target = float(stop_raw), float(target_raw)
+        # 방어선이 반쪽인 랏(stop/target 없음)이라도 EoD·세션 롤·시간 청산은
+        # 지켜야 한다 — intraday_momentum과 동일 정책: 하드레일(손절·목표)
+        # 판정만 건너뛴다("지어내지 않는다"), 시간 기반 청산은 아래에서 유지된다.
+        stop = float(stop_raw) if stop_raw is not None else None
+        target = float(target_raw) if target_raw is not None else None
 
         def _exit(reason: str) -> Signal:
             return Signal(
@@ -472,12 +474,12 @@ class GapFadePureStrategy:
             return _exit(
                 f"EoD 청산: entry={fmt_price(entry, symbol)} 현재={fmt_price(price, symbol)}"
             )
-        if price <= stop:
+        if stop is not None and price <= stop:
             return _exit(
                 f"손절: entry={fmt_price(entry, symbol)} stop={fmt_price(stop, symbol)} "
                 f"현재={fmt_price(price, symbol)}"
             )
-        if price >= target:
+        if target is not None and price >= target:
             return _exit(
                 f"목표(갭 메움) 도달 청산: entry={fmt_price(entry, symbol)} "
                 f"목표={fmt_price(target, symbol)} 현재={fmt_price(price, symbol)}"

@@ -286,6 +286,34 @@ def test_hard_stop_beats_rsi_exit_when_both_trigger_same_cycle():
     assert "하드 손절" in exit_sig.reason
 
 
+# ================================================== ⑤b 방어선 결손 랏(stop 없음)
+
+
+def test_time_exit_still_fires_when_lot_has_no_stop():
+    """stop이 없는 랏(방어선 결손)이라도 하드레일 판정만 건너뛴다 — "지어내지
+    않는다" 원칙상 stop을 재계산해 채우지 않는다. 보유기간 초과 청산은 그대로
+    걸린다(intraday_momentum과 동일 정책)."""
+    strat = _strategy()
+    daily = _daily([100.0] * 4, date(2026, 3, 6))  # 03-03,04,05,06
+    lot = {"entry": 100.0, "stop": None, "entered_date": "2026-03-02"}
+    now = datetime.combine(date(2026, 3, 9), dtime(11, 0), tzinfo=NY)  # 다음 월요일
+    snap = _snap(now=now, price=100.0, bars={(SYM, "1d"): daily}, lots={SYM: lot})
+    decision = strat.decide(snap, {})
+    [exit_sig] = [s for s in decision.signals if s.action is SignalAction.EXIT_LONG]
+    assert "보유기간 청산" in exit_sig.reason
+
+
+def test_rsi_exit_still_fires_when_lot_has_no_stop():
+    strat = _strategy()
+    daily = _daily([100.0, 95.0, 90.0, 85.0, 95.0], date(2026, 3, 5))
+    lot = {"entry": 100.0, "stop": None, "entered_date": "2026-03-02"}
+    now = datetime.combine(date(2026, 3, 6), dtime(11, 0), tzinfo=NY)  # 금요일 장중
+    snap = _snap(now=now, price=105.0, bars={(SYM, "1d"): daily}, lots={SYM: lot})
+    decision = strat.decide(snap, {})
+    [exit_sig] = [s for s in decision.signals if s.action is SignalAction.EXIT_LONG]
+    assert "RSI(2)=85.7" in exit_sig.reason
+
+
 # ============================================================ ⑥ 재시작 생존
 
 def test_restart_survival_exit_comes_from_the_lot_not_instance_state():

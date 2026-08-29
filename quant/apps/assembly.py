@@ -188,6 +188,11 @@ def build_market_data(client, clock, *, interval: str, symbols: list[str],
     symbols는 반드시 넘겨야 한다 — HistoryDataFeed는 생성 시 받은 심볼만 로드하므로
     빈 리스트를 주면 디스크에 데이터가 있어도 영원히 빈 프레임만 돌려주는,
     "있는 척하는 죽은 폴백"이 된다.
+
+    cfg["engine"]["cold_fetch_budget_per_cycle"](기본 8)는 사이클당 봉 캐시
+    미스로 실제 소스를 때리는 횟수 상한이다 — 유니버스 롤 직후 신규 심볼 수십
+    개가 한 사이클에 몰려 사이클이 수십 초로 늘어나는 것을 막는다
+    (MarketDataService.history() 참고).
     """
     from quant.adapters.brokers.toss.datafeed import TossDataFeed
     from quant.adapters.data.history import HistoryDataFeed
@@ -250,6 +255,9 @@ def build_market_data(client, clock, *, interval: str, symbols: list[str],
     return MarketDataService(
         routes=routes, clock=clock, quote_cache_seconds=quote_cache_seconds,
         bar_cache_enabled=bool((cfg or {}).get("engine", {}).get("bar_cache_enabled", True)),
+        cold_fetch_budget_per_cycle=int(
+            (cfg or {}).get("engine", {}).get("cold_fetch_budget_per_cycle", 8)
+        ),
     )
 
 

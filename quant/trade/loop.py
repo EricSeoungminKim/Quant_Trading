@@ -1656,6 +1656,13 @@ async def run_paper_loop(
         if settings.reload_if_changed():
             logger.info("settings.yaml 변경 감지 — 리로드")
         cycle_count += 1
+        # 콜드 페치 예산(service.py MarketDataService)은 사이클 단위 자원이라
+        # 매 사이클 시작에 리셋한다 — 안 그러면 유니버스 롤 직후 몰린 캐시 미스가
+        # 첫 사이클에 예산을 다 쓰고 남은 사이클에서도 계속 거부된다. market_data가
+        # 이 메서드를 노출하지 않으면(스텁/테스트 더블) 조용히 건너뛴다.
+        reset_budget_fn = getattr(market_data, "reset_cycle_budget", None)
+        if callable(reset_budget_fn):
+            reset_budget_fn()
         now_mono = time.monotonic()
         market_states = _market_states(ctx, active_markets)
         market_open = market_states is None or any(market_states.values())

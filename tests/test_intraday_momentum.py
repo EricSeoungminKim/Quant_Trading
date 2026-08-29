@@ -325,6 +325,38 @@ def test_session_roll_forces_overnight_exit():
     assert "오버나잇 금지" in d.signals[0].reason
 
 
+def test_eod_flatten_exit_when_lot_has_no_stop():
+    """stop이 없는 랏(방어선 결손)이라도 EoD 청산은 걸린다 — 이 전략은 이미
+    하드레일(손절) 판정만 건너뛰고 시간 기반 청산은 유지하는 기준 구현이다
+    (vol_breakout/gap_fade/rsi2_dip을 이 정책으로 통일한 근거)."""
+    lot = {
+        "entry": 50.0, "stop": None, "direction": "long",
+        "session": TODAY.isoformat(), "entered_at": _now(9, 40).isoformat(),
+    }
+    d = _decide(
+        _strategy(), last_close=100.00,
+        quotes={SIGNAL: 100.00, LONG: 51.0, SHORT: 30.0},
+        lots={LONG: lot}, mtc=1.0, cadence=0.1,
+    )
+    assert len(d.signals) == 1
+    assert "EoD 청산" in d.signals[0].reason
+
+
+def test_session_roll_forces_overnight_exit_when_lot_has_no_stop():
+    lot = {
+        "entry": 50.0, "stop": None, "direction": "long",
+        "session": PREV_DAYS[-1].isoformat(), "entered_at": _now(9, 40).isoformat(),
+    }
+    vwap = _vwap_for(100.00)
+    d = _decide(
+        _strategy(), last_close=100.00,
+        quotes={SIGNAL: vwap + 0.10, LONG: 51.0, SHORT: 30.0},
+        lots={LONG: lot},
+    )
+    assert len(d.signals) == 1
+    assert "오버나잇 금지" in d.signals[0].reason
+
+
 # ============================================================ ⑦ min_stop 게이트
 
 

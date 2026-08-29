@@ -267,6 +267,52 @@ def test_commits_capped_at_ten():
     assert len(sec["commits"]) == 10
 
 
+# ⑦ 지수 대비 성적(알파, 2026-08-29 통합) ------------------------------------
+
+def _alpha_series(n_up: int = 5, n_down: int = 5) -> list[tuple]:
+    """`alpha.wrap_section()`이 받는 (날짜, 우리%, 지수%, 알파pp) 시퀀스를 손으로
+    조립한다 — 상승일 n_up개(지수+0.5%, 우리+1.0%), 하락일 n_down개(지수-1.0%,
+    우리-0.5%)로 참여율/방어율 표본(각 `MIN_SAMPLE_DAYS`=5)을 채운다."""
+    from datetime import date as _d, timedelta
+
+    series: list[tuple] = []
+    d = _d(2026, 8, 1)
+    for _ in range(n_up):
+        our, bench = 1.0, 0.5
+        series.append((d, our, bench, our - bench))
+        d += timedelta(days=1)
+    for _ in range(n_down):
+        our, bench = -0.5, -1.0
+        series.append((d, our, bench, our - bench))
+        d += timedelta(days=1)
+    return series
+
+
+def test_alpha_section_shows_no_sample_by_default():
+    """`alpha_series`를 안 주면(기본값) 5절이 "표본 없음"/"표본 부족"으로
+    나온다 — 데이터가 없는데 숫자를 지어내지 않는다."""
+    html = render_html(_sections())
+    assert "5. 지수 대비 성적</h2>" in html
+    assert "표본 없음" in html
+    assert "표본 부족" in html
+
+
+def test_alpha_section_renders_capture_and_recent_rows_with_sample():
+    series = _alpha_series()
+    sec = _sections(alpha_series=series)
+    assert sec["alpha"]["summary"]["up_days"] == 5
+    assert sec["alpha"]["summary"]["down_days"] == 5
+    assert sec["alpha"]["summary"]["cum_alpha_pp"] is not None
+    html = render_html(sec)
+    assert "누적 알파" in html
+    assert "참여율" in html
+    assert "방어율" in html
+    assert "표본 없음" not in html
+    # 최근 5일 표(alpha.wrap_section 계약 — rows는 최대 5개).
+    assert len(sec["alpha"]["rows"]) == 5
+    assert "알파pp" in html
+
+
 # ⑤ 외부 URL 이 없다 (인라인 CSS 규율) ---------------------------------------
 
 _EXTERNAL = re.compile(r"https?:|//[a-zA-Z0-9]|<script|<img|<link|@import|url\(")

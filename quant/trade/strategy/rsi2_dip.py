@@ -390,7 +390,11 @@ class Rsi2DipStrategy:
             return None  # 진입일을 모른다 — 지어내지 않는다(모듈 docstring 4번)
 
         stop_raw = lot.get("stop")
-        stop = float(stop_raw) if stop_raw is not None else entry * (1 - self.hard_stop_pct / 100)
+        # 방어선이 반쪽인 랏(stop 없음)이면 하드 레일(손절) 판정만 건너뛴다 —
+        # "지어내지 않는다" 원칙상 stop을 여기서 재계산해 채우지 않는다
+        # (vol_breakout/gap_fade와 동일 정책). 보유기간·RSI 청산은 진입 당일이
+        # 아니면 아래에서 그대로 걸린다.
+        stop = float(stop_raw) if stop_raw is not None else None
 
         def _exit(reason: str) -> Signal:
             return Signal(
@@ -403,7 +407,7 @@ class Rsi2DipStrategy:
                 f"({pnl_bp:+.0f}bp)")
 
         # (c) 하드 레일 — 요일 무관, 진입 당일이라도 즉시.
-        if price <= stop:
+        if stop is not None and price <= stop:
             return _exit(f"RSI(2) 눌림매수 하드 손절(-{self.hard_stop_pct:g}%): "
                          f"{base} 손절선={fmt_price(stop, symbol)}")
 

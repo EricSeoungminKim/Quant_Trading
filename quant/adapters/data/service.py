@@ -31,7 +31,7 @@ from typing import Protocol, runtime_checkable
 
 import pandas as pd
 
-from quant.core.ports import Clock
+from quant.core.ports import Clock, DataSourceError
 from quant.core.models import Quote
 
 logger = logging.getLogger(__name__)
@@ -155,7 +155,13 @@ class MarketDataService:
     def __init__(self, routes: list[SourceRoute], clock: Clock,
                  quote_cache_seconds: float = 0.0,
                  bar_cache_enabled: bool = True,
-                 bar_cache_max_entries: int = _DEFAULT_BAR_CACHE_MAX_ENTRIES) -> None:
+                 bar_cache_max_entries: int = _DEFAULT_BAR_CACHE_MAX_ENTRIES,
+                 cold_fetch_budget_per_cycle: int | None = None) -> None:
+        if cold_fetch_budget_per_cycle is not None and cold_fetch_budget_per_cycle <= 0:
+            raise ValueError(
+                "cold_fetch_budget_per_cycle는 양수이거나 None(무제한)이어야 한다: "
+                f"{cold_fetch_budget_per_cycle!r}"
+            )
         self._routes = list(routes)
         self._clock = clock
         self._health: dict[str, SourceHealth] = {r.name: SourceHealth(name=r.name) for r in self._routes}
@@ -174,6 +180,14 @@ class MarketDataService:
         self._bar_cache_hits = 0
         self._bar_cache_misses = 0
         self._bar_source_calls = 0
+        # 사이클당 콜드 페치 예산(None=무제한, 기존 동작 그대로). 유니버스 롤
+        # 직후처럼 신규 심볼 수십 개의 캐시 미스가 한 사이클에 몰리면 그 사이클
+        # 자체가 수십 회 소스 호출로 18~23초까지 늘어나고, 그동안 보유 포지션의
+        # 손절 판정(quote() 기반, 이 예산과 무관)도 사이클이 끝날 때까지 대기한다.
+        # 예산을 넘는 캐시 미스는 소스를 때리지 않고 즉시 거부해 다음 사이클(들)로
+        # 미룬다 — 콜드 페치 총량은 그대로지만 한 사이클에 몰리지 않게 편다.
+        self._cold_fetch_budget_per_cycle = cold_fetch_budget_per_cycle
+        self._cold_fetch_count = 0
 
     def quote(self, symbol: str) -> Quote | None:
         """한 사이클 안에서 같은 심볼을 여러 번 물어도 소스는 한 번만 친다.
@@ -245,12 +259,35 @@ class MarketDataService:
             return self._finalize_bars(entry.frame, interval, n)
 
         self._bar_cache_misses += 1
+        if (
+            self._cold_fetch_budget_per_cycle is not None
+            and self._cold_fetch_count >= self._cold_fetch_budget_per_cycle
+        ):
+            # 소스는 때리지 않는다 — 예산 소진은 "시도해서 실패"가 아니라 "이번
+            # 사이클엔 아예 시도하지 않음"이다. 호출부(PureStrategyShell._snapshot)는
+            # 이 예외를 감싸지 않으므로 loop.run_cycle의 전략별 try/except까지 올라가
+            # 그 전략의 이번 사이클만 스킵된다 — 다음 사이클에 예산이 리셋되면 재시도된다.
+            raise DataSourceError(
+                f"콜드 페치 예산 초과 ({self._cold_fetch_budget_per_cycle}/사이클, "
+                f"{symbol} {interval}) — 다음 사이클"
+            )
+        self._cold_fetch_count += 1
         frame = self._history_raw(symbol, interval, n)
         # **실패는 캐시하지 않는다.** 빈 프레임을 캐시하면 그 봉 내내(1분봉이면 1분,
         # 일봉이면 하루) 모든 전략이 데이터 없이 돌아간다 — 손절 판정이 조용히 멈춘다.
         if not frame.empty:
             self._store_bars(key, frame, n)
         return self._finalize_bars(frame, interval, n)
+
+    def reset_cycle_budget(self) -> None:
+        """콜드 페치 예산 카운터를 리셋한다. loop가 사이클 경계마다 호출한다
+        (봉 캐시 통계 로그 배선 옆, `run_cycle` 밖 while 루프 최상단).
+
+        `bar_cache_stats()`의 hits/misses/source_calls는 런타임 전체 누적값으로
+        일부러 리셋하지 않는다(관측 목적이 다르다: 저건 "런타임 동안 캐시가 얼마나
+        일했나", 이건 "이번 사이클에 남은 예산이 얼마나 되나"). 예산이 없으면
+        (None) 카운터는 그냥 안 쓰인다 — 호출해도 무해하다."""
+        self._cold_fetch_count = 0
 
     def _finalize_bars(self, frame: pd.DataFrame, interval: str, n: int) -> pd.DataFrame:
         """완성봉 필터와 tail(n)은 **캐시 뒤가 아니라 앞**에서 매번 새로 적용한다.
