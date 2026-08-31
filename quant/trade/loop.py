@@ -27,7 +27,8 @@ from quant.trade.approval import STATUS_REJECTED, ApprovalGate, ApprovalRequest
 from quant.core import oms
 from quant.trade.control import TradingControl
 from quant.core.ports import (
-    Context, EventSink, Notifier, OrderSink, RiskManager, Strategy, TickLogger,
+    ColdFetchBudgetExceeded, Context, EventSink, Notifier, OrderSink, RiskManager,
+    Strategy, TickLogger,
 )
 from quant.core.models import (
     Fill, Order, OrderState, Quote, Side, Signal, SignalAction, market_of_symbol,
@@ -240,6 +241,14 @@ def run_cycle(
             signals = strategy.on_cycle(ctx)
             if timings is not None:
                 timings.strategy_ms[getattr(strategy, "id", "?")] = (time.perf_counter() - strat_t0) * 1000
+        except ColdFetchBudgetExceeded as e:
+            # 예산 스로틀은 장애가 아니다 — strategy_errors 에 넣지 않는다.
+            # 넣으면 "포지션 있는 전략의 오류 3연속 → 자동 정지"가 오발한다
+            # (2026-08-31 실사고: 분 경계 연속 스킵으로 KR 하루 무체결).
+            # 다음 사이클에 예산이 리셋되며 자가 회복한다(ports.py 클래스 docstring).
+            sid = getattr(strategy, "id", "?")
+            logger.info("전략 %s 사이클 스킵(예산): %s", sid, e)
+            continue
         except Exception as e:
             sid = getattr(strategy, "id", "?")
             logger.warning("전략 %s 사이클 스킵: %s", sid, e)
@@ -1001,13 +1010,28 @@ def _heartbeat_text(
     cycle_line = f"🔄 {cycle_count:,}번째 사이클"
     if uptime_seconds is not None:
         cycle_line += f" · 가동 {_uptime_text(uptime_seconds)}"
-    lines = [
-        "💓 엔진 상태 점검",
-        "",
-        cycle_line,
-        f"{'⛔ 거래 상태: 중단됨' if halted else '✅ 거래 상태: 정상'}",
-        f"📦 보유 종목: {held_text}",
-    ]
+    if halted:
+        # 정지는 하트비트의 부속 한 줄이 아니라 머리기사다(2026-08-31 실사고:
+        # 금요일 밤 자동 정지가 "중단됨" 한 줄로만 표시돼 월요일 KR 세션 전체가
+        # 무체결로 지나갔다 — 사유도 대처법도 없어 방치됐다).
+        reason = getattr(control, "halt_reason", "") or "사유 미기록"
+        lines = [
+            "⛔ 거래 중단이 계속되고 있습니다",
+            "",
+            f"📕 사유: {reason}",
+            "▶️ 신규 진입을 재개하려면 /resume (청산·손절은 계속 작동 중)",
+            "",
+            cycle_line,
+            f"📦 보유 종목: {held_text}",
+        ]
+    else:
+        lines = [
+            "💓 엔진 상태 점검",
+            "",
+            cycle_line,
+            "✅ 거래 상태: 정상",
+            f"📦 보유 종목: {held_text}",
+        ]
 
     equity = _estimate_equity(ctx)
     if equity is not None:

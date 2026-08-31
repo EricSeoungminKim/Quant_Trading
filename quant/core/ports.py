@@ -58,6 +58,22 @@ class DataSourceError(RuntimeError):
     """
 
 
+class ColdFetchBudgetExceeded(DataSourceError):
+    """콜드 페치 예산 초과 — 장애가 아니라 **의도된 일시 스로틀**이다.
+
+    MarketDataService 가 사이클당 콜드 페치 상한(engine.cold_fetch_budget_per_cycle)
+    을 넘는 캐시 미스를 다음 사이클로 미룰 때 던진다. 다음 사이클에 예산이
+    리셋되며 자가 회복한다.
+
+    **회로차단기와의 구분이 이 클래스의 존재 이유다**(2026-08-31 실사고):
+    이 예외가 일반 전략 오류로 집계되면, 분 경계마다 같은 전략이 연속 스킵돼
+    "전략 오류 3회 → 자동 정지"를 오발한다 — 금요일 밤 정지가 주말을 건너
+    월요일 전체(KR 무체결)를 삼켰고, 재개 3분 만에 재정지됐다. 루프는 이
+    타입만 골라 정지 에스컬레이션에서 제외한다. 진짜 소스 장애(부모 타입)는
+    여전히 에스컬레이션된다.
+    """
+
+
 @runtime_checkable
 class DataFeed(Protocol):
     def quote(self, symbol: str) -> Quote | None: ...

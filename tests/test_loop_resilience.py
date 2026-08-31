@@ -411,9 +411,13 @@ def test_heartbeat_emits_at_cadence_and_includes_halted_state(tmp_path):
         notifier=notifier, control=control, market_data=market_data,
     ))
 
-    heartbeats = [m for m in notifier.messages if "엔진 상태 점검" in m]
+    # 2026-08-31 강화: 정지 중 하트비트는 "점검" 부속 줄이 아니라 머리기사다 —
+    # 사유와 재개 방법(/resume)을 함께 보여야 한다(실사고: "중단됨" 한 줄만으로
+    # 월요일 세션 전체가 무체결로 방치됐다).
+    heartbeats = [m for m in notifier.messages if "거래 중단이 계속되고" in m]
     assert len(heartbeats) >= 1
-    assert "거래 상태: 중단됨" in heartbeats[0]
+    assert "점검" in heartbeats[0]          # halt("점검") 의 사유가 표시된다
+    assert "/resume" in heartbeats[0]
 
 
 def test_heartbeat_silent_when_market_closed(tmp_path):

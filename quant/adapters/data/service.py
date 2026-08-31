@@ -30,7 +30,7 @@ from typing import Protocol, runtime_checkable
 
 import pandas as pd
 
-from quant.core.ports import Clock, DataSourceError
+from quant.core.ports import ColdFetchBudgetExceeded, Clock, DataSourceError
 from quant.core.models import Quote
 
 logger = logging.getLogger(__name__)
@@ -264,7 +264,7 @@ class MarketDataService:
             # 사이클엔 아예 시도하지 않음"이다. 호출부(PureStrategyShell._snapshot)는
             # 이 예외를 감싸지 않으므로 loop.run_cycle의 전략별 try/except까지 올라가
             # 그 전략의 이번 사이클만 스킵된다 — 다음 사이클에 예산이 리셋되면 재시도된다.
-            raise DataSourceError(
+            raise ColdFetchBudgetExceeded(
                 f"콜드 페치 예산 초과 ({self._cold_fetch_budget_per_cycle}/사이클, "
                 f"{symbol} {interval}) — 다음 사이클"
             )
