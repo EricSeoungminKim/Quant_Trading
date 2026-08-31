@@ -64,21 +64,15 @@ import pandas as pd
 
 from quant.core.ports import Context
 from quant.core.models import Position, Signal, SignalAction
-from quant.trade.indicators import bollinger, detect_box, macd, rsi, sma, squeeze
+from quant.trade.indicators import bollinger, detect_box, macd, rsi, sma, sma_atr, squeeze
 from quant.trade.strategy.orb_scan import _SESSION_OPEN
 
 
 def _atr(bars: pd.DataFrame, period: int) -> float:
-    """분봉 기준 단순평균 ATR — orb_scan/intraday_scan/mean_reversion의 동일
-    산식을 재사용한다(True Range의 단순 이동평균, Wilder 평활 아님 — 기존
-    스캐너 관례를 그대로 따른다). 인터벌만 다르다(여기는 전략의 판정 인터벌
-    그대로, 다른 스캐너는 별도 일봉 조회)."""
-    high, low, close = bars["high"], bars["low"], bars["close"]
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
-    ).max(axis=1)
-    return float(tr.dropna().tail(period).mean())
+    """분봉 기준 단순평균 ATR — `quant.trade.indicators.sma_atr` 참고(구현
+    근거는 그쪽 docstring). 인터벌만 다르다(여기는 전략의 판정 인터벌 그대로,
+    다른 스캐너는 별도 일봉 조회)."""
+    return sma_atr(bars, period)
 
 
 class ConfluenceStrategy:

@@ -129,7 +129,7 @@ self.long_symbol`)에 암묵적으로 의존하지 않게 한다.
 """
 from __future__ import annotations
 
-from datetime import date as dtdate, datetime
+from datetime import date as dtdate
 from typing import Any, Mapping
 
 import pandas as pd
@@ -138,6 +138,7 @@ from quant.core.models import Signal, SignalAction, market_of_symbol
 from quant.core.session import continuous_window, in_continuous_session, market_tz
 from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
 from quant.trade.fmt import fmt_price
+from quant.trade.strategy import kernel
 from quant.trade.strategy.mr_vwap_quiet import session_vwap_bands
 from quant.trade.strategy.shell import PureStrategyShell
 
@@ -275,7 +276,7 @@ class IntradayMomentumPureStrategy:
         # 손절폭 하한(bp). 0 = 비활성. stop_pct가 지나치게 좁으면 왕복 비용
         # 근처에서 손절선이 형성된다(`pullback_impulse.py` 2026-08-29 실사고와
         # 같은 계열의 방어).
-        self.min_stop_bp: float = float(params.get("min_stop_bp", 40.0))
+        self.min_stop_bp: float = kernel.parse_min_stop_bp(params)
         # 같은 방향 하루 진입 상한 — 반대 방향 재진입은 이 상한에 걸리지 않는다.
         self.max_same_direction_entries_per_day: int = int(
             params.get("max_same_direction_entries_per_day", 2)
@@ -297,8 +298,6 @@ class IntradayMomentumPureStrategy:
             raise ValueError("band_mult는 양수여야 합니다.")
         if self.stop_pct <= 0:
             raise ValueError("stop_pct는 양수여야 합니다.")
-        if self.min_stop_bp < 0:
-            raise ValueError("min_stop_bp는 0(비활성) 이상이어야 합니다.")
         if self.max_same_direction_entries_per_day < 1:
             raise ValueError("max_same_direction_entries_per_day는 1 이상이어야 합니다.")
         if self.flatten_before_close_minutes <= 0:
@@ -326,15 +325,9 @@ class IntradayMomentumPureStrategy:
 
     def _held_lot(self, snap: StrategySnapshot) -> tuple[str, Mapping[str, Any]] | None:
         """지금 내가 방어선을 써 넣은 랏이 있는 심볼(`long_symbol` 또는
-        `short_symbol`) — 없으면 None. `entry` 유무로 판정하는 이유는
-        `mr_vwap_quiet.py`의 `_my_lot`과 같다: 빈 dict는 "다른 전략 보유" 또는
-        "방금 체결, 아직 state_update 미반영" 둘 다일 수 있어 안전하게
-        "관리 대상 아님"으로 떨어뜨린다."""
-        for sym in (self.long_symbol, self.short_symbol):
-            lot = snap.lots.get(sym)
-            if lot and lot.get("entry") is not None:
-                return sym, lot
-        return None
+        `short_symbol`) — 없으면 None. 판정 근거는 `kernel.held_lot`
+        docstring 참고."""
+        return kernel.held_lot(snap.lots, (self.long_symbol, self.short_symbol))
 
     def decide(self, snap: StrategySnapshot, state: Mapping[str, Any]) -> Decision:
         session_date: dict[str, str] = dict(state.get("session_date", {}))
@@ -416,7 +409,7 @@ class IntradayMomentumPureStrategy:
         if not (stop < entry):
             return None
         stop_bp = (entry - stop) / entry * 1e4
-        if self.min_stop_bp and stop_bp < self.min_stop_bp:
+        if not kernel.stop_bp_gate_ok(stop_bp, self.min_stop_bp):
             return None
 
         entries_today[direction] = entries_today.get(direction, 0) + 1
@@ -461,19 +454,14 @@ class IntradayMomentumPureStrategy:
 
     def _should_flatten(self, snap: StrategySnapshot) -> bool:
         """EoD 강제청산 시점인가 — `mr_vwap_quiet._should_flatten`과 동일한
-        이중 판정(캘린더 기반 + 연속거래종료 벽시계 기준의 논리합). 모듈
-        docstring "판단 주기와 EoD 청산의 상호작용" 절 참고."""
+        이중 판정(캘린더 기반 + 연속거래종료 벽시계 기준의 논리합). `kernel.
+        should_flatten_dual` 참고(모듈 docstring "판단 주기와 EoD 청산의
+        상호작용" 절도 같이 참고)."""
         market = self._market
         mtc = snap.minutes_to_close.get(market)
-        if mtc is not None and 0 < mtc and mtc - snap.cadence_minutes < self.flatten_before_close_minutes:
-            return True
-        tz = market_tz(market)
-        now_local = snap.now.astimezone(tz)
-        _, end_t = continuous_window(market)
-        remaining = (
-            datetime.combine(now_local.date(), end_t, tzinfo=tz) - now_local
-        ).total_seconds() / 60
-        return 0 < remaining and remaining - snap.cadence_minutes < self.flatten_before_close_minutes
+        return kernel.should_flatten_dual(
+            market, snap.now, mtc, snap.cadence_minutes, self.flatten_before_close_minutes
+        )
 
     def _manage(
         self, snap: StrategySnapshot, today: dtdate, symbol: str, lot: Mapping[str, Any],
@@ -489,13 +477,11 @@ class IntradayMomentumPureStrategy:
         tz = market_tz(self._market)
 
         def _exit(reason: str) -> Signal:
-            return Signal(
-                strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
-                target_weight=0.0, exit_fraction=1.0, reason=reason,
-            )
+            return kernel.exit_signal(self.id, symbol, reason)
 
         entry_session = lot.get("session")
-        if entry_session and entry_session != snap.now.astimezone(tz).date().isoformat():
+        today_iso = snap.now.astimezone(tz).date().isoformat()
+        if kernel.is_overnight_carry(lot, today_iso):
             return _exit(
                 f"세션 롤 강제청산(오버나잇 금지): entry={fmt_price(entry, symbol)} "
                 f"현재={fmt_price(price, symbol)}"

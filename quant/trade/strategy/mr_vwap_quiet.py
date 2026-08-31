@@ -165,6 +165,7 @@ from quant.core.session import continuous_window, in_continuous_session, market_
 from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
 from quant.trade.fmt import fmt_price
 from quant.trade.indicators.trend_gate import adx_di
+from quant.trade.strategy import kernel
 from quant.trade.strategy.shell import PureStrategyShell
 
 # 주력 봉. 모듈 docstring "정직한 경고"/"데이터" 절 — 1분봉 청산은 왕복 20~30bp
@@ -417,19 +418,9 @@ class MrVwapQuietStrategy:
 
     @staticmethod
     def _my_lot(snap: StrategySnapshot, symbol: str) -> Mapping[str, Any] | None:
-        """내가 **방어선을 써 넣은** 열린 랏만 돌려준다.
-
-        `snap.lots[symbol]` 이 빈 dict(`{}`)인 경우가 두 가지 있는데
-        (`shell.py` `_snapshot`) 스냅샷만으로는 구분되지 않는다: (a) 다른 전략이
-        그 심볼을 보유 중이라 내 lot 이 없다, (b) 내가 방금 체결됐는데 아직 lot
-        필드가 없다. `entry` 유무로 판정하면 두 경우 모두 "내 관리 대상이 아니다"
-        로 안전하게 떨어지고, (a) 에서 남의 포지션을 내 것으로 오인해 청산 주문을
-        내는 사고가 구조적으로 불가능해진다.
-        """
-        lot = snap.lots.get(symbol)
-        if not lot or lot.get("entry") is None:
-            return None
-        return lot
+        """내가 **방어선을 써 넣은** 열린 랏만 돌려준다 — `kernel.my_lot` 참고
+        (판정 근거는 그쪽 docstring)."""
+        return kernel.my_lot(snap.lots, symbol)
 
     def decide(self, snap: StrategySnapshot, state: Mapping[str, Any]) -> Decision:
         # 입력 state 는 절대 in-place 로 건드리지 않는다 — 중첩 dict 까지 복사한다.
@@ -522,17 +513,12 @@ class MrVwapQuietStrategy:
 
         둘 다 `cadence_minutes` 를 빼서 판정한다 — 다음 사이클이 오기 전에 창이
         닫히면 이번 사이클에 나가야 한다(`Clock._should_flatten` 과 같은 공식).
+        구체적인 계산은 `kernel.should_flatten_dual` 참고.
         """
         mtc = snap.minutes_to_close.get(market)
-        if mtc is not None and 0 < mtc and mtc - snap.cadence_minutes < self.flatten_minutes:
-            return True
-        tz = market_tz(market)
-        now_local = snap.now.astimezone(tz)
-        _, end_t = continuous_window(market)
-        remaining = (
-            datetime.combine(now_local.date(), end_t, tzinfo=tz) - now_local
-        ).total_seconds() / 60
-        return 0 < remaining and remaining - snap.cadence_minutes < self.flatten_minutes
+        return kernel.should_flatten_dual(
+            market, snap.now, mtc, snap.cadence_minutes, self.flatten_minutes
+        )
 
     @staticmethod
     def _session_bars(bars: pd.DataFrame, market: str, today: dtdate) -> pd.DataFrame:
@@ -660,13 +646,11 @@ class MrVwapQuietStrategy:
         stop, target = float(stop_raw), float(target_raw)
 
         def _exit(reason: str) -> Signal:
-            return Signal(
-                strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
-                target_weight=0.0, exit_fraction=1.0, reason=reason,
-            )
+            return kernel.exit_signal(self.id, symbol, reason)
 
         entry_session = lot.get("session")
-        if entry_session and entry_session != snap.now.astimezone(tz).date().isoformat():
+        today_iso = snap.now.astimezone(tz).date().isoformat()
+        if kernel.is_overnight_carry(lot, today_iso):
             return _exit(
                 f"세션 롤 강제청산(오버나잇 금지): 진입 {entry_session} "
                 f"현재={fmt_price(price, symbol)}"

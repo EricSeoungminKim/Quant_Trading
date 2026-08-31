@@ -107,6 +107,7 @@ from quant.core.session import continuous_window, in_continuous_session, market_
 from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
 from quant.trade.fmt import fmt_price
 from quant.trade.indicators.trend_gate import atr_ratio
+from quant.trade.strategy import kernel
 from quant.trade.strategy.shell import PureStrategyShell
 
 _INTERVAL = "5m"
@@ -192,7 +193,7 @@ class GapFadePureStrategy:
         self.atr_period: int = int(params.get("atr_period", 14))
         # 최소 손절폭(bp). 0 = 비활성. 기본 40 = US 왕복 비용(20bp)의 2배 —
         # pullback_impulse의 2026-08-29 결함 수리와 같은 근거.
-        self.min_stop_bp: float = float(params.get("min_stop_bp", 40.0))
+        self.min_stop_bp: float = kernel.parse_min_stop_bp(params)
         # 6) 시간 청산(분).
         self.max_hold_min: float = float(params.get("max_hold_min", 120.0))
         # 7) EoD 청산 여유(분). 0 이하 금지 — 모듈 docstring 규칙 7번의 실사고 근거.
@@ -212,8 +213,6 @@ class GapFadePureStrategy:
             raise ValueError("atr_buffer_mult는 0 이상이어야 합니다.")
         if self.atr_period < 2:
             raise ValueError("atr_period는 2 이상이어야 합니다.")
-        if self.min_stop_bp < 0:
-            raise ValueError("min_stop_bp는 0(비활성) 이상이어야 합니다.")
         if self.max_hold_min <= 0:
             raise ValueError("max_hold_min은 양수여야 합니다.")
         if self.flatten_minutes <= 0:
@@ -239,13 +238,9 @@ class GapFadePureStrategy:
 
     @staticmethod
     def _my_lot(snap: StrategySnapshot, symbol: str) -> Mapping[str, Any] | None:
-        """내가 방어선을 써 넣은 열린 랏만 돌려준다 — `mr_vwap_quiet._my_lot`과
-        같은 이유(빈 dict는 "남의 포지션" 또는 "체결 직후 반영 전" 둘 다일 수
-        있어 `entry` 유무로만 내 것을 판정한다)."""
-        lot = snap.lots.get(symbol)
-        if not lot or lot.get("entry") is None:
-            return None
-        return lot
+        """내가 방어선을 써 넣은 열린 랏만 돌려준다 — `kernel.my_lot` 참고
+        (판정 근거는 그쪽 docstring)."""
+        return kernel.my_lot(snap.lots, symbol)
 
     def decide(self, snap: StrategySnapshot, state: Mapping[str, Any]) -> Decision:
         # 입력 state는 절대 in-place로 건드리지 않는다.
@@ -315,9 +310,7 @@ class GapFadePureStrategy:
         이른 쪽)를 기준으로 하므로 KR 동시호가 구간을 별도로 다시 판정할 필요가
         없다(`pullback_impulse._should_flatten`과 동일 근거)."""
         mtc = snap.minutes_to_close.get(market)
-        if mtc is None or mtc <= 0:
-            return False
-        return mtc - snap.cadence_minutes < self.flatten_minutes
+        return kernel.should_flatten_calendar(mtc, snap.cadence_minutes, self.flatten_minutes)
 
     @staticmethod
     def _session_bars(bars: pd.DataFrame, market: str, today: dtdate) -> pd.DataFrame:
@@ -401,7 +394,7 @@ class GapFadePureStrategy:
             last_reject[symbol] = "손절가 계산 불가(진입가 이상)"
             return None
         stop_bp = (entry - stop) / entry * 1e4
-        if stop_bp < self.min_stop_bp:
+        if not kernel.stop_bp_gate_ok(stop_bp, self.min_stop_bp):
             last_reject[symbol] = (
                 f"손절폭 {stop_bp:.0f}bp < 최소 {self.min_stop_bp:g}bp"
             )
@@ -459,13 +452,11 @@ class GapFadePureStrategy:
         target = float(target_raw) if target_raw is not None else None
 
         def _exit(reason: str) -> Signal:
-            return Signal(
-                strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
-                target_weight=0.0, exit_fraction=1.0, reason=reason,
-            )
+            return kernel.exit_signal(self.id, symbol, reason)
 
         entry_session = lot.get("session")
-        if entry_session and entry_session != snap.now.astimezone(tz).date().isoformat():
+        today_iso = snap.now.astimezone(tz).date().isoformat()
+        if kernel.is_overnight_carry(lot, today_iso):
             return _exit(
                 f"세션 롤 강제청산(오버나잇 금지): 진입 {entry_session} "
                 f"현재={fmt_price(price, symbol)}"

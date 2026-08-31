@@ -149,6 +149,7 @@ from quant.core.ports import Context
 from quant.core.models import Position, Signal, SignalAction, market_of_symbol
 from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
 from quant.trade.indicators.breadth import ANCHOR_SYMBOLS, anchor_drawdown
+from quant.trade.strategy import kernel
 from quant.trade.strategy.orb_scan import _SESSION_OPEN
 from quant.trade.strategy.shell import PureStrategyShell
 
@@ -947,14 +948,10 @@ class NewsMomentumPureStrategy:
     # ------------------------------------------------------------------ 관리
 
     def _should_flatten(self, market: str, snap: StrategySnapshot) -> bool:
-        """`Clock._should_flatten`(quant/core/clock.py) 재현 — donchian_pure/
-        scalp_1m_pure와 동일 공식(`StrategySnapshot.cadence_minutes` 원재료 사용)."""
+        """`Clock._should_flatten`(quant/core/clock.py) 재현 — `kernel.
+        should_flatten_calendar` 참고."""
         mtc = snap.minutes_to_close.get(market)
-        if mtc is None:
-            return False
-        if mtc <= 0:
-            return False  # 연속 거래 종료(동시호가) — 원본과 동일하게 False
-        return mtc - snap.cadence_minutes < self.flatten_minutes
+        return kernel.should_flatten_calendar(mtc, snap.cadence_minutes, self.flatten_minutes)
 
     def _manage(self, symbol: str, lot: dict, snap: StrategySnapshot) -> Signal | None:
         """`lot`은 `decide()`가 만든 이번 사이클 로컬 사본(`open_[symbol]`)이다 —

@@ -53,6 +53,9 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 # 요약·정보성이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl
 # 에 쌓여 마감 HTML 리포트로만 간다.
 . "$(dirname "$0")/lib/notify.sh"
+# 메모리 워터마크(2026-08-31, 2GB 박스 관측) — server/scripts/lib/memlog.sh 참고.
+. "$(dirname "$0")/lib/memlog.sh"
+memlog_wrap "backfill_us_daily"
 
 START="$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%d 2>/dev/null \
          || date -u -v-${LOOKBACK_DAYS}d +%Y-%m-%d)"   # GNU / BSD 양쪽

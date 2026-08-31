@@ -34,6 +34,10 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 
 log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 
+# 메모리 워터마크(2026-08-31, 2GB 박스 관측) — server/scripts/lib/memlog.sh 참고.
+. "$(dirname "$0")/lib/memlog.sh"
+memlog_wrap "daily_wrap"
+
 # TZ 가드 — 크론 시각(KR 16:55 / US 06:55)은 호스트가 KST 라는 전제다.
 # ai_trader.sh 와 같은 계약이되, 여기서는 **중단하지 않는다**: 요약 파일은
 # 시각이 조금 어긋나도 만드는 편이 낫다(빠진 날은 나중에 복원할 수 없다).

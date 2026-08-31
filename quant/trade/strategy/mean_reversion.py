@@ -54,6 +54,7 @@ import pandas as pd
 
 from quant.core.ports import Context
 from quant.core.models import Position, Signal, SignalAction, market_of_symbol
+from quant.trade.indicators import sma_atr
 from quant.trade.strategy.orb_scan import _SESSION_OPEN
 
 # 재시작 복구용 보수적 손절 폴백 — orb_scan/intraday_scan과 동일한 관례(2%).
@@ -81,12 +82,9 @@ def _rsi(closes: pd.Series, period: int) -> float:
 
 
 def _atr(bars: pd.DataFrame, period: int) -> float:
-    high, low, close = bars["high"], bars["low"], bars["close"]
-    prev_close = close.shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
-    ).max(axis=1)
-    return float(tr.dropna().tail(period).mean())
+    """분봉 기준 단순평균 ATR — `quant.trade.indicators.sma_atr` 참고(구현
+    근거는 그쪽 docstring)."""
+    return sma_atr(bars, period)
 
 
 def _turnover(bars: pd.DataFrame, window: int) -> float:

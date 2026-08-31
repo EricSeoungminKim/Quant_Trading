@@ -53,6 +53,36 @@ notify() {
   if [ "$1" = "ok" ]; then
     text="📄 ${MARKET} 개장 전 리포트 발행
 ${url}"
+    # 요일 착오 백신(2026-08-31) — 크론/발행 파이프라인이 요일을 착각한 채 돈
+    # 사고를 사람이 브리핑 첫눈에 알아채게 한다. 새 휴장표를 만들지 않고 기존
+    # quant.core.session.StaticSessionCalendar(주말만 거르는 캘린더 — clock.py
+    # 폴백과 동일 출처)를 재사용한다. 진짜 공휴일까지는 못 잡지만(주말만 판별),
+    # 이 라인의 목적은 정확한 휴장 예측이 아니라 요일 자체가 어긋난 사고를
+    # 잡는 것이다. US 는 정오 KST를 America/New_York로 환산한 날짜로 판정한다
+    # (KST 요일과 US 거래일이 하루 어긋나는 관례 — crontab.txt의 "화-토" 참고).
+    STATUS="$($PY - <<'PYEOF' 2>/dev/null || true
+from datetime import date, datetime, time as dtime
+from zoneinfo import ZoneInfo
+from quant.core.session import StaticSessionCalendar, market_tz
+
+today = date.today()
+cal = StaticSessionCalendar()
+now = datetime.combine(today, dtime(12, 0), tzinfo=ZoneInfo("Asia/Seoul"))
+dow = ["월", "화", "수", "목", "금", "토", "일"]
+
+def status(market: str) -> str:
+    if cal.session(market, now) is not None:
+        return "개장"
+    local_dow = dow[now.astimezone(market_tz(market)).weekday()]
+    return f"휴장({local_dow})"
+
+print(f"오늘: KR {status('KR')} · US {status('US')}")
+PYEOF
+)"
+    if [ -n "$STATUS" ]; then
+      text="${text}
+${STATUS}"
+    fi
     # 결정론 요약(G Task 5) — 실패해도 발행 알림 자체는 막지 않는다(부가 기능).
     SUMMARY="$($PY -m quant.apps.report_cli summary --market "$MARKET" 2>/dev/null || true)"
     if [ -n "$SUMMARY" ]; then

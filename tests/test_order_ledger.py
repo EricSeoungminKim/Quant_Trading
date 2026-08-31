@@ -260,6 +260,60 @@ def test_full_chain_from_loop_to_file_actually_writes(tmp_path: Path):
     assert row["remaining_qty"] == 12
 
 
+def test_repeated_rejection_is_suppressed_within_cooldown(tmp_path: Path):
+    """2026-08-31 실측: donchian SQQQ '매도 가능 수량 0' 거부가 사이클마다(사실상
+    수 초 간격) 동일하게 orders.jsonl 에 반복 기록됐다(110줄). 같은 (전략, 심볼,
+    사유)는 REJECT_LOG_COOLDOWN(1시간) 안에서는 한 번만 쓴다."""
+    from datetime import timedelta
+
+    orders_path = tmp_path / "orders.jsonl"
+    ledger = TradeLedgerSink(_PlainSink(), path=tmp_path / "trades.jsonl",
+                             orders_path=orders_path)
+    order = Order(symbol="SQQQ", side=Side.SELL, qty=10, strategy_id="donchian")
+    state1 = oms.not_submitted(order, "매도 가능 수량 0 (요청 10, 이 전략 몫 0)", at=T0)
+    state2 = oms.not_submitted(
+        order, "매도 가능 수량 0 (요청 10, 이 전략 몫 0)", at=T0 + timedelta(minutes=1),
+    )
+
+    ledger.on_order(state1)
+    ledger.on_order(state2)
+
+    rows = [json.loads(l) for l in orders_path.read_text(encoding="utf-8").splitlines() if l]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "rejected"
+
+
+def test_repeated_rejection_logs_again_after_cooldown(tmp_path: Path):
+    from datetime import timedelta
+
+    orders_path = tmp_path / "orders.jsonl"
+    ledger = TradeLedgerSink(_PlainSink(), path=tmp_path / "trades.jsonl",
+                             orders_path=orders_path)
+    order = Order(symbol="SQQQ", side=Side.SELL, qty=10, strategy_id="donchian")
+    state1 = oms.not_submitted(order, "매도 가능 수량 0", at=T0)
+    state2 = oms.not_submitted(order, "매도 가능 수량 0", at=T0 + timedelta(hours=1, seconds=1))
+
+    ledger.on_order(state1)
+    ledger.on_order(state2)
+
+    rows = [json.loads(l) for l in orders_path.read_text(encoding="utf-8").splitlines() if l]
+    assert len(rows) == 2
+
+
+def test_different_symbol_rejection_is_not_suppressed(tmp_path: Path):
+    orders_path = tmp_path / "orders.jsonl"
+    ledger = TradeLedgerSink(_PlainSink(), path=tmp_path / "trades.jsonl",
+                             orders_path=orders_path)
+    sqqq = Order(symbol="SQQQ", side=Side.SELL, qty=10, strategy_id="donchian")
+    tqqq = Order(symbol="TQQQ", side=Side.SELL, qty=10, strategy_id="donchian")
+
+    ledger.on_order(oms.not_submitted(sqqq, "매도 가능 수량 0", at=T0))
+    ledger.on_order(oms.not_submitted(tqqq, "매도 가능 수량 0", at=T0))
+
+    rows = [json.loads(l) for l in orders_path.read_text(encoding="utf-8").splitlines() if l]
+    assert len(rows) == 2
+
+
 def test_ledger_write_failure_does_not_propagate(tmp_path: Path):
     """원장이 못 써져도 체결 처리는 계속된다(on_fill 의 기존 계약과 같다)."""
     ledger = TradeLedgerSink(_PlainSink(), path=tmp_path / "trades.jsonl",

@@ -139,3 +139,29 @@ def detect_box(
 
     is_box = ((high_spread_pct <= tolerance_pct) & (low_spread_pct <= tolerance_pct)).fillna(False)
     return is_box, box_high, box_low
+
+
+def sma_atr(bars: pd.DataFrame, period: int) -> float:
+    """단순평균 ATR(단일 값) — confluence, cross_momentum, orb, mean_reversion
+    4개 파일의 동일한 `_atr(bars, period) -> float` 반복 구현을 대체한다.
+
+    True Range의 **단순** 이동평균이다(`trend_gate.atr_ratio`의 Wilder 평활과
+    **별개 함수다 — 절대 통합하지 마라.** `atr_ratio`는 최근 종가 대비 ATR의
+    "비율"을 Wilder 평활로 반환하는 변동성 게이트 원재료고, 이 함수는 절대
+    가격 단위의 ATR 값 자체를 손절폭 계산(`entry - k * sma_atr(...)` 형태)에
+    바로 쓰기 위한 것이다 — 둘을 하나로 합치면 이 값을 쓰는 전략들의 절대
+    손절폭 계산이 깨진다.
+
+    이 파일의 다른 함수들과 달리(모듈 docstring "같은 인덱스의 Series 반환"
+    규칙) **단일 float를 반환한다** — 4개 원본 구현이 전부 "최신 시점 ATR
+    값 하나"만 필요로 했던 관례를 그대로 옮긴 것이다(`trend_gate.py`의
+    "최신 시점 단일 값" 관례와 같은 이유). 데이터가 부족하면(`period`개
+    미만) `tail(period)`가 있는 만큼만 평균한다 — 호출부가 그 전에 최소
+    봉 수를 별도로 검증한다(원본 4곳 모두 호출 전 봉 수 체크를 자체적으로
+    했으므로, 이 함수 자체에는 하한 검증이 없다)."""
+    high, low, close = bars["high"], bars["low"], bars["close"]
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
+    return float(tr.dropna().tail(period).mean())

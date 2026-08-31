@@ -9,7 +9,7 @@ import math
 import pandas as pd
 import pytest
 
-from quant.trade.indicators import bollinger, detect_box, ema, macd, rsi, sma, squeeze
+from quant.trade.indicators import bollinger, detect_box, ema, macd, rsi, sma, sma_atr, squeeze
 
 
 # ---------------------------------------------------------------- sma / ema
@@ -156,6 +156,34 @@ def test_detect_box_false_in_trending_range():
     low = pd.Series([98.0, 102.0, 107.0, 112.0, 117.0])
     is_box, box_high, box_low = detect_box(high, low, lookback=5, tolerance_pct=1.0)
     assert bool(is_box.iloc[-1]) is False
+
+
+# --------------------------------------------------------------- sma_atr
+
+def _bars(high, low, close):
+    return pd.DataFrame({"high": high, "low": low, "close": close})
+
+
+def test_sma_atr_matches_hand_computed_true_range_average():
+    # TR0 = h0-l0 (직전 종가 없음, skipna로 h-l만 남는다) = 2
+    # TR1 = max(h1-l1=3, |h1-c0|=|12-9|=3, |l1-c0|=|9-9|=0) = 3
+    # TR2 = max(h2-l2=1.5, |h2-c1|=|11-11.5|=0.5, |l2-c1|=|9.5-11.5|=2) = 2
+    # TR3 = max(h3-l3=4, |h3-c2|=|14-10|=4, |l3-c2|=|10-10|=0) = 4
+    high = pd.Series([10.0, 12.0, 11.0, 14.0])
+    low = pd.Series([8.0, 9.0, 9.5, 10.0])
+    close = pd.Series([9.0, 11.5, 10.0, 13.5])
+    bars = _bars(high, low, close)
+    assert sma_atr(bars, period=2) == pytest.approx((2.0 + 4.0) / 2)
+    assert sma_atr(bars, period=4) == pytest.approx((2.0 + 3.0 + 2.0 + 4.0) / 4)
+
+
+def test_sma_atr_uses_whatever_is_available_when_fewer_bars_than_period():
+    high = pd.Series([10.0, 12.0])
+    low = pd.Series([8.0, 9.0])
+    close = pd.Series([9.0, 11.5])
+    bars = _bars(high, low, close)
+    # TR = [2.0, 3.0] — period=10보다 데이터가 적어도 있는 만큼만 평균한다.
+    assert sma_atr(bars, period=10) == pytest.approx((2.0 + 3.0) / 2)
 
 
 def test_detect_box_false_during_warmup():

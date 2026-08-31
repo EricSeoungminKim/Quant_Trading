@@ -188,6 +188,7 @@ from quant.trade.fmt import fmt_price
 from quant.trade.indicators import sma
 from quant.trade.indicators.trend_gate import adx_di, atr_ratio
 from quant.trade.structure import structure_bracket, williams_r
+from quant.trade.strategy import kernel
 from quant.trade.strategy.orb_scan import _SESSION_OPEN
 from quant.trade.strategy.shell import PureStrategyShell
 
@@ -1296,16 +1297,10 @@ class Scalp1mPureStrategy:
         return Scalp1mStrategy._premarket_window_state(market, now_local) != "closed"
 
     def _should_flatten(self, market: str, snap: StrategySnapshot) -> bool:
-        """`Clock._should_flatten`(quant/core/clock.py) 재현 — donchian_pure와
-        동일 공식(`StrategySnapshot.cadence_minutes` 원재료 사용)."""
+        """`Clock._should_flatten`(quant/core/clock.py) 재현 — `kernel.
+        should_flatten_calendar` 참고."""
         mtc = snap.minutes_to_close.get(market)
-        if mtc is None:
-            return False
-        # mtc <= 0 = 연속 거래 종료(동시호가 구간) — 원본과 동일하게 False
-        # (2026-08-26, clock._should_flatten 의 remaining<=0 게이트 재현).
-        if mtc <= 0:
-            return False
-        return mtc - snap.cadence_minutes < self.flatten_minutes
+        return kernel.should_flatten_calendar(mtc, snap.cadence_minutes, self.flatten_minutes)
 
     # ------------------------------------------------------------------ 추세/변동성 게이트
 

@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from quant.core.ports import EventSink
-from quant.core.models import Fill, Signal
+from quant.core.models import Fill, OrderStatus, Signal
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,13 @@ MIN_TRIPS_FOR_JUDGEMENT = 30
 # 하나로 합치면 환율 의존성이 생기므로 KR/US를 각자 통화 기준으로 판정한다.
 DUST_NOTIONAL_KRW = 30_000
 DUST_NOTIONAL_USD = 20
+
+# 반복 거부 로그 쿨다운(2026-08-31 실측: EC2 orders.jsonl 에 donchian SQQQ
+# "매도 가능 수량 0" 거부가 사이클마다 — 사실상 수 초 단위로 — 똑같이 찍혔다,
+# 110줄). 같은 (전략, 심볼, 사유)가 이 창 안에서 다시 오면 파일에는 안 쓴다.
+# 재시도 자체(엔진 판단)는 그대로 두고 **부기만** 억제한다 — 메모리에만 있어
+# 프로세스 재시작 때마다 리셋된다(디스크 쿨다운 상태를 새로 만들지 않는다).
+REJECT_LOG_COOLDOWN = timedelta(hours=1)
 
 _Z_95 = 1.959963984540054  # 95% 신뢰수준 표준정규분포 z-score
 
@@ -94,6 +101,9 @@ class TradeLedgerSink:
         self._orders_path = Path(orders_path or self._path.parent / "orders.jsonl")
         self._write_warned = False
         self._order_write_warned = False
+        # 반복 거부 로그 쿨다운(REJECT_LOG_COOLDOWN) — (strategy_id, symbol, reason)
+        # 별 마지막 기록 시각. 프로세스 메모리에만 있다.
+        self._reject_last_logged: dict[tuple[str, str, str], datetime] = {}
 
     def on_signal(self, signal: Signal) -> None:
         self._inner.on_signal(signal)
@@ -138,7 +148,24 @@ class TradeLedgerSink:
 
         기록 실패는 삼킨다 — `on_fill` 과 같은 계약이다. 사후 분석용 부기가 매매를
         멈추면 안 된다.
+
+        **거부(REJECTED)는 반복 억제가 걸린다** — 같은 (전략, 심볼, 사유)가
+        `REJECT_LOG_COOLDOWN`(1시간) 안에 다시 오면 파일에 또 쓰지 않는다
+        (2026-08-31, EC2 실측: 사이클마다 동일 거부가 그대로 반복 기록됐다).
+        엔진의 재시도 판단 자체는 건드리지 않는다 — 내부 싱크(`self._inner`)는
+        억제와 무관하게 항상 부른다.
         """
+        reason = state.reason or state.order.reason
+        if state.status == OrderStatus.REJECTED:
+            key = (state.order.strategy_id, state.order.symbol, reason)
+            now = state.updated_at or datetime.now(timezone.utc)
+            last = self._reject_last_logged.get(key)
+            if last is not None and (now - last) < REJECT_LOG_COOLDOWN:
+                inner_on_order = getattr(self._inner, "on_order", None)
+                if inner_on_order is not None:
+                    inner_on_order(state)
+                return
+            self._reject_last_logged[key] = now
         try:
             self._orders_path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps({
@@ -153,7 +180,7 @@ class TradeLedgerSink:
                 "remaining_qty": state.remaining_qty,
                 "avg_price": state.avg_price,
                 "broker_order_id": state.broker_order_id,
-                "reason": state.reason or state.order.reason,
+                "reason": reason,
                 "market": _market_of(state.order.symbol),
             }, ensure_ascii=False)
             with open(self._orders_path, "a", encoding="utf-8") as f:

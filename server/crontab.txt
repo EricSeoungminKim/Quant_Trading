@@ -10,14 +10,25 @@
 #   영향은 없지만, 추후 US 세션 관련 cron을 추가할 땐 EDT/EST 전환을 반드시 감안할 것
 #   (전작 테크감사 2026-07-17: 05:15 고정 크론이 동계에 하루 늦게 실행된 사례).
 
-# 매일 07:00 KST — Private Banker 일일 리포트 (Toss 실계좌 진단 → Telegram)
-0 7 * * * cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.cli report >> data/report.log 2>&1
+# 2026-08-31 몰림 분산(소유자 승인 "쪼개서 처리", 2GB 박스): 뱅커 report(구 07:00)
+# + backfill_us_daily(구 07:00, 화~토) 가 같은 분에 동시 기동했고, dart_collect
+# (구 07:20)도 market-report-kr.timer 기상(07:30)·빌드 시작(07:35, REPORT_BUILD_LEAD
+# 1500초)에 가까웠다. 세 크론 모두 하류 소비자가 "그 시각 이전에만 끝나면" 되는
+# 관계라(뱅커 report는 독립 알림, backfill은 regime provider가 다음 리로드에
+# 파일을 직접 읽는 것뿐, dart_collect는 07:35 빌드 시작 전에만 disclosures.jsonl
+# 이 채워지면 된다) 당기는 방향은 전부 안전 — 06:42/06:48/07:05 로 벌렸다.
+# 06:40/06:50 이 아니라 06:42/06:48 인 이유: 토요일엔 06:40 param_propose.sh /
+# 06:50 governor.sh(둘 다 LLM 호출, weekly_review 06:25 부터 이어지는 체인)가
+# 이미 그 분을 쓰고 있어 정각으로 맞추면 같은 분에 또 몰린다 — 2분 비켜 심었다.
+# 매일 06:48 KST — Private Banker 일일 리포트 (Toss 실계좌 진단 → Telegram)
+48 6 * * * cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.cli report >> data/report.log 2>&1
 
-# 매일 07:20 KST — DART 공시 수집 (H-2). KR 리포트(market-report-kr.timer, 07:50
-# 발행) 전에 원장(data/ledger/disclosures.jsonl)을 채워야 리포트가 오늘 공시를
-# 종목 카드에 붙일 수 있다. 공시는 뉴스보다 정확한 팩트 이벤트인데, 네이버 공시
-# 페이지는 robots.txt 전면 비허용이라 공식 DART OpenAPI 가 유일한 경로다.
-20 7 * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/dart_collect.sh >> data/dart.log 2>&1
+# 매일 07:05 KST — DART 공시 수집 (H-2). KR 리포트(market-report-kr.timer, 07:30
+# 기상 → 07:35 빌드 시작 → 08:00 발행) 전에 원장(data/ledger/disclosures.jsonl)을
+# 채워야 리포트가 오늘 공시를 종목 카드에 붙일 수 있다. 공시는 뉴스보다 정확한
+# 팩트 이벤트인데, 네이버 공시 페이지는 robots.txt 전면 비허용이라 공식 DART
+# OpenAPI 가 유일한 경로다.
+5 7 * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/dart_collect.sh >> data/dart.log 2>&1
 
 # 매주 일요일 03:00 KST — 로그 로테이션 + 캐시 정리 (7일 이상 지난 로그/캐시 삭제)
 0 3 * * 0 cd /home/ubuntu/quant_trading_kiwoom && find data -name "*.log" -mtime +7 -delete && find data/cache -mtime +7 -delete 2>/dev/null || true
@@ -230,8 +241,9 @@
 40 5 * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backfill_1m.sh >> data/backfill.log 2>&1
 
 # --- 봉 백필 (2026-08-13 신규: 스케줄이 아예 없었다) ---
-# QQQ 일봉. 화-토 07:00 KST — US 마감 05:00(EDT)/06:00(EST) 양쪽 모두 지난 시각이고,
-# 미국 월-금 세션은 한국 달력으로 익일에 걸리므로 요일이 화-토(2-6)다.
+# QQQ 일봉. 화-토 06:42 KST(2026-08-31 몰림 분산 이전 07:00 — 크론 상단 주석 참고) —
+# US 마감 05:00(EDT)/06:00(EST) 양쪽 모두 지난 시각이고, 미국 월-금 세션은 한국
+# 달력으로 익일에 걸리므로 요일이 화-토(2-6)다.
 #
 # **이건 백테스트용이 아니라 라이브 사이징에 걸린 파일이다.** regime provider가
 # data/history/QQQ/1d/를 직접 읽어 US 국면(방어 0.5x/중립 1.0x/공격 1.3x)을 계산한다.
@@ -241,7 +253,7 @@
 #
 # 스크립트가 받은 뒤 **커버리지로 되짚고**, 여전히 낡으면 알린다 — fetch의 exit 0이
 # "봉이 최신"을 뜻하지 않는다(alpaca 무료 구독이 rc=0으로 빈 결과를 주던 실측).
-0 7 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backfill_us_daily.sh >> data/backfill.log 2>&1
+42 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backfill_us_daily.sh >> data/backfill.log 2>&1
 
 # 매일 16:30 KST — 069500(KODEX200) 일봉 백필. 개장일 판정(quant/analyze/opendays.py)이
 # 이 파일의 마지막 봉 날짜를 앵커로 쓴다(G). 요일 제한 없이 **매일**인 이유: 이 파일

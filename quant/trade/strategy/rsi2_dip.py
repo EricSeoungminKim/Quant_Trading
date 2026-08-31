@@ -78,14 +78,18 @@ RSI(2)는 일봉 최소 5개, 추세 필터는 `trend_sma_days`개의 일봉이 
 맥락의 값이다 — 2번은 "그 심볼을 마지막으로 언제 팔았나"(하루짜리 게이트), 3번은
 "지금 들고 있는 포지션을 언제 샀나"(보유기간 계산의 기준, 랏에 영속).
 
-## RSI(2) 계산 — Wilder 평활, 파일 안에 순수 구현
+## RSI(2) 계산 — `quant.trade.indicators.rsi()` 재사용
 
-`quant/trade/indicators/__init__.py`에 이미 Wilder RSI 구현(`rsi()`, 기본 14)이
-있지만, 이 전략의 신호 정확성이 실거래 손익에 직결되므로 이 파일 안에서 계산이
-완결적으로 검증 가능해야 한다는 요구(작업 스펙)에 따라 `_wilder_rsi()`를
-독립적으로 구현했다 — `indicators.rsi()`와 알고리즘은 동일하고(재구현이지 새
-공식이 아니다), `period=2`로 이 전략에서만 쓴다. `tests/test_rsi2_dip.py`가 손으로
-계산한 수열로 정확성을 고정한다.
+과거에는 이 전략의 신호 정확성이 실거래 손익에 직결된다는 이유로 파일 안에
+`_wilder_rsi()`를 독립 구현했다(`indicators.rsi()`와 알고리즘은 완전히 동일한
+재구현이었다 — 새 공식이 아니었다). 커널 추출 수술(공용 커널 도입) 이후
+"이 파일 안에서 완결적으로 검증 가능해야 한다"는 자기완결 요구는 소멸했다 —
+`quant.trade.indicators.rsi()` 하나를 여러 전략이 신뢰해 공유하는 것이 지금의
+원칙이다. 그래서 이제 `rsi()`를 `_wilder_rsi`라는 이름으로 임포트해
+`period=2`로 그대로 쓴다(호출부 코드는 바뀌지 않는다). 정확성 검증(손으로 계산한
+수열 기대값)은 `tests/test_indicators.py`가 `indicators.rsi()`를 대상으로
+고정한다 — `tests/test_rsi2_dip.py`의 옛 `_wilder_rsi` 전용 테스트는 그 검증을
+가리키도록 갱신됐다.
 
 ## 세션 마감 근접 판단 — "오늘 종가"를 실시간 가격으로 근사한다
 
@@ -125,7 +129,8 @@ from quant.core.models import Signal, SignalAction, market_of_symbol
 from quant.core.session import in_continuous_session, market_tz
 from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
 from quant.trade.fmt import fmt_price
-from quant.trade.indicators import sma
+from quant.trade.indicators import rsi as _wilder_rsi, sma
+from quant.trade.strategy import kernel
 from quant.trade.strategy.shell import PureStrategyShell
 
 # Connors RSI(2) — 이 전략 고유의 고정 기간. 설정으로 노출하지 않는다("RSI(2)
@@ -146,38 +151,6 @@ _RSI_MIN_DAILY_BARS = 5
 # RSI 평활이 시드 편향을 벗어나 안정되기까지, 그리고 휴장일 결손을 감안하는
 # 여유분. `trend_sma_days`가 이보다 훨씬 크면(기본 200) 사실상 무관해진다.
 _WARMUP_BUFFER_DAYS = 20
-
-
-def _wilder_rsi(closes: pd.Series, period: int) -> pd.Series:
-    """Wilder 평활 RSI — `quant.trade.indicators.rsi()`와 같은 알고리즘의 독립
-    구현(모듈 docstring "RSI(2) 계산" 절 — 이 파일 안에서 완결적으로 검증
-    가능해야 한다는 요구에 따른 재구현이며, 새 공식이 아니다).
-
-    표준 정의: 첫 `period`개 상승분/하락분을 단순평균으로 시드한 뒤
-    (`평균_t = (평균_{t-1} × (period-1) + 현재값) / period`) 재귀적으로 평활한다.
-    첫 유효값은 인덱스 `period`(0-base)에서 나온다. 상승분/하락분이 둘 다
-    0(가격 불변)이면 50, 하락분만 0이면 100 — 워밍업 미달 구간은 NaN 그대로 둔다
-    (0이나 임의값으로 채우지 않는다 — 호출부가 `pd.isna()`로 직접 판단한다).
-    """
-    delta = closes.diff()
-    gain = delta.clip(lower=0.0)
-    loss = -delta.clip(upper=0.0)
-
-    avg_gain = pd.Series(index=closes.index, dtype=float)
-    avg_loss = pd.Series(index=closes.index, dtype=float)
-
-    if len(closes) > period:
-        avg_gain.iloc[period] = gain.iloc[1:period + 1].mean()
-        avg_loss.iloc[period] = loss.iloc[1:period + 1].mean()
-        for i in range(period + 1, len(closes)):
-            avg_gain.iloc[i] = (avg_gain.iloc[i - 1] * (period - 1) + gain.iloc[i]) / period
-            avg_loss.iloc[i] = (avg_loss.iloc[i - 1] * (period - 1) + loss.iloc[i]) / period
-
-    rs = avg_gain / avg_loss
-    result = 100 - (100 / (1 + rs))
-    result = result.mask(avg_loss == 0, 100.0)
-    result = result.mask((avg_gain == 0) & (avg_loss == 0), 50.0)
-    return result
 
 
 class Rsi2DipStrategy:
@@ -302,13 +275,9 @@ class Rsi2DipStrategy:
 
     @staticmethod
     def _my_lot(snap: StrategySnapshot, symbol: str) -> Mapping[str, Any] | None:
-        """내가 **진입가를 써 넣은** 열린 랏만 돌려준다 — 남의 포지션을 내 것으로
-        오인해 청산 주문을 내는 사고가 구조적으로 불가능해진다
-        (`overnight_drift._my_lot`/`MrVwapQuietStrategy._my_lot`과 같은 판정)."""
-        lot = snap.lots.get(symbol)
-        if not lot or lot.get("entry") is None:
-            return None
-        return lot
+        """내가 **진입가를 써 넣은** 열린 랏만 돌려준다 — `kernel.my_lot` 참고
+        (판정 근거는 그쪽 docstring)."""
+        return kernel.my_lot(snap.lots, symbol)
 
     @staticmethod
     def _extended_closes(daily: pd.DataFrame, price: float) -> pd.Series:
@@ -397,10 +366,7 @@ class Rsi2DipStrategy:
         stop = float(stop_raw) if stop_raw is not None else None
 
         def _exit(reason: str) -> Signal:
-            return Signal(
-                strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
-                target_weight=0.0, exit_fraction=1.0, reason=reason,
-            )
+            return kernel.exit_signal(self.id, symbol, reason)
 
         pnl_bp = (price / entry - 1.0) * 1e4
         base = (f"진입={fmt_price(entry, symbol)} 현재={fmt_price(price, symbol)} "

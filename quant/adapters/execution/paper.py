@@ -11,6 +11,8 @@ slippage_bps는 config(execution.slippage_bps)에서 오며, 체결가에 항상
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from quant.core.fx import FixedFxProvider, FxProvider
 from quant.core.ports import DataFeed
 from quant.core import oms
@@ -118,7 +120,11 @@ class PaperBroker:
         """
         quote = self.data.quote(order.symbol)
         if quote is None or quote.price <= 0:
-            return oms.not_submitted(order, "시세 없음/0 이하 — 주문 생성 불가")
+            # quote 가 없어 quote.ts 를 못 쓴다 — 2026-08-31 실측(EC2 orders.jsonl,
+            # "ts": null 110건): 이 아래 not_submitted 호출들이 at= 을 안 넘겨
+            # oms.accept()의 updated_at 이 그대로 None 으로 남았다. 벽시계로 채운다.
+            return oms.not_submitted(
+                order, "시세 없음/0 이하 — 주문 생성 불가", at=datetime.now(timezone.utc))
         slippage_bps = self._slippage_bps_for(order.symbol)
         if order.side is Side.BUY:
             price = quote.price * (1 + slippage_bps / 10_000)
@@ -136,7 +142,8 @@ class PaperBroker:
         if order.side is Side.BUY:
             qty = order.qty
             if qty <= 0:
-                return oms.not_submitted(order, f"매수 수량이 0 이하 (qty={qty})")
+                return oms.not_submitted(
+                    order, f"매수 수량이 0 이하 (qty={qty})", at=quote.ts)
             # 매수에는 세금·SEC Fee가 붙지 않는다 — 둘 다 매도 전용(토스 실제
             # 요율표). $10 이하 미국 커미션 면제는 매수·매도 공통이라 _commission이
             # 알아서 처리한다.
@@ -164,7 +171,7 @@ class PaperBroker:
             self.portfolio.cash -= to_krw(notional + fee, market, self.fx)
         else:
             if pos is None or pos.qty <= 0:
-                return oms.not_submitted(order, "보유 수량 없음 — 매도 불가")
+                return oms.not_submitted(order, "보유 수량 없음 — 매도 불가", at=quote.ts)
             # 자기 lot에서만 판다 — 다른 전략의 몫은 절대 건드리지 않는다(2026-08-11
             # 사용자 지시). lot이 없으면(수동 매수/순수 레거시) 기존 동작(pos 전체
             # 기준)으로 폴백하되, lot들이 존재하면 그 lot들 밖의 잔량(고아분)까지만
@@ -182,7 +189,8 @@ class PaperBroker:
             qty = min(order.qty, sellable)
             if qty <= 0:
                 return oms.not_submitted(
-                    order, f"매도 가능 수량 0 (요청 {order.qty}, 이 전략 몫 {sellable})")
+                    order, f"매도 가능 수량 0 (요청 {order.qty}, 이 전략 몫 {sellable})",
+                    at=quote.ts)
             notional = qty * price
             fee = self._commission(market, notional)
             if (

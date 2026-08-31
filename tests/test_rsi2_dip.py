@@ -5,7 +5,12 @@
 고정한다(`decide()`가 곧 이 전략의 계약이다).
 
 RSI(2) 계산 자체의 정확성은 손으로 계산한 수열(①)로 별도 고정한다 — 이후 모든
-진입/청산 테스트는 그 검증된 계산 위에서 시나리오만 다룬다.
+진입/청산 테스트는 그 검증된 계산 위에서 시나리오만 다룬다. ①은 이제
+`quant.trade.strategy.rsi2_dip._wilder_rsi`가 아니라 `quant.trade.indicators.rsi`를
+직접 검증한다 — 커널 추출 수술 이후 이 전략이 그 함수를 `period=2`로 그대로
+가져다 쓰기 때문에("이 파일 안에서 완결적으로 검증돼야 한다"는 옛 자기완결
+요구는 공용 커널 도입으로 소멸했다), ①이 고정하는 대상도 실제 호출 지점을
+따라간다.
 
 시각은 전부 America/New_York로 조립한다(기본 `market="US"`). 날짜는 전부 실제
 평일(월~금)로 골랐다 — `in_continuous_session`은 주말만 걸러내고 공휴일은 모른다.
@@ -21,11 +26,8 @@ import pytest
 
 from quant.core.models import Quote, SignalAction
 from quant.core.strategy_api import StrategySnapshot
-from quant.trade.strategy.rsi2_dip import (
-    Rsi2DipShell,
-    Rsi2DipStrategy,
-    _wilder_rsi,
-)
+from quant.trade.indicators import rsi as _wilder_rsi
+from quant.trade.strategy.rsi2_dip import Rsi2DipShell, Rsi2DipStrategy
 
 NY = ZoneInfo("America/New_York")
 SYM = "RSIU"
@@ -71,6 +73,7 @@ def _lot_from(signal) -> dict:
 
 
 # ============================================================ ① RSI(2) 계산 정확성
+# (이 전략이 period=2로 그대로 쓰는 quant.trade.indicators.rsi 자체를 검증한다)
 
 def test_wilder_rsi_matches_hand_computed_sequence():
     """손으로 계산한 Wilder RSI(2) 수열 — 시드 후 세 스텝을 정확한 분수로 검증.

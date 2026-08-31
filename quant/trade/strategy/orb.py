@@ -89,6 +89,7 @@ import pandas as pd
 
 from quant.core.ports import Context
 from quant.core.models import Position, Signal, SignalAction
+from quant.trade.indicators import sma_atr
 
 # 세션 시가 — "오늘 세션의 첫 N봉"을 판단하기 위한 거래일 경계 기준.
 _SESSION_OPEN: dict[str, tuple[ZoneInfo, dtime]] = {
@@ -379,17 +380,14 @@ class OpeningRangeBreakoutStrategy:
         return risk / reference_price if risk > 0 else None
 
     def _atr(self, ctx: Context) -> float | None:
+        """일봉 ATR 조회 — 분봉 기준 단순평균 산식은 `quant.trade.indicators.
+        sma_atr` 참고(구현 근거는 그쪽 docstring)."""
         bars = ctx.data.history(
             self.signal_symbol, self.atr_interval, self.atr_period + _ATR_LOOKBACK_EXTRA
         )
         if len(bars) < self.atr_period + 1:
             return None
-        high, low, close = bars["high"], bars["low"], bars["close"]
-        prev_close = close.shift(1)
-        tr = pd.concat(
-            [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
-        ).max(axis=1)
-        atr = float(tr.dropna().tail(self.atr_period).mean())
+        atr = sma_atr(bars, self.atr_period)
         return atr if atr > 0 else None
 
     def _manage_position(self, symbol: str, pos: Position, ctx: Context) -> Signal | None:

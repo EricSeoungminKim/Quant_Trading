@@ -157,6 +157,8 @@ from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
 from quant.trade.fmt import fmt_price
 from quant.trade.indicators import ema
 from quant.trade.indicators.trend_gate import atr_ratio
+from quant.trade.strategy import kernel
+from quant.trade.strategy.mr_vwap_quiet import session_vwap_bands
 from quant.trade.strategy.shell import PureStrategyShell
 
 _INTERVAL = "5m"
@@ -188,7 +190,7 @@ class PullbackImpulsePureStrategy:
         self.atr_buffer_mult: float = float(params.get("atr_buffer_mult", 0.3))
         # 최소 손절폭(bp). 기본 40 = 왕복 비용(US 20bp)의 2배 — 손절폭이 비용과
         # 같은 자릿수면 진입 자체가 마이너스섬이다(2026-08-29 NOW 실사고 주석 참고).
-        self.min_stop_bp: float = float(params.get("min_stop_bp", 40.0))
+        self.min_stop_bp: float = kernel.parse_min_stop_bp(params)
         self.atr_period: int = int(params.get("atr_period", 14))
         # 7) 목표 — 임펄스 폭 배수.
         self.target_mult: float = float(params.get("target_mult", 1.2))
@@ -212,8 +214,6 @@ class PullbackImpulsePureStrategy:
             raise ValueError("ema_period는 2 이상이어야 합니다.")
         if self.atr_buffer_mult < 0:
             raise ValueError("atr_buffer_mult는 0 이상이어야 합니다.")
-        if self.min_stop_bp < 0:
-            raise ValueError("min_stop_bp는 0(비활성) 이상이어야 합니다.")
         if self.atr_period < 2:
             raise ValueError("atr_period는 2 이상이어야 합니다.")
         if self.target_mult <= 0:
@@ -382,7 +382,7 @@ class PullbackImpulsePureStrategy:
         # 손절폭이 이 문턱에 못 미치는 자리는 "손절선을 정할 수 없는 자리"와
         # 같다 — 진입하지 않는다(structure.py 손절 철학).
         stop_bp = (entry - stop) / entry * 1e4
-        if stop_bp < self.min_stop_bp:
+        if not kernel.stop_bp_gate_ok(stop_bp, self.min_stop_bp):
             last_reject[symbol] = (
                 f"손절폭 {stop_bp:.0f}bp < 최소 {self.min_stop_bp:g}bp — "
                 "되돌림 저점이 너무 가깝다(노이즈 안)"
@@ -506,24 +506,28 @@ class PullbackImpulsePureStrategy:
 
     @staticmethod
     def _session_vwap(session: pd.DataFrame, ts) -> float | None:
-        """`ts` 봉까지의 누적 세션 VWAP(전형가 기준). 거래량 0이면 None."""
-        upto = session.loc[:ts]
-        volume = float(upto["volume"].sum())
-        if volume <= 0:
+        """`ts` 봉까지의 누적 세션 VWAP(전형가 기준). 거래량 0이면 None.
+
+        `mr_vwap_quiet.session_vwap_bands`(밴드 포함 버전)를 호출해 vwap만
+        취한다 — 밴드는 버리므로 `band_k`는 아무 값이나 상관없다(0 전달).
+        수치 동치는 `tests/test_pullback_impulse.py`의
+        `test_session_vwap_matches_mr_vwap_quiet_*`가 고정한다."""
+        bands = session_vwap_bands(session, band_k=0.0)
+        if bands is None:
             return None
-        typical = (upto["high"] + upto["low"] + upto["close"]) / 3.0
-        return float((typical * upto["volume"]).sum() / volume)
+        vwap, _, _ = bands
+        value = vwap.get(ts)
+        if value is None or pd.isna(value):
+            return None
+        return float(value)
 
     # ------------------------------------------------------------------ 관리
 
     def _should_flatten(self, market: str, snap: StrategySnapshot) -> bool:
-        """`Clock._should_flatten`(quant/core/clock.py) 재현 — 스냅샷이 주는
-        원재료(`minutes_to_close`, `cadence_minutes`)로 같은 공식을 계산한다."""
+        """`Clock._should_flatten`(quant/core/clock.py) 재현 — `kernel.
+        should_flatten_calendar` 참고."""
         mtc = snap.minutes_to_close.get(market)
-        if mtc is None or mtc <= 0:
-            # mtc <= 0 = 연속 거래 종료(동시호가) — 원본과 동일하게 False.
-            return False
-        return mtc - snap.cadence_minutes < self.flatten_minutes
+        return kernel.should_flatten_calendar(mtc, snap.cadence_minutes, self.flatten_minutes)
 
     def _manage(
         self, symbol: str, lot: Mapping[str, Any], market: str, snap: StrategySnapshot
@@ -544,13 +548,10 @@ class PullbackImpulsePureStrategy:
         target = float(lot["target"]) if lot.get("target") is not None else None
 
         def _exit(reason: str) -> Signal:
-            return Signal(
-                strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
-                target_weight=0.0, exit_fraction=1.0, reason=reason,
-            )
+            return kernel.exit_signal(self.id, symbol, reason)
 
         today_iso = snap.now.astimezone(market_tz(market)).date().isoformat()
-        if lot.get("session") and lot["session"] != today_iso:
+        if kernel.is_overnight_carry(lot, today_iso):
             return _exit(
                 f"세션 롤 강제청산(오버나잇 금지): 진입 {lot['session']} "
                 f"현재={fmt_price(price, symbol)}"

@@ -134,6 +134,7 @@ from quant.core.models import Signal, SignalAction, market_of_symbol
 from quant.core.session import continuous_window, in_continuous_session, market_tz
 from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
 from quant.trade.fmt import fmt_price
+from quant.trade.strategy import kernel
 from quant.trade.strategy.shell import PureStrategyShell
 
 # 필터가 켜졌을 때만 쓰는 봉. 세션 시가(당일 첫 봉의 시가)를 얻는 용도라
@@ -292,17 +293,9 @@ class OvernightDriftStrategy:
 
     @staticmethod
     def _my_lot(snap: StrategySnapshot, symbol: str) -> Mapping[str, Any] | None:
-        """내가 **진입가를 써 넣은** 열린 랏만 돌려준다.
-
-        `snap.lots[symbol]` 이 빈 dict 인 두 경우(남의 포지션 / 방금 체결돼
-        아직 lot 필드가 없음)를 `entry` 유무로 안전하게 걸러낸다 — 남의 포지션을
-        내 것으로 오인해 청산 주문을 내는 사고가 구조적으로 불가능해진다
-        (`MrVwapQuietStrategy._my_lot` 과 같은 판정).
-        """
-        lot = snap.lots.get(symbol)
-        if not lot or lot.get("entry") is None:
-            return None
-        return lot
+        """내가 **진입가를 써 넣은** 열린 랏만 돌려준다 — `kernel.my_lot` 참고
+        (판정 근거는 그쪽 docstring)."""
+        return kernel.my_lot(snap.lots, symbol)
 
     # ------------------------------------------------------------------ 진입
 
@@ -423,10 +416,7 @@ class OvernightDriftStrategy:
         stop = float(stop_raw) if stop_raw is not None else entry * (1 - self.stop_pct / 100)
 
         def _exit(reason: str) -> Signal:
-            return Signal(
-                strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
-                target_weight=0.0, exit_fraction=1.0, reason=reason,
-            )
+            return kernel.exit_signal(self.id, symbol, reason)
 
         pnl_bp = (price / entry - 1.0) * 1e4
         base = (f"진입={fmt_price(entry, symbol)} 현재={fmt_price(price, symbol)} "

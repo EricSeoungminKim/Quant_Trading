@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 from quant.core.ports import Context
 from quant.core.models import Position, Signal, SignalAction
 from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
+from quant.trade.strategy import kernel
 from quant.trade.strategy.shell import PureStrategyShell
 
 # min_session_bars_before_entry 게이팅에만 쓰는 세션 시가 — Clock은 is_market_open/
@@ -347,15 +348,10 @@ class DonchianPureStrategy:
         return Decision(signals=tuple(signals), next_state=next_state)
 
     def _should_flatten(self, snap: StrategySnapshot) -> bool:
-        """`quant/core/clock.py`의 `_should_flatten`을 스냅샷 원재료로 재현한다."""
+        """`quant/core/clock.py`의 `_should_flatten`을 스냅샷 원재료로 재현한다
+        — `kernel.should_flatten_calendar` 참고."""
         mtc = snap.minutes_to_close.get(self.market)
-        if mtc is None:
-            return False
-        # mtc <= 0 = 연속 거래 종료(동시호가 구간) — 원본과 동일하게 False
-        # (2026-08-26, clock._should_flatten 의 remaining<=0 게이트 재현).
-        if mtc <= 0:
-            return False
-        return mtc - snap.cadence_minutes < self.flatten_minutes
+        return kernel.should_flatten_calendar(mtc, snap.cadence_minutes, self.flatten_minutes)
 
     def _check_entry(
         self, symbol: str, snap: StrategySnapshot, last_bar_ts: object,

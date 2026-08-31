@@ -98,6 +98,7 @@ from quant.core.models import Signal, SignalAction, market_of_symbol
 from quant.core.session import continuous_window, in_continuous_session, market_tz
 from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
 from quant.trade.fmt import fmt_price
+from quant.trade.strategy import kernel
 from quant.trade.strategy.shell import PureStrategyShell
 
 # 당일 시가 획득용 봉 간격 — 모듈 docstring "데이터" 절. 이미 라이브에서 쓰이는
@@ -129,7 +130,7 @@ class VolBreakoutPureStrategy:
         self.k: float = float(params.get("k", 0.5))
         # 손절폭이 이 미만이면 진입 자체를 거부한다(모듈 docstring 규칙 3).
         # 0 이면 비활성 — 다른 전략들의 관례와 같다.
-        self.min_stop_bp: float = float(params.get("min_stop_bp", 40.0))
+        self.min_stop_bp: float = kernel.parse_min_stop_bp(params)
         # 마감 이 시간(분) 전에 전량 청산. clock.py 의 flatten_minutes 하한(≥1)과
         # 같은 이유로 0 을 허용하지 않는다 — 0 이면 cadence 를 뺀 조건이 세션 안
         # 어디에서도 성립하지 않아 청산 창이 통째로 사라진다(clock.py docstring
@@ -141,8 +142,6 @@ class VolBreakoutPureStrategy:
 
         if self.k <= 0:
             raise ValueError("k는 양수여야 합니다.")
-        if self.min_stop_bp < 0:
-            raise ValueError("min_stop_bp는 0(비활성) 이상이어야 합니다.")
         if self.eod_exit_min <= 0:
             raise ValueError("eod_exit_min은 양수여야 합니다.")
         if not 0 < self.target_weight <= 1:
@@ -166,12 +165,9 @@ class VolBreakoutPureStrategy:
 
     @staticmethod
     def _my_lot(snap: StrategySnapshot, symbol: str) -> Mapping[str, Any] | None:
-        """내가 **방어선을 써 넣은** 열린 랏만 돌려준다 — `mr_vwap_quiet`/
-        `overnight_drift`의 `_my_lot`과 같은 판정(남의 포지션 오인 방지)."""
-        lot = snap.lots.get(symbol)
-        if not lot or lot.get("entry") is None:
-            return None
-        return lot
+        """내가 **방어선을 써 넣은** 열린 랏만 돌려준다 — `kernel.my_lot` 참고
+        (판정 근거는 그쪽 docstring)."""
+        return kernel.my_lot(snap.lots, symbol)
 
     def decide(self, snap: StrategySnapshot, state: Mapping[str, Any]) -> Decision:
         # 입력 state 는 절대 in-place 로 건드리지 않는다 — 중첩 dict 까지 복사.
@@ -309,7 +305,7 @@ class VolBreakoutPureStrategy:
         # 손절폭 게이트 — 모듈 docstring 규칙 3 (`pullback_impulse`의
         # min_stop_bp 게이트와 같은 패턴).
         stop_bp = (entry - stop) / entry * 1e4
-        if self.min_stop_bp and stop_bp < self.min_stop_bp:
+        if not kernel.stop_bp_gate_ok(stop_bp, self.min_stop_bp):
             last_reject[symbol] = (
                 f"손절폭 {stop_bp:.0f}bp < 최소 {self.min_stop_bp:g}bp — "
                 "전일 변동성이 너무 좁다"
@@ -348,9 +344,7 @@ class VolBreakoutPureStrategy:
         판단 주기의 상호작용" 절. `snap.minutes_to_close`가 이미 연속 거래 끝
         기준(`_effective_close`)이므로 이 재현만으로 KR 동시호가까지 안전하다."""
         mtc = snap.minutes_to_close.get(market)
-        if mtc is None or mtc <= 0:
-            return False
-        return mtc - snap.cadence_minutes < self.eod_exit_min
+        return kernel.should_flatten_calendar(mtc, snap.cadence_minutes, self.eod_exit_min)
 
     def _manage(
         self, symbol: str, lot: Mapping[str, Any], market: str, snap: StrategySnapshot
@@ -371,16 +365,14 @@ class VolBreakoutPureStrategy:
         stop = float(stop_raw) if stop_raw is not None else None
 
         def _exit(reason: str) -> Signal:
-            return Signal(
-                strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
-                target_weight=0.0, exit_fraction=1.0, reason=reason,
-            )
+            return kernel.exit_signal(self.id, symbol, reason)
 
         # 오버나잇 안전망 — 이 전략은 정의상 하루 안에서 닫힌다(EoD 청산이 주
         # 경로다). 그래도 데이터 결손 등으로 EoD 청산을 놓친 경우의 방어선으로
         # 세션 롤 강제청산을 둔다(`mr_vwap_quiet`/`pullback_impulse`와 동일 패턴).
         entry_session = lot.get("session")
-        if entry_session and entry_session != snap.now.astimezone(tz).date().isoformat():
+        today_iso = snap.now.astimezone(tz).date().isoformat()
+        if kernel.is_overnight_carry(lot, today_iso):
             return _exit(
                 f"세션 롤 강제청산(오버나잇 금지): entry={fmt_price(entry, symbol)} "
                 f"현재={fmt_price(price, symbol)}"

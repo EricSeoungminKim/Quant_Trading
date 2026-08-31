@@ -541,3 +541,51 @@ def test_min_stop_gate_default_is_double_round_trip_cost():
     """기본 40bp = US 왕복 20bp 의 2배 — 이 관계가 깨지면 주석의 근거도 낡는다."""
     strat = PullbackImpulsePureStrategy(["AAA"], {})
     assert strat.min_stop_bp == 40.0
+
+
+# --------------------------------------------------------- _session_vwap 동치
+
+def test_session_vwap_matches_mr_vwap_quiet_session_vwap_bands():
+    """`_session_vwap`을 `mr_vwap_quiet.session_vwap_bands`(밴드 포함 버전)
+    호출로 교체하기 전, 두 구현이 합성 데이터에서 같은 값을 내는지 수치로
+    대조한다 — 밴드는 버리고 vwap 만 취하는 교체이므로 이 동치만 성립하면
+    안전하다(정상 거래량 봉과 거래량 0인 봉이 섞인 세션)."""
+    from quant.trade.strategy.mr_vwap_quiet import session_vwap_bands
+
+    idx = pd.date_range("2026-08-28 09:30", periods=6, freq="5min", tz=NY)
+    session = pd.DataFrame({
+        "high": [10.2, 10.5, 10.3, 10.6, 10.9, 10.7],
+        "low": [10.0, 10.2, 10.1, 10.3, 10.5, 10.4],
+        "close": [10.1, 10.4, 10.2, 10.5, 10.8, 10.6],
+        "volume": [100, 0, 200, 150, 0, 300],
+    }, index=idx)
+
+    old_vals = [PullbackImpulsePureStrategy._session_vwap(session, ts) for ts in idx]
+    vwap_series, _, _ = session_vwap_bands(session, band_k=0.0)
+    new_vals = [
+        float(vwap_series.get(ts)) if pd.notna(vwap_series.get(ts)) else None
+        for ts in idx
+    ]
+    assert old_vals == pytest.approx(new_vals)
+
+
+def test_session_vwap_matches_mr_vwap_quiet_when_leading_bars_have_zero_volume():
+    """세션 시작 봉들이 거래량 0(거래 정지 등)이면 누적 거래량이 0인 동안은
+    None — 둘 다 같은 지점에서 None을 벗어나야 한다."""
+    from quant.trade.strategy.mr_vwap_quiet import session_vwap_bands
+
+    idx = pd.date_range("2026-08-28 09:30", periods=3, freq="5min", tz=NY)
+    session = pd.DataFrame({
+        "high": [10.2, 10.5, 10.3],
+        "low": [10.0, 10.2, 10.1],
+        "close": [10.1, 10.4, 10.2],
+        "volume": [0, 0, 200],
+    }, index=idx)
+
+    old_vals = [PullbackImpulsePureStrategy._session_vwap(session, ts) for ts in idx]
+    vwap_series, _, _ = session_vwap_bands(session, band_k=0.0)
+    new_vals = [
+        float(vwap_series.get(ts)) if pd.notna(vwap_series.get(ts)) else None
+        for ts in idx
+    ]
+    assert old_vals == new_vals
