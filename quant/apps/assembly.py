@@ -794,7 +794,13 @@ def rebuild_strategies(
             len(universe_symbols), ", ".join(universe_symbols), WATCHLIST_OPT_IN,
         )
 
-    strategies = build_strategies(effective_cfg, leverage_of=leverage_of, tags_of=tags_of)
+    # inbox_reader 를 여기서 반드시 전달한다 — 2026-08-31 실사고: 파라미터를
+    # 받아 기본값(_read_llm_trader_inbox)까지 채워놓고 이 호출에서 빠뜨려,
+    # llm_trader 가 스텁 리더(빈 목록)로 조립됐다. 전략 쪽 `None이면 빈 목록`
+    # 폴백이 실패를 무증상으로 만들었다(판단 13건 무체결). 배선 끝까지의
+    # 주입은 tests/test_llm_trader_wiring.py 가 대조한다.
+    strategies = build_strategies(effective_cfg, leverage_of=leverage_of, tags_of=tags_of,
+                                  inbox_reader=inbox_reader)
     symbols = sorted({s for st in strategies for s in st.symbols})
     # 관심종목으로 새로 들어온 심볼은 settings의 us/kr 목록에 없어 매핑이 비는데,
     # 하위 계층은 전부 `.get(sym, "US")` 폴백을 쓴다 — KR 6자리 코드가 US로

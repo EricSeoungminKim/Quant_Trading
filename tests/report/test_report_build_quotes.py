@@ -227,11 +227,14 @@ def test_emit_merges_carryover_window_and_keeps_selections_ledger_free_of_carrie
     집계 창으로 잡아야 한다. 08-15 는 일부러 안 심어서 '누락 날짜는 건너뛴다'도
     같이 확인한다((f) 배선 + 누락 스킵).
 
-    **§G Task 4 와의 상호작용**: 08-17(월)은 앵커 기준 `last_open+1`(토, 08-15)
-    을 넘겨 원장 기록 게이트가 건너뛴다(Task 4) — 앵커 일봉은 그날 마감 후에야
-    갱신되므로 개장 전 리포트 시점엔 항상 하루 지연이 있다. 병합 자체
-    (engine.json/HTML)는 게이트와 무관하게 그대로 실행된다는 것도 이 테스트가
-    같이 확인한다."""
+    **§G Task 4 와의 상호작용(2026-08-31 갱신)**: 종전에는 이 시나리오(월요일)
+    에서 게이트가 기록을 통째로 건너뛰어 "원장 파일 부재"를 단언했다. 그 동작
+    자체가 결함이었다 — 앵커 일봉의 하루 지연 탓에 **정상 개장 월요일의 선정
+    기록이 매주 유실**됐다(실사고: 2026-08-31 선정 0행 → ai_trader 결근). 게이트
+    수리(평일은 항상 기록) 후, 이 테스트의 진짜 안전 속성만 남긴다: **이월
+    (carryover) 심볼은 오늘의 선정으로 원장에 오염되지 않는다** —
+    `_record_selections` 가 `_apply_carryover` *이전의* payload 로 호출되는
+    순서가 이를 구조적으로 보장하며, 이 단언이 그 순서의 회귀 가드다."""
     _write_qqq_anchor(tmp_path, ["2026-08-14"])
 
     cont = {"AAPL": _cont_entry(0)}
@@ -270,11 +273,15 @@ def test_emit_merges_carryover_window_and_keeps_selections_ledger_free_of_carrie
     assert "MSFT:RANK" in merged["auto_watch"]
     assert "AAPL:" in merged["auto_watch"]
 
-    # 원장 기록 게이트(Task 4) — 08-17(월)은 last_open(금)+1 을 넘겨 선정 원장
-    # 기록 자체를 건너뛴다. 게이트가 병합·렌더·write_machine 을 막지 않는다는
-    # 건 위 engine.json/HTML 검증이 이미 확인했다.
+    # 2026-08-31 게이트 수리 후: 정상 개장 월요일은 **기록된다**(주간 유실 결함
+    # 수리). 안전 속성은 "이월 심볼 미오염"으로 좁혀 검증한다 — 기록은 이월
+    # 병합 이전 payload 기준이라 MSFT(이월)는 원장에 없어야 하고, 오늘의 신선한
+    # 후보(AAPL)는 있어야 한다.
     ledger_path = tmp_path / "data" / "ledger" / "selections.jsonl"
-    assert not ledger_path.exists()
+    assert ledger_path.exists(), "정상 개장 월요일 선정 기록이 다시 유실되고 있다(게이트 회귀)"
+    ledger_text = ledger_path.read_text(encoding="utf-8")
+    assert '"MSFT"' not in ledger_text, "이월 심볼이 오늘의 선정으로 원장에 새고 있다"
+    assert '"AAPL"' in ledger_text
 
     html = (out_root / "2026" / "08" / "17" / "US_report.html").read_text(encoding="utf-8")
     assert "badge-carry" in html

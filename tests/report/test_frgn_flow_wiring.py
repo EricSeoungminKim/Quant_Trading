@@ -151,3 +151,16 @@ def test_emit_records_frgn_flow_on_saturday_first_capture(monkeypatch, tmp_path)
     report_cli._emit(snap, tmp_path, out_root, tmp_path / "snapshots")
 
     assert _frgn_flow_path(tmp_path).exists()
+
+
+def test_should_record_ledger_allows_normal_monday(tmp_path, monkeypatch):
+    """2026-08-31 실사고 회귀 가드: 정상 개장 월요일 아침 빌드(오늘 봉 부재 →
+    last_open=금요일)에서 기록이 차단되면 매주 월요일 선정 원장이 통째로
+    유실된다(ai_trader 결근·ML 라벨 구멍). 평일은 항상 기록해야 한다."""
+    from datetime import date
+    import quant.report.collect.ledger as L
+
+    monkeypatch.setattr(L, "last_open_day", lambda d, t: date(2026, 8, 28))  # 금
+    assert L._should_record_ledger("KR", tmp_path, date(2026, 8, 31)) is True   # 월 → 기록
+    assert L._should_record_ledger("KR", tmp_path, date(2026, 8, 29)) is True   # 토 → 첫 기록 허용(기존 의도)
+    assert L._should_record_ledger("KR", tmp_path, date(2026, 8, 30)) is False  # 일 → 차단(기존 의도)

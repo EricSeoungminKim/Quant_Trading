@@ -58,9 +58,19 @@ def _should_record_ledger(market: str, root: Path, today: date) -> bool:
 
     앵커(`opendays`) 데이터가 없어 개장일 판정이 안 되면 `True`(기존 동작
     유지) — 기록이 판정에 인질잡히지 않는다.
+
+    2026-08-31 수리: **평일 빌드는 항상 기록한다.** 종전 공식(`today <=
+    last_open+1`)은 정상 개장 월요일도 차단했다 — 아침 빌드(07:35) 시점엔
+    오늘 봉이 아직 없어 `last_open`이 금요일이고, 월요일 = 금+3 이라 거짓이
+    된다. 실측: 2026-08-31(월) 선정 기록 0행 → ai_trader 결근. 휴장 평일
+    (공휴일)의 드문 중복 기록은 수용한다 — 매주 월요일 전량 유실보다 낫고,
+    행에는 데이터 자체의 날짜가 남아 사후 dedup 이 가능하다. 주말 분기
+    (토=금요일분 첫 기록 허용 / 일=차단)는 원래 의도 그대로 유지된다.
     """
     last_open = last_open_day(anchor_dir_for(market, root), today)
     if last_open is None:
+        return True
+    if today.weekday() < 5:
         return True
     return today <= last_open + timedelta(days=1)
 
