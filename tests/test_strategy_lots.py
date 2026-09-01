@@ -148,6 +148,43 @@ def test_orphan_qty_outside_lots_is_not_managed_by_any_strategy_but_flatten_clea
     assert total_sold == pytest.approx(15.0)
 
 
+def test_flatten_day_scope_only_clears_intraday_lots_leaves_swing_and_orphan():
+    """`/flatten day` — 단타(오버나이트 캐리 없음) 전략의 lot만 청산하고, 스윙
+    (오버나이트 허용) 전략의 lot과 소유자 없는 잔여 수량은 손대지 않는다.
+
+    orb_scan은 `_OVERNIGHT_STRATEGIES`에 없는 단타 전략, frgn_accumulate는 그
+    집합에 있는 스윙(오버나이트) 전략 — loop.py의 EoD 강제청산 분류를 그대로
+    재사용한다."""
+    pos = Position(
+        symbol=SYMBOL, qty=25, avg_cost=100.0,
+        meta={"lots": {
+            "orb_scan": {"qty": 10.0, "avg_cost": 100.0, "entry": 100.0, "stop": 90.0},
+            "frgn_accumulate": {"qty": 10.0, "avg_cost": 100.0, "entry": 100.0, "stop": 90.0},
+        }},
+    )  # 25주 중 20주는 lot으로 추적, 5주는 고아분(소유자 없음)
+
+    broker = _broker(price=95.0)
+    broker.portfolio.positions[SYMBOL] = pos
+    ctx = Context(clock=_FixedClock(), data=broker.data, broker=broker)
+    risk = RiskManagerImpl(
+        {"risk": {"max_orders_per_day": 999, "cooldown_bars_after_stop": 0}},
+        capital_fraction={"orb_scan": 1.0, "frgn_accumulate": 1.0, "flatten": 1.0},
+        market_of={SYMBOL: "US"},
+    )
+    sink = _Sink()
+
+    _flatten_all(ctx, risk, sink, notifier=None, scope="day")
+
+    remaining = broker.portfolio.positions[SYMBOL]
+    assert remaining.is_open
+    # orb_scan(단타) 10주만 팔렸다 — frgn_accumulate(스윙) 10주 + 고아분 5주는 그대로.
+    assert remaining.qty == pytest.approx(15.0)
+    assert "orb_scan" not in remaining.meta["lots"]
+    assert remaining.meta["lots"]["frgn_accumulate"]["qty"] == pytest.approx(10.0)
+    total_sold = sum(f.qty for f in sink.fills)
+    assert total_sold == pytest.approx(10.0)
+
+
 # ============================================================= Position.ensure_lot: 재시작 이행
 
 

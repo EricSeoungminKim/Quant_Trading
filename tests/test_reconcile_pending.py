@@ -30,13 +30,15 @@ class _Control:
     def __init__(self):
         self.halted = False
         self.reason = ""
+        self.by = ""
 
     def is_halted(self) -> bool:
         return self.halted
 
-    def halt(self, reason: str) -> None:
+    def halt(self, reason: str, by: str = "manual") -> None:
         self.halted = True
         self.reason = reason
+        self.by = by
 
 
 class _Broker:

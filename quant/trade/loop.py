@@ -756,9 +756,10 @@ def _cancel_open_orders_before_flatten(broker) -> None:
 
 def _flatten_all(
     ctx: Context, risk: RiskManager, sinks: EventSink, notifier: Notifier | None,
-    books: StrategyBooks | None = None,
+    books: StrategyBooks | None = None, scope: str = "all",
 ) -> None:
-    """열린 포지션 전부를 즉시 청산한다 — TradingControl.request_flatten()의 실행부.
+    """열린 포지션 전부(또는 scope="day"면 단타 전략 보유분만)를 즉시 청산한다 —
+    TradingControl.request_flatten()의 실행부.
 
     halt와 달리 여기서 만드는 Signal은 항상 EXIT_LONG이라 run_cycle의 halt 체크
     (_ENTRY_ACTIONS)에 걸리지 않는다: halt 중에도 flatten은 반드시 동작해야 한다.
@@ -766,7 +767,13 @@ def _flatten_all(
     **장이 닫힌 종목은 risk.approve의 물리적 제약(A-5)에 그대로 걸린다** — flatten만
     이 게이트를 우회하지 않는다(닫힌 시장에 체결 가능한 가격이 없다는 사실은 flatten이라고
     바뀌지 않는다). 대신 여기서 우회하지 않는 대가로 **조용히 무시하지 않는다**: 게이트에
-    막힌 종목은 한 번에 모아 "다음 개장까지 대기"임을 사용자에게 알린다."""
+    막힌 종목은 한 번에 모아 "다음 개장까지 대기"임을 사용자에게 알린다.
+
+    `scope="day"`: 오버나이트 캐리가 설계인 전략(`_OVERNIGHT_STRATEGIES`/`_is_overnight`
+    — EoD 강제청산 여부를 가르는 데 이미 쓰던 같은 분류를 재사용한다)의 lot은
+    건드리지 않는다. 소유자가 없는 잔여 수량("flatten" 경로로 잡히는 고아분)도
+    day scope에서는 건드리지 않는다 — 스윙 전략 몫일 수 있어 단타 한정 청산의
+    범위 밖이다."""
     _cancel_open_orders_before_flatten(ctx.broker)
     positions = ctx.broker.positions()
     # 엔진 소유 원장을 노출하는 브로커면 **엔진이 진입한 종목만** 청산한다. 사용자가
@@ -780,7 +787,8 @@ def _flatten_all(
     ]
     if not open_symbols:
         return
-    logger.warning("수동 청산 요청 처리 — 전량 청산: %s", ", ".join(open_symbols))
+    scope_label = "단타 보유분" if scope == "day" else "전량"
+    logger.warning("수동 청산 요청 처리 — %s 청산: %s", scope_label, ", ".join(open_symbols))
     market_closed_symbols: set[str] = set()
 
     def _flatten_signal(strategy_id: str, symbol: str) -> None:
@@ -810,8 +818,18 @@ def _flatten_all(
         pos = positions.get(symbol)
         lots = (pos.meta.get("lots") if pos is not None else None) or {}
         active_strategy_ids = [sid for sid, lot in lots.items() if lot.get("qty", 0.0) > 0]
-        for strategy_id in active_strategy_ids:
+        # day scope: 오버나이트 캐리가 설계인 전략의 lot은 건드리지 않는다 —
+        # 그 몫은 스윙 포지션이라 단타 한정 청산의 대상이 아니다.
+        target_strategy_ids = (
+            [sid for sid in active_strategy_ids if not _is_overnight(sid)]
+            if scope == "day" else active_strategy_ids
+        )
+        for strategy_id in target_strategy_ids:
             _flatten_signal(strategy_id, symbol)
+        if scope == "day":
+            # 소유자 없는 잔여 수량("flatten" 경로)은 스윙 몫일 수 있으므로
+            # day scope에서는 건드리지 않는다.
+            continue
         tracked_qty = sum(lot.get("qty", 0.0) for lot in lots.values())
         residual = (pos.qty if pos is not None else 0.0) - tracked_qty
         if not active_strategy_ids or residual > 1e-9:
@@ -1946,17 +1964,21 @@ async def run_paper_loop(
         try:
             if reconciler is not None:
                 reconciler.check()  # 주기 미도달이면 내부에서 즉시 반환한다
-            if control.consume_flatten():
+            flatten_scope = control.consume_flatten_scope()
+            if flatten_scope:
                 # flatten은 승인을 거치지 않는다 — kill switch가 승인 대기로 막히면
                 # 안 된다. 대기 중이던 진입 요청은 만료시켜 청산 직후 되살아나지
                 # 않게 한다(expire_seconds=0 = 지금 pending인 것 전부).
-                _flatten_all(ctx, risk, sinks, notifier, books)
+                _flatten_all(ctx, risk, sinks, notifier, books, scope=flatten_scope)
                 if approval is not None:
                     approval.expire_stale(0)
                     for req in approval.take_approved():
                         _cancel_approved(req, "수동 청산 실행됨", notifier)
                 if notifier is not None:
-                    notifier.send("🧹 수동 청산 완료\n\n열린 포지션을 전량 청산 처리했습니다")
+                    if flatten_scope == "day":
+                        notifier.send("🧹 단타 청산 완료\n\n단타 전략 보유분을 청산 처리했습니다(오버나이트 전략 보유분은 유지)")
+                    else:
+                        notifier.send("🧹 수동 청산 완료\n\n열린 포지션을 전량 청산 처리했습니다")
             else:
                 if approval is not None:
                     _process_approvals(
@@ -1979,7 +2001,7 @@ async def run_paper_loop(
                     )
             if consecutive_failures >= max_failures and not control.is_halted():
                 reason = f"연속 {consecutive_failures}회 사이클 실패 — 자동 정지"
-                control.halt(reason)
+                control.halt(reason, by="auto")
                 logger.error(reason)
                 if notifier is not None:
                     notifier.send(f"⛔ 거래 자동 중단\n\n📕 사유 {reason}")
@@ -2011,7 +2033,7 @@ async def run_paper_loop(
                         )
                 if consecutive_failures >= max_failures and not control.is_halted():
                     reason = f"전략 오류로 포지션 관리 중단 {consecutive_failures}회 — 자동 정지"
-                    control.halt(reason)
+                    control.halt(reason, by="auto")
                     logger.error(reason)
                     if notifier is not None:
                         notifier.send(f"⛔ 거래 자동 중단\n\n📕 사유 {reason}")

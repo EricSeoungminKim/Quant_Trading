@@ -230,7 +230,7 @@ class Reconciler:
         reason = f"브로커 대사 불일치 — 신규 진입 중단 ({detail})"
         logger.error(reason)
         if not self._control.is_halted():
-            self._control.halt(reason)
+            self._control.halt(reason, by="auto")
         if self._notifier is not None and not self._mismatch_notified:
             self._mismatch_notified = True
             self._notifier.send(

@@ -76,3 +76,91 @@ def test_missing_state_file_is_treated_as_default(tmp_path):
     control = TradingControl(state_path=tmp_path / "does_not_exist" / "control.json")
     assert control.is_halted() is False
     assert control.consume_flatten() is False
+
+
+# ============================================================= halted_by: 수동 REST vs 자동 중단
+
+
+def test_halt_defaults_to_manual(tmp_path):
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.halt("사유")
+    assert control.halted_by() == "manual"
+
+
+def test_halt_by_auto_marks_circuit_breaker_origin(tmp_path):
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.halt("연속 실패", by="auto")
+    assert control.is_halted() is True
+    assert control.halted_by() == "auto"
+
+
+def test_resume_resets_halted_by_to_manual(tmp_path):
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.halt("자동 정지", by="auto")
+    control.resume()
+    control.halt("다시 수동")
+    assert control.halted_by() == "manual"
+
+
+def test_halted_by_survives_restart(tmp_path):
+    path = tmp_path / "control.json"
+    first = TradingControl(state_path=path)
+    first.halt("자동 중단", by="auto")
+
+    restarted = TradingControl(state_path=path)
+    assert restarted.halted_by() == "auto"
+    assert restarted.halt_reason() == "자동 중단"
+
+
+def test_old_schema_without_halted_by_or_flatten_scope_defaults_safely(tmp_path):
+    """control.json 하위호환 — 이 필드들이 생기기 전에 쓰인 구 스키마(halted만
+    있고 halted_by/flatten_scope가 없는 파일)를 에러 없이 읽고 안전한 기본값을
+    쓴다."""
+    import json
+
+    path = tmp_path / "control.json"
+    path.write_text(
+        json.dumps({"halted": True, "halt_reason": "레거시 정지", "flatten_requested": False}),
+        encoding="utf-8",
+    )
+
+    control = TradingControl(state_path=path)
+    assert control.is_halted() is True
+    assert control.halt_reason() == "레거시 정지"
+    assert control.halted_by() == "manual"  # 필드 부재 시 기본값
+    assert control.consume_flatten() is False
+
+
+# ============================================================= flatten scope: all vs day
+
+
+def test_request_flatten_defaults_to_all_scope(tmp_path):
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.request_flatten()
+    assert control.consume_flatten_scope() == "all"
+
+
+def test_request_flatten_day_scope_round_trips(tmp_path):
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.request_flatten("day")
+    assert control.consume_flatten_scope() == "day"
+    # one-shot — 두번째 소비는 빈 문자열(요청 없음)
+    assert control.consume_flatten_scope() == ""
+
+
+def test_consume_flatten_bool_wrapper_still_works_for_day_scope(tmp_path):
+    """하위호환 bool 버전은 scope와 무관하게 요청 여부만 True/False로 반환한다."""
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.request_flatten("day")
+    assert control.consume_flatten() is True
+    assert control.consume_flatten() is False
+
+
+def test_flatten_scope_survives_restart(tmp_path):
+    path = tmp_path / "control.json"
+    first = TradingControl(state_path=path)
+    first.request_flatten("day")
+
+    restarted = TradingControl(state_path=path)
+    assert restarted.consume_flatten_scope() == "day"
+

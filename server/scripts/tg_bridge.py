@@ -182,9 +182,11 @@ def build_claude_prompt(user_text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 매매 제어 명령 (/halt, /resume, /flatten, /status) — 실거래에 직접 영향을 주므로
-# Claude 서브프로세스를 거치지 않고 TradingControl에 바로 반영한다. 허용 chat_id
-# 검증은 process_update에서 이미 끝난 뒤에만 호출된다.
+# 매매 제어 명령 (/halt·/rest, /resume·/live, /flatten[·all|day], /status) — 실거래에
+# 직접 영향을 주므로 Claude 서브프로세스를 거치지 않고 TradingControl에 바로
+# 반영한다. 허용 chat_id 검증은 process_update에서 이미 끝난 뒤에만 호출된다.
+# /rest·/live는 각각 /halt·/resume의 별칭(같은 경로) — REST는 "관리 불가 상황에서
+# 신규 진입만 막고 보유 포지션 손절·청산은 계속"이라는 기존 halt 의미론 그대로다.
 # ---------------------------------------------------------------------------
 def read_portfolio_summary(path: Optional[Path] = None) -> Optional[dict]:
     path = path or PORTFOLIO_STATE_PATH  # 호출 시점 해석 — 테스트 monkeypatch 격리 가능
@@ -203,19 +205,31 @@ def handle_control_command(
     stripped = text.strip()
     lower = stripped.lower()
 
-    if lower == "/resume":
+    if lower == "/resume" or lower == "/live":
         control.resume()
-        return "재개됨 — 신규 진입 재허용"
+        return "재개됨(LIVE) — 신규 진입 재허용"
 
-    if lower == "/flatten":
-        control.request_flatten()
+    if lower == "/flatten" or lower == "/flatten all":
+        control.request_flatten("all")
         return "전량 청산 요청됨 — 다음 엔진 사이클에 반영"
+
+    if lower == "/flatten day" or lower == "/단타청산":
+        control.request_flatten("day")
+        return (
+            "단타 보유분만 즉시 청산 요청됨 — 다음 엔진 사이클에 반영\n"
+            "오버나이트 전략 보유분은 그대로 유지됩니다"
+        )
 
     if lower == "/status":
         halted = control.is_halted()
-        lines = [f"거래상태: {'중단' if halted else '정상'}"]
-        if halted:
-            lines.append(f"중단사유: {control.halt_reason()}")
+        if not halted:
+            state_value = "🟢 LIVE"
+        elif control.halted_by() == "auto":
+            state_value = f"⛔ 자동 중단({control.halt_reason()})"
+        else:
+            state_value = f"⏸ REST(수동 정지: {control.halt_reason()})"
+        # "거래상태" 레이블은 기존 표시와 하위호환을 위해 유지 — 값만 LIVE/REST/자동중단으로 구분한다.
+        lines = [f"거래상태: {state_value}"]
         portfolio = read_portfolio_summary()
         if portfolio is not None:
             lines.append(f"현금: {portfolio.get('cash', 0):,.0f}원")
@@ -231,10 +245,14 @@ def handle_control_command(
             lines.append(handle_daily_record(toss_client))
         return "\n".join(lines)
 
-    if lower == "/halt" or lower.startswith("/halt "):
-        reason = stripped[len("/halt"):].strip() or "수동 중단(텔레그램)"
-        control.halt(reason)
-        return f"거래 중단됨 — 사유: {reason}"
+    if lower == "/halt" or lower.startswith("/halt ") or lower == "/rest" or lower.startswith("/rest "):
+        prefix_len = len("/rest") if lower.startswith("/rest") else len("/halt")
+        reason = stripped[prefix_len:].strip() or "수동 중단(텔레그램)"
+        control.halt(reason, by="manual")
+        return (
+            f"REST 상태 진입 — 사유: {reason}\n"
+            "신규 진입 중단 — 보유 포지션 손절·청산은 계속 작동"
+        )
 
     return None
 
@@ -828,9 +846,10 @@ HELP_TEXT = """📖 사용 가능한 명령어
 /watchlist — 관심종목 목록
 
 ⚙️ 제어 (즉시 반영)
-/halt [사유] — 신규 진입 중단 (청산은 계속)
-/resume — 재개
-/flatten — 전량 청산 요청
+/halt [사유] (/rest [사유]) — 신규 진입 중단 REST 상태 (청산은 계속)
+/resume (/live) — 재개
+/flatten (/flatten all) — 전량 청산 요청
+/flatten day (/단타청산) — 단타 전략 보유분만 즉시 청산 (오버나이트 전략 보유분은 유지)
 
 📝 관심종목
 /watch <심볼...> — 추가 (여러 개 가능)
