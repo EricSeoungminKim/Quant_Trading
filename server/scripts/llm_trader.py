@@ -49,6 +49,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PORTFOLIO_PATH = REPO_ROOT / "data" / "state" / "portfolio.json"
 INBOX_PATH = REPO_ROOT / "data" / "state" / "llm_trader_inbox.jsonl"
+TRADES_PATH = REPO_ROOT / "data" / "state" / "trades.jsonl"
 PYTHON_BIN = REPO_ROOT / ".venv" / "bin" / "python"
 KST = timezone(timedelta(hours=9))
 STRATEGY_ID = "llm_trader"
@@ -170,6 +171,59 @@ def _positions_summary() -> tuple[str, list[str]]:
     return f"{body}\n{cash_line}", symbols
 
 
+def _scorecard() -> str:
+    """자기 성적표 — **수수료 차감 후** 순손익과 종목별 재매매 횟수.
+
+    2026-09-01 실측으로 드러난 착시를 메운다: 이 컨텍스트에는 평단만 있고
+    수수료가 없어서, 트레이더가 "평단 26,107 대비 +1.1% 수익 중인 승자"라고
+    판단한 종목이 실제로는 왕복 비용(KR 주식 왕복 ~23bp)에 먹혀 마이너스였다.
+    첫날+둘째날 합계가 수수료 전 -10,579원인데 수수료가 30,795원이라, 판단의
+    질과 무관하게 **재매매 빈도 자체가 손실의 주원인**이었다. 그 사실을 숨긴 채
+    한 달을 돌리면 실험 데이터가 통째로 무의미해진다 — 그래서 판단을 대신
+    내려주지 않고(자율성 유지) 자기 숫자만 정직하게 보여준다.
+    """
+    if not TRADES_PATH.exists():
+        return "(체결 기록 없음)"
+    today = datetime.now(KST).strftime("%Y-%m-%d")
+    gross = fee = 0.0
+    gross_today = fee_today = 0.0
+    fills_today: dict[str, int] = {}
+    try:
+        for line in TRADES_PATH.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get("strategy_id") != STRATEGY_ID:
+                continue
+            f = float(row.get("fee") or 0.0)
+            g = float(row.get("realized_pnl") or 0.0) if str(row.get("side", "")).lower() == "sell" else 0.0
+            gross += g
+            fee += f
+            if str(row.get("ts", "")).startswith(today):
+                gross_today += g
+                fee_today += f
+                sym = str(row.get("symbol", ""))
+                fills_today[sym] = fills_today.get(sym, 0) + 1
+    except OSError as exc:
+        return f"(체결 기록 읽기 실패: {exc})"
+
+    churn = ", ".join(
+        f"{s} {n}회" for s, n in sorted(fills_today.items(), key=lambda kv: -kv[1]) if n >= 2
+    )
+    return (
+        f"오늘: 수수료 전 {gross_today:+,.0f}원 / 수수료 {fee_today:,.0f}원 / "
+        f"**순손익 {gross_today - fee_today:+,.0f}원**\n"
+        f"누적: 수수료 전 {gross:+,.0f}원 / 수수료 {fee:,.0f}원 / "
+        f"**순손익 {gross - fee:+,.0f}원**\n"
+        f"오늘 같은 종목 재매매: {churn or '없음'}\n"
+        "※ 한국 주식은 왕복 약 23bp(수수료+거래세)가 든다 — 같은 종목을 하루에 "
+        "여러 번 사고팔면 판단이 맞아도 비용이 먼저 먹는다. 위 '순손익'이 네 진짜 성적이다."
+    )
+
+
 def _recent_orders(n: int = 5) -> str:
     if not INBOX_PATH.exists():
         return "(없음)"
@@ -255,6 +309,9 @@ def cmd_context() -> int:
     print()
     print("===== [참고 시세 데이터 (우리 데이터 API 조회 — 리포트 상위 후보 + 내 포지션)] =====")
     print(_peek_summary(candidates))
+    print()
+    print("===== [내 성적표 (수수료 차감 후 — 이게 진짜 성적이다)] =====")
+    print(_scorecard())
     print()
     print("===== [최근 자기 주문 이력 (최근 5건)] =====")
     print(_recent_orders())
