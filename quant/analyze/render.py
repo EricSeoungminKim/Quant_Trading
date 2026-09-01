@@ -647,6 +647,198 @@ def group_carried_by_sector(carried: list[dict]) -> list[dict]:
     return [{"name": name, "tiles": groups[name]} for name in order]
 
 
+# ---------------------------------------------------------------- 섹션 요약줄 (접힘 details 의 <summary>)
+#
+# 소유자 지시(2026-09-02): 섹션이 많아지면서 리포트가 길어졌다 — 각 섹션을
+# details/summary 로 접되, 접힌 상태에서도 "그 섹션의 결론"이 한 줄로 읽혀야
+# 한다(라벨 자기설명 원칙, 2026-08-29 개편과 동일). 조립 로직은 여기(파이썬)에
+# 둔다 — 템플릿에 판단 로직을 우겨넣지 않는다. 전부 **이미 model 에 있는
+# 필드를 재사용**할 뿐 새 수집·새 계산은 하지 않는다. 각 함수는 데이터가
+# 없으면 None — 템플릿의 `{% if tldr.xxx %}` 가 조용히 생략한다.
+
+def _pct_fmt(v: float | None) -> str:
+    return f"{v:+.1f}%" if v is not None else "―"
+
+
+def summarize_index_outlook(index_outlook: dict[str, dict] | None) -> str | None:
+    """지수별 전망 접힘 요약 — 지수마다 상승 확률(또는 점수/라벨)을 한 줄로.
+
+    확률 엔진 v2(up_prob)가 있으면 그 값을, 없으면 기존 probability.prob 를,
+    그마저 없으면 score100/label 을 쓴다 — 화면 표시(§2 필드 계약)와 같은
+    폴백 순서.
+    """
+    if not index_outlook:
+        return None
+    names = {"kospi": "코스피", "kosdaq": "코스닥", "sp500": "S&P500", "nasdaq": "나스닥"}
+    parts = []
+    for key, idx in index_outlook.items():
+        label = names.get(key, key)
+        up = idx.get("up_prob")
+        prob = (idx.get("probability") or {}).get("prob")
+        if up is not None:
+            parts.append(f"{label} 상승 {up:.0%}")
+        elif prob is not None:
+            parts.append(f"{label} 상승 {prob:.0%}")
+        elif idx.get("score100") is not None:
+            parts.append(f"{label} {idx.get('label')}")
+        else:
+            parts.append(f"{label} 판단 근거 부족")
+    return " · ".join(parts) if parts else None
+
+
+def summarize_money_flow(money_flow: dict | None) -> str | None:
+    """돈의 흐름 접힘 요약 — 자금 흐름 판정 + 현금 체력 판정 두 줄을 한 줄로."""
+    if not money_flow:
+        return None
+    flow = (money_flow.get("flow") or {}).get("label")
+    cash = (money_flow.get("cash") or {}).get("label")
+    parts = [p for p in (flow, cash) if p]
+    return " · ".join(parts) if parts else None
+
+
+def summarize_candidates(ranked: list[tuple[str, dict]]) -> str | None:
+    """뉴스 노출 상위 종목(오늘의 후보) 접힘 요약 — 종목 수 + 노출 1위."""
+    if not ranked:
+        return "오늘 뉴스에서 추출된 후보 없음"
+    _, top = ranked[0]
+    return f"{len(ranked)}종목 · 노출 1위 {top['name']}(오늘 {top['today_articles']}건)"
+
+
+def summarize_holiday(holiday_synthesis: dict | None) -> str | None:
+    if not holiday_synthesis:
+        return None
+    gap = holiday_synthesis.get("gap_days")
+    themes = holiday_synthesis.get("theme_freq") or []
+    if themes:
+        return f"휴장 {gap}일 · 상위 테마 {themes[0]['theme']}({themes[0]['count']}건)"
+    return f"휴장 {gap}일 종합"
+
+
+def summarize_digest(digest: dict | None) -> str | None:
+    if not digest:
+        return None
+    n_dom = len(digest.get("domestic") or [])
+    n_us = len(digest.get("us_impact") or [])
+    if not n_dom and not n_us:
+        return None
+    return f"국내 {n_dom}건 · 미국발 {n_us}건"
+
+
+def summarize_news_flow(news_flow: list[dict] | None) -> str | None:
+    if not news_flow:
+        return None
+    return f"전 매체 사건 단위 {len(news_flow)}건"
+
+
+def summarize_us_wrap(us_wrap: dict | None) -> str | None:
+    if not us_wrap:
+        return None
+    tone = us_wrap.get("tone")
+    up, down = us_wrap.get("up_count"), us_wrap.get("down_count")
+    if tone and up is not None and down is not None:
+        return f"{tone} · {up}↑ {down}↓"
+    return tone
+
+
+def summarize_us_kr_bridge(us_kr_bridge: dict | None) -> str | None:
+    if not us_kr_bridge:
+        return None
+    parts = []
+    if us_kr_bridge.get("tone"):
+        parts.append(us_kr_bridge["tone"])
+    up, down = us_kr_bridge.get("up_count"), us_kr_bridge.get("down_count")
+    if up is not None and down is not None:
+        parts.append(f"{up}↑ {down}↓")
+    n_focus = len(us_kr_bridge.get("focus") or [])
+    if n_focus:
+        parts.append(f"연동 업종 {n_focus}개")
+    return " · ".join(parts) if parts else None
+
+
+def summarize_usnews_headlines(usnews_headlines: list[dict] | None) -> str | None:
+    if not usnews_headlines:
+        return None
+    return f"최신 {len(usnews_headlines)}건"
+
+
+def summarize_top_movers(top_movers: dict | None) -> str | None:
+    if not top_movers:
+        return None
+    parts = []
+    sectors = top_movers.get("sectors") or []
+    themes = top_movers.get("themes") or []
+    if sectors:
+        s = sectors[0]
+        parts.append(f"업종 1위 {s['name']} {_pct_fmt(s.get('change_pct'))}")
+    if themes:
+        t = themes[0]
+        parts.append(f"테마 1위 {t['name']} {_pct_fmt(t.get('change_pct'))}")
+    return " · ".join(parts) if parts else None
+
+
+def summarize_sector_view(sector_view: list[dict] | None) -> str | None:
+    if not sector_view:
+        return None
+    dated = [s for s in sector_view if s.get("change_pct") is not None]
+    if not dated:
+        return f"{len(sector_view)}개 업종"
+    top = max(dated, key=lambda s: s["change_pct"])
+    return f"{len(sector_view)}개 업종 · 최고 {top['name']} {_pct_fmt(top['change_pct'])}"
+
+
+def summarize_foreign_view(foreign_view: dict | None) -> str | None:
+    if not foreign_view:
+        return None
+    sectors = foreign_view.get("sectors") or []
+    buy = sum(
+        1 for s in sectors for row in (s.get("rows") or [])
+        if row.get("label") == "매수 시그널(재유입)"
+    )
+    return f"{len(sectors)}개 업종 · 매수 시그널 {buy}건"
+
+
+def summarize_intraday_view(intraday_view: list[dict] | None) -> str | None:
+    if not intraday_view:
+        return None
+    top = intraday_view[0]
+    return f"{len(intraday_view)}종목 · 1위 {top['name']} {top.get('grade', '')} {top.get('score100')}점"
+
+
+def summarize_midterm_view(midterm_view: list[dict] | None) -> str | None:
+    if not midterm_view:
+        return None
+    top = midterm_view[0]
+    return f"{len(midterm_view)}종목 · 1위 {top['name']} {top.get('grade_label', '')}"
+
+
+def summarize_agent_interpret_view(agent_interpret_view: list[dict] | None) -> str | None:
+    if not agent_interpret_view:
+        return None
+    bullish = sum(1 for it in agent_interpret_view if it.get("direction") == "bullish")
+    return f"{len(agent_interpret_view)}종목 심층 해석 · 상승 근거 {bullish}건"
+
+
+def summarize_us_news_kr_view(us_news_kr_view: list[dict] | None) -> str | None:
+    if not us_news_kr_view:
+        return None
+    hits = sum(s.get("hits", 0) for s in us_news_kr_view)
+    return f"{len(us_news_kr_view)}개 섹터 · 헤드라인 {hits}건"
+
+
+def summarize_research_badges(research_badges: list[dict] | None) -> str | None:
+    if not research_badges:
+        return None
+    return f"{len(research_badges)}종목 리포트 발행"
+
+
+def summarize_carried_candidates(
+    carried_candidates: list[dict] | None, carried_by_sector: list[dict],
+) -> str | None:
+    if not carried_candidates:
+        return None
+    return f"{len(carried_candidates)}종목 · {len(carried_by_sector)}개 업종"
+
+
 def render(
     snap: Snapshot,
     cont: dict | None = None,
@@ -706,6 +898,31 @@ def render(
         (sym, {**c, "title_reps": dedup_with_counts(c.get("titles") or [])})
         for sym, c in rank(cont)
     ]
+    carried_by_sector = group_carried_by_sector(carried_candidates or [])
+    # 섹션 접힘 요약줄(2026-09-02) — 결정론 조립, 새 수집 없음(§섹션 요약줄
+    # docstring). 데이터가 없는 섹션은 함수가 None 을 돌려주고, 템플릿의
+    # `{% if tldr.xxx %}` 가 조용히 생략한다(digest/news_flow 등 기존 폴백과
+    # 같은 관례).
+    tldr = {
+        "index_outlook": summarize_index_outlook(index_outlook),
+        "money_flow": summarize_money_flow(money_flow),
+        "candidates": summarize_candidates(ranked),
+        "holiday": summarize_holiday(holiday_synthesis),
+        "digest": summarize_digest(digest),
+        "news_flow": summarize_news_flow(news_flow),
+        "us_wrap": summarize_us_wrap(us_wrap),
+        "us_kr_bridge": summarize_us_kr_bridge(us_kr_bridge),
+        "usnews_headlines": summarize_usnews_headlines(usnews_headlines),
+        "top_movers": summarize_top_movers(top_movers),
+        "sector_view": summarize_sector_view(sector_view),
+        "foreign_view": summarize_foreign_view(foreign_view),
+        "intraday": summarize_intraday_view(intraday_view),
+        "midterm": summarize_midterm_view(midterm_view),
+        "agent_interpret": summarize_agent_interpret_view(agent_interpret_view),
+        "us_news_kr": summarize_us_news_kr_view(us_news_kr_view),
+        "research_badges": summarize_research_badges(research_badges),
+        "carried": summarize_carried_candidates(carried_candidates, carried_by_sector),
+    }
     return _env().get_template("report.html.j2").render(
         snap=snap,
         cont=cont,
@@ -741,7 +958,7 @@ def render(
         carried_candidates=carried_candidates or [],
         # 이월 후보 업종별 그룹(리포트 UX 2차 Task 3) — 히트맵을 섹터로 묶어
         # 그리기 위한 뷰. 섹터 미상은 '기타'로 묶는다(group_carried_by_sector).
-        carried_by_sector=group_carried_by_sector(carried_candidates or []),
+        carried_by_sector=carried_by_sector,
         # 공시(H-2 Task 1) — DART 원장 교집합. 없으면 빈 dict, 칩 자체를 안 그린다.
         disclosures=disclosures or {},
         # 증권사 리서치(H-2 Task 5) — research.jsonl 원장 교집합. 없으면 빈 dict.
@@ -836,6 +1053,9 @@ def render(
         # 오늘의 시황/오늘의 뉴스 흐름 불릿의 "관련 종목" 칩(2026-08-29 소유자
         # 피드백) — cont 에서 파생한 순수 조회(link_to_symbols), 새 데이터 아님.
         link_symbols=link_to_symbols(cont),
+        # 섹션 접힘 요약줄(2026-09-02) — details/summary 로 접은 각 섹션의
+        # <summary> 에 실을 결론 한 줄. §섹션 요약줄 docstring 참고.
+        tldr=tldr,
         r=lambda k: snap.results.get(k),
         d=lambda k: _ok(snap, k),
     )

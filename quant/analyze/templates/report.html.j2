@@ -287,12 +287,27 @@ body{
 @media(max-width:840px){.mod.half{grid-column:span 12}
   .spine{grid-template-columns:1fr}.spine-now{width:auto;height:3px}
   }
-.mod > h2{font-size:var(--fs-md);font-weight:650;letter-spacing:0;
+.mod > h2,.mod > summary{font-size:var(--fs-md);font-weight:650;letter-spacing:0;
   padding-bottom:14px;margin-bottom:18px;border-bottom:1px solid var(--rule);
-  display:flex;align-items:baseline;gap:8px}
-.mod > h2 .sub{font-family:var(--font-mono);font-size:var(--fs-2xs);
+  display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.mod > h2 .sub,.mod > summary .sub{font-family:var(--font-mono);font-size:var(--fs-2xs);
   font-weight:500;letter-spacing:0;text-transform:uppercase;color:var(--mute);
   margin-left:auto}
+/* ── 섹션 요약(summary) 접힘 — details.mod (2026-09-02 소유자 지시) ──
+   섹션이 늘어나며 리포트가 길어진다는 피드백 — 알짜 요약(제목+결론 한 줄)만
+   보이고 나머지는 펼쳐서 본다. `.mod > h2`와 타이포는 완전히 공유하고(위 병합
+   셀렉터), summary 고유의 클릭 커서·마커·화살표만 여기서 얹는다(.appendix/
+   .engine/.sector 의 기존 접힘 패턴과 동일). 정보는 그대로다 — 접히는 것뿐. */
+.mod > summary{cursor:pointer;list-style:none}
+.mod > summary::-webkit-details-marker{display:none}
+.mod > summary::after{content:"▸";margin-left:8px;font-size:var(--fs-2xs);color:var(--mute)}
+details.mod[open] > summary::after{content:"▾"}
+.mod > summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+/* 결론 한 줄 — 제목(굵게)·부가 배지(.sub)와 다른 무게로, 항상 새 줄에(줄바꿈
+   강제는 flex-basis:100%) 읽힌다. 접혀 있어도 이 줄만으로 오해가 없어야 한다
+   (라벨 자기설명 원칙, 2026-08-29 개편과 동일). */
+.mod-tldr{flex-basis:100%;font-size:var(--fs-sm);font-weight:500;
+  color:var(--body);margin-top:2px}
 .exec-p{font-size:var(--fs-md);line-height:1.7;color:var(--body)}
 .exec-p + .exec-p{margin-top:12px}
 table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
@@ -566,6 +581,11 @@ a{color:inherit}
   .wrap{max-width:100%;padding:0}
   .engine{background:#fff;color:#000;border:1px solid #000}
   .engine code,.engine h2{color:#000}
+  /* 접힌 details 요소도 인쇄에서는 전부 펼쳐서 찍는다 — 종이/PDF에서는 클릭이
+     안 되니 접힌 채로 나가면 그 섹션은 통째로 소실된 것과 같다(2026-09-02).
+     open 속성이 없어도 내용을 강제로 보이게 하고, 화살표 마커는 지운다. */
+  details:not([open]) > *:not(summary){display:block !important}
+  details > summary::after{content:none !important}
 }
 
 /* ── 챕터(읽는 흐름 재구성, 2026-08-29) ──────────────────────────────
@@ -599,6 +619,15 @@ a{color:inherit}
 .idx-outlook-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
   gap:16px;margin-top:14px}
 .idx-outlook-card .v{font-size:var(--fs-xl)}
+/* 상승/하락 확률 쌍 + 가로 게이지(2026-09-02, 확률 엔진 v2 필드 — up_prob/
+   down_prob 가 있을 때만 쓰인다. 없으면 기존 단일 상승확률 문구로 폴백). */
+.prob-pair{display:flex;gap:14px;font-size:var(--fs-sm);margin-bottom:5px}
+.prob-pair b{font-variant-numeric:tabular-nums}
+.prob-gauge{height:8px;border-radius:var(--radius-pill);overflow:hidden;
+  display:flex;background:var(--hair)}
+.prob-gauge i{display:block;height:100%}
+.prob-gauge i.up{background:var(--up)}
+.prob-gauge i.down{background:var(--down)}
 /* ── 부록(8장) 접힘 — .engine/.sector 의 기존 details 패턴 재사용 ── */
 .appendix{border:1px solid var(--rule);border-radius:var(--radius-lg);
   padding:22px 26px;margin-top:8px}
@@ -746,8 +775,8 @@ html{overflow-x:hidden}
 {% endif %}
 
 {% if holiday_synthesis %}
-<section class="mod">
-  <h2>휴장 {{ holiday_synthesis.gap_days }}일 종합<span class="sub">마지막 개장일 {{ holiday_synthesis.last_open }} 이후 · {{ holiday_synthesis.window_dates|join(', ') }}</span></h2>
+<details class="mod">
+  <summary>휴장 {{ holiday_synthesis.gap_days }}일 종합<span class="sub">마지막 개장일 {{ holiday_synthesis.last_open }} 이후 · {{ holiday_synthesis.window_dates|join(', ') }}</span>{% if tldr.holiday %}<span class="mod-tldr">{{ tldr.holiday }}</span>{% endif %}</summary>
   <p class="idx-sub">지난 휴장 동안 쌓인 리포트 데이터를 오늘 개장 아침에 종합한 것이다 — 휴장 기간 흐름이 오늘 개장에 갖는 의미와, 우리 시스템이 어떻게 대응하는지를 함께 본다.</p>
   {% if holiday_synthesis.prose %}
   <p class="foot"><span class="chip">AI 요약</span></p>
@@ -778,7 +807,7 @@ html{overflow-x:hidden}
   {% if holiday_synthesis.missing_engine_days %}
   <p class="foot">일부 결손 — {{ holiday_synthesis.missing_engine_days|join(', ') }} 데이터 없음(부분 집계).</p>
   {% endif %}
-</section>
+</details>
 {% endif %}
 
 <div class="chapter-head" id="ch3"><span class="chapter-no">3</span><h2 class="chapter-title">오늘의 지수 전망</h2></div>
@@ -808,8 +837,8 @@ html{overflow-x:hidden}
 
 {% set idx_names = {"kospi": "코스피", "kosdaq": "코스닥", "sp500": "S&P500", "nasdaq": "나스닥"} %}
 {% if index_outlook %}
-<section class="mod">
-  <h2>지수별 전망<span class="sub">코스피/코스닥 또는 S&amp;P500/나스닥 · 점수 + 경험적 상승확률</span></h2>
+<details class="mod" open>
+  <summary>지수별 전망<span class="sub">코스피/코스닥 또는 S&amp;P500/나스닥 · 점수 + 경험적 상승확률</span>{% if tldr.index_outlook %}<span class="mod-tldr">{{ tldr.index_outlook }}</span>{% endif %}</summary>
   <p class="idx-sub">
     <b>점수</b>는 오늘 조건(지수 모멘텀·수급·VIX·앵커·임박 이벤트)을 규칙으로 가감한 것이고,
     <b>확률</b>은 과거 같은 조건일 때 실제로 다음날 오른 비율을 센 경험적 빈도다 — 서로 다른 근거이니 함께 참고한다.
@@ -829,6 +858,43 @@ html{overflow-x:hidden}
         {% for f in idx.negatives %}<span class="fac m">{{ f }}</span>{% endfor %}
       </div>
       {% endif %}
+      {# 확률 엔진 v2(2026-09-02, 병렬 워커 배선) — 지수당 up_prob/down_prob/
+         n_samples/shrinkage/method/factors/brier_vs_base 필드가 있으면 상승·
+         하락 확률을 쌍으로 가로 게이지와 함께 보여준다. 필드가 아직 없거나
+         (구 스키마) None 이면 기존 단일 상승확률 문구로 그대로 폴백한다 —
+         두 워커가 순서 무관하게 합쳐지도록(스펙 §2 필드 계약). #}
+      {% if idx.up_prob is defined and idx.up_prob is not none %}
+      <div class="note" style="margin-top:10px">
+        <div class="prob-pair">
+          <span>상승 <b class="up">{{ '{:.0%}'.format(idx.up_prob) }}</b></span>
+          <span>하락 <b class="down">{{ '{:.0%}'.format(idx.down_prob) }}</b></span>
+        </div>
+        <div class="prob-gauge">
+          <i class="up" style="width:{{ '%.1f' % (idx.up_prob * 100) }}%"></i>
+          <i class="down" style="width:{{ '%.1f' % (idx.down_prob * 100) }}%"></i>
+        </div>
+        {% if idx.method or idx.n_samples is not none or idx.factors %}
+        <details class="score-breakdown" style="margin-top:6px">
+          <summary>확률 산출 근거</summary>
+          <p class="idx-sub">
+            {{ idx.method }}{% if idx.n_samples is not none %} · 표본 {{ idx.n_samples }}개{% endif %}
+            {%- if idx.shrinkage is not none %} · 축소계수 {{ '{:.2f}'.format(idx.shrinkage) }}{% endif %}
+            {%- if idx.brier_vs_base is not none %} · Brier 개선 {{ '{:+.3f}'.format(idx.brier_vs_base) }}{% endif %}
+          </p>
+          {% if idx.factors %}
+          <div class="facs">
+            {% for f in idx.factors %}
+            {# 확률 엔진 v2 요인 계약(quant.analyze.index_outlook.shrinkage_probability):
+               {"name", "state", "contribution"} — 채택 요인(전일 등락 부호 ·
+               N일 추세 부호)만 담는다. 다른 형태(plain 문자열)가 오면 그대로 표시. #}
+            <span class="chip">{% if f is mapping %}{{ f.name }}{% if f.state %} {{ f.state }}{% endif %}{% if f.contribution %} ({{ f.contribution }}){% endif %}{% else %}{{ f }}{% endif %}</span>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </details>
+        {% endif %}
+      </div>
+      {% else %}
       <div class="note" style="margin-top:10px">
         {% if idx.probability.prob is not none %}
         상승 확률 <b>{{ '{:.0%}'.format(idx.probability.prob) }}</b>
@@ -837,10 +903,11 @@ html{overflow-x:hidden}
         상승 확률 <span class="idx-sub">산출 불가 — {{ idx.probability.reason }}</span>
         {% endif %}
       </div>
+      {% endif %}
     </div>
     {% endfor %}
   </div>
-</section>
+</details>
 {% endif %}
 
 {# ── 돈의 흐름(money_flow, 2026-08-31 소유자 지시: "유가·금리·원자재·지수의
@@ -851,8 +918,8 @@ html{overflow-x:hidden}
    docstring)로 결정된다 — 실패/결측이면 fallback_text(결정론 문장)를
    대신 보여준다(us_kr_bridge/index_outlook과 같은 무LLM 폴백 관례). #}
 {% if money_flow %}
-<section class="mod">
-  <h2>돈의 흐름<span class="sub">유가·금리·환율·VIX 매크로 원장 · 결정론 판정</span></h2>
+<details class="mod" open>
+  <summary>돈의 흐름<span class="sub">유가·금리·환율·VIX 매크로 원장 · 결정론 판정</span>{% if tldr.money_flow %}<span class="mod-tldr">{{ tldr.money_flow }}</span>{% endif %}</summary>
   <div class="key">
     {% for name, s in money_flow.series.items() %}
     <div class="kv">
@@ -879,7 +946,7 @@ html{overflow-x:hidden}
   {% else %}
   <p class="foot">{{ money_flow.fallback_text }}</p>
   {% endif %}
-</section>
+</details>
 {% endif %}
 
 <div class="chapter-head" id="ch4"><span class="chapter-no">4</span><h2 class="chapter-title">시장 흐름</h2></div>
@@ -888,8 +955,8 @@ html{overflow-x:hidden}
    중복 제거) 대표를 dup_count 내림차순 상위로 뽑아 국내/미국발로 나눈다.
    무LLM 완전 결정론(사용자 원칙 2: "국내 뉴스는 다 똑같은 말 = 노이즈"). #}
 {% if digest and (digest.domestic or digest.us_impact) %}
-<section class="mod">
-  <h2>오늘의 시황 — 사건 단위<span class="sub">다매체 보도량 순 · 대표 사건만</span></h2>
+<details class="mod">
+  <summary>오늘의 시황 — 사건 단위<span class="sub">다매체 보도량 순 · 대표 사건만</span>{% if tldr.digest %}<span class="mod-tldr">{{ tldr.digest }}</span>{% endif %}</summary>
   <div class="themes">
     <div class="theme">
       <div class="theme-h"><b>국내 시장</b></div>
@@ -950,15 +1017,15 @@ html{overflow-x:hidden}
   {% if digest_prose %}
   <p class="foot">요약은 서술만 — 사건 선정은 결정론(다매체 보도량)</p>
   {% endif %}
-</section>
+</details>
 {% endif %}
 {# ── 오늘의 뉴스 흐름(리포트 UX 2차 요구 1) ── 시황 다이제스트는 경제지
    큐레이션 + 대표 8건이라 "여러 매체 뉴스가 풍성하게" 라는 느낌이 사라졌다는
    피드백(2026-08-17) — 여기는 econ 필터도 TOP_N 자름도 없이 그날 전체를
    사건 단위(다매체 중복만 제거)로 보여준다. market_digest.build_news_flow. #}
 {% if news_flow %}
-<section class="mod">
-  <h2>오늘의 뉴스 흐름<span class="sub">전 매체 · 사건 단위 · 다매체 보도량 순</span></h2>
+<details class="mod">
+  <summary>오늘의 뉴스 흐름<span class="sub">전 매체 · 사건 단위 · 다매체 보도량 순</span>{% if tldr.news_flow %}<span class="mod-tldr">{{ tldr.news_flow }}</span>{% endif %}</summary>
   <ul class="news-list">
     {% for item in news_flow[:12] %}
     <li>
@@ -1003,7 +1070,7 @@ html{overflow-x:hidden}
   </details>
   {% endif %}
   <p class="foot">모든 수집 매체의 사건 단위 흐름 — 시황 다이제스트(경제지 큐레이션)와 달리 전 매체를 보여준다</p>
-</section>
+</details>
 {% endif %}
 {# ── 시간 척추: 과거 흐름 │NOW│ 예정 이벤트 ── #}
 <section class="spine">
@@ -1083,8 +1150,8 @@ html{overflow-x:hidden}
    읽어와 보여준다 — 아래 us_kr_bridge 카드와 달리 이 카드는 그 시점에 이미
    계산된 값을 재활용할 뿐 이 자리에서 다시 계산하지 않는다. #}
 {% if us_wrap %}
-<section class="mod">
-  <h2>🌆 전일 미국장 마감 요약<span class="sub">{{ us_wrap.date }}{% if us_wrap.tone %} · {{ us_wrap.tone }}{% endif %}{% if us_wrap.up_count is defined %} · {{ '%d' % us_wrap.up_count }}↑ {{ '%d' % us_wrap.down_count }}↓{% endif %}</span></h2>
+<details class="mod">
+  <summary>🌆 전일 미국장 마감 요약<span class="sub">{{ us_wrap.date }}{% if us_wrap.tone %} · {{ us_wrap.tone }}{% endif %}{% if us_wrap.up_count is defined %} · {{ '%d' % us_wrap.up_count }}↑ {{ '%d' % us_wrap.down_count }}↓{% endif %}</span>{% if tldr.us_wrap %}<span class="mod-tldr">{{ tldr.us_wrap }}</span>{% endif %}</summary>
   {% if us_wrap.indices %}
   <div class="brief">
   {% for idx in us_wrap.indices %}
@@ -1138,15 +1205,15 @@ html{overflow-x:hidden}
   {% endfor %}
   <p class="foot" style="margin-top:8px">패턴 종목은 오늘 후보 유니버스에 자동 합류한다 — 전략들이 1분봉·일봉 조건으로 진입각을 판단한다.</p>
   {% endif %}
-</section>
+</details>
 {% endif %}
 {# ── 🌙 어젯밤 미국장 → 오늘 한국장(KR 아침판 전용, 2026-08-21) ──
    미국 정규장은 KST 새벽에 끝나고 같은 날 아침 한국장이 열린다. 방금 끝난
    미국 세션의 섹터 등락(S&P 섹터 ETF 11종)과, GICS 섹터→산업 매핑으로 연결된
    국내 업종·종목을 보여준다. tone 은 집계 라벨이지 예측이 아니다. #}
 {% if us_kr_bridge %}
-<section class="mod">
-  <h2>🌙 어젯밤 미국장 → 오늘 한국장<span class="sub">S&P 섹터 ETF 11종 · 마감 {{ '%d' % us_kr_bridge.up_count }}↑ {{ '%d' % us_kr_bridge.down_count }}↓ · {{ us_kr_bridge.tone }}</span></h2>
+<details class="mod">
+  <summary>🌙 어젯밤 미국장 → 오늘 한국장<span class="sub">S&P 섹터 ETF 11종 · 마감 {{ '%d' % us_kr_bridge.up_count }}↑ {{ '%d' % us_kr_bridge.down_count }}↓ · {{ us_kr_bridge.tone }}</span>{% if tldr.us_kr_bridge %}<span class="mod-tldr">{{ tldr.us_kr_bridge }}</span>{% endif %}</summary>
   <p class="idx-sub">
     미국 정규장은 한국시간 새벽에 끝난다 — 아래는 방금 끝난 미국 세션의 섹터
     등락과, 같은 GICS 분류로 연결되는 국내 업종이다. 미국에서 오른 섹터가 당일
@@ -1182,13 +1249,13 @@ html{overflow-x:hidden}
     데이터가 없어 대장주 기준은 쓰지 않는다. 표시·근거용이며 자동매수 경로
     (AUTO_WATCH)에는 들어가지 않는다.
   </p>
-</section>
+</details>
 {% endif %}
 {# ── 🇺🇸 실시간 헤드라인(US 리포트 전용) ──
    텔레그램 usnews tier 채널 최신 12건 — 별도 해석 없이 원문 그대로. #}
 {% if usnews_headlines %}
-<section class="mod">
-  <h2>🇺🇸 실시간 헤드라인<span class="sub">텔레그램 미국 뉴스 채널 · 최신 {{ usnews_headlines|length }}건</span></h2>
+<details class="mod">
+  <summary>🇺🇸 실시간 헤드라인<span class="sub">텔레그램 미국 뉴스 채널 · 최신 {{ usnews_headlines|length }}건</span>{% if tldr.usnews_headlines %}<span class="mod-tldr">{{ tldr.usnews_headlines }}</span>{% endif %}</summary>
   <div class="brief">
   {% for h in usnews_headlines %}
     <div class="bi">
@@ -1197,7 +1264,7 @@ html{overflow-x:hidden}
     </div>
   {% endfor %}
   </div>
-</section>
+</details>
 {% endif %}
 <div class="grid">
 {# ── 반도체 앵커 (KR 고정) ── #}
@@ -1267,8 +1334,8 @@ html{overflow-x:hidden}
    나머지 3개는 대표 종목 없는 sectors_all/themes_all 에서 이어 붙인다 — 그래서
    앞 3타일만 대표 종목 캡션이 있다(내 판단: 데이터가 없는데 지어내지 않는다). #}
 {% if top_movers and (top_movers.sectors or top_movers.themes) %}
-<section class="mod">
-  <h2>업종상위 · 테마상위<span class="sub">등락률 상위 6 히트맵 · 네이버 금융 홈 패리티</span></h2>
+<details class="mod">
+  <summary>업종상위 · 테마상위<span class="sub">등락률 상위 6 히트맵 · 네이버 금융 홈 패리티</span>{% if tldr.top_movers %}<span class="mod-tldr">{{ tldr.top_movers }}</span>{% endif %}</summary>
   <div class="rank-grid">
     {% if top_movers.sectors %}
     {% set sector_tiles = top_movers.sectors + (top_movers.sectors_all or [])[top_movers.sectors|length:6] %}
@@ -1337,12 +1404,12 @@ html{overflow-x:hidden}
     </div>
     {% endif %}
   </div>
-</section>
+</details>
 {% endif %}
 {# ── 테마(업종) 시세: 오늘 오르는 섹터 → 소속 종목 → 수혜주 ── #}
 {% if sector_view %}
-<section class="mod">
-  <h2>업종별 시세<span class="sub">업종 등락률 · 타일 클릭해서 소속 종목·수혜주 펼치기</span></h2>
+<details class="mod">
+  <summary>업종별 시세<span class="sub">업종 등락률 · 타일 클릭해서 소속 종목·수혜주 펼치기</span>{% if tldr.sector_view %}<span class="mod-tldr">{{ tldr.sector_view }}</span>{% endif %}</summary>
   <div class="hm-grid">
     {% for s in sector_view %}
     <a class="{{ hm_class(s.change_pct) }}" href="#sector-{{ loop.index }}">
@@ -1396,7 +1463,7 @@ html{overflow-x:hidden}
   <p class="foot">
     <b>업종</b> 네이버 금융 업종 분류 · 종목 옆 <b>[배지]</b> 는 네이버 테마
   </p>
-</section>
+</details>
 {% endif %}
 
 <div class="chapter-head" id="ch6"><span class="chapter-no">6</span><h2 class="chapter-title">종목 후보</h2></div>
@@ -1410,8 +1477,8 @@ html{overflow-x:hidden}
   확인할 수 있다 — 세 점수는 서로 다른 잣대라 직접 비교하지 않는다.
 </p>
 {# ── 뉴스 노출 상위 종목 ── #}
-<section class="mod">
-  <h2>뉴스 노출 상위 종목</h2>
+<details class="mod" open>
+  <summary>뉴스 노출 상위 종목{% if tldr.candidates %}<span class="mod-tldr">{{ tldr.candidates }}</span>{% endif %}</summary>
   {% if ranked %}
   {% for sym, c in ranked %}
   <div class="sym">
@@ -1597,13 +1664,13 @@ html{overflow-x:hidden}
   {% else %}
   <p style="color:var(--mute);font-size:12.5px">오늘 뉴스에서 추출된 상장 종목이 없다.</p>
   {% endif %}
-</section>
+</details>
 {# ── 외국인 수급 추종(서브프로젝트 I, 2026-08-17 사용자 원칙) ──
    "한국주식은 기관 매수세는 노이즈 — 메인 리서치와 비리 없는 매수는 오로지
    외국인 매수 추세." 한국장 메인 로직이므로 업종별 시세보다 위에 둔다. #}
 {% if foreign_view %}
-<section class="mod">
-  <h2>외국인 수급 추종<span class="sub">탑다운 업종 → 종목 · 일별 근거</span></h2>
+<details class="mod">
+  <summary>외국인 수급 추종<span class="sub">탑다운 업종 → 종목 · 일별 근거</span>{% if tldr.foreign_view %}<span class="mod-tldr">{{ tldr.foreign_view }}</span>{% endif %}</summary>
   {% if foreign_view.market_foreign_net is not none %}
   <p class="idx-sub">코스피 종합 외국인
     <span class="num {{ 'up' if foreign_view.market_foreign_net > 0 else ('down' if foreign_view.market_foreign_net < 0 else 'flat') }}">
@@ -1640,7 +1707,7 @@ html{overflow-x:hidden}
     전 저점·현 고점 맥락(개미 털기성 하락 구간 가능성)은 이 리포트가 차트를
     다시 그리지 않는다 — 종목명을 눌러 네이버에서 직접 확인한다.
   </p>
-</section>
+</details>
 {% endif %}
 {# ── 당일 단타 후보(서브프로젝트 K + 행동 등급, 2026-08-18) ──
    뉴스·수급·트렌딩·촉매를 하나의 점수로 묶은 실험적 스코어러(quant/analyze/
@@ -1652,8 +1719,8 @@ html{overflow-x:hidden}
    표시 직전에 걸러낸다(원장·engine.json은 미달 포함 전체를 유지, `_build_
    intraday_view` docstring). #}
 {% if intraday_view %}
-<section class="mod">
-  <h2>당일 단타 후보<span class="sub">뉴스·수급·트렌딩·촉매 통합 점수 + 행동 등급 · 상위 {{ intraday_view|length }}</span></h2>
+<details class="mod">
+  <summary>당일 단타 후보<span class="sub">뉴스·수급·트렌딩·촉매 통합 점수 + 행동 등급 · 상위 {{ intraday_view|length }}</span>{% if tldr.intraday %}<span class="mod-tldr">{{ tldr.intraday }}</span>{% endif %}</summary>
   <p class="idx-sub">
     뉴스·수급·트렌딩·촉매를 하나의 점수로, 그 위에 "지금 사도 되는지" 3단계
     등급(보류/진입/적극 진입)을 얹었다 — 등급 미달은 표시하지 않는다.
@@ -1695,15 +1762,15 @@ html{overflow-x:hidden}
     생긴다. 여기 오른 종목은 관심종목 자동 편입(AUTO_WATCH) 경로에 접촉하지
     않는다 — 편입 여부는 검증 수치가 쌓인 뒤 사람이 결정한다.
   </p>
-</section>
+</details>
 {% endif %}
 {# ── 중기 관심 종목(투자 추천, 서브프로젝트 W part 3) ──
    텔레그램 언급(최근 3일, ≥2회) + 외국인 수급 + 호재/악재로 진입 등급을 매긴
    "앞으로 투자하기 좋아 보이는 종목". 등급은 결정론(entry_grade.py) — AI는
    전망 산문만 얹는다(등급에는 관여하지 않는다). #}
 {% if midterm_view %}
-<section class="mod">
-  <h2>🔭 중기 관심 종목<span class="sub">텔레그램 언급 · 외국인 수급 · 진입 등급 · 상위 {{ midterm_view|length }}</span></h2>
+<details class="mod">
+  <summary>🔭 중기 관심 종목<span class="sub">텔레그램 언급 · 외국인 수급 · 진입 등급 · 상위 {{ midterm_view|length }}</span>{% if tldr.midterm %}<span class="mod-tldr">{{ tldr.midterm }}</span>{% endif %}</summary>
   <p class="idx-sub">
     텔레그램 공개 채널에서 최근 3일간 2회 이상 언급된 종목에 외국인 수급·
     호재/악재로 진입 시점(1 관망 ~ 5 적극 매수)을 매겼다. 등급은 결정론
@@ -1739,7 +1806,7 @@ html{overflow-x:hidden}
     채점 크론이 실측한다. 관심종목 자동 편입(AUTO_WATCH) 경로에는 접촉하지
     않는다.
   </p>
-</section>
+</details>
 {% endif %}
 {# ── AI 심층 해석(서브프로젝트 U) ──
    단타 스코어러(K) top-5 후보에 툴콜링 에이전트가 수급·뉴스·공시·텔레그램·
@@ -1747,8 +1814,8 @@ html{overflow-x:hidden}
    실패한 종목은 조용히 빠진다(전멸 방지) — 데이터가 없으면 섹션 자체를
    그리지 않는다. #}
 {% if agent_interpret_view %}
-<section class="mod">
-  <h2>🤖 AI 심층 해석<span class="sub">도구 조회 기반 · 상위 {{ agent_interpret_view|length }}</span></h2>
+<details class="mod">
+  <summary>🤖 AI 심층 해석<span class="sub">도구 조회 기반 · 상위 {{ agent_interpret_view|length }}</span>{% if tldr.agent_interpret %}<span class="mod-tldr">{{ tldr.agent_interpret }}</span>{% endif %}</summary>
   <p class="idx-sub">
     단타 스코어러 후보에 대해 AI가 수급·뉴스·공시·텔레그램·과거 성적을 직접
     조회해 종합한 해석이다. 방향·확신 태그는 실현 수익률로 계속 채점된다
@@ -1781,15 +1848,15 @@ html{overflow-x:hidden}
     편입(AUTO_WATCH) 경로에 접촉하지 않는다. 방향·확신 판정은 선정 원장에
     producer=agent_interpret_v1 로 남아 기존 채점 크론이 그대로 실측한다.
   </p>
-</section>
+</details>
 {% endif %}
 {# ── 🇺🇸→🇰🇷 미국발 섹터 수혜주(KR 리포트 전용) ──
    텔레그램 usnews tier(walterbloomberg·financialjuice) 헤드라인을 GICS
    섹터로 분류(us_sector_map.classify_sector)해, 그 섹터에 연동되는 국내
    수혜주(정적 큐레이션)에 같은 진입 등급을 매긴다. #}
 {% if us_news_kr_view %}
-<section class="mod">
-  <h2>🇺🇸→🇰🇷 미국발 섹터 수혜주<span class="sub">텔레그램 미국 헤드라인 · 섹터별 국내 수혜주</span></h2>
+<details class="mod">
+  <summary>🇺🇸→🇰🇷 미국발 섹터 수혜주<span class="sub">텔레그램 미국 헤드라인 · 섹터별 국내 수혜주</span>{% if tldr.us_news_kr %}<span class="mod-tldr">{{ tldr.us_news_kr }}</span>{% endif %}</summary>
   <p class="idx-sub">
     텔레그램 미국 뉴스 채널(walterbloomberg·financialjuice) 헤드라인을 GICS
     섹터로 분류해, 그 섹터에 연동되는 국내 수혜주에 진입 등급을 매겼다.
@@ -1820,7 +1887,7 @@ html{overflow-x:hidden}
     수혜주 매핑은 정적 큐레이션(us_sector_map.KR_BENEFICIARIES)이다 — 특정
     시점의 투자 추천이 아니라 통상적으로 알려진 업종 대표주 매핑이다.
   </p>
-</section>
+</details>
 {% endif %}
 {# ── 뉴스 미노출 종목 증권사 리포트(H-2 Task 5 확장, P1 2026-08-19) ──
    위 카드는 cont(오늘 뉴스에 잡힌 종목) 기준이라, 뉴스에 안 걸렸지만
@@ -1828,14 +1895,14 @@ html{overflow-x:hidden}
    research_badges 는 그 나머지를 "N건(증권사...)" 사실만 최소 노출한다 —
    제목·투자의견은 원장에 없으니 지어내지 않는다. #}
 {% if research_badges %}
-<section class="mod">
-  <h2>오늘 증권사 리포트<span class="sub">뉴스 미노출 종목 · 사실 표기만</span></h2>
+<details class="mod">
+  <summary>오늘 증권사 리포트<span class="sub">뉴스 미노출 종목 · 사실 표기만</span>{% if tldr.research_badges %}<span class="mod-tldr">{{ tldr.research_badges }}</span>{% endif %}</summary>
   <div class="sym-arts">
     {% for r in research_badges %}
     <span class="chip on">{{ r.name }} {{ r.count }}건{% if r.brokers %} ({{ r.brokers|join('·') }}){% endif %}</span>
     {% endfor %}
   </div>
-</section>
+</details>
 {% endif %}
 
 <div class="chapter-head" id="ch7"><span class="chapter-no">7</span><h2 class="chapter-title">우리 시스템의 대응</h2></div>
@@ -1844,8 +1911,8 @@ html{overflow-x:hidden}
    `cont`(뉴스 연속성 사전)에서 그려지므로 거기엔 이 필드가 없다. 카드 구조를
    확장하는 대신 별도의 최소 목록으로 노출한다. #}
 {% if carried_candidates %}
-<section class="mod">
-  <h2>휴장 기간 이월 후보<span class="sub">마지막 개장일 이후 engine.json 병합 · 업종별</span></h2>
+<details class="mod">
+  <summary>휴장 기간 이월 후보<span class="sub">마지막 개장일 이후 engine.json 병합 · 업종별</span>{% if tldr.carried %}<span class="mod-tldr">{{ tldr.carried }}</span>{% endif %}</summary>
   {% for grp in carried_by_sector %}
   <h3 class="cat">{{ grp.name }}</h3>
   <div class="hm-grid">
@@ -1858,7 +1925,7 @@ html{overflow-x:hidden}
     {% endfor %}
   </div>
   {% endfor %}
-</section>
+</details>
 {% endif %}
 {# ── 엔진 판독값 ── #}
 {# 기계용 블록은 접어 둔다 — 사람이 읽는 문단과 같은 무게로 펼쳐져 있으면
