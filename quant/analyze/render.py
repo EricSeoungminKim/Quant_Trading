@@ -9,6 +9,8 @@
 """
 from __future__ import annotations
 
+from functools import partial as _partial
+
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -331,7 +333,7 @@ _KIND_KO = {"beneficiary": "수혜주", "supplier": "공급사", "competitor": "
 
 
 def relation_items(cont: dict[str, dict], relations: dict[str, list[dict]] | None,
-                    symbol: str) -> list[dict]:
+                    symbol: str, name_map: dict[str, str] | None = None) -> list[dict]:
     """종목 카드에 실을 수혜주/공급사/경쟁사 트리 항목(점수 내림차순).
 
     노출 임계는 `evidence_score >= MIN_EVIDENCE` — 단 `source == "naver_theme"`
@@ -342,9 +344,15 @@ def relation_items(cont: dict[str, dict], relations: dict[str, list[dict]] | Non
 
     종목명 해석 우선순위: 관계 행 자체의 `dst_name`(테마 경로가 실어 보내는 값,
     오늘 뉴스에 안 뜬 수혜주도 이름을 안다) → `cont`(이 리포트가 이미 쓰는 이름
-    사전, LLM 경로 하위호환) → 코드 그대로(지어내지 않는다). `cont` 만 보면
-    naver_theme 항목(리뷰 결함 c의 주 대상)이 오늘 뉴스에 없어 폴백에 실패해
-    6자리 코드가 그대로 노출됐다.
+    사전, LLM 경로 하위호환) → `name_map`(KR 상장사 전체 이름표) → 코드 그대로
+    (지어내지 않는다). `cont` 만 보면 naver_theme 항목(리뷰 결함 c의 주 대상)이
+    오늘 뉴스에 없어 폴백에 실패해 6자리 코드가 그대로 노출됐다.
+
+    **2026-09-02**: 위 두 단계로도 부족했다 — 실제 리포트에 "153890 153890
+    공급사", "011070 011070 경쟁사"처럼 코드만 노출됐는데, DART 캐시(3,985행)는
+    두 종목의 이름을 **알고 있었다**. 이름표가 사슬에 없었을 뿐이다. report_cli
+    가 이미 로드해 쓰는 `research_code_to_name` 을 그대로 넘겨 메운다(네트워크
+    추가 없음). 여전히 모르는 심볼은 코드 그대로 — 지어내지 않는 원칙은 유지.
     """
     rows = (relations or {}).get(symbol) or []
     out = []
@@ -354,7 +362,10 @@ def relation_items(cont: dict[str, dict], relations: dict[str, list[dict]] | Non
         dst = r["dst"]
         out.append({
             "symbol": dst,
-            "name": r.get("dst_name") or (cont.get(dst) or {}).get("name", dst),
+            "name": (r.get("dst_name")
+                     or (cont.get(dst) or {}).get("name")
+                     or (name_map or {}).get(dst)
+                     or dst),
             "kind": _KIND_KO.get(r.get("kind"), r.get("kind")),
             "reason": r.get("reason", ""),
             "score": r.get("evidence_score", 0),
@@ -850,6 +861,9 @@ def render(
     view: dict | None = None,
     scores: dict[str, dict] | None = None,
     relations: dict[str, list[dict]] | None = None,
+    # KR 상장사 전체 이름표 — relation_items 의 마지막 이름 폴백(2026-09-02,
+    # 관련 종목 섹션에 6자리 코드가 그대로 노출되던 결함 수리).
+    name_map: dict[str, str] | None = None,
     sector_view: list[dict] | None = None,
     flow_rows: list[dict] | None = None,
     youtube: dict[str, list[dict]] | None = None,
@@ -943,6 +957,9 @@ def render(
         brief=brief or [],
         auto_watch=auto_watch,
         relations=relations or {},
+        # 전역으로 등록된 relation_items 를 이 렌더에 한해 이름표 바인딩본으로
+        # 가린다(jinja 는 render kwarg 가 global 을 shadow 한다).
+        relation_items=_partial(relation_items, name_map=name_map or {}),
         sector_view=sector_view or [],
         flow_rows=flow_rows or [],
         # 시황 브리핑 유튜브 KR/US 고정 탭(2026-08-18) — `youtube`는 호출부가
@@ -1080,7 +1097,7 @@ def write_html(
     agent_interpret_view=None, midterm_view=None, us_news_kr_view=None,
     usnews_headlines=None, us_kr_bridge=None, us_wrap=None,
     index_outlook=None, holiday_synthesis=None, symbol_payload=None,
-    money_flow=None,
+    money_flow=None, name_map=None,
 ) -> Path:
     path = _dated_dir(root, snap) / f"{snap.market}_report.html"
     path.write_text(
@@ -1100,7 +1117,8 @@ def write_html(
                us_news_kr_view=us_news_kr_view, usnews_headlines=usnews_headlines,
                us_kr_bridge=us_kr_bridge, us_wrap=us_wrap,
                index_outlook=index_outlook, holiday_synthesis=holiday_synthesis,
-               symbol_payload=symbol_payload, money_flow=money_flow),
+               symbol_payload=symbol_payload, money_flow=money_flow,
+               name_map=name_map),
         encoding="utf-8",
     )
     return path

@@ -497,6 +497,7 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         index_outlook=payload.get("index_outlook"),
         holiday_synthesis=payload.get("holiday_synthesis"),
         money_flow=money_flow_view,
+        name_map=research_code_to_name,
     )
     hp, jp, cp = write_open_report(model, snap, out_root)
     print(f"HTML   {hp}\n엔진   {jp}\n후보   {cp}")

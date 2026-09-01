@@ -320,3 +320,27 @@ def test_index_outlook_v2_missing_down_prob_field_key_falls_back():
 def test_print_media_query_forces_details_open():
     html = render(_snap(), _cont())
     assert "details:not([open]) > *:not(summary){display:block !important}" in html
+
+
+def test_relation_items_falls_back_to_name_map_before_bare_code():
+    """관련 종목 섹션에 6자리 코드가 그대로 노출되던 결함(2026-09-02 실측).
+
+    실제 리포트에 "153890 153890 공급사"처럼 이름 없이 코드만 찍혔는데,
+    DART 캐시(3,985행)는 그 이름을 알고 있었다 — 이름표가 해석 사슬에 없었을
+    뿐이다. dst_name·cont 가 둘 다 비어도 name_map 이 있으면 이름을 쓰고,
+    그것도 없으면 코드 그대로(지어내지 않는다).
+    """
+    from quant.analyze.render import relation_items
+
+    relations = {"005930": [
+        {"dst": "153890", "kind": "supplier", "evidence_score": 100, "source": "naver_theme"},
+        {"dst": "999999", "kind": "competitor", "evidence_score": 100, "source": "naver_theme"},
+    ]}
+    items = relation_items({}, relations, "005930", name_map={"153890": "우신시스템"})
+    by_symbol = {i["symbol"]: i["name"] for i in items}
+    assert by_symbol["153890"] == "우신시스템"   # 이름표가 메운다
+    assert by_symbol["999999"] == "999999"        # 모르면 코드 그대로
+
+    # name_map 없이도 기존 동작(코드 폴백)이 그대로여야 한다 — 하위호환
+    legacy = relation_items({}, relations, "005930")
+    assert {i["symbol"]: i["name"] for i in legacy}["153890"] == "153890"

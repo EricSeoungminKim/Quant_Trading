@@ -75,6 +75,9 @@ class ReportModel:
     # 원장(macro_rates.jsonl)이 비어 있으면 None — 렌더가 섹션을 생략한다
     # (us_kr_bridge와 같은 관례).
     money_flow: dict | None = None
+    # KR 상장사 전체 이름표(load_name_map). relation_items 의 마지막 이름 폴백 —
+    # 없으면 관련 종목 섹션에 6자리 코드가 그대로 노출된다(2026-09-02 실측 결함).
+    name_map: dict[str, str] | None = None
 
 
 @dataclass
