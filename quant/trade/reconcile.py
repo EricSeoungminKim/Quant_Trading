@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from quant.core.models import Side
+
 logger = logging.getLogger(__name__)
 
 # 수량 비교 허용 오차(주). 미국 분할주는 소수점 6자리까지라 그 아래는 반올림 잡음이다.
@@ -255,7 +257,7 @@ class OpenOrderBook:
     def __init__(self, ttl_minutes: float = 60.0, clock=None) -> None:
         # 주문 단위로 들고 있다가 합산한다. 같은 주문의 갱신이 누적되면 잔량이 두 배로
         # 세어지므로 **주문 키로 덮어쓴다**.
-        self._by_order: dict[tuple, tuple[float, float]] = {}   # key -> (잔량, 기록시각)
+        self._by_order: dict[tuple, tuple[float, float, Side]] = {}   # key -> (잔량, 기록시각, side)
         # **TTL 이 없으면 이 장부는 영구 halt 생성기가 된다.**
         # 루프는 주문을 낼 때 상태를 한 번만 준다 — 폴링 타임아웃으로 열린 채 남은
         # 주문은 그 뒤 갱신이 오지 않으므로 잔량이 영원히 남고, 대사가 매번 불일치로
@@ -271,7 +273,7 @@ class OpenOrderBook:
 
     def _prune(self) -> None:
         cutoff = self._now() - self._ttl_seconds
-        for key in [k for k, (_, ts) in self._by_order.items() if ts < cutoff]:
+        for key in [k for k, (_, ts, _side) in self._by_order.items() if ts < cutoff]:
             del self._by_order[key]
 
     # sink 체인 안에 놓이므로 나머지 이벤트는 조용히 흘려보낸다 — 주문만 본다.
@@ -289,9 +291,24 @@ class OpenOrderBook:
         if remaining <= _QTY_TOLERANCE:
             self._by_order.pop(key, None)
         else:
-            self._by_order[key] = (remaining, self._now())
+            self._by_order[key] = (remaining, self._now(), state.order.side)
         self._prune()
 
-    def pending_qty(self, symbol: str) -> float:
+    def pending_qty(
+        self, symbol: str, *, strategy_id: str | None = None, side: Side | None = None,
+    ) -> float:
+        """미체결 잔량 합계. 기본(strategy_id=side=None)은 기존 동작과 동일하게
+        종목의 모든 미체결 주문을 합산한다(Reconciler가 쓰는 형태). 중복 진입
+        가드(risk/manager.py)는 `side=Side.BUY`로 좁혀 "이 전략의 미체결 매수"만
+        묻는다 — 미체결 매도(청산) 주문이 있다고 새 진입까지 막으면 안 된다."""
         self._prune()
-        return sum(q for (_, sym, _), (q, _ts) in self._by_order.items() if sym == symbol)
+        total = 0.0
+        for (_, sym, sid), (q, _ts, s) in self._by_order.items():
+            if sym != symbol:
+                continue
+            if strategy_id is not None and sid != strategy_id:
+                continue
+            if side is not None and s != side:
+                continue
+            total += q
+        return total

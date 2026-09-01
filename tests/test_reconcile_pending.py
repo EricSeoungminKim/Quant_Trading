@@ -103,6 +103,40 @@ def test_orders_without_broker_id_are_not_pending():
     assert book.pending_qty("TQQQ") == 0
 
 
+# ── strategy_id/side 필터 (2026-09-01, 미체결 중복 진입 가드용) ──────────────
+
+def test_pending_qty_can_be_filtered_by_strategy_id():
+    """같은 종목에 다른 전략의 미체결이 있어도 strategy_id로 좁히면 안 섞인다."""
+    book = OpenOrderBook()
+    book.on_order(on_fill(
+        accept(Order(symbol="TQQQ", side=Side.BUY, qty=20, strategy_id="donchian"), "A1", T0),
+        qty=8, price=100.0, at=T0,
+    ))
+    book.on_order(on_fill(
+        accept(Order(symbol="TQQQ", side=Side.BUY, qty=10, strategy_id="orb_scan"), "A2", T0),
+        qty=1, price=100.0, at=T0,
+    ))
+
+    assert book.pending_qty("TQQQ", strategy_id="donchian") == 12
+    assert book.pending_qty("TQQQ", strategy_id="orb_scan") == 9
+    assert book.pending_qty("TQQQ", strategy_id="unknown_strategy") == 0
+    assert book.pending_qty("TQQQ") == 21  # 필터 없으면 기존 동작(합산) 그대로
+
+
+def test_pending_qty_can_be_filtered_by_side():
+    """미체결 매도(청산) 주문은 side=Side.BUY로 물으면 잡히지 않는다 —
+    중복 진입 가드가 청산까지 막으면 안 되기 때문에 이 구분이 필요하다."""
+    book = OpenOrderBook()
+    book.on_order(on_fill(
+        accept(Order(symbol="TQQQ", side=Side.SELL, qty=5, strategy_id="donchian"), "A1", T0),
+        qty=1, price=100.0, at=T0,
+    ))
+
+    assert book.pending_qty("TQQQ", side=Side.BUY) == 0
+    assert book.pending_qty("TQQQ", side=Side.SELL) == 4
+    assert book.pending_qty("TQQQ") == 4  # 필터 없으면 side 무관하게 합산(기존 동작)
+
+
 # ── 대사가 그 값을 쓴다 ──────────────────────────────────────────────────
 
 def _reconciler(broker, control, pending=None):

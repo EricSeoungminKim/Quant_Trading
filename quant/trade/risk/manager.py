@@ -87,6 +87,11 @@ _STOP_LOSS_MARKER = "손절"
 # last_block 문자열에서 찾는 마커. approve()의 block 사유 문구를 바꾸면 같이 확인할 것.
 MARKET_CLOSED_MARKER = "장 마감"
 
+# 미체결 잔량 비교 허용 오차 — reconcile.py의 _QTY_TOLERANCE와 같은 값(소수점 주 단위
+# 반올림 잡음 흡수). 이 파일은 reconcile.py를 import하지 않으므로(duck-typing 콜백만
+# 받는다) 값을 여기 별도로 둔다.
+_QTY_EPSILON = 1e-6
+
 logger = logging.getLogger(__name__)
 
 
@@ -100,6 +105,7 @@ class RiskManagerImpl:
         state_path: "Path | str | None" = None,
         leverage_of: dict[str, float] | None = None,
         books: "StrategyBooks | None" = None,
+        pending_entry_qty=None,
     ):
         risk_cfg = settings.get("risk", {})
         self.max_position_pct = risk_cfg.get("max_position_pct", 50) / 100
@@ -215,6 +221,14 @@ class RiskManagerImpl:
         self.leverage_of = leverage_of
         self._warned_unknown_leverage: set[str] = set()
         self.fx = fx or FixedFxProvider()
+        # `pending_entry_qty(symbol, strategy_id) -> float` — 미체결(아직 안 채워진)
+        # 매수 잔량. 실계좌 중복 진입 가드(2026-09-01): 엔진이 5초마다 돌고 브로커가
+        # 느리거나 부분체결 중이면, 같은 (전략,종목)에 대해 "포지션 없음"으로 판단해
+        # 같은 신호에 여러 번 진입할 수 있다(감사 판정: 최대 3배 진입 가능). paper
+        # 브로커는 즉시 체결이라 미체결이 남지 않으므로 이 콜백을 안 넘기면(None,
+        # 기존 호출부 전부 그렇다) 기존 동작 100% 보존 — `OpenOrderBook.pending_qty`가
+        # 실제 구현체다(quant/trade/reconcile.py, assembly.py가 배선).
+        self._pending_entry_qty = pending_entry_qty
         self.last_block: str = ""
         self._day: str | None = None
         self._day_start_equity: float | None = None
@@ -861,6 +875,35 @@ class RiskManagerImpl:
                     return None
                 del self._stop_bar_ts[signal.symbol]  # 쿨다운 종료 — 상태 정리
                 self._stop_day.pop(signal.symbol, None)
+
+        if signal.action in _ENTRY_ACTIONS and self._pending_entry_qty is not None:
+            # 미체결 중복 진입 가드(2026-09-01). `held_lot`/`my_lot`(strategy/kernel.py)이
+            # "이미 보유 중인가"를 보는 것과 같은 자리에서, 이건 그 미체결 버전이다 —
+            # 브로커가 느려 아직 채워지지 않은 매수 주문이 있으면 같은 신호로 또 사지
+            # 않는다. 청산(EXIT_ACTIONS)은 이 게이트를 절대 타지 않는다 — 중복 청산
+            # 주문은 위험이 아니라 안전 쪽이고, 손절이 여기 막히면 그게 진짜 사고다.
+            #
+            # 조회 실패/미배선(None 반환 포함)은 **통과시킨다** — "모른다"를 "차단"으로
+            # 바꾸지 않는다(이 저장소가 반복해서 다친 반대 방향 결함: 모른다를 이상
+            # 없음으로 위장하는 것과는 다른 문제이지만, 여기서 모른다=차단으로 가면
+            # 브로커 조회 실패 한 번이 진입을 영구 차단하는 새 장애 모드가 된다 —
+            # 대신 로그로 남겨 눈에 보이게 한다).
+            try:
+                pending_buy_qty = float(
+                    self._pending_entry_qty(signal.symbol, signal.strategy_id) or 0.0
+                )
+            except Exception as e:  # noqa: BLE001 — 가드 조회 실패가 매매를 죽이면 안 된다
+                pending_buy_qty = 0.0
+                logger.warning(
+                    "미체결 매수 조회 실패(%s/%s) — 중복 진입 가드 스킵(통과): %s: %s",
+                    signal.symbol, signal.strategy_id, type(e).__name__, e,
+                )
+            if pending_buy_qty > _QTY_EPSILON:
+                self._block(
+                    f"{signal.symbol}/{signal.strategy_id} 미체결 매수 대기 중 "
+                    f"({pending_buy_qty:g}주) — 중복 진입 차단"
+                )
+                return None
 
         pos = positions.get(signal.symbol)
         existing_qty = pos.qty if pos is not None else 0.0

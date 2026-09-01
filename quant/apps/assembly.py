@@ -27,7 +27,7 @@ from quant.trade.approval import ApprovalGate
 from quant.apps.config import Settings
 from quant.adapters.smart_flow_log import SmartFlowLogger
 from quant.adapters.tick_log import TickLogger
-from quant.core.models import market_of
+from quant.core.models import Side, market_of
 from quant.trade.control import TradingControl
 from quant.trade.reconcile import OpenOrderBook, Reconciler
 from quant.core.clock import WallClock
@@ -1031,6 +1031,12 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
                 " 기존 장부 %d개만 로드 (data/state/strategy_books.json)",
                 capital_policy, len(books.books),
             )
+    # 미체결 장부(Phase 6.5) — 루프가 주문 상태를 여기에 흘리고, 대사가 그걸 읽어
+    # "사용자 수동 보유"와 "우리 주문의 늦은 체결"을 가른다. 둘을 섞으면 엔진이 자기
+    # 포지션을 모르는 상태가 정보성 로그로 묻힌다. risk보다 먼저 만든다 — 아래
+    # RiskManagerImpl가 같은 장부를 중복 진입 가드(pending_entry_qty)로도 쓴다.
+    open_orders = OpenOrderBook()
+
     # state_path: 일일 회로차단기 상태(손실 한도 기준자산·주문 수·손절 쿨다운)를
     # 재시작에도 유지한다. 재시작은 "나쁜 날"에 더 자주 일어나므로(자동 halt 후
     # 재개, 배포) 레일이 가장 필요한 순간에 풀리던 문제 — 2026-08-12 감사 A-3.
@@ -1038,15 +1044,17 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
         cfg, capital_fraction=capital_fraction, market_of=markets, fx=fx,
         state_path=Path("data/state/risk_day.json"), leverage_of=leverage_of,
         books=books,
+        # 미체결 중복 진입 가드(2026-09-01) — side=Side.BUY로 좁힌다: 같은
+        # (전략,종목)에 미체결 매도(청산)가 있어도 새 진입은 막지 않는다(청산은
+        # 절대 막지 않는다는 이 파일 전체의 원칙과 동일선상).
+        pending_entry_qty=lambda symbol, strategy_id: open_orders.pending_qty(
+            symbol, strategy_id=strategy_id, side=Side.BUY
+        ),
     )
 
     control = TradingControl()
     approval, approval_notifier, approval_cfg = build_approval(cfg)
     notifier = build_notifier(cfg)
-    # 미체결 장부(Phase 6.5) — 루프가 주문 상태를 여기에 흘리고, 대사가 그걸 읽어
-    # "사용자 수동 보유"와 "우리 주문의 늦은 체결"을 가른다. 둘을 섞으면 엔진이 자기
-    # 포지션을 모르는 상태가 정보성 로그로 묻힌다.
-    open_orders = OpenOrderBook()
     reconciler = build_reconciler(broker, control, notifier, cfg,
                                   pending_qty=open_orders.pending_qty)
     logger.info(
