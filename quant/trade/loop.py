@@ -137,6 +137,12 @@ def _signed_amount(value: float, symbol: str) -> str:
     return f"{value:+,.0f}원" if _is_kr(symbol) else f"{value:+,.2f}달러"
 
 
+def _signed_amount_market(value: float, market: str) -> str:
+    """_signed_amount와 같은 포맷이지만 심볼이 아니라 시장(KR/US) 기준 — 세션 요약은
+    전략별 순손익을 여러 심볼에 걸쳐 합산하므로 심볼 하나로 통화를 판정할 수 없다."""
+    return f"{value:+,.0f}원" if market == "KR" else f"{value:+,.2f}달러"
+
+
 @dataclass
 class CycleTimings:
     """사이클 1회의 단계별 소요시간(ms) 스냅샷 — run_cycle이 채우고 run_paper_loop가
@@ -169,7 +175,16 @@ class _SessionTallySink:
     수수료는 Fill.fee(표시 통화)를 종목 시장 기준으로 KRW 환산해 누적한다 — "수수료가
     엣지를 먹는가"를 매일 한 줄로 보이게 하는 것이 목적이라 통화가 섞이면 안 된다.
     집계를 내부 sink 호출보다 **먼저** 한다: 로그 쓰기가 실패해도 체결은 일어난
-    것이고, 요약에서 빠지면 안 된다."""
+    것이고, 요약에서 빠지면 안 된다.
+
+    전략별 라운드트립 성적(`strategy_stats`)도 여기서 집계한다. `quant/control/ledger.py`의
+    `round_trips()`가 같은 판정(같은 (전략,종목) 누적 수량이 0으로 돌아오면 트립 종결)을
+    이미 하지만, `quant/trade/`는 `quant/control/`을 임포트할 수 없다(FORBIDDEN,
+    tests/test_architecture.py) — "장중에 MySQL이 딸꾹질해도 매매가 멈추면 안 된다"는
+    평면 경계다. 그래서 원장을 다시 읽지 않고, 이미 지나가는 fill 스트림에서 같은
+    판정을 실시간으로 재현한다. 트립 진행 상태(`_trip_*`)는 세션 경계를 넘어 살아
+    있어야 오버나이트 전략(진입 세션과 청산 세션이 다르다)의 트립이 청산 세션에
+    올바르게 잡힌다 — `reset()`은 `strategy_stats`(그 세션에 종결된 트립)만 비운다."""
 
     def __init__(self, inner: EventSink, market_of: dict[str, str], fx: object | None):
         self._inner = inner
@@ -177,19 +192,65 @@ class _SessionTallySink:
         self._fx = fx
         self.fills = 0
         self.fee_krw = 0.0
+        self.notional_krw = 0.0
+        # 배관 점검(세션 마감 요약)용 카운터 — run_paper_loop이 매 사이클 갱신한다.
+        self.cycles = 0
+        self.error_cycles = 0
+        self.halted_seen = False
+        self.degraded_seen = False
+        self.strategy_stats: dict[str, dict] = {}
+        self._trip_qty: dict[tuple[str, str], float] = {}
+        self._trip_pnl: dict[tuple[str, str], float] = {}
+        self._trip_fee: dict[tuple[str, str], float] = {}
+        self._trip_unknown: dict[tuple[str, str], bool] = {}
 
     def on_signal(self, signal: Signal) -> None:
         self._inner.on_signal(signal)
 
     def on_fill(self, fill: Fill) -> None:
         self.fills += 1
+        market = self._market_of.get(fill.symbol) or market_of_symbol(fill.symbol)
         try:
-            self.fee_krw += to_krw(fill.fee, self._market_of.get(fill.symbol) or market_of_symbol(fill.symbol), self._fx)
+            self.fee_krw += to_krw(fill.fee, market, self._fx)
+            self.notional_krw += to_krw(fill.qty * fill.price, market, self._fx)
         except Exception:
             # 요약용 부기가 체결 처리를 막으면 안 된다(리포팅이 거래를 죽이는 경로 금지).
             # 환산에 실패하면 합계를 통화 혼합으로 오염시키느니 그 건을 빼고 경고한다.
-            logger.warning("수수료 KRW 환산 실패 — 세션 수수료 합계에서 제외: %s", fill.symbol)
+            logger.warning("수수료/거래대금 KRW 환산 실패 — 세션 합계에서 제외: %s", fill.symbol)
+        self._tally_strategy(fill)
         self._inner.on_fill(fill)
+
+    def _tally_strategy(self, fill: Fill) -> None:
+        """전략별 라운드트립 완주 판정 — 클래스 docstring 참고."""
+        sid = fill.strategy_id or "?"
+        key = (sid, fill.symbol)
+        side = str(getattr(fill.side, "value", fill.side)).upper()
+        signed = fill.qty if side == "BUY" else -fill.qty
+        self._trip_qty[key] = self._trip_qty.get(key, 0.0) + signed
+        self._trip_fee[key] = self._trip_fee.get(key, 0.0) + (fill.fee or 0.0)
+        if side != "BUY":
+            if fill.realized_pnl is None:
+                self._trip_unknown[key] = True
+            else:
+                self._trip_pnl[key] = self._trip_pnl.get(key, 0.0) + fill.realized_pnl
+        if abs(self._trip_qty.get(key, 0.0)) >= 1e-9:
+            return
+        # 순수량이 0으로 돌아왔다 — 트립 종결. 진행 상태를 비우고 결과를 반영한다.
+        gross = self._trip_pnl.pop(key, 0.0)
+        fees = self._trip_fee.pop(key, 0.0)
+        unknown = self._trip_unknown.pop(key, False)
+        self._trip_qty.pop(key, None)
+        stats = self.strategy_stats.setdefault(
+            sid, {"trips": 0, "wins": 0, "losses": 0, "net_pnl": 0.0, "unknown": 0}
+        )
+        if unknown:
+            # 매도 체결의 realized_pnl을 브로커가 모른다 — 0으로 위장하지 않고 뺀다.
+            stats["unknown"] += 1
+            return
+        net = gross - fees
+        stats["trips"] += 1
+        stats["wins" if net > 0 else "losses"] += 1
+        stats["net_pnl"] += net
 
     def on_order(self, state) -> None:
         """주문 생애를 그대로 흘려보낸다.
@@ -206,6 +267,13 @@ class _SessionTallySink:
     def reset(self) -> None:
         self.fills = 0
         self.fee_krw = 0.0
+        self.notional_krw = 0.0
+        self.cycles = 0
+        self.error_cycles = 0
+        self.halted_seen = False
+        self.degraded_seen = False
+        # _trip_* 는 비우지 않는다 — 세션을 넘는 진행 중 트립(오버나이트) 추적이다.
+        self.strategy_stats = {}
 
 
 def run_cycle(
@@ -1450,6 +1518,23 @@ def _breaker_line(state: dict) -> str | None:
         return None
 
 
+def _open_position_owner_tag(pos) -> str:
+    """열린 포지션 하나의 '소유 전략·보유기한' 태그 — "왜 안 팔았지?"에 메시지 안에서
+    답하기 위함(2026-09 소유자 요청). `_position_report_text`와 같은 lots 파싱(레거시
+    플랫 meta 폴백 포함)을 재사용하고, 보유기한 판정은 `_is_overnight`(기존
+    `_OVERNIGHT_STRATEGIES` 목록)을 그대로 쓴다 — 새 목록을 만들지 않는다."""
+    lots = pos.meta.get("lots") or {}
+    active = {sid: lot for sid, lot in lots.items() if lot.get("qty", 0.0) > 0}
+    if not active and "lots" not in pos.meta:
+        sid = pos.meta.get("strategy")
+        active = {sid: {}} if sid else {}
+    if not active:
+        return "전략 미상"
+    return "+".join(
+        f"{sid}·{'오버나이트' if _is_overnight(sid) else '단타'}" for sid in active
+    )
+
+
 def _session_summary_text(
     market: str,
     ctx: Context,
@@ -1457,10 +1542,11 @@ def _session_summary_text(
     control: TradingControl,
     market_data: object | None,
     tally: _SessionTallySink,
+    strategies: list[Strategy] | None = None,
 ) -> str:
     """세션 마감 성적표. 하루에 시장당 1회만 나가는 메시지라 하트비트보다 정보를 더 담는다."""
     positions = ctx.broker.positions()
-    open_positions = {sym: pos.qty for sym, pos in positions.items() if pos.is_open}
+    open_positions = {sym: pos for sym, pos in positions.items() if pos.is_open}
 
     breaker = _breaker_snapshot(risk, _safe_now(ctx))
 
@@ -1479,12 +1565,32 @@ def _session_summary_text(
         mark = "🔺" if day_pnl > 0 else ("🔻" if day_pnl < 0 else "➖")
         lines.append(f"📊 오늘 손익: {mark} {day_pnl:+.2f}%")
 
-    # 비용 회계 한 줄 — 체결 수와 수수료를 붙여 둔다. 체결 0건이어도 반드시 찍는다
-    # ("오늘 아무것도 안 했다"는 것 자체가 매일 확인해야 할 신호다).
-    lines.append(f"🧾 체결 {tally.fills}건 · 수수료 합계 {tally.fee_krw:,.0f}원")
+    # 비용 회계 한 줄 — 체결 수·수수료에 거래대금 대비 bp를 붙인다. 체결 0건이어도
+    # 반드시 찍는다("오늘 아무것도 안 했다"는 것 자체가 매일 확인해야 할 신호다).
+    bp_text = f" ({tally.fee_krw / tally.notional_krw * 1e4:.1f}bp)" if tally.notional_krw > 0 else ""
+    lines.append(f"🧾 체결 {tally.fills}건 · 수수료 합계 {tally.fee_krw:,.0f}원{bp_text}")
 
+    # 전략별 세션 성적 — 순손익(수수료 차감) 기준. 그 세션에 종결된 트립이 있었던
+    # 전략만 보인다(소유자 지시: 거래 없는 전략까지 나열하면 소음).
+    for sid in sorted(tally.strategy_stats):
+        st = tally.strategy_stats[sid]
+        if st["trips"] == 0:
+            # 종결된 트립이 전부 손익미상(브로커가 realized_pnl을 모름) — 0으로
+            # 위장하지 않고 건수만 알린다.
+            lines.append(f"🧠 {_strategy_label(sid)} · 손익미상 {st['unknown']}건 (집계 제외)")
+            continue
+        unk = f" (손익미상 {st['unknown']}건 제외)" if st["unknown"] else ""
+        lines.append(
+            f"🧠 {_strategy_label(sid)} · {st['trips']}건 · {st['wins']}승 {st['losses']}패"
+            f" · 순손익 {_signed_amount_market(st['net_pnl'], market)}{unk}"
+        )
+
+    # 미청산 포지션 — 소유 전략과 보유기한(오버나이트/단타)을 붙인다.
     held_text = (
-        ", ".join(f"{_display(s)} {q:g}주" for s, q in open_positions.items())
+        ", ".join(
+            f"{_display(sym)} {pos.qty:g}주({_open_position_owner_tag(pos)})"
+            for sym, pos in open_positions.items()
+        )
         if open_positions else "없음 (전량 청산됨)"
     )
     lines.append(f"📦 보유 종목: {held_text}")
@@ -1500,6 +1606,15 @@ def _session_summary_text(
             lines.append(f"📡 시세 연결: {'⚠️ 저하됨' if health_fn().degraded else '정상'}")
         except Exception:
             pass
+
+    # 배관 점검 한 줄 — 워크플로우가 정상이었는지. 전부 엔진이 이미 들고 있는
+    # 상태만 쓴다(거래 평면에서 파일을 새로 뒤지거나 네트워크를 타지 않는다).
+    universe_n = len({sym for s in (strategies or []) for sym in getattr(s, "symbols", [])})
+    lines.append(
+        f"⚙️ 배관 점검: 유니버스 {universe_n}종목 · 사이클 {tally.cycles}회"
+        f" · 에러 {tally.error_cycles}건 · 정지 {'발생' if tally.halted_seen else '없음'}"
+        f" · 시세 폴백 {'발생' if tally.degraded_seen else '없음'}"
+    )
 
     return "\n".join(lines)
 
@@ -1835,6 +1950,9 @@ async def run_paper_loop(
         if settings.reload_if_changed():
             logger.info("settings.yaml 변경 감지 — 리로드")
         cycle_count += 1
+        tally.cycles += 1  # 배관 점검용 — 세션 마감 요약이 "루프가 살아 있었나"의 증거로 쓴다
+        if control.is_halted():
+            tally.halted_seen = True
         # 콜드 페치 예산(service.py MarketDataService)은 사이클 단위 자원이라
         # 매 사이클 시작에 리셋한다 — 안 그러면 유니버스 롤 직후 몰린 캐시 미스가
         # 첫 사이클에 예산을 다 쓰고 남은 사이클에서도 계속 거부된다. market_data가
@@ -1992,6 +2110,7 @@ async def run_paper_loop(
                 )
         except Exception:
             consecutive_failures += 1
+            tally.error_cycles += 1
             logger.exception("사이클 %d 실패 (연속 %d회)", cycle_count, consecutive_failures)
             if now_mono - last_failure_alert >= failure_cooldown_sec:
                 last_failure_alert = now_mono
@@ -2011,6 +2130,8 @@ async def run_paper_loop(
             # except 절에 걸리지 않아 예전에는 조용히 넘어갔다 — 청산이 멈춘 상태를
             # 시스템이 "정상"으로 보고했다. 열린 포지션을 가진 전략이 죽었다면
             # 사이클 실패와 동급으로 취급해 알림·자동정지 에스컬레이션에 태운다.
+            if timings.strategy_errors:
+                tally.error_cycles += 1
             broken_with_positions = _strategies_with_open_lots(ctx, timings.strategy_errors)
             if broken_with_positions:
                 consecutive_failures += 1
@@ -2108,6 +2229,7 @@ async def run_paper_loop(
                     degraded = False
                 if degraded:
                     consecutive_stale += 1
+                    tally.degraded_seen = True
                 else:
                     consecutive_stale = 0
                     stale_alerted = False
@@ -2193,7 +2315,9 @@ async def run_paper_loop(
                 try:
                     if notifier is not None:
                         notifier.send(
-                            _session_summary_text(market, ctx, risk, control, market_data, tally)
+                            _session_summary_text(
+                                market, ctx, risk, control, market_data, tally, strategies,
+                            )
                         )
                 except Exception:
                     logger.exception("세션 마감 요약 실패 %s — 다음 세션에는 영향 없음", market)
