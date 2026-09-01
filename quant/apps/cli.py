@@ -670,6 +670,36 @@ def cmd_scoreboard(args: argparse.Namespace) -> None:
     print(_news_scalp_verdict_line())
 
 
+def cmd_orders(args: argparse.Namespace) -> None:
+    """주문 생애 원장(data/state/orders.jsonl) 조회 — 체결 원장(trades.jsonl)과
+    달리 "시킨 것과 일어난 일의 차이"(거부·미체결 포함)를 담는다
+    (`quant.control.ledger.TradeLedgerSink.on_order`).
+
+    --rejected-funds: 자금 부족으로 못 산 시도만 필터한다. 소유자 지시(2026-08-31)
+    "잔고 부족으로 못 산 경우, 시도 기록을 남겨 나중에 '안 산 게 아니라 못 샀던
+    것'이 되게" 대응 — risk 레벨 예산 부족(quant/trade/risk/manager.py)과 브로커
+    레벨 insufficient-buying-power(quant/adapters/brokers/toss/broker.py) 둘 다
+    reason에 "자금 부족" 마커를 통일해뒀으므로 grep도, 이 필터도 같은 문자열 하나로
+    양쪽을 다 잡는다."""
+    from quant.control.ledger import load_orders
+
+    orders_path = ledger_state_path().parent / "orders.jsonl"
+    rows = load_orders(orders_path)
+    if args.rejected_funds:
+        rows = [r for r in rows if "자금 부족" in (r.get("reason") or "")]
+    if args.limit:
+        rows = rows[-args.limit:]
+    if not rows:
+        print("해당하는 주문 기록이 없음.")
+        return
+    for r in rows:
+        print(
+            f"{r.get('ts', '?')}  {r.get('market', '?'):>2}  "
+            f"{r.get('strategy_id', '?'):<16}  {r.get('symbol', '?'):<8}  "
+            f"{r.get('side', '?'):<4}  {r.get('status', '?'):<10}  {r.get('reason', '')}"
+        )
+
+
 def cmd_forensics(args: argparse.Namespace) -> None:
     """거래 부검 — 원장의 "졌다"를 "무엇 때문에 졌다"로 바꾼다.
 
@@ -4344,6 +4374,14 @@ def main() -> None:
     p_scoreboard = sub.add_parser("scoreboard", help="누적 거래 원장 기반 전략별·종목별 성적표 (승률/payoff/bps)")
     p_scoreboard.add_argument("--days", type=int, default=None, help="최근 N일만 (기본: 전체 누적)")
     p_scoreboard.set_defaults(func=cmd_scoreboard)
+
+    p_orders = sub.add_parser("orders", help="주문 생애 원장(orders.jsonl) 조회 — 거부/미체결 포함")
+    p_orders.add_argument(
+        "--rejected-funds", action="store_true",
+        help="자금 부족으로 거부된 시도만 (\"안 산 게 아니라 못 샀던 것\")",
+    )
+    p_orders.add_argument("--limit", type=int, default=50, help="최근 N건만 (기본 50, 0=전체)")
+    p_orders.set_defaults(func=cmd_orders)
 
     p_eq = sub.add_parser("equity-snapshot", help="자본 곡선 1점 기록 — 세션 마감 후 총자산·전략별 장부 평가액(KRW)")
     p_eq.add_argument("--market", required=True, choices=["KR", "US"])

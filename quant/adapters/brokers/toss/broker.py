@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -52,6 +53,47 @@ KST = ZoneInfo("Asia/Seoul")
 
 def _is_kr_symbol(symbol: str) -> bool:
     return bool(_KR_SYMBOL_RE.match(symbol))
+
+
+# KR 호가 단위 그리드 (2023년 개편표, 원). (미만 가격 상한, 그 구간의 틱) 오름차순.
+# 이 표의 마지막 구간(500,000원 이상)은 표에 없으므로 _KR_TICK_ABOVE 로 별도 처리.
+_KR_TICK_TABLE: tuple[tuple[float, int], ...] = (
+    (2_000, 1),
+    (5_000, 5),
+    (20_000, 10),
+    (50_000, 50),
+    (200_000, 100),
+    (500_000, 500),
+)
+_KR_TICK_ABOVE = 1_000  # 500,000원 이상
+
+
+def snap_to_tick(price: float, side: str = "SELL") -> int:
+    """가격을 KR 호가 단위 그리드에 맞춘다 (조건주문 서버측 보호주문 등록용).
+
+    그냥 `round()`하면 2,000원 이상 종목에서 호가단위를 벗어난 가격이 나와
+    서버가 400 invalid-request로 거부한다 — 서버측 보호주문(OCO 손절/익절)이
+    조용히 빠지는 실계좌 차단급 결함이었다.
+
+    방향은 **보수적으로** 고정한다: side="BUY"만 올림(지정 매수가 밀려서 체결
+    안 되는 쪽을 피함), 그 외(기본값 "SELL" 포함, 즉 손절가·목표가 둘 다)는
+    내림 — 손절은 더 일찍 발동하는 쪽이 안전하고 목표가도 보수적으로 낮춘다.
+
+    **한계**: ETF는 실제로는 5원 고정 틱이 별도로 있지만(2023년 개편), 이 계층
+    (브로커 어댑터)에는 종목이 ETF인지 판별할 정보가 없다 — 그래서 이 함수는
+    적용하지 않는다. 2,000원 미만 ETF에서 최대 4원 오차가 날 수 있고, 그 경우
+    서버가 nearestPrices 필드와 함께 거부하면 로그로 드러난다. 그 실패 시의
+    기존 폴백(엔진 폴링 손절, 최대 poll_interval초 지연)은 그대로 안전망으로
+    남는다 — 이 함수의 실패가 무방비 상태를 만들지 않는다.
+    """
+    tick = _KR_TICK_ABOVE
+    for threshold, t in _KR_TICK_TABLE:
+        if price < threshold:
+            tick = t
+            break
+    if side == "BUY":
+        return int(math.ceil(price / tick)) * tick
+    return int(math.floor(price / tick)) * tick
 
 
 def _is_us_regular_hours(now: datetime) -> bool:
@@ -204,6 +246,23 @@ class TossBroker:
             except (TossAPIError, RuntimeError, ValueError) as e:
                 logger.warning("TossBroker.place_order 실패 (%s): %s: %s",
                                 order.symbol, type(e).__name__, e)
+                if isinstance(e, TossAPIError) and e.code == "insufficient-buying-power":
+                    # 소유자 지시(2026-08-31): "잔고 부족으로 못 산 경우, 시도 기록을
+                    # 남겨 나중에 '안 산 게 아니라 못 샀던 것'이 되게." 이 422 응답은
+                    # 주문 자체가 서버에 생성되지 않아 사후 조회(order-status)로
+                    # 재구성할 수 없다 — 이 except 블록이 사유를 남길 **유일한
+                    # 기회**다. "자금 부족" 마커는 risk 레이어(quant/trade/risk/
+                    # manager.py)의 예산 부족 사유 문구와 통일해 grep 한 번으로
+                    # 리스크 레벨/브로커 레벨 거부를 함께 찾을 수 있게 한다.
+                    needed = order_amount if order_amount is not None else (
+                        qty * order.ref_price if qty is not None and order.ref_price else None
+                    )
+                    reason = (
+                        f"자금 부족: 주문 생성 거절 (symbol={order.symbol}, "
+                        f"필요금액={needed if needed is not None else '알 수 없음'}) — "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    return oms.not_submitted(order, reason)
                 return oms.not_submitted(order, f"주문 생성 거절: {type(e).__name__}: {e}")
             except (httpx.TimeoutException, httpx.TransportError) as e:
                 if attempt < 2:
@@ -416,11 +475,17 @@ class TossBroker:
         )
 
     # ------------------------------------------------------ 서버측 보호주문 (조건주문)
-    def _fmt_price(self, symbol: str, price: float) -> str:
-        """조건주문 body의 가격은 문자열이다. KR은 호가 단위가 원 단위 이상이라 정수,
-        US는 소수점 2자리로 보낸다 (실호출로 검증하지 못했다 — [미검증])."""
+    def _fmt_price(self, symbol: str, price: float, side: str = "SELL") -> str:
+        """조건주문 body의 가격은 문자열이다.
+
+        KR은 `snap_to_tick`으로 호가 단위 그리드에 스냅한 정수 — 단순
+        `round()`는 2,000원 이상 종목에서 호가단위 밖 가격을 만들어 서버가
+        400으로 거부한다(이 파일 상단 `snap_to_tick` 참고, 방향 기본값은
+        내림). US는 소수점 2자리로 보낸다(실호출로 검증하지 못했다 —
+        [미검증]. $1 미만 종목은 4자리 소수 규칙이 있다고 알려져 있으나
+        우리 유니버스에 $1 미만 종목이 없어 미적용 — 여기 기록만 해둔다)."""
         if _is_kr_symbol(symbol):
-            return str(int(round(price)))
+            return str(snap_to_tick(price, side))
         return f"{price:.2f}"
 
     def _cancel_protective_orders(self, symbol: str, ids: list[str] | None = None) -> None:
@@ -555,6 +620,30 @@ class TossBroker:
         except (TossAPIError, RuntimeError) as e:
             logger.warning("TossBroker.cash 조회 실패: %s: %s", type(e).__name__, e)
             return 0.0
+        return float(data["cashBuyingPower"])
+
+    def cash_usd(self) -> float | None:
+        """USD 매수가능금액(원화와 분리된 별도 예수금).
+
+        Broker Protocol(`quant.core.ports.Broker`)에는 없는 부가 메서드다 —
+        원화/달러 계좌가 분리돼 있고 자동 환전은 하지 않는다는 사용자 정책
+        (2026-08-31) 때문에 US 사이징 경로(quant/trade/risk/manager.py)가
+        `getattr`로 duck-typing 조회한다. PaperBroker 등 이 메서드가 없는
+        구현체는 그 경로에서 조용히 건너뛰어진다 — 기존 동작을 바꾸지 않는다.
+
+        `cash()`와 달리 조회 실패는 **0.0이 아니라 None**을 돌려준다 — "정말
+        예수금이 0달러"와 "네트워크가 흔들려서 모른다"를 구분해야 한다. 0.0으로
+        위장하면 일시적 API 오류 한 번에 모든 US 진입이 "USD 자금 부족"으로
+        차단된다(실제로는 몰라서 막는 것뿐인데). 호출부(risk/manager.py)는
+        None을 "게이트 건너뛰기"로 취급한다 — 모르면 막지 않고, 기존 KRW 기준
+        사이징이 안전망으로 남는다. 이 어댑터 예외 삼킴 규칙은 그대로 지킨다
+        (raw 예외를 코어로 올리지 않는다) — 실패를 None이라는 값으로 표현할 뿐,
+        예외를 전파하지 않는다."""
+        try:
+            data = self._client.buying_power(currency="USD")
+        except (TossAPIError, RuntimeError) as e:
+            logger.warning("TossBroker.cash_usd 조회 실패: %s: %s", type(e).__name__, e)
+            return None
         return float(data["cashBuyingPower"])
 
     # ------------------------------------------------------------- 미체결 주문 관리

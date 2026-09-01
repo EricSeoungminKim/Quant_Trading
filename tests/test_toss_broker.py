@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 import quant.adapters.brokers.toss.broker as broker_module
-from quant.adapters.brokers.toss.broker import TossBroker
+from quant.adapters.brokers.toss.broker import TossBroker, snap_to_tick
 from quant.adapters.brokers.toss.client import TossAPIError
 from quant.core.models import Order, Side, OrderStatus
 from quant.core.portfolio.ownership import EngineOwnership
@@ -150,6 +150,25 @@ def test_place_order_swallows_client_errors_and_returns_none(monkeypatch):
 
     assert fill is None
     client.order.assert_not_called()
+
+
+def test_place_order_insufficient_buying_power_records_a_funds_shortage_reason(monkeypatch):
+    """소유자 지시(2026-08-31): "잔고 부족으로 못 산 경우, 시도 기록을 남겨라."
+    이 422는 주문이 서버에 생성조차 안 돼 사후 조회로 복원할 수 없다 — 이
+    except 블록이 사유를 남길 유일한 기회다. reason에 risk 레이어(quant/trade/
+    risk/manager.py)와 통일된 "자금 부족" 마커가 있어야 grep/CLI 필터가 잡는다."""
+    monkeypatch.setenv("MODE", "live")
+    client = MagicMock()
+    client.place_order.side_effect = TossAPIError(
+        422, "insufficient-buying-power", "주문 가능 금액이 부족합니다.")
+    broker = TossBroker(client, poll_max_attempts=1, poll_interval=0)
+
+    state = broker.place_order(_order(qty=10))
+
+    assert state.fill is None
+    assert state.broker_order_id is None  # 서버에 닿지 못했다 — not_submitted
+    assert "자금 부족" in state.reason
+    assert "insufficient-buying-power" in state.reason
 
 
 # ------------------------------------------- KR/US quantity vs amount resolution
@@ -446,6 +465,38 @@ def test_no_journal_entry_and_no_http_when_mode_is_not_live(monkeypatch, ownersh
     assert not intents.exists()
 
 
+# --------------------------------------------------------- snap_to_tick (호가 단위 그리드)
+
+@pytest.mark.parametrize("price", [1_999, 2_000, 4_995, 19_990, 49_950, 199_900, 499_500, 700_000])
+def test_snap_to_tick_price_band_boundaries_are_unaffected(price):
+    """각 구간에서 이미 유효한(그 구간 틱의 배수인) 최대값들 — 구간 경계 판정이
+    한 칸이라도 어긋나면 다음 구간 틱으로 잘못 스냅돼 이 값들이 바뀐다."""
+    assert snap_to_tick(price) == price
+    assert snap_to_tick(price, side="BUY") == price
+
+
+def test_snap_to_tick_sell_rounds_down_for_earlier_trigger():
+    """손절/목표가(SELL)는 내림 — 손절은 더 일찍 발동해야 안전하다.
+    69,873원은 50,000~200,000원 구간(틱 100)이라 69,800원으로 내려간다."""
+    assert snap_to_tick(69_873.0, side="SELL") == 69_800
+    assert snap_to_tick(69_873.0) == 69_800  # 기본값도 내림(SELL과 동일)
+
+
+def test_snap_to_tick_buy_rounds_up():
+    """매수 지정가는 올림 — 틱 미만으로 걸면 체결이 안 밀리게(스펙 요구)."""
+    assert snap_to_tick(71_326.0, side="BUY") == 71_400
+
+
+def test_snap_to_tick_sub_2000_won_uses_1_won_tick():
+    assert snap_to_tick(1_234.0) == 1_234
+    assert snap_to_tick(1_234.7) == 1_234  # 내림
+
+
+def test_snap_to_tick_500k_and_above_uses_1000_won_tick():
+    assert snap_to_tick(612_345.0) == 612_000
+    assert snap_to_tick(612_345.0, side="BUY") == 613_000
+
+
 # --------------------------------------------- 서버측 보호주문 (조건주문) [미검증 스키마]
 
 def _filled_client(qty: str = "10", price: str = "100") -> MagicMock:
@@ -457,20 +508,23 @@ def _filled_client(qty: str = "10", price: str = "100") -> MagicMock:
 
 
 def test_entry_with_stop_and_target_registers_an_oco(monkeypatch, ownership, tmp_path):
+    """실단가(삼성전자 스케일) 검증 — 호가단위 그리드 스냅까지 함께 확인한다.
+    목표가/손절가 둘 다 100원 틱(50,000~200,000원 구간) 경계에 걸치지 않는 값을 써서
+    snap_to_tick의 내림 방향이 실제로 조건주문 body에 반영되는지 본다."""
     monkeypatch.setenv("MODE", "live")
-    client = _filled_client(price="100")
+    client = _filled_client(price="71300")
     broker = TossBroker(client, poll_max_attempts=1, poll_interval=0,
                         ownership=ownership, intents_path=tmp_path / "i.jsonl")
 
     broker.place_order(Order(symbol="005930", side=Side.BUY, qty=10, strategy_id="s",
-                             stop=95.0, target=110.0))
+                             stop=69_873.0, target=74_987.0))
 
     _, kwargs = client.place_conditional_order.call_args
     args, _ = client.place_conditional_order.call_args
     assert args[1] == "OCO"
     assert kwargs["order_type"] == "LIMIT"  # OCO는 지정가만 지원
-    assert kwargs["first"]["triggerPrice"] == "110"   # 목표가가 현재가보다 위
-    assert kwargs["second"]["triggerPrice"] == "95"   # 손절가가 현재가보다 아래
+    assert kwargs["first"]["triggerPrice"] == "74900"   # 목표가 74,987 → 100원 틱 내림
+    assert kwargs["second"]["triggerPrice"] == "69800"  # 손절가 69,873 → 100원 틱 내림(더 일찍 발동)
     assert kwargs["quantity"] == 10
 
 

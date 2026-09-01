@@ -1044,7 +1044,9 @@ class RiskManagerImpl:
                 else:
                     qty = math.floor(qty)
                 if qty <= 0:
-                    self._block(f"배분 자금 부족 (예산 {budget:,.0f})")
+                    self._block(
+                        f"배분 자금 부족 (예산 {budget:,.0f}원, 가용현금 {available_cash:,.0f}원)"
+                    )
                     return None
 
                 # 경제적으로 무의미한 주문 차단. 2026-08-11 실운영에서 058610을
@@ -1100,6 +1102,44 @@ class RiskManagerImpl:
                             return None
 
             side = Side.BUY
+
+            # 통화별 매수가능금액 분리(2026-08-31, 소유자 지시): "원화·달러 계좌가
+            # 분리돼 있고 자동 환전은 하지 않는다. 초기 실전은 넣은 금액 안에서만."
+            # 위 사이징(capital_fraction/cash_pct, shared/per_strategy 공통)은 전부
+            # **KRW 환산** 예산 기준이라, 계좌 전체로는 충분해 보여도 실제 USD
+            # 예수금이 모자라면 브로커가 insufficient-buying-power로 거부한다 —
+            # 그 시점엔 "왜"가 로그 문자열 파싱 없이는 안 보인다. 그래서 US 진입에
+            # 한해 여기서 한 번 더 min()을 씌운다.
+            #
+            # cash_usd()는 Broker Protocol에 없는 duck-typed 부가 메서드다
+            # (TossBroker만 구현 — PaperBroker 등 없는 구현체는 hasattr 자체가
+            # False라 조용히 건너뛴다. 기존 KR 전용/백테스트/paper 결과는 100%
+            # 보존된다. paper는 가상 자본이라 통화 분리가 애초에 의미 없다).
+            # **환전 시도는 하지 않는다** — Toss API에 환전 엔드포인트가 없다
+            # (정책이자 사실, 여기서 만들어내지 않는다). 조회 실패는 게이트를
+            # 건너뛴다(모르면 막지 않는다 — 기존 KRW 기준 사이징이 안전망으로 남는다).
+            if market == "US":
+                cash_usd_fn = getattr(ctx.broker, "cash_usd", None)
+                if callable(cash_usd_fn):
+                    try:
+                        usd_cash = cash_usd_fn()
+                    except Exception:  # noqa: BLE001
+                        usd_cash = None
+                    if usd_cash is not None and math.isfinite(usd_cash):
+                        usd_cap_qty = math.floor(max(usd_cash, 0.0) / price)
+                        if usd_cap_qty < qty:
+                            if usd_cap_qty <= 0:
+                                self._block(
+                                    f"USD 자금 부족 (필요 {qty:g}주×${price:g}, "
+                                    f"가용 ${usd_cash:,.2f}) — 신규 진입 차단"
+                                )
+                                return None
+                            logger.info(
+                                "US 진입 수량을 USD 예수금 기준으로 축소 (symbol=%s, "
+                                "%g주 → %g주, 가용 $%.2f)",
+                                signal.symbol, qty, usd_cap_qty, usd_cash,
+                            )
+                            qty = usd_cap_qty
 
         # 계산된 최종 수량 sanity 가드 — NaN/inf/음수/0은 여기서 전부 걸러진다. 위의
         # 개별 체크들은 흔한 케이스에 사람이 읽을 사유를 붙이기 위함이고, 이건 그

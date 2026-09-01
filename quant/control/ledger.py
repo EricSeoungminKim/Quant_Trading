@@ -214,6 +214,15 @@ def load_trades(path: Path | str = DEFAULT_LEDGER_PATH) -> list[dict]:
     return out
 
 
+def load_orders(path: Path | str) -> list[dict]:
+    """주문 생애 원장(orders.jsonl, `TradeLedgerSink.on_order`) 로더.
+
+    파일 포맷은 trades.jsonl과 다르지만 파싱 계약(깨진 줄 건너뛰기, symbol 없는
+    행 제외)은 동일하다 — `load_trades`를 그대로 재사용한다. CLI의 `orders`
+    서브커맨드(자금 부족 거부 조회 등)가 이 함수를 쓴다."""
+    return load_trades(path)
+
+
 def round_trips(trades: list[dict]) -> list[dict]:
     """(전략, 종목)별 체결을 라운드트립으로 묶는다 — 누적 수량이 0으로 돌아오면 종결.
 

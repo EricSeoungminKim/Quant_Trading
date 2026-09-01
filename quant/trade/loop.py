@@ -392,6 +392,24 @@ def _execute_signal(
     if order is None:
         reason = getattr(risk, "last_block", "") or "거부됨"
         logger.info("주문 거부 %s %s: %s", signal.strategy_id, signal.symbol, reason)
+        if "자금 부족" in reason and signal.action in _ENTRY_ACTIONS:
+            # 소유자 지시(2026-08-31): "잔고 부족으로 못 산 경우, 시도 기록을 남겨
+            # 나중에 '안 산 게 아니라 못 샀던 것'이 되게." risk.approve()가 예산
+            # 부족을 여기서 이미 걸러 order를 만들지 않으므로(위 order is None),
+            # 평소 경로(place_order 이후 _emit_order_state)를 전혀 타지 않아
+            # orders.jsonl에 아무 흔적도 안 남았다 — 그 구멍만 메운다(다른 거부
+            # 사유는 기존 동작 그대로 로그만). qty=0은 "수량 산정 자체가 안 됐다"는
+            # 뜻이고, 실제 필요/가용 금액은 reason 문자열에 있다(symbol/전략/시각은
+            # 아래 OrderState/on_order가 별도 컬럼으로 남긴다).
+            try:
+                pseudo_order = Order(
+                    symbol=signal.symbol, side=Side.BUY, qty=0.0,
+                    strategy_id=signal.strategy_id, reason=signal.reason,
+                )
+                _emit_order_state(oms.not_submitted(pseudo_order, reason, at=_safe_now(ctx)), sinks)
+            except Exception as e:  # noqa: BLE001 — 기록 실패가 매매 흐름을 막으면 안 된다
+                logger.warning("자금 부족 거부 기록 실패 %s: %s: %s",
+                               signal.symbol, type(e).__name__, e)
         return
     if approval is not None and signal.action in _ENTRY_ACTIONS:
         # 리스크 통과까지만 하고 집행하지 않는다. 여기서 만든 order는 버린다 —
