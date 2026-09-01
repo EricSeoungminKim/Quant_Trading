@@ -53,7 +53,10 @@ TRADES_PATH = REPO_ROOT / "data" / "state" / "trades.jsonl"
 PYTHON_BIN = REPO_ROOT / ".venv" / "bin" / "python"
 KST = timezone(timedelta(hours=9))
 STRATEGY_ID = "llm_trader"
-BUDGET_KRW = 10_000_000.0
+# 2026-09-01 실계좌 이식 후: 가상 1천만원 실험에서 실계좌 규모 KR 레인 배분
+# (~4.5M × 8%)으로 축소 존속. 데뷔일 순손실의 진범이 판단력이 아니라 회전율로
+# 진단돼(수수료 30,795원 > 총손실), 성적표 주입과 함께 소액으로 계속 관찰한다.
+BUDGET_KRW = 400_000.0
 SYMBOL_RE = re.compile(r"^\d{6}$")
 WEIGHT_MIN, WEIGHT_MAX = 0.1, 0.34
 HORIZONS = ("단타", "스윙", "장기")

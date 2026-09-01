@@ -500,7 +500,8 @@ strategies:
     # 2026-08-17: KR 0.2 → 0.1 — 갈래 A/B(spec §5)에 KR 50%를 내주려 갈래 C
     # 기존 비중을 균등 x0.5(파일 상단 "3갈래 자본 배분" 표 참고).
     capital_fraction:
-      KR: 0.2
+      KR: 0.1
+
       US: 0.0
     validation:
       status: burn_in # 백테스트 미검증 — 스코어보드 30건 + 유의(양) 전까지 승격 금지
@@ -589,7 +590,8 @@ strategies:
     # 전략 자본 추정이 아예 필요 없다.
     enabled: true
     capital_fraction:
-      KR: 0.3
+      KR: 0.14
+
       US: 0.0
     validation:
       status: burn_in # 신규 전략 — 백테스트 미검증. paper 원장 20거래일 이후 승격 판단(§4)
@@ -614,7 +616,8 @@ strategies:
     # 규칙 근거(웹 리서치)는 quant/trade/strategy/close_bet.py docstring.
     enabled: true
     capital_fraction:
-      KR: 0.2
+      KR: 0.1
+
       US: 0.0
     validation:
       status: burn_in # 백테스트 [미검증] — 표본은 experiments 루프가 판정
@@ -642,7 +645,8 @@ strategies:
     symbols: [QQQ] # US ETF 전용 의도 — 레버리지(TQQQ)는 갭 리스크 3배라 제외
     capital_fraction:
       KR: 0.0
-      US: 1.0
+      US: 0.15
+
     validation:
       status: burn_in # 백테스트 표본 0 — 문헌 인용이지 우리 측정이 아니다
     params:
@@ -676,7 +680,8 @@ strategies:
     symbols: []
     capital_fraction:
       KR: 0.0 # KR 개별주는 매도세 20bp 라 왕복 30bp — 스캘핑이 구조적으로 불리
-      US: 1.0
+      US: 0.15
+
     validation:
       status: burn_in # 신규 — 백테스트 표본 0(Toss 1m 4거래일 롤링). paper 번인이 유일한 검증 경로
     params:
@@ -701,7 +706,8 @@ strategies:
     symbols: []
     capital_fraction:
       KR: 0.0
-      US: 1.0
+      US: 0.06
+
     validation:
       status: burn_in
     params:
@@ -732,8 +738,9 @@ strategies:
     # 122630=2x"(2026-08-29 06:23)로 조회 성공을 실측 확인했다.
     symbols: ["069500", "122630", "TQQQ"] # KODEX200 / KODEX레버리지 / US 3x
     capital_fraction:
-      KR: 1.0 # ETF 전용 — 거래세 면제 + KODEX200 스프레드 0.5bp 실측(2026-08-28)
-      US: 1.0
+      KR: 0.14 # ETF 전용 — 거래세 면제 + KODEX200 스프레드 0.5bp 실측(2026-08-28)
+      US: 0.1
+
     validation:
       status: burn_in # 문헌 인용(원 공식) — 우리 원장 실측 0
     params:
@@ -750,7 +757,8 @@ strategies:
     symbols: [] # 심볼은 params 의 signal/long/short 3개로 내부 구성(전략이 무시)
     capital_fraction:
       KR: 0.0
-      US: 1.0
+      US: 0.09
+
     validation:
       status: burn_in
     params:
@@ -780,7 +788,8 @@ strategies:
     symbols: []
     capital_fraction:
       KR: 0.0 # KR 개별주 왕복 30bp — 갭 절반 메움 목표와 산수가 빠듯해 US 먼저
-      US: 1.0
+      US: 0.09
+
     validation:
       status: burn_in
     params:
@@ -803,8 +812,10 @@ strategies:
     enabled: true
     symbols: ["069500", "QQQ"] # KR ETF 4bp venue + US 지수 — 레버리지 제외(갭 리스크)
     capital_fraction:
-      KR: 1.0
-      US: 1.0
+      KR: 0.08
+
+      US: 0.08
+
     validation:
       status: burn_in
     params:
@@ -824,8 +835,10 @@ strategies:
     # 대상 — news_scalp/frgn_accumulate와 달리 EVENT_SCALP/FRGN 태그를 읽지 않는다).
     enabled: true
     capital_fraction:
-      KR: 0.3
-      US: 1.0
+      KR: 0.2
+
+      US: 0.18
+
     validation:
       status: burn_in # 신규 전략 — 백테스트 표본 없음(Toss 1m 4거래일 롤링). paper 번인이 유일한 검증 경로(스펙 "데이터" 절)
     universe: watchlist
@@ -935,7 +948,7 @@ strategies:
     enabled: true
     symbols: [] # 인박스가 유니버스를 대신한다 — universe: watchlist 가 아니다
     capital_fraction:
-      KR: 1.0 # KR 전용 — 인박스가 KR 6자리 심볼만 받는다(llm_trader.py 가드레일 1번)
+      KR: 0.08 # KR 전용 — 인박스가 KR 6자리 심볼만 받는다(llm_trader.py 가드레일 1번)
       US: 0.0
     validation:
       status: burn_in # 신규 실험 레인 — 백테스트 표본 0(LLM 판단은 리플레이 불가). paper 번인이 유일한 검증 경로, 한 달 테스트(소유자 지시)
@@ -980,8 +993,14 @@ risk:
   #   게이트가 진짜 게이트가 된다. 새로 추가된 전략만 그 시점의 최신 분모를
   #   받고, 이미 굴러간 전략의 시작금은 재조정되지 않는다(장부 생성 시점에
   #   한 번만 못박힘 — quant/trade/risk/books.py `_ensure` 참고).
-  capital_policy: fixed # fixed | equal_split — 코드 기본값도 fixed
-  per_strategy_initial_krw: 10000000 # capital_policy: fixed 에서만 쓰는 전략당 시작 명목자본(원)
+  # 2026-09-01: 실계좌 스냅샷 이식(seed-real) 이후 fixed(전략당 고정 1,000만원)는
+  # 새 현실(실제 KRW 현금 ~300만원 + 005930 보유, USD 현금 ~$6.2k)과 충돌한다 —
+  # 활성 전략이 여럿이면 명목 합계가 실제 자산의 몇 배가 되어 전략별 현금 게이트가
+  # 이름뿐인 상한이 된다. equal_split(위 주석대로 원래 "실전 전환의 다리"로
+  # 설계된 값)로 전환해 전략당 시작 명목자본을 **실제 총현금 ÷ 활성 전략 수**로
+  # 맞춘다 — 코드는 이미 이 값을 지원한다(assembly.py `equal_split_initial_krw`).
+  capital_policy: equal_split # fixed | equal_split — 코드 기본값은 fixed
+  per_strategy_initial_krw: 10000000 # capital_policy: fixed 로 되돌릴 때만 쓰는 값(지금은 미사용)
   # 사이징 기준. capital_fraction(기본) = target_weight x 전략자본(=capital_fraction x 총자산).
   # cash_pct = target_weight x **그날 실제 가용 현금**(브로커 buying-power).
   # 사용자가 같은 계좌에서 손으로도 매매하므로 실계좌에서는 cash_pct가 맞다 —
@@ -1094,6 +1113,12 @@ execution:
   # 데이터로 검증된 값이 아니다. 0이 "모름"이 아니라 "틀림"이라는 판단 하에 두 종목의
   # 중간값을 기본으로 둔다.
   slippage_bps: 2.5
+  # 통화별 현금 지갑 분리(2026-09-01 소유자 지시: "원화는 원화로, 달러는
+  # 달러로만. 환전 금지"). true면 paper 브로커가 KRW/USD 현금을 별도 풀로
+  # 관리한다(quant/adapters/execution/paper.py `dual_currency`) — KR 체결은
+  # KRW 풀만, US 체결은 USD 풀만 움직인다. 이 키가 없거나 false면 기존 단일
+  # KRW 풀 동작(US 체결도 환산해 같은 풀 사용) 그대로다.
+  dual_currency_cash: true
 
 # 키움 실시간 웹소켓(체결가) 시세 라우트. 실키가 아직 등록 전이라 실서버 검증이
 # 안 됐다 — kiwoom-probe로 실서버 확인 전까지 기본 비활성. 켜져 있어도 연결 실패나
