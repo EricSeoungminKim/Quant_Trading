@@ -17,7 +17,9 @@ from datetime import date, datetime
 import pandas as pd
 import pytest
 
-from quant.analyze.index_outlook import empirical_probability, factor_outlook
+from quant.analyze.index_outlook import (
+    empirical_probability, factor_outlook, shrinkage_probability,
+)
 from quant.collect.contracts import SCHEMA_VERSION, Snapshot, SourceResult
 from quant.core.report_clock import KST
 from quant.report.collect import index_outlook as wiring
@@ -160,6 +162,83 @@ def test_empirical_probability_too_few_bars_is_none():
     assert out["reason"] == "일봉 부족"
 
 
+# ── 3b. shrinkage_probability(v2) 버킷 계산 손검증 ────────────────
+
+
+def test_shrinkage_probability_hand_verified_bucket():
+    """v1과 같은 합성 10개 종가(trend_days=2)로 수축 확률을 손검증한다.
+
+    alpha=7로 골라 분수가 깔끔해지게 했다(값 자체의 의미는 없다, 검산용).
+    v1 테스트의 버킷 분해를 그대로 재사용:
+      전체 버킷 outcomes = [1,0,1,0,1,0,1](t=2..8) → p0 = 4/7.
+      오늘 버킷(+1,+1): k=0, n=3(t=3,5,7)
+        → up_prob = (0 + 7*4/7)/(3+7) = 4/10 = 0.4, shrinkage = 7/10 = 0.7.
+      단일요인(전일 부호=+1): outcomes[t=3,5,7]=[0,0,0] → k=0,n=3
+        → prev_rate = (0+4)/10 = 0.4 → contribution = 0.4 - 4/7 ≈ -17.1%p.
+      단일요인(추세 부호=+1): outcomes[t=3,5,6,7]=[0,0,1,0] → k=1,n=4
+        → trend_rate = (1+4)/11 = 5/11 ≈ 0.4545 → contribution ≈ -11.7%p.
+    """
+    closes = [100, 101, 99, 103, 97, 105, 104, 108, 102, 110]
+    out = shrinkage_probability(closes, trend_days=2, alpha=7.0)
+    assert out["up_prob"] == 0.4
+    assert out["down_prob"] == 0.6
+    assert out["n_samples"] == 3
+    assert out["shrinkage"] == 0.7
+    assert out["brier_vs_base"] is None  # 7개 관측 < MIN_SPLIT_BARS
+    names = [f["name"] for f in out["factors"]]
+    assert names == ["전일 등락 부호", "2일 추세 부호"]
+    assert out["factors"][0]["contribution"] == "-17.1%p"
+    assert out["factors"][1]["contribution"] == "-11.7%p"
+
+
+def test_shrinkage_probability_no_matching_bucket_fully_shrinks_to_p0():
+    """오늘과 같은 버킷이 과거에 한 번도 없었으면(n=0) up_prob는 p0와 정확히
+    같아야 한다(수축 100%) — "표본 부족이면 침묵" 대신 "표본이 없으면 전체
+    평균"이 v1과의 핵심 차이다."""
+    # 끝까지 단조 하락하다 마지막 하루만 급등시켜 오늘 버킷(+1,+1)이 과거
+    # 관측(t=2..8, 전부 (-1,-1))에 단 한 번도 등장하지 않게 만든다.
+    closes = [100, 99, 98, 97, 96, 95, 94, 93, 92, 110]
+    out = shrinkage_probability(closes, trend_days=2)
+    assert out["n_samples"] == 0
+    assert out["shrinkage"] == 1.0
+    # p0(무조건부 상승률, 7개 관측 중 1개 상승 = 1/7)과 정확히 같아야 한다
+    assert out["up_prob"] == pytest.approx(1 / 7, abs=1e-4)
+
+
+def test_shrinkage_probability_down_prob_is_complement_of_up_prob():
+    closes = [float(100 + (i % 7) - 3) for i in range(150)]
+    out = shrinkage_probability(closes)
+    assert out["up_prob"] is not None
+    assert round(out["up_prob"] + out["down_prob"], 6) == 1.0
+
+
+def test_shrinkage_probability_converges_toward_raw_rate_as_alpha_shrinks():
+    """alpha를 0에 가깝게 주면 수축이 거의 사라지고 순수 조건부 비율(k/n)에
+    가까워져야 한다(수축 공식의 극한 검증)."""
+    closes = [100, 101, 99, 103, 97, 105, 104, 108, 102, 110]
+    out = shrinkage_probability(closes, trend_days=2, alpha=1e-6)
+    # 오늘 버킷(+1,+1)의 raw 비율은 0/3 = 0.0
+    assert out["up_prob"] == pytest.approx(0.0, abs=1e-4)
+    assert out["shrinkage"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_shrinkage_probability_too_few_bars_returns_none():
+    out = shrinkage_probability([100.0, 101.0, 99.0], trend_days=5)
+    assert out["up_prob"] is None and out["down_prob"] is None
+    assert out["n_samples"] == 0
+    assert out["shrinkage"] is None
+    assert out["factors"] == []
+    assert out["brier_vs_base"] is None
+
+
+def test_shrinkage_probability_brier_vs_base_computed_with_enough_bars():
+    """MIN_SPLIT_BARS(100) 이상의 버킷 표본이 있으면 walk-forward Brier 차를
+    낸다(부호는 데이터에 따라 다를 수 있으므로 float 여부만 검증)."""
+    closes = [100.0 + (i % 11) - 5 + 0.3 * i for i in range(400)]
+    out = shrinkage_probability(closes)
+    assert isinstance(out["brier_vs_base"], float)
+
+
 # ── 5. 로컬 parquet 결측 처리 ─────────────────────────────────────
 
 
@@ -209,6 +288,9 @@ def test_build_index_outlook_kr_schema(tmp_path):
         assert set(entry) >= {
             "score", "span", "score100", "label", "positives", "negatives",
             "probability", "proxy_symbol",
+            # v2(2026-09-02, 수축 기저율) — 이름 고정 계약
+            "up_prob", "down_prob", "n_samples", "shrinkage", "method",
+            "factors", "brier_vs_base",
         }
         assert set(entry["probability"]) == {"prob", "n", "method", "reason"}
     assert out["kospi"]["proxy_symbol"] == "069500"
@@ -216,8 +298,36 @@ def test_build_index_outlook_kr_schema(tmp_path):
     # 로컬 parquet 이 전혀 없는 tmp_path 이므로 확률은 정직하게 결측이어야 한다
     assert out["kospi"]["probability"]["prob"] is None
     assert out["kospi"]["probability"]["reason"]
+    # v2도 마찬가지로 결측이어야 한다(파티션이 없으면 수축할 표본 자체가 없다)
+    assert out["kospi"]["up_prob"] is None
+    assert out["kospi"]["down_prob"] is None
+    assert out["kospi"]["factors"] == []
     # 코스닥엔 앵커 요인이 없다(강제로 채우지 않는다) — span 이 코스피보다 작다
     assert out["kosdaq"]["span"] < out["kospi"]["span"]
+
+
+def test_build_index_outlook_v2_populates_when_history_exists(tmp_path):
+    """로컬 parquet 이 있으면 v2 필드(up_prob/down_prob/...)가 실제로 채워지고
+    down_prob = 1 - up_prob 를 만족해야 한다."""
+    part_dir = tmp_path / "data" / "history" / "069500" / "1d" / "2024"
+    part_dir.mkdir(parents=True)
+    idx = pd.date_range("2024-01-02", periods=150, freq="B", tz="UTC")
+    closes = [100.0 + (i % 9) - 4 + 0.05 * i for i in range(150)]
+    df = pd.DataFrame({
+        "open": closes, "high": closes, "low": closes, "close": closes,
+        "volume": [1] * 150,
+    }, index=idx)
+    df.to_parquet(part_dir / "01.parquet")
+
+    out = wiring.build_index_outlook(_kr_snap(), tmp_path)
+    kospi = out["kospi"]
+    assert kospi["up_prob"] is not None
+    assert round(kospi["up_prob"] + kospi["down_prob"], 6) == 1.0
+    assert kospi["n_samples"] >= 0
+    assert 0.0 <= kospi["shrinkage"] <= 1.0
+    assert len(kospi["factors"]) == 2
+    # 코스닥은 여전히 파티션이 없으므로(이 테스트에선 069500만 만들었다) 결측
+    assert out["kosdaq"]["up_prob"] is None
 
 
 def _us_snap():

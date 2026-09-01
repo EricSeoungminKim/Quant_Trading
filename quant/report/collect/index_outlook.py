@@ -111,10 +111,19 @@ def _index_entry(
             "prob": None, "n": 0, "method": None,
             "reason": "일봉 없음(로컬 파티션 없음)",
         }
+        probability_v2 = {
+            "up_prob": None, "down_prob": None, "n_samples": 0, "shrinkage": None,
+            "method": "일봉 없음(로컬 파티션 없음)", "factors": [], "brier_vs_base": None,
+        }
     else:
         probability = idx_calc.empirical_probability(closes)
+        probability_v2 = idx_calc.shrinkage_probability(closes)
     outlook["probability"] = probability
     outlook["proxy_symbol"] = closes_symbol
+    # v2(2026-09-02, 수축 기저율) — 기존 "probability"(v1)는 하위호환을 위해
+    # 그대로 두고, 새 필드는 여기에만 얹는다(quant.analyze.index_outlook 모듈
+    # docstring에 채택/탈락 요인 근거). 필드명은 리포트 UIUX 워커와 고정 계약.
+    outlook.update(probability_v2)
     return outlook
 
 
