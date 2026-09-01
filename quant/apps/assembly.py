@@ -815,9 +815,19 @@ def rebuild_strategies(
     return strategies, markets, active_markets
 
 
-def equal_split_initial_krw(broker, active_strategy_ids: list[str]) -> float | None:
+def equal_split_initial_krw(
+    broker, active_strategy_ids: list[str], fx: FxProvider | None = None
+) -> float | None:
     """`capital_policy: equal_split`의 전략당 시작 명목자본 = 실제 총현금 ÷
     활성 전략 수.
+
+    **총현금에는 USD 풀도 KRW 환산으로 포함한다(fx가 주어질 때).** 2026-09-01
+    실계좌 이식 첫 기동에서 KRW 풀(2.98M)만 나눠 전략당 248k가 됐는데, 계좌의
+    실질 2/3는 USD($6.2k≈8.5M)였다 — US 레인 명목 예산이 $180 수준이 되어 US
+    주식 대부분이 1주도 못 사는(int 내림 → 0주) 침묵 무거래가 될 뻔했다.
+    명목 예산을 KRW 합산으로 잡아도 초과 지출은 불가능하다 — 실제 주문은
+    통화별 지갑(cash/cash_usd)과 리스크 게이트가 각자 clamp하므로 환전 없이
+    한도가 지켜진다. 명목은 배분 비율일 뿐, 지출 한도는 지갑이다.
 
     **`None`은 "0원"이 아니다 — "모른다"다.** `broker.cash()`가 예외를 던지거나
     0 이하를 돌려주면 총현금을 모르는 것인데, 그걸 0으로 위장해 새 전략을
@@ -850,6 +860,19 @@ def equal_split_initial_krw(broker, active_strategy_ids: list[str]) -> float | N
             total_cash,
         )
         return None
+    # USD 풀 합산 — cash_usd()가 없거나(단일 통화 브로커) None(비활성/조회 실패)이면
+    # KRW만으로 계산한다(기존 동작 그대로). 환율 조회 실패는 FxProvider 가 자체
+    # fallback을 갖고 있어 여기까지 예외가 오지 않는 게 정상이지만, 명목 예산
+    # 계산이 기동을 죽이면 안 되므로 한 번 더 감싼다.
+    if fx is not None:
+        try:
+            cash_usd_fn = getattr(broker, "cash_usd", None)
+            usd = cash_usd_fn() if callable(cash_usd_fn) else None
+            if usd is not None and usd > 0:
+                total_cash += usd * fx.usd_krw()
+        except Exception as e:  # noqa: BLE001 — 명목 예산 계산 실패로 기동을 막지 않는다
+            logger.warning("equal_split: USD 풀 환산 실패 — KRW만으로 계산: %s: %s",
+                           type(e).__name__, e)
     return total_cash / len(active_strategy_ids) if active_strategy_ids else 0.0
 
 
@@ -995,7 +1018,7 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
             # broker는 위에서 이미 조립됐다 — paper는 Portfolio 현금(모의),
             # live는 TossBroker.cash()(실제 buying power)를 그대로 쓴다. 같은
             # 코드가 모의·실전 양쪽을 돈다는 게 이 정책의 핵심 이점이다.
-            per_strategy_initial_krw = equal_split_initial_krw(broker, active_strategy_ids)
+            per_strategy_initial_krw = equal_split_initial_krw(broker, active_strategy_ids, fx=fx)
             if per_strategy_initial_krw is None:
                 # 총현금을 모른다(조회 실패 또는 0 이하) — `equal_split_initial_krw`가
                 # 이미 경고 로그를 남겼다. 여기서 신규 전략을 시딩하면 0원 시작

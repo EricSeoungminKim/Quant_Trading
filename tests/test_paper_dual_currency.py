@@ -214,3 +214,32 @@ def test_portfolio_load_or_init_reads_cash_usd_when_present(tmp_path):
 def test_equity_includes_usd_cash_converted_to_krw():
     p = Portfolio(cash=0.0, cash_usd=100.0, positions={}, state_path=None)
     assert p.equity({}, fx=FixedFxProvider(FX_RATE)) == pytest.approx(100.0 * FX_RATE)
+
+
+def test_equal_split_includes_usd_pool_when_fx_given():
+    """2026-09-01 실기동 결함 재현 방지 — KRW만 나누면 US 레인 명목예산이 $180
+    수준이 되어 1주도 못 사는 침묵 무거래가 된다. fx가 주어지면 USD 풀을 KRW
+    환산해 합산하고, cash_usd가 None(비활성)이면 기존 동작(KRW만)을 유지한다."""
+    from quant.apps.assembly import equal_split_initial_krw
+
+    class _FakeBroker:
+        def __init__(self, krw, usd):
+            self._krw, self._usd = krw, usd
+        def cash(self):
+            return self._krw
+        def cash_usd(self):
+            return self._usd
+
+    class _FakeFx:
+        def usd_krw(self):
+            return 1000.0
+
+    # USD 포함: (1_000_000 + 500 * 1000) / 3 = 500_000
+    got = equal_split_initial_krw(_FakeBroker(1_000_000, 500.0), ["a", "b", "c"], fx=_FakeFx())
+    assert got == 500_000.0
+    # cash_usd 비활성(None) → KRW만 (구 동작 보존)
+    got = equal_split_initial_krw(_FakeBroker(1_000_000, None), ["a", "b"], fx=_FakeFx())
+    assert got == 500_000.0
+    # fx 미주입 → KRW만 (구 호출부 하위호환)
+    got = equal_split_initial_krw(_FakeBroker(1_000_000, 500.0), ["a", "b"])
+    assert got == 500_000.0
