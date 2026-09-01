@@ -252,7 +252,7 @@ def test_kr_non_etf_fails_with_cost_reason():
     client = _FakeClient(d, stock_info={"securityType": "STOCK"})
     r = score_symbol(d, "005930", ["TREND"], None, client, today=d.index[-1].date())
     assert r.prereq_ok is False
-    assert any("매도세 15~20bp" in reason for reason in r.reasons)
+    assert any("왕복 23bp" in reason for reason in r.reasons)
 
 
 def test_kr_etf_passes_product_prereq():
@@ -569,7 +569,7 @@ def test_allow_kr_stocks_converts_block_to_pass_with_note():
         ["005930:TREND"], client, threshold=0, regime_label="neutral", allow_kr_stocks=True,
     )[0]
     assert allowed.prereq_ok is True
-    assert any("매도세 15bp paper 반영" in x for x in allowed.reasons)
+    assert any("왕복 23bp paper 반영" in x for x in allowed.reasons)
 
 
 # ================================ US 자동 편입 발굴 (2026-08-11 사용자 요청)

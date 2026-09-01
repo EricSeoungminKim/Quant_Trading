@@ -237,10 +237,14 @@ def _check_prerequisites(
         if is_etf is False:
             if allow_kr_stocks:
                 # 2026-08-10 사용자 결정: 개별주 자동 편입 허용 — 단 paper 수수료
-                # 모델이 매도세 15bp를 반영하므로 성적이 실비용 기준으로 나온다.
-                info.append("KR 개별주(매도세 15bp paper 반영) — 통과")
+                # 모델이 매도세를 반영하므로 성적이 실비용 기준으로 나온다.
+                # 수치는 execution.kr_stock_sell_tax_bps(=20bp) 가 진실이다 —
+                # 2026-08-19 에 15→20bp 로 정정됐는데 이 문구만 15bp 로 남아
+                # 있었다(2026-09-02 발견). 계산엔 영향이 없었지만 읽는 사람이
+                # 비용을 실제보다 낮게 오인하게 만든다.
+                info.append("KR 개별주(매도세 20bp + 수수료 3bp = 왕복 23bp paper 반영) — 통과")
             else:
-                failures.append("KR 개별주: 매도세 15~20bp > 엣지 — 자동등록 차단(수동 /watch는 가능)")
+                failures.append("KR 개별주: 왕복 23bp(수수료 3 + 거래세 20) > 엣지 — 자동등록 차단(수동 /watch는 가능)")
         elif is_etf is None:
             info.append(product_reason)
 
