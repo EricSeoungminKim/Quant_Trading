@@ -1046,7 +1046,12 @@ def cmd_equity_snapshot(args: argparse.Namespace) -> None:
     from quant.core.portfolio.portfolio import to_krw
 
     degraded = []
-    total_krw = float(portfolio.get("cash", 0.0))
+    # cash_usd(2026-09-01, PaperBroker 통화 분리 지갑): dual_currency=True에서
+    # US 체결대금이 이 별도 필드에 쌓인다 — 안 더하면 총자산이 USD 현금만큼
+    # 누락된다. 구버전 portfolio.json(필드 없음)은 0.0으로 안전하게 폴백된다
+    # (Portfolio.load_or_init과 동일한 하위호환 원칙).
+    total_krw = float(portfolio.get("cash", 0.0)) + to_krw(
+        float(portfolio.get("cash_usd", 0.0)), "US", fx)
     for sym, p in positions.items():
         qty = float(p.get("qty", 0) or 0)
         price = quotes.get(sym)
@@ -1990,6 +1995,183 @@ def cmd_backup(args: argparse.Namespace) -> None:
         pass
     print(_json.dumps(stats, ensure_ascii=False, indent=2))
     raise SystemExit(1 if problems else 0)
+
+
+def cmd_seed_real(args: argparse.Namespace) -> None:
+    """실계좌 스냅샷을 모의(paper) 상태에 이식하는 **일회성 제어 도구**.
+
+    **엔진(quant.apps.cli paper)이 꺼져 있을 때만 실행할 것.** 돌고 있는
+    루프가 사이클마다 portfolio.json을 읽고/쓰는 도중 이 도구가 같은 파일을
+    덮어쓰면, 엔진이 보는 상태와 실제 디스크 상태가 어긋나는 레이스 컨디션이
+    난다 — 이 도구는 그 경합을 스스로 막지 않는다(호출부 책임).
+
+    (2026-09-01 소유자 지시) "모의 포트폴리오를 완전히 초기화하고, 실제 토스
+    계좌 스냅샷을 이어받아 모의투자로 진행하라. 원화는 원화로, 달러는 달러로만
+    (환전 금지). 그 안에서 전략대로 지분을 나눠라." — 오케스트레이터가 정리한
+    처분:
+
+    - 005930(삼성전자)은 보유를 유지하고 `frgn_accumulate` 전략 lot으로
+      이관한다(그 전략이 지금도 이 종목 매집 신호를 갖고 있어 청산 규칙이
+      계속 자연스럽게 관리한다).
+    - 나머지 종목(009150/012450/GOOGL/NVDA/TSLA/GLDM/SOXL)은 임시 `legacy`
+      lot으로 세팅한 뒤, 스냅샷 가격으로 즉시 매도 체결을 기록한다 — 기존
+      PaperBroker 수수료 모델(KR 개별주 매도세 20bp, US SEC Fee+TAF 포함)을
+      그대로 통과시켜 trades.jsonl에 정식 행으로 남긴다. reason에 "실계좌
+      이식 정리" 마커를 남긴다.
+
+    매도 대금은 PaperBroker의 통화 분리 지갑(dual_currency=True, paper.py
+    참고)을 통해 KR 매도→KRW 풀, US 매도→USD 풀로만 들어간다 — 환전 코드는
+    어디에도 없다.
+
+    **주의**: `strategy_books.json`(전략별 독립 명목계정, capital_mode:
+    per_strategy)의 `frgn_accumulate` 장부는 이 도구가 건드리지 않는다 —
+    거기 기록된 005930 포지션/현금은 이 이식 이전의 시뮬레이션 이력 그대로
+    남는다. 이 장부와 새로 이식된 실제 보유(6주)를 맞출지는 별도 판단이
+    필요하다(과도한 자동 조정 대신 백업만 남기고 사람 판단에 맡긴다).
+    """
+    import json as _json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    import pandas as pd
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.adapters.execution.paper import PaperBroker
+    from quant.apps.config import load_settings
+    from quant.control.ledger import TradeLedgerSink
+    from quant.core.fx import FixedFxProvider
+    from quant.core.models import Order, Position, Quote, Side, market_of_symbol
+    from quant.core.portfolio.portfolio import Portfolio
+
+    KEEP_SYMBOL = "005930"
+    KEEP_STRATEGY = "frgn_accumulate"
+    LEGACY_STRATEGY = "legacy"
+    REASON = "실계좌 이식 정리 — 소유자 지시 2026-09-01: 005930만 보유 유지, 나머지 정리"
+
+    snapshot_path = Path(args.snapshot)
+    snapshot = _json.loads(snapshot_path.read_text(encoding="utf-8"))
+
+    holdings = {h["symbol"]: h for h in snapshot["holdings"]}
+    if KEEP_SYMBOL not in holdings:
+        raise SystemExit(f"스냅샷에 {KEEP_SYMBOL}이 없다 — 이관 대상을 다시 확인하라")
+
+    # 심볼 형태(6자리 숫자=KR)로 추론한 시장이 스냅샷의 통화 표기와 어긋나면
+    # 스냅샷이 이상하다는 신호다 — 조용히 넘기지 않고 멈춘다.
+    market_of: dict[str, str] = {}
+    for sym, h in holdings.items():
+        inferred = market_of_symbol(sym)
+        expected = "KR" if h["currency"] == "KRW" else "US"
+        if inferred != expected:
+            raise SystemExit(
+                f"{sym}: 심볼 추론 시장({inferred}) != 스냅샷 통화 기준 시장({expected}, "
+                f"currency={h['currency']!r}) — 스냅샷을 확인하라"
+            )
+        market_of[sym] = inferred
+
+    state_dir = REPO_ROOT / "data" / "state"
+    portfolio_path = state_dir / "portfolio.json"
+    books_path = state_dir / "strategy_books.json"
+    risk_day_path = state_dir / "risk_day.json"
+    ledger_path = state_dir / "trades.jsonl"
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backed_up: list[str] = []
+    if not args.dry_run:
+        # 삭제가 아니라 보존 — 이 도구는 엔진이 꺼져 있을 때만 쓰는 전제이므로
+        # 백업은 "되돌릴 방법"이지 "동시 접근 방지"가 아니다.
+        for p in (portfolio_path, books_path, risk_day_path):
+            if p.exists():
+                bak = p.with_name(f"{p.name}.pre_seed.{stamp}.bak")
+                bak.write_bytes(p.read_bytes())
+                backed_up.append(str(bak))
+
+    settings = load_settings()
+    execution_cfg = settings.execution
+    fx = FixedFxProvider(float(snapshot["fx_usd_krw"]))
+
+    now = datetime.now(timezone.utc)
+    portfolio = Portfolio(
+        cash=float(snapshot["buying_power_KRW"]["cashBuyingPower"]),
+        cash_usd=float(snapshot["buying_power_USD"]["cashBuyingPower"]),
+        state_path=None if args.dry_run else portfolio_path,
+    )
+    for sym, h in holdings.items():
+        qty = float(h["qty"])
+        avg_cost = float(h["avg_cost"])
+        pos = Position(symbol=sym, qty=qty, avg_cost=avg_cost, opened_at=now)
+        portfolio.positions[sym] = pos
+        lot = pos.ensure_lot(KEEP_STRATEGY if sym == KEEP_SYMBOL else LEGACY_STRATEGY)
+        lot["qty"] = qty
+        lot["avg_cost"] = avg_cost
+
+    class _SnapshotDataFeed:
+        """스냅샷 가격만 answer하는 정적 DataFeed — 이 도구는 실시세를 조회하지
+        않는다(스냅샷 가격 그대로 체결시키는 것이 목적)."""
+
+        def quote(self, symbol: str) -> Quote | None:
+            h = holdings.get(symbol)
+            return None if h is None else Quote(symbol=symbol, ts=now, price=float(h["price"]))
+
+        def history(self, symbol: str, interval: str, n: int) -> pd.DataFrame:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+
+    broker = PaperBroker(
+        data=_SnapshotDataFeed(), portfolio=portfolio,
+        fee_bps=execution_cfg.get("fee_bps", 0.0), market_of=market_of, fx=fx,
+        # 정리 매도는 스냅샷에 이미 찍힌 실제 가격을 그대로 체결가로 쓴다 —
+        # 슬리피지 가정을 얹지 않는다(추정치를 실측 위에 덧씌우지 않는다).
+        slippage_bps=0.0,
+        kr_stock_sell_tax_bps=execution_cfg.get("kr_stock_sell_tax_bps", 0.0),
+        # 스냅샷에는 ETF 여부 정보가 없다 — "모르면 개별주"(paper.py 기존
+        # 원칙: 과대 비용이 과소 비용보다 정직하다).
+        kr_etf_symbols=set(),
+        us_sec_fee_bps=execution_cfg.get("us_sec_fee_bps", 0.0),
+        us_sec_fee_min_usd=execution_cfg.get("us_sec_fee_min_usd", 0.0),
+        us_taf_per_share=execution_cfg.get("us_taf_per_share", 0.0),
+        us_taf_cap_usd=execution_cfg.get("us_taf_cap_usd", 0.0),
+        us_free_commission_notional_usd=execution_cfg.get("us_free_commission_notional_usd", 0.0),
+        dual_currency=True,
+    )
+
+    class _NullSink:
+        def on_signal(self, signal) -> None: ...
+        def on_fill(self, fill) -> None: ...
+        def on_order(self, state) -> None: ...
+
+    ledger = None if args.dry_run else TradeLedgerSink(_NullSink(), path=ledger_path)
+
+    sell_fills = []
+    for sym, h in holdings.items():
+        if sym == KEEP_SYMBOL:
+            continue
+        order = Order(symbol=sym, side=Side.SELL, qty=float(h["qty"]),
+                       strategy_id=LEGACY_STRATEGY, reason=REASON)
+        state = broker.place_order(order)
+        if ledger is not None:
+            ledger.on_order(state)
+            if state.fill is not None:
+                ledger.on_fill(state.fill)
+        sell_fills.append({
+            "symbol": sym, "status": state.status.value, "filled_qty": state.filled_qty,
+            "price": state.fill.price if state.fill else None,
+            "fee": state.fill.fee if state.fill else None,
+        })
+
+    if not args.dry_run:
+        portfolio.save()
+
+    result = {
+        "dry_run": bool(args.dry_run),
+        "backed_up": backed_up,
+        "cash_krw_final": portfolio.cash,
+        "cash_usd_final": portfolio.cash_usd,
+        "positions_remaining": {
+            sym: {"qty": pos.qty, "avg_cost": pos.avg_cost}
+            for sym, pos in portfolio.positions.items() if pos.qty > 0
+        },
+        "sell_fills_recorded": sell_fills,
+    }
+    print(_json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def cmd_health(args: argparse.Namespace) -> None:
@@ -4458,6 +4640,20 @@ def main() -> None:
         help="이 번들을 매니페스트와 대조만 하고 끝낸다 (생성하지 않음)",
     )
     p_backup.set_defaults(func=cmd_backup)
+
+    p_seed_real = sub.add_parser(
+        "seed-real",
+        help="실계좌 스냅샷을 모의(paper) 상태로 이식 (일회성 제어 도구 — 반드시 엔진 정지 중에 실행)",
+    )
+    p_seed_real.add_argument(
+        "--snapshot", default="data/state/real_account_snapshot.json",
+        help="실계좌 스냅샷 JSON 경로",
+    )
+    p_seed_real.add_argument(
+        "--dry-run", action="store_true",
+        help="파일을 쓰지 않고 결과만 미리 본다(기본은 실제로 씀)",
+    )
+    p_seed_real.set_defaults(func=cmd_seed_real)
 
     p_health = sub.add_parser(
         "health",

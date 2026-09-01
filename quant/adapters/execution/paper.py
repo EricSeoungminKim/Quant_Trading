@@ -38,6 +38,7 @@ class PaperBroker:
         us_free_commission_notional_usd: float = 0.0,
         us_taf_per_share: float = 0.0,
         us_taf_cap_usd: float = 0.0,
+        dual_currency: bool = False,
     ):
         self.data = data
         self.portfolio = portfolio
@@ -63,6 +64,13 @@ class PaperBroker:
         # 기본값 0.0 = 하위호환(기존 호출부 동작 불변).
         self.us_taf_per_share = us_taf_per_share
         self.us_taf_cap_usd = us_taf_cap_usd
+        # 통화별 현금 지갑 분리(2026-09-01 소유자 지시: "원화는 원화로, 달러는
+        # 달러로만. 환전 금지"). 기본값 False = 기존 동작(단일 KRW 풀, US 체결도
+        # to_krw로 환산해 같은 풀을 debit/credit) 100% 보존 — 백테스트가 이
+        # 인자를 넘기지 않으므로 결과가 바뀌지 않는다. True면 US 체결이
+        # portfolio.cash_usd만 움직이고 portfolio.cash(KRW)는 건드리지 않는다.
+        # 환전 코드는 어디에도 없다 — 두 풀은 서로 절대 섞이지 않는다.
+        self.dual_currency = dual_currency
 
     def _fee_bps_for(self, market: str) -> float:
         """시장별 수수료(bp, 편도). dict인데 해당 시장이 없으면 0이 아니라 명시된 값 중
@@ -168,7 +176,11 @@ class PaperBroker:
             if lot_new_qty > 0:
                 lot["avg_cost"] = (lot_avg_before * lot_qty_before + notional) / lot_new_qty
             lot["qty"] = lot_new_qty
-            self.portfolio.cash -= to_krw(notional + fee, market, self.fx)
+            if self.dual_currency and market == "US":
+                # USD 풀만 debit — KRW 현금은 건드리지 않는다(환전 없음).
+                self.portfolio.cash_usd -= notional + fee
+            else:
+                self.portfolio.cash -= to_krw(notional + fee, market, self.fx)
         else:
             if pos is None or pos.qty <= 0:
                 return oms.not_submitted(order, "보유 수량 없음 — 매도 불가", at=quote.ts)
@@ -214,7 +226,11 @@ class PaperBroker:
             cost_basis = float(lot["avg_cost"]) if lot is not None else pos.avg_cost
             realized_pnl = (price - cost_basis) * qty
             pos.qty -= qty
-            self.portfolio.cash += to_krw(notional - fee, market, self.fx)
+            if self.dual_currency and market == "US":
+                # USD 풀만 credit — KRW 현금은 건드리지 않는다(환전 없음).
+                self.portfolio.cash_usd += notional - fee
+            else:
+                self.portfolio.cash += to_krw(notional - fee, market, self.fx)
             if lot is not None:
                 remaining = float(lot.get("qty", 0.0)) - qty
                 if remaining <= qty * 1e-9:
@@ -254,6 +270,19 @@ class PaperBroker:
 
     def cash(self) -> float:
         return self.portfolio.cash
+
+    def cash_usd(self) -> float | None:
+        """USD 현금 풀. dual_currency=False(기본, 백테스트 등 기존 호출부)면
+        **None**을 돌려준다 — TossBroker.cash_usd와 같은 계약으로, risk/manager.py
+        의 duck-typed USD 게이트(`approve()`)가 None을 "게이트 건너뛰기"로
+        취급한다(TossBroker.cash_usd 참고). 이 메서드 존재 자체는 항상 있으므로
+        (Broker Protocol에 없는 부가 메서드지만 hasattr는 항상 True), dual_currency
+        여부를 값으로 표현해야 백테스트(dual_currency=False)의 US 진입 사이징이
+        이 게이트에 걸려 결과가 바뀌는 사고를 막는다. dual_currency=True면 실제
+        USD 풀 잔액을 반환한다."""
+        if not self.dual_currency:
+            return None
+        return self.portfolio.cash_usd
 
     def cancel_order(self, order_id: str) -> bool:
         """paper는 즉시 체결 모델이라 미체결 주문이 존재할 수 없다 — 취소할 대상이

@@ -35,6 +35,7 @@ class Portfolio:
         cash: float,
         positions: dict[str, Position] | None = None,
         state_path: Path | None = DEFAULT_STATE_PATH,
+        cash_usd: float = 0.0,
     ):
         """state_path=None이면 영속화하지 않는다(save()가 no-op).
 
@@ -42,8 +43,15 @@ class Portfolio:
         paper 거래의 상태 파일을 덮어쓰고, 동시에 돌린 백테스트끼리 서로의
         상태를 밟아 결과가 비결정적이 된다(2026-08-06 실측: 동일 조건에서
         승률 90.3% vs 87.3%). 6.9만 사이클 × 파일 쓰기라 속도 손해도 크다.
+
+        cash_usd(2026-09-01, 통화별 지갑 분리): 원화 현금과 별도인 USD 현금
+        풀. 기본값 0.0 — 이 인자를 넘기지 않는 기존 호출부(백테스트 등)는
+        예전과 동일하게 self.cash 하나만 쓴다. PaperBroker가 dual_currency=True
+        일 때만 이 풀을 실제로 debit/credit한다(paper.py 참고) — 그 전까지는
+        존재하되 항상 0으로 남는 죽은 필드다.
         """
         self.cash = cash
+        self.cash_usd = cash_usd
         self.positions: dict[str, Position] = positions or {}
         self.state_path = Path(state_path) if state_path is not None else None
 
@@ -53,9 +61,9 @@ class Portfolio:
         market_of: dict[str, str] | None = None,
         fx: FxProvider | None = None,
     ) -> float:
-        """KRW 기준 총자산 = 현금 + 각 포지션의 KRW 환산 평가액."""
+        """KRW 기준 총자산 = 현금(KRW+USD 환산) + 각 포지션의 KRW 환산 평가액."""
         market_of = market_of or {}
-        total = self.cash
+        total = self.cash + to_krw(self.cash_usd, "US", fx)
         for symbol, pos in self.positions.items():
             if pos.qty <= 0:
                 continue
@@ -69,6 +77,7 @@ class Portfolio:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "cash": self.cash,
+            "cash_usd": self.cash_usd,
             "positions": {
                 sym: {
                     "symbol": pos.symbol,
@@ -99,7 +108,12 @@ class Portfolio:
                 )
                 for sym, p in data.get("positions", {}).items()
             }
-            return cls(cash=data.get("cash", start_cash), positions=positions, state_path=state_path)
+            # cash_usd: 구 스키마(필드 부재)는 0.0으로 폴백 — 통화 분리 도입 전
+            # 상태 파일도 그대로 읽힌다.
+            return cls(
+                cash=data.get("cash", start_cash), positions=positions, state_path=state_path,
+                cash_usd=float(data.get("cash_usd", 0.0)),
+            )
         portfolio = cls(cash=start_cash, state_path=state_path)
         portfolio.save()
         return portfolio

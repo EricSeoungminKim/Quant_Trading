@@ -964,6 +964,10 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
             us_taf_cap_usd=cfg["execution"].get("us_taf_cap_usd", 0.0),
             us_free_commission_notional_usd=cfg["execution"].get(
                 "us_free_commission_notional_usd", 0.0),
+            # 통화별 지갑 분리(2026-09-01 소유자 지시). 기본값 False로 명시적
+            # opt-in — 설정에 없는 환경(과거 settings.yaml, 다른 프로파일)은
+            # 기존 단일 KRW 풀 동작 그대로다. paper.py dual_currency 참고.
+            dual_currency=bool(cfg["execution"].get("dual_currency_cash", False)),
         )
     capital_fraction = validated_capital_fractions(cfg)
     # 전략별 독립 명목계정(2026-08-19, 모의투자 중 전략별 성장곡선 비교용 —

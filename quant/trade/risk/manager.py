@@ -1154,10 +1154,12 @@ class RiskManagerImpl:
             # 그 시점엔 "왜"가 로그 문자열 파싱 없이는 안 보인다. 그래서 US 진입에
             # 한해 여기서 한 번 더 min()을 씌운다.
             #
-            # cash_usd()는 Broker Protocol에 없는 duck-typed 부가 메서드다
-            # (TossBroker만 구현 — PaperBroker 등 없는 구현체는 hasattr 자체가
-            # False라 조용히 건너뛴다. 기존 KR 전용/백테스트/paper 결과는 100%
-            # 보존된다. paper는 가상 자본이라 통화 분리가 애초에 의미 없다).
+            # cash_usd()는 Broker Protocol에 없는 duck-typed 부가 메서드다.
+            # TossBroker는 항상 실제 잔액을, PaperBroker(2026-09-01 통화 분리
+            # 도입)는 dual_currency=True일 때만 실제 USD 풀을, 그 외(백테스트 등
+            # dual_currency=False 호출부, 그리고 아예 이 메서드가 없는 브로커
+            # 더블)에는 **None**을 돌려준다 — None은 아래에서 "게이트 건너뛰기"로
+            # 취급되므로 기존 KR 전용/백테스트/paper 결과는 100% 보존된다.
             # **환전 시도는 하지 않는다** — Toss API에 환전 엔드포인트가 없다
             # (정책이자 사실, 여기서 만들어내지 않는다). 조회 실패는 게이트를
             # 건너뛴다(모르면 막지 않는다 — 기존 KRW 기준 사이징이 안전망으로 남는다).
