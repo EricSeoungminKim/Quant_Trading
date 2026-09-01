@@ -171,6 +171,12 @@
 10 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/session_pnl.sh US >> data/session_pnl.log 2>&1
 15 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.cli equity-snapshot --market US >> data/equity.log 2>&1
 
+# 06:20 US — 공개 포트폴리오 사이트용 성과 JSON(data/public/performance.json).
+# 세션 손익(06:10) 뒤·일일 피드백(06:25) 전. 입력은 거래 원장 하나뿐(LLM/네트워크
+# 호출 없음) — quant/control/performance.py 계약. git push는 아직 안 한다(공개
+# 저장소 배선 전, publish_performance.sh 주석 참고).
+20 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_performance.sh >> data/publish_performance.log 2>&1
+
 # 06:25 US — 일일 피드백(2026-08-26 소유자 조직도 역할 5). 자본 곡선(06:15)
 # 뒤로 10분 띄웠다 — 그 세션 체결 원장이 확정된 뒤. 오늘 US 진입 체결의 진입
 # 타이밍(고점매수/거래 소강 진입/늦은 진입)을 규칙 기반으로 판정해 전략별로
@@ -339,6 +345,12 @@
 # 애초에 없으므로 build_close_report 가 정직하게 "만기 지평 없음"을 보낸다 —
 # 억지로 걸러 침묵하는 것보다 매일 원칙이 단순하고, 조용한 실패를 피한다.
 20 16 * * * cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 ./server/scripts/close_report.sh >> data/close_report.log 2>&1
+
+# 16:20 KR — 공개 포트폴리오 사이트용 성과 JSON(data/public/performance.json).
+# close-report(바로 위)와 같은 분이지만 이쪽은 원장 읽기 + JSON 쓰기뿐(LLM/네트워크
+# 호출 없음, 결정론)이라 1.8GB 박스에서도 동시 실행이 안전하다 — quant/control/
+# performance.py 계약. git push는 아직 안 한다(공개 저장소 배선 전).
+20 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_performance.sh >> data/publish_performance.log 2>&1
 
 # 매주 금 16:30 KST — 리더보드 승격 판정. **자동 적용하지 않는다**(판정만 낸다).
 # 표본 수를 거래일로 세므로 20거래일 전에는 계속 "판단 불가"가 정상이다.

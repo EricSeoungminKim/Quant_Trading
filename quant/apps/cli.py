@@ -1960,6 +1960,30 @@ def ledger_state_path():
     return REPO_ROOT / "data" / "state" / "trades.jsonl"
 
 
+def cmd_publish_performance(args: argparse.Namespace) -> None:
+    """공개 포트폴리오 사이트용 성과 JSON을 `--out`에 쓴다.
+
+    입력은 거래 원장(`trades.jsonl`) 하나 + `execution` 설정 비용 상수뿐 —
+    종목/포지션/계좌 잔고 절대값은 출력에 없다. 계산 로직은 순수 함수
+    `quant.control.performance.build_performance_payload`에 있다(이 함수는
+    파일 I/O만 한다)."""
+    import json as _json
+    from pathlib import Path
+
+    from quant.control.ledger import load_trades
+    from quant.control.performance import build_performance_payload
+
+    trades = load_trades(ledger_state_path())
+    settings = load_settings()
+    payload = build_performance_payload(trades, settings.execution)
+
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"성과 JSON 기록: {out_path} (체결 {payload['period']['total_fills']}건, "
+          f"거래일 {payload['period']['sessions']}일, 전략 {len(payload['strategies'])}개)")
+
+
 def cmd_backup(args: argparse.Namespace) -> None:
     """백업 번들 생성/대조. JSON 을 stdout 으로 — 셸 스크립트와 감시가 파싱한다.
 
@@ -4658,6 +4682,13 @@ def main() -> None:
         help="이 번들을 매니페스트와 대조만 하고 끝낸다 (생성하지 않음)",
     )
     p_backup.set_defaults(func=cmd_backup)
+
+    p_publish_perf = sub.add_parser(
+        "publish-performance",
+        help="공개 포트폴리오 사이트용 성과 JSON 생성 (거래 원장 하나만 입력, 종목/잔고 비노출)",
+    )
+    p_publish_perf.add_argument("--out", required=True, help="출력 JSON 경로")
+    p_publish_perf.set_defaults(func=cmd_publish_performance)
 
     p_seed_real = sub.add_parser(
         "seed-real",
