@@ -447,3 +447,8 @@
 # 보고 핑. 엔진 정체=즉시 /fail 알림, EC2/cron 사망=핑 끊김→유예 후 알림.
 # HEALTHCHECKS_PING_URL 이 .env.local 에 없으면 무동작(에러 아님).
 */10 * * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/hc_ping.sh >> data/hc_ping.log 2>&1
+
+# 공개 포트폴리오 사이트 데이터 갱신(2026-09-02) — publish_performance.sh 직후.
+# 배포 키(~/.ssh/id_portfolio)가 GitHub 에 등록돼 있을 때만 동작, 아니면 조용히 스킵.
+25 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_portfolio.sh >> data/portfolio_publish.log 2>&1
+25 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_portfolio.sh >> data/portfolio_publish.log 2>&1
