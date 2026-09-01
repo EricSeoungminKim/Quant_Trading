@@ -41,6 +41,14 @@ SERIES: dict[str, str] = {
     "vix": "VIXCLS",
     "dollar_index": "DTWEXBGS",
     "usdkrw": "DEXKOUS",
+    # WTI 유가(2026-08-31 소유자 지시 — 자금 흐름 해석, quant/analyze/money_flow.py).
+    # 실측: DCOILWTICO 는 살아 있다(2026-09-01 API 확인, 2026-08-25까지 최신).
+    # 금(GOLDAMGBD228NLBM/GOLDPMGBD228NLBM, LBMA 고시가)은 **같은 확인에서
+    # "series does not exist"(400) — FRED 무료 시리즈로는 2015년 이후 중단됐다.
+    # 대체로 찾은 NASDAQQGLDI는 실시간이지만 "Credit Suisse NASDAQ Gold FLOWS103
+    # Price Index"라는 전략 인덱스이지 현물 금가가 아니라(값이 스팟 금가와
+    # 다르게 움직인다) 채택하지 않았다 — 여기 없는 시리즈를 지어내지 않는다.
+    "oil_wti": "DCOILWTICO",
 }
 
 DEFAULT_LEDGER_PATH = "data/ledger/macro_rates.jsonl"

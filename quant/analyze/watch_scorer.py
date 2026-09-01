@@ -425,6 +425,34 @@ _PROFILE_SCORERS = {
 }
 
 
+def macro_sector_adjustment(
+    symbol: str, sector_map: dict[str, str] | None, sector_tilt: dict[str, dict] | None,
+) -> tuple[int, str] | None:
+    """자금 흐름 섹터 기울기(§4, 2026-08-31 소유자 지시) → 증거점수 ±2 가감.
+
+    `sector_map`은 `data/ledger/sector_map.json`(네이버 업종, KR 전용 — US
+    종목-섹터 매핑은 이 저장소에 없다, `quant.analyze.money_flow` docstring의
+    조사 결과 그대로). `sector_tilt`은
+    `quant.analyze.money_flow.analyze_money_flow(...)["sector_tilt"]["KR"]`.
+
+    섹터를 모르는 종목(`sector_map`에 없거나 `sector_tilt`이 그 업종을 모름)은
+    `None` — 호출부가 0점(불이익 없음)으로 취급한다. 반환 사유 문자열은
+    "매크로: <업종> <부호점수> (<근거>)" 형태로, `cmd_watch_score`의 점수
+    세부화 출력에 그대로 남는다."""
+    if not sector_map or not sector_tilt:
+        return None
+    sector = sector_map.get(symbol)
+    if not sector:
+        return None
+    entry = sector_tilt.get(sector)
+    if entry is None:
+        return None
+    score = max(-2, min(2, entry["score"]))
+    why = " · ".join(entry.get("why") or [])
+    reason = f"매크로: {sector} {score:+d}" + (f" ({why})" if why else "")
+    return score, reason
+
+
 def score_symbol(
     daily: pd.DataFrame,
     symbol: str,
@@ -434,10 +462,15 @@ def score_symbol(
     today: date | None = None,
     extra_reasons: list[str] | None = None,
     allow_kr_stocks: bool = False,
+    macro_sector_adj: tuple[int, str] | None = None,
 ) -> ScoreResult:
     """일봉 DataFrame(open/high/low/close/volume, 시간 오름차순) 하나를 채점한다.
     `tags`가 비어있으면(무태그) 세 프로필을 모두 계산해 최고점을 취한다(best-of).
-    `passed`는 여기서 정하지 않는다 — threshold와 비교는 `run_watch_score`가 한다."""
+    `passed`는 여기서 정하지 않는다 — threshold와 비교는 `run_watch_score`가 한다.
+
+    `macro_sector_adj`(선택) — `macro_sector_adjustment()`가 계산한
+    `(점수, 사유)`. 있으면 최종 점수에 그대로 더하고(±2 한도는 호출부가 이미
+    보장) breakdown/reasons에 "매크로 섹터 기울기" 항목으로 남긴다."""
     today = today or date.today()
     reasons: list[str] = list(extra_reasons or [])
 
@@ -462,7 +495,14 @@ def score_symbol(
     profile_results = {p: _PROFILE_SCORERS[p](daily, report_date) for p in profiles}
     best_profile = max(profile_results, key=lambda p: profile_results[p][0])
     score, profile_reasons, breakdown = profile_results[best_profile]
+    breakdown = list(breakdown)
     reasons.append(f"[{best_profile}] " + "; ".join(profile_reasons))
+
+    if macro_sector_adj is not None:
+        adj, adj_reason = macro_sector_adj
+        score += adj
+        reasons.append(adj_reason)
+        breakdown.append(("매크로 섹터 기울기", adj, 2, adj_reason))
 
     prereq_ok = not prereq_failures
     if prereq_failures:
@@ -609,10 +649,19 @@ def run_watch_score(
     today: date | None = None,
     kiwoom_client=None,
     allow_kr_stocks: bool = False,
+    sector_map: dict[str, str] | None = None,
+    sector_tilt: dict[str, dict] | None = None,
 ) -> list[ScoreResult]:
     """토큰(`SYMBOL[:TAGS[:YYYYMMDD]]`) 목록을 채점한다. `enabled=False`면 네트워크를
     전혀 부르지 않고 전부 FAIL 처리한다(설정으로 자동채점을 끈 경우). 종목 하나의
-    조회/채점 실패가 전체를 막지 않도록 예외는 종목 단위로 삼킨다."""
+    조회/채점 실패가 전체를 막지 않도록 예외는 종목 단위로 삼킨다.
+
+    `sector_map`/`sector_tilt`(선택, §4 2026-08-31) — 각각 `data/ledger/
+    sector_map.json`(KR 종목→네이버 업종)과
+    `quant.analyze.money_flow.analyze_money_flow(...)["sector_tilt"]["KR"]`.
+    둘 다 있으면 KR 종목에 `macro_sector_adjustment()`로 증거점수 ±2를
+    가감한다. US 종목은 섹터 매핑이 없어(모듈 docstring 조사 결과) 항상
+    영향받지 않는다 — 모르는 건 불이익이 아니다."""
     if not enabled:
         results = []
         for token in tokens:
@@ -644,11 +693,12 @@ def run_watch_score(
                 eff_threshold += sym_adj
             elif flow_adj:
                 eff_threshold += flow_adj
+        macro_adj = None if is_us else macro_sector_adjustment(symbol, sector_map, sector_tilt)
         try:
             daily = client.candles(symbol, interval="day", count=90)
             result = score_symbol(
                 daily, symbol, tags, report_date, client, today=today, extra_reasons=parse_reasons,
-                allow_kr_stocks=allow_kr_stocks,
+                allow_kr_stocks=allow_kr_stocks, macro_sector_adj=macro_adj,
             )
         except Exception as e:
             result = ScoreResult(

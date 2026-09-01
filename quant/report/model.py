@@ -69,6 +69,12 @@ class ReportModel:
     # 와 같은 값. 오늘이 휴장 뒤 첫 개장일 아침이 아니면 None — 렌더가 섹션
     # 자체를 생략한다.
     holiday_synthesis: dict | None = None
+    # 돈의 흐름(money_flow, 2026-08-31 소유자 지시 — "유가·금리·원자재·지수의
+    # 숫자 흐름으로 큰손들의 돈이 어디로 쏠릴지 읽어라") — payload["money_flow"]
+    # 와 같은 값. quant.report.collect.money_flow.build_money_flow_view 결과.
+    # 원장(macro_rates.jsonl)이 비어 있으면 None — 렌더가 섹션을 생략한다
+    # (us_kr_bridge와 같은 관례).
+    money_flow: dict | None = None
 
 
 @dataclass

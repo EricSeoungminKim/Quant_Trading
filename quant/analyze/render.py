@@ -688,6 +688,7 @@ def render(
     index_outlook: dict | None = None,
     holiday_synthesis: dict | None = None,
     symbol_payload: dict[str, dict] | None = None,
+    money_flow: dict | None = None,
 ) -> str:
     from quant.analyze.indicators import describe
 
@@ -822,6 +823,12 @@ def render(
         # None 이면 템플릿이 해당 섹션을 생략한다(us_kr_bridge 와 같은 관례).
         index_outlook=index_outlook,
         holiday_synthesis=holiday_synthesis,
+        # 돈의 흐름(money_flow, 2026-08-31 소유자 지시) — 유가·금리·환율·VIX
+        # 매크로 시계열로 자금 흐름/섹터 기울기를 판정한 결과
+        # (quant.report.collect.money_flow.build_money_flow_view). None 이면
+        # 템플릿이 섹션을 생략한다(us_kr_bridge와 같은 관례 — 원장이 비어
+        # 있는 초기 배포 등).
+        money_flow=money_flow,
         # 뉴스 노출 상위 종목 카드의 "점수 내역" 접힘에서 트렌딩 요인을 보여주기
         # 위한 심볼별 machine_payload 조회. 없으면(호출부 하위호환) 트렌딩
         # 내역 없이 AI 점수 내역만 보인다.
@@ -853,6 +860,7 @@ def write_html(
     agent_interpret_view=None, midterm_view=None, us_news_kr_view=None,
     usnews_headlines=None, us_kr_bridge=None, us_wrap=None,
     index_outlook=None, holiday_synthesis=None, symbol_payload=None,
+    money_flow=None,
 ) -> Path:
     path = _dated_dir(root, snap) / f"{snap.market}_report.html"
     path.write_text(
@@ -872,7 +880,7 @@ def write_html(
                us_news_kr_view=us_news_kr_view, usnews_headlines=usnews_headlines,
                us_kr_bridge=us_kr_bridge, us_wrap=us_wrap,
                index_outlook=index_outlook, holiday_synthesis=holiday_synthesis,
-               symbol_payload=symbol_payload),
+               symbol_payload=symbol_payload, money_flow=money_flow),
         encoding="utf-8",
     )
     return path

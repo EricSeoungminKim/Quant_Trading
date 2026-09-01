@@ -843,6 +843,45 @@ html{overflow-x:hidden}
 </section>
 {% endif %}
 
+{# ── 돈의 흐름(money_flow, 2026-08-31 소유자 지시: "유가·금리·원자재·지수의
+   숫자 흐름으로 큰손들의 돈이 어디로 쏠릴지 읽어라") — 유가·금리·환율·VIX
+   매크로 원장(data/ledger/macro_rates.jsonl)을 결정론 규칙으로 읽은 자금
+   흐름 판정 + 현금 체력 판정 + 섹터 기울기. AI 요약(prose)은 숫자 인용
+   서술 보강일 뿐 판정 자체는 규칙표(quant/analyze/money_flow.py 함수
+   docstring)로 결정된다 — 실패/결측이면 fallback_text(결정론 문장)를
+   대신 보여준다(us_kr_bridge/index_outlook과 같은 무LLM 폴백 관례). #}
+{% if money_flow %}
+<section class="mod">
+  <h2>돈의 흐름<span class="sub">유가·금리·환율·VIX 매크로 원장 · 결정론 판정</span></h2>
+  <div class="key">
+    {% for name, s in money_flow.series.items() %}
+    <div class="kv">
+      <span class="k">{{ s.label }}</span>
+      <span class="v">{{ '%.2f' % s.value }} {{ s.direction_5d }}</span>
+      {% if s.chg_5d is not none %}<span class="idx-sub">5일 {{ '%+.2f' % s.chg_5d }}</span>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  <p class="idx-sub"><b>자금 흐름</b>: {{ money_flow.flow.label }}{% if money_flow.flow.reasons %} — {{ money_flow.flow.reasons|join(', ') }}{% endif %}</p>
+  <p class="idx-sub"><b>현금 체력</b>: {{ money_flow.cash.label }}{% if money_flow.cash.reasons %} — {{ money_flow.cash.reasons|join(', ') }}{% endif %}</p>
+  {% if money_flow.sector_tilt %}
+  <div class="brief">
+    {% for sector, t in money_flow.sector_tilt.items() %}
+    <div class="bi">{{ sector }}
+      <b style="color:var(--{{ 'up' if t.score > 0 else ('down' if t.score < 0 else 'muted') }})">{{ '%+d' % t.score }}</b>
+      <span class="idx-sub">{{ t.why|join(' · ') }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if money_flow.prose %}
+  <p class="foot"><span class="chip">AI 요약</span> {{ money_flow.prose }}</p>
+  {% else %}
+  <p class="foot">{{ money_flow.fallback_text }}</p>
+  {% endif %}
+</section>
+{% endif %}
+
 <div class="chapter-head" id="ch4"><span class="chapter-no">4</span><h2 class="chapter-title">시장 흐름</h2></div>
 {# ── 오늘의 시황 — 사건 단위(서브프로젝트 I) ── 한국장 뉴스 요약 + 미국발
    뉴스의 한국 증시 영향. market_digest.build_digest 가 사건 단위(다매체

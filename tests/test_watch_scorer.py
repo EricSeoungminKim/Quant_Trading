@@ -17,6 +17,7 @@ from quant.analyze.watch_scorer import (
     _rebound_score,
     _trend_score,
     effective_threshold,
+    macro_sector_adjustment,
     resolve_regime_label,
     run_watch_score,
     score_symbol,
@@ -850,3 +851,98 @@ def test_frgn_and_event_scalp_run_through_run_watch_score_end_to_end():
         [f"005930:EVENT_SCALP:{yyyymmdd}", "005930:FRGN"], client, _DEFAULT_THRESHOLD, "neutral",
     )
     assert [r.tags for r in results] == [["EVENT_SCALP"], ["FRGN"]]
+
+
+# ---------------------------------------------------------------------------
+# 자금 흐름 섹터 기울기 (macro_sector_adjustment) — §4, 2026-08-31 소유자 지시
+# ---------------------------------------------------------------------------
+
+def test_macro_sector_adjustment_known_sector_returns_score_and_reason():
+    sector_map = {"096770": "석유와가스"}
+    sector_tilt = {"석유와가스": {"score": 2, "why": ["정제마진 확대"]}}
+    result = macro_sector_adjustment("096770", sector_map, sector_tilt)
+    assert result == (2, "매크로: 석유와가스 +2 (정제마진 확대)")
+
+
+def test_macro_sector_adjustment_unmapped_symbol_returns_none():
+    """sector_map에 없는 종목(섹터 미상)은 None — 불이익 없음."""
+    assert macro_sector_adjustment("005930", {"096770": "석유와가스"},
+                                    {"석유와가스": {"score": 2, "why": []}}) is None
+
+
+def test_macro_sector_adjustment_sector_not_in_tilt_table_returns_none():
+    """섹터는 알지만 오늘 활성화된 매크로 드라이버가 그 섹터를 안 건드리면 None."""
+    sector_map = {"005930": "반도체와반도체장비"}
+    assert macro_sector_adjustment("005930", sector_map, {"석유와가스": {"score": 2, "why": []}}) is None
+
+
+def test_macro_sector_adjustment_missing_inputs_returns_none():
+    assert macro_sector_adjustment("096770", None, {"석유와가스": {"score": 2, "why": []}}) is None
+    assert macro_sector_adjustment("096770", {"096770": "석유와가스"}, None) is None
+
+
+def test_macro_sector_adjustment_clips_to_plus_minus_2():
+    """money_flow.sector_tilt이 이미 -2..2로 자르지만, 이 함수도 방어적으로
+    한 번 더 자른다(계약이 깨져도 채점이 ±2를 넘지 않게)."""
+    sector_map = {"096770": "석유와가스"}
+    sector_tilt = {"석유와가스": {"score": 5, "why": []}}
+    score, _ = macro_sector_adjustment("096770", sector_map, sector_tilt)
+    assert score == 2
+
+
+def test_score_symbol_applies_macro_sector_adj_to_score_and_breakdown():
+    d = _uptrend_kr_daily()
+    client = _FakeClient(d)
+    today = d.index[-1].date()
+    base = score_symbol(d, "096770", ["TREND"], None, client, today=today)
+    boosted = score_symbol(d, "096770", ["TREND"], None, client, today=today,
+                            macro_sector_adj=(2, "매크로: 석유와가스 +2 (정제마진 확대)"))
+    assert boosted.score == base.score + 2
+    assert "매크로: 석유와가스 +2 (정제마진 확대)" in boosted.reasons
+    assert ("매크로 섹터 기울기", 2, 2, "매크로: 석유와가스 +2 (정제마진 확대)") in boosted.breakdown
+
+
+def test_run_watch_score_applies_macro_adjustment_for_kr_symbol():
+    d = _uptrend_kr_daily()
+    client = _FakeClient(d)
+    sector_map = {"096770": "석유와가스"}
+    sector_tilt = {"석유와가스": {"score": 2, "why": ["정제마진 확대"]}}
+
+    plain = run_watch_score(["096770:TREND"], client, _DEFAULT_THRESHOLD, "neutral")
+    boosted = run_watch_score(
+        ["096770:TREND"], client, _DEFAULT_THRESHOLD, "neutral",
+        sector_map=sector_map, sector_tilt=sector_tilt,
+    )
+    assert boosted[0].score == plain[0].score + 2
+    assert any("매크로: 석유와가스" in r for r in boosted[0].reasons)
+
+
+def test_run_watch_score_us_symbol_unaffected_even_if_sector_data_present():
+    """US 종목은 섹터 매핑이 없다(모듈 docstring 조사 결과) — sector_map/
+    sector_tilt이 주어져도 US 심볼 채점에는 영향이 없다."""
+    d = _uptrend_kr_daily()
+    client = _FakeClient(d)
+    sector_map = {"TQQQ": "XLK(기술/성장주)"}  # 가정: 매핑이 있더라도
+    sector_tilt = {"XLK(기술/성장주)": {"score": -1, "why": ["할인율 부담"]}}
+
+    plain = run_watch_score(["TQQQ:TREND"], client, _DEFAULT_THRESHOLD, "neutral")
+    with_sector_data = run_watch_score(
+        ["TQQQ:TREND"], client, _DEFAULT_THRESHOLD, "neutral",
+        sector_map=sector_map, sector_tilt=sector_tilt,
+    )
+    assert with_sector_data[0].score == plain[0].score
+    assert not any("매크로:" in r for r in with_sector_data[0].reasons)
+
+
+def test_run_watch_score_unknown_sector_symbol_not_penalized():
+    """sector_map에 없는 KR 종목은 매크로 조정 없이 기존 점수 그대로다."""
+    d = _uptrend_kr_daily()
+    client = _FakeClient(d)
+    sector_tilt = {"석유와가스": {"score": 2, "why": ["정제마진 확대"]}}
+
+    plain = run_watch_score(["005930:TREND"], client, _DEFAULT_THRESHOLD, "neutral")
+    unmapped = run_watch_score(
+        ["005930:TREND"], client, _DEFAULT_THRESHOLD, "neutral",
+        sector_map={"096770": "석유와가스"}, sector_tilt=sector_tilt,
+    )
+    assert unmapped[0].score == plain[0].score

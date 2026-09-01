@@ -91,27 +91,25 @@ def test_custom_gate_limit_is_honored():
 
 
 def test_production_settings_yaml_passes_the_gate_as_intended():
-    """실제 설정 파일 회귀 가드 — 2026-08-29 전략 11종 체제(소유자 결정) 기준.
+    """실제 settings.yaml이 **성과 기반 배분 체제**의 불변식을 지키는지 검산한다.
 
-    2026-08-29 새벽 소유자: "대회인데 더 다양한 전략들을 웹서치로 근거를 찾고
-    다 시도해보자 … 다 긁어서 병렬로 돌려야 의미가 있지" — 4종(8-25) → 7종(8-28)
-    → 11종. 시행 횟수 재신고는 tests/test_strategy_registry_new_branches.py 와
-    settings.yaml 주석(`--trials 8`)에 있다.
-    2026-08-30: llm_trader 추가로 12종 체제(소유자 승인 — LLM 판단 실험 레인,
-    KR 전용). KR 레인이 6 → 7로 늘어 균등 배분이 1/6 → 1/7로 바뀐다. US는
-    llm_trader의 US capital_fraction이 0이라 8레인·0.125 그대로 불변.
+    시대 전환 기록:
+    - ~2026-09-01: 균등 대회 체제(전 레인 burn_in 캡 0.2 + 비례 축소 → KR 1/7,
+      US 0.125). 이 테스트의 이전 버전이 그 균등을 단언했다.
+    - 2026-09-01 심야: 소유자 지시로 실계좌 이식 + **성과 기반 배분**(scalp_1m
+      앞줄 — 유일한 수수료 후 순양수 실측, llm_trader 축소 — 회전율 진단) +
+      **상황 배분 프로토콜**(Claude가 08:24/20:03에 ±5%p 한도로 재조정, 최소
+      3% 바닥). 균등 단언은 이제 정책과 반대라 제거하고, 프로토콜이 어떤 값을
+      고르든 지켜져야 하는 안전 불변식만 남긴다.
 
-    배분표 설계(균등 대회 체제): 전 레인 burn_in 이라 캡 0.2 가 먼저 걸리고,
-    캡 합이 1.0 을 넘는 시장은 **비례 축소가 전 레인을 균등하게 눌러** 결과적으로
-    시장별 활성 레인이 같은 자본으로 출발한다 — 소유자의 대회 원칙("같은 자본으로
-    리셋해서 병렬로") 그 자체다. KR 7레인 → 각 1/7, US 8레인 → 각 0.125.
-    declared(1.0 등)는 승격 시 도달할 목표 선언이라는 기존 관례 그대로다.
-
-    검산 두 개(안전 invariant):
-    - 캡·축소 적용 후(런타임) 시장별 합계가 정확히 1.00 — 초과 배분(의도치 않은
-      레버리지) 금지이자, 대회 중 노는 자본도 없어야 한다.
-    - 시장별 활성 레인의 런타임 배분이 전부 같다 — 균등이 깨지면 대회 성적
-      비교의 전제가 깨진다.
+    안전 invariant (배분 값이 바뀌어도 항상 참이어야 하는 것):
+    - 어떤 burn_in 레인도 런타임 0.2(캡)를 넘지 않는다 — 미검증 전략 과대 배분 금지.
+    - 시장별 런타임 합계 ≤ 1.0 — 초과 배분(의도치 않은 레버리지) 금지.
+      (합계 < 1.0 은 허용 — 현금 버퍼는 프로토콜의 의도적 선택지다.)
+    - 자본을 받는 모든 활성 레인 ≥ 0.03 — 프로토콜 바닥. 레인을 0으로 조용히
+      굶기면 표본이 끊겨 개선 루프가 죽는다(소유자: "버리지 말고 개선").
+    - 자본 레인 집합이 명단과 정확히 일치 — 새 레인이 0 선언으로 조용히 빠지거나
+      명단 밖 레인이 자본을 받으면 잡는다.
     """
     import yaml
 
@@ -123,23 +121,21 @@ def test_production_settings_yaml_passes_the_gate_as_intended():
     us_lanes = ("scalp_1m", "pullback_impulse", "mr_vwap_quiet", "overnight_drift",
                 "vol_breakout", "intraday_momentum", "gap_fade", "rsi2_dip")
 
-    for sid in kr_lanes:
-        assert abs(fractions[sid]["KR"] - 1.0 / 7) < 1e-9, (
-            f"KR {sid} 런타임 {fractions[sid]['KR']} != 1/7 — 균등 대회 전제가 깨졌다"
-        )
-    for sid in us_lanes:
-        assert abs(fractions[sid]["US"] - 0.125) < 1e-9, (
-            f"US {sid} 런타임 {fractions[sid]['US']} != 0.125 — 균등 대회 전제가 깨졌다"
-        )
-
     active = [sid for sid, c in cfg["strategies"].items() if c.get("enabled", True)]
     for market, lanes in (("KR", kr_lanes), ("US", us_lanes)):
+        for sid in lanes:
+            f = fractions[sid][market]
+            assert f <= 0.2 + 1e-9, (
+                f"{market} {sid} 런타임 {f} > 0.2 — burn_in 캡 초과(미검증 과대 배분)"
+            )
+            assert f >= 0.03 - 1e-9, (
+                f"{market} {sid} 런타임 {f} < 0.03 — 프로토콜 바닥 위반(레인 굶김)"
+            )
         runtime = sum(fractions[sid][market] for sid in active)
-        assert abs(runtime - 1.0) < 1e-9, f"{market} 런타임 합계 {runtime} != 1.00"
-        # 시장에 자본을 받는 활성 레인 집합이 위 명단과 정확히 일치해야 한다 —
-        # 새 레인이 0 선언으로 조용히 빠지거나, 명단 밖 레인이 자본을 받으면 잡는다.
+        assert runtime <= 1.0 + 1e-9, f"{market} 런타임 합계 {runtime} > 1.00 — 초과 배분"
         nonzero = {sid for sid in active if fractions[sid][market] > 0}
         assert nonzero == set(lanes), f"{market} 자본 레인 불일치: {sorted(nonzero)}"
+
 
 def test_market_dict_declaration_is_used_as_is_when_verified():
     cfg = _cfg({

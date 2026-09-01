@@ -70,6 +70,7 @@ from quant.report.collect.midterm import (
     _build_us_news_kr_view, _load_midterm_telegram_msgs, _midterm_entities,
     _midterm_name_by_symbol,
 )
+from quant.report.collect.money_flow import build_money_flow_view
 from quant.report.collect.news import (
     _build_digest, _build_digest_prose, _build_exec_summary, _build_news_flow,
     _build_section_advice, _build_stance_prose, _load_disclosures, _load_research,
@@ -355,6 +356,12 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
     stance_prose = _build_stance_prose(snap, view, narrator=quality_narrator)
     print(f"품질 레인(exec/digest/section) {time.monotonic() - t0:.1f}초 "
          f"(narrator={quality_narrator.name})")
+    # 돈의 흐름(money_flow, 2026-08-31 소유자 지시) — 유가·금리·환율·VIX
+    # 매크로 원장으로 자금 흐름/섹터 기울기를 판정한다. quality_narrator를
+    # 재사용해(품질 레인 5번째 지점) 산문을 얹지만, 실패/원장 결측이면
+    # None — 템플릿은 결정론 판정만으로 완전하다(us_kr_bridge와 같은 관례).
+    money_flow_view = build_money_flow_view(snap, root, narrator=quality_narrator)
+    payload["money_flow"] = money_flow_view
     # 당일 단타 후보(서브프로젝트 K) — 시장 가드는 _build_intraday_view 내부에 있다.
     telegram_mentions = _build_telegram_mentions(root, snap.market, payload, telegram_result)
     intraday_view = _build_intraday_view(
@@ -489,6 +496,7 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         # (us_kr_bridge/us_wrap 과 같은 관례 — payload 키와 모델 필드 이중 유지).
         index_outlook=payload.get("index_outlook"),
         holiday_synthesis=payload.get("holiday_synthesis"),
+        money_flow=money_flow_view,
     )
     hp, jp, cp = write_open_report(model, snap, out_root)
     print(f"HTML   {hp}\n엔진   {jp}\n후보   {cp}")

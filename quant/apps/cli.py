@@ -563,9 +563,27 @@ def cmd_watch_score(args: argparse.Namespace) -> None:
                 kiwoom_client = KiwoomClient(app_key=app_key, secret_key=secret_key)
             except Exception as e:  # noqa: BLE001 — 보조 데이터 소스 실패는 치명 아님
                 logger.warning("키움 클라이언트 생성 실패 — 시장 조류로 폴백: %s", e)
+        # 자금 흐름 섹터 기울기(§4, 2026-08-31 소유자 지시) — KR 종목의 네이버
+        # 업종(sector_map.json)과 quant.analyze.money_flow 판정을 매칭해 증거
+        # 점수 ±2를 가감한다. 둘 중 하나라도 없으면(원장 초기 배포 등)
+        # run_watch_score/macro_sector_adjustment가 None으로 조용히 건너뛴다
+        # — 매크로 데이터 없음이 채점 자체를 막지 않는다.
+        from quant.adapters.env import REPO_ROOT
+        from quant.adapters.macro.fred import DEFAULT_LEDGER_PATH as _MACRO_LEDGER_PATH
+        from quant.analyze.money_flow import analyze_money_flow
+        from quant.report.paths import _load_artifact
+
+        sector_map = _load_artifact(REPO_ROOT / "data" / "ledger" / "sector_map.json")
+        sector_tilt = None
+        try:
+            sector_tilt = analyze_money_flow(REPO_ROOT / _MACRO_LEDGER_PATH)["sector_tilt"].get("KR")
+        except Exception as e:  # noqa: BLE001 — 매크로 판정 실패가 채점을 막지 않는다
+            logger.warning("watch-score: 자금 흐름 섹터 기울기 생략: %s", e)
+
         results = run_watch_score(
             tokens, client, threshold, regime_label, enabled=True, kiwoom_client=kiwoom_client,
             allow_kr_stocks=auto_score_cfg.get("allow_kr_stocks", False),
+            sector_map=sector_map, sector_tilt=sector_tilt,
         )
 
     # 세분화 출력(2026-08-10 사용자 요청): 항목별 득점/만점 → 총점 → 임계값 구성.
