@@ -11,6 +11,13 @@
 # 경로이고, 장중이면 재시작을 거부한다. (수동 ssh 재시작은 이제 규칙 위반이다.)
 set -euo pipefail
 
+# ## OS 자동 업그레이드 우회 사고 (2026-09-02)
+# unattended-upgrade → needrestart 가 quant-engine/tg-bridge 를 정지·재시작했다
+# (06:17, 이번엔 US 마감 후라 무해). 타이머 시각이 RandomizedDelaySec 로 흔들려
+# 언젠가 장중에 걸리면 **아래 하드가드를 OS 가 우회**한다. 대응은 서버 쪽:
+# /etc/needrestart/conf.d/99-quant-trading.conf 가 두 유닛을 자동 재시작에서
+# 제외한다. 이 스크립트는 그 사실을 아는 유일한 문서이기도 하다.
+
 if [ -z "${QT_SSH_HOST:-}" ]; then
   echo "[deploy] QT_SSH_HOST 환경변수가 설정되지 않았습니다." >&2
   echo "  사용법: QT_SSH_HOST=ubuntu@<ElasticIP> ./server/scripts/deploy.sh" >&2
