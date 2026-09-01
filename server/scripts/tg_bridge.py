@@ -233,6 +233,11 @@ def handle_control_command(
         portfolio = read_portfolio_summary()
         if portfolio is not None:
             lines.append(f"현금: {portfolio.get('cash', 0):,.0f}원")
+            # 통화 분리 지갑(2026-09-01 실계좌 이식) — 달러 풀이 있으면 별도 줄.
+            # 이걸 빼면 계좌의 2/3(USD)가 /status에서 보이지 않는다.
+            cash_usd = float(portfolio.get("cash_usd", 0) or 0)
+            if cash_usd > 0:
+                lines.append(f"현금(USD): ${cash_usd:,.2f}")
             open_syms = [s for s, p in portfolio.get("positions", {}).items() if p.get("qty", 0) > 0]
             # 종목명 표시 — /balance·/daily_record와 같은 패턴(관심종목 파일에
             # 등록 시점에 적어둔 이름 재사용). 이름이 없으면 코드만(_display_symbol).
@@ -677,8 +682,11 @@ def handle_balance(toss_client: TossClient) -> str:
     }
     names = _watchlist_names()
 
+    cash_usd = float(portfolio.get("cash_usd", 0) or 0)
+
     if not positions:
-        return f"💰 현재 자산\n\n현금 {cash:,.0f}원 · 보유 종목 없음"
+        extra = f" · 현금(USD) ${cash_usd:,.2f}" if cash_usd > 0 else ""
+        return f"💰 현재 자산\n\n현금 {cash:,.0f}원{extra} · 보유 종목 없음"
 
     symbols = list(positions)
     quotes: dict[str, float] = {}
@@ -716,6 +724,11 @@ def handle_balance(toss_client: TossClient) -> str:
         total += value * (1 if is_kr else usd_krw)
         lines.append("")
     lines.append(f"🏦 현금 {cash:,.0f}원")
+    if cash_usd > 0:
+        # 달러 지갑(통화 분리, 2026-09-01) — US 종목처럼 환율로 환산해 총자산에 합산.
+        # 빠뜨리면 총자산이 달러 풀만큼(이식 직후 기준 계좌의 2/3) 과소 표기된다.
+        lines.append(f"💵 현금(USD) ${cash_usd:,.2f} (≈{cash_usd * usd_krw:,.0f}원)")
+        total += cash_usd * usd_krw
     lines.append(f"📊 총 추정자산 {total:,.0f}원")
     return "\n".join(lines)
 
