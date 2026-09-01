@@ -788,7 +788,8 @@ strategies:
     symbols: []
     capital_fraction:
       KR: 0.0 # KR 개별주 왕복 30bp — 갭 절반 메움 목표와 산수가 빠듯해 US 먼저
-      US: 0.09
+      US: 0.06
+
 
     validation:
       status: burn_in
@@ -835,7 +836,8 @@ strategies:
     # 대상 — news_scalp/frgn_accumulate와 달리 EVENT_SCALP/FRGN 태그를 읽지 않는다).
     enabled: true
     capital_fraction:
-      KR: 0.2
+      KR: 0.15
+
 
       US: 0.18
 
