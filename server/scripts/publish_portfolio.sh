@@ -12,11 +12,15 @@
 # 조용한 것이 기본값 — 실패해도 exit 0(리포팅 레인이 엔진을 죽이면 안 된다).
 set -u
 cd "$(dirname "$0")/../.."
+ROOT="$(pwd)"
 
-LOG="data/portfolio_publish.log"
+# **절대 경로**로 잡는다 — 아래에서 클론 디렉토리로 cd 하므로 상대 경로 로그·
+# 소스는 그 순간 사라진다(2026-09-02 실측: "data/portfolio_publish.log: No such
+# file or directory" 로 로그가 통째로 날아갔다).
+LOG="$ROOT/data/portfolio_publish.log"
 log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 
-SRC="data/public/performance.json"
+SRC="$ROOT/data/public/performance.json"
 WORK="$HOME/.cache/quant-portfolio"
 KEY="$HOME/.ssh/id_portfolio"
 REPO="git@github.com:EricSeoungminKim/quant-portfolio.git"
@@ -36,7 +40,7 @@ git fetch --depth 1 origin main >>"$LOG" 2>&1 || { log "fetch 실패"; exit 0; }
 git reset --hard origin/main >>"$LOG" 2>&1 || exit 0
 
 mkdir -p public/data
-cp "$OLDPWD/$SRC" public/data/performance.json
+cp "$SRC" public/data/performance.json
 
 if git diff --quiet -- public/data/performance.json; then
   log "변경 없음 — push 생략"
