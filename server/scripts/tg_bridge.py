@@ -638,13 +638,33 @@ def handle_watchlist_reset(path: Optional[Path] = None, market: Optional[str] = 
 # 로컬 상태 + Toss 시세로 바로 응답한다 (2026-08-10 사용자 요청: "너가 어차피
 # 시세를 들고 있으니 내가 물으면 바로 알려달라").
 # ---------------------------------------------------------------------------
+SYMBOL_NAMES_PATH = REPO_ROOT / "data" / "state" / "symbol_names.json"
+
+
 def _watchlist_names(path: Optional[Path] = None) -> dict[str, str]:
-    """관심종목 파일의 이름표 재사용 — 보유 종목 대부분이 여기서 온다."""
+    """종목 이름표 — 관심종목 파일 + 엔진 이름 캐시(symbol_names.json).
+
+    관심종목만 보면 **보유 중인데 유니버스에서 빠진 종목**의 이름이 사라진다:
+    2026-09-02 실측으로 /status·/balance 가 삼성전자를 "005930" 코드로만
+    보여줬다(이식으로 넘겨받은 보유분인데 그날 후보에서 탈락). 엔진이 이미
+    쓰는 symbol_names.json 이 그 이름을 알고 있었을 뿐 브리지가 안 봤다 —
+    같은 날 아침 리포트에서 고친 것(relation_items 이름표 누락)과 같은 부류다.
+    관심종목 이름이 우선(사용자가 붙인 표기), 없으면 엔진 캐시로 메운다.
+    """
+    names: dict[str, str] = {}
+    try:
+        payload = json.loads(SYMBOL_NAMES_PATH.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            names.update({k: v for k, v in payload.items() if isinstance(v, str) and v})
+    except (OSError, ValueError):
+        pass  # 캐시가 없어도 관심종목 이름만으로 동작한다(있던 그대로)
     try:
         entries = load_watchlist(path or WATCHLIST_PATH)
-        return {e.get("symbol"): e.get("name") for e in entries if e.get("symbol") and e.get("name")}
+        names.update({e.get("symbol"): e.get("name")
+                      for e in entries if e.get("symbol") and e.get("name")})
     except Exception:  # noqa: BLE001
-        return {}
+        pass
+    return names
 
 
 def _display_symbol(symbol: str, names: dict[str, str]) -> str:

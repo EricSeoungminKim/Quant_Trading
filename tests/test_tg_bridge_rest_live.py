@@ -144,3 +144,29 @@ def test_flatten_all_explicit_alias(tmp_path):
     control = _control(tmp_path)
     tg_bridge.handle_control_command("/flatten all", control)
     assert control.consume_flatten_scope() == "all"
+
+
+def test_watchlist_names_falls_back_to_engine_symbol_cache(tmp_path, monkeypatch):
+    """보유 중인데 유니버스에서 빠진 종목의 이름이 사라지던 결함(2026-09-02 실측).
+
+    /status·/balance 가 삼성전자를 "005930" 코드로만 보여줬다 — 이식으로 넘겨받은
+    보유분이라 그날 관심종목 후보에서 빠졌기 때문. 엔진 캐시(symbol_names.json)는
+    이름을 알고 있었다. 관심종목 이름이 우선하고, 없으면 캐시가 메운다.
+    """
+    import json as _json
+    import tg_bridge
+
+    cache = tmp_path / "symbol_names.json"
+    cache.write_text(_json.dumps({"005930": "삼성전자", "066570": "엘지전자"}), encoding="utf-8")
+    monkeypatch.setattr(tg_bridge, "SYMBOL_NAMES_PATH", cache)
+
+    wl = tmp_path / "watchlist.yaml"
+    wl.write_text("symbols:\n  - symbol: '066570'\n    name: LG전자\n", encoding="utf-8")
+
+    names = tg_bridge._watchlist_names(wl)
+    assert names["005930"] == "삼성전자"   # 캐시가 메운다
+    assert names["066570"] == "LG전자"     # 관심종목 표기가 우선
+
+    # 캐시가 없어도 기존 동작 그대로(관심종목 이름만) — 하위호환
+    monkeypatch.setattr(tg_bridge, "SYMBOL_NAMES_PATH", tmp_path / "missing.json")
+    assert tg_bridge._watchlist_names(wl) == {"066570": "LG전자"}
