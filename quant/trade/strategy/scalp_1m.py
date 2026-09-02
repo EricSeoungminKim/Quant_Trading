@@ -124,6 +124,36 @@ ET — 04:00 전체가 아니라 개장 직전 유동성 있는 90분만, "데�
    없는 임의값이 아니라 "유동성이 특히 얇은 이른 새벽 구간을 배제"하는 보수적
    선택이다(백테스트로 검증된 값은 아니다 — paper 번인이 검증 경로).
 
+## KR 개장 초반 진입 지연 게이트 (2026-09-02, 문헌×원장실측 교차확인)
+
+원장 실측(138왕복 분해, `data/state/trades.jsonl`)을 진입 시각(KST)별로 나누면:
+08시(프리마켓)대 13왕복 승률15% −605,764원, 09시대 46왕복 승률30% −1,077,172원,
+반면 13시대는 승률50% +16,999원 — 전체 손실 −163만원 중 −158만원이 KR 08~09시
+진입에 몰려 있다. 문헌(개장 첫 20~30분 변동성·거래량 서지 3~4배, 진입 승률
+급락 38%→이후 54% — LuxAlgo 개장 변동성 리서치, arXiv:1005.3535)도 같은 방향을
+가리킨다 — 리서치와 원장 분해가 같은 곳을 가리킨 것만 적용한다는 원칙에 따라
+개장 초반 KR 신규 진입에 지연 게이트를 건다.
+
+- **KR 심볼에 한해** 정규장 신규 진입(패턴 A/B)을 개장 후
+  `kr_entry_open_delay_min`(기본 30)분 동안 차단한다(`on_cycle` 2)단계, 진입창
+  상한 `entry_window_minutes`와는 별개의 **하한** 축이다).
+- KR 프리마켓(08:00~08:50 NXT) 직접 진입은 이미 2026-08-26 소유자 교정으로
+  구조적으로 막혀 있다(`_PREMARKET_DIRECT_ENTRY_MARKETS`가 US만 포함 — KR
+  동시호가는 체결이 실재할 수 없는 거래라는 게 그 근거). 그래서 이 게이트가
+  실제로 다루는 신규 주문 경로는 09:00~09:30 KST 구간이지만, 위 실측의 08시
+  손실 표본은 그 교정 **이전**(과거 프리마켓 직접 진입이 아직 막히지 않았던
+  시기) 거래가 섞여 있어 "KR 개장 초반 전체가 나쁘다"는 같은 결론을 보강하는
+  근거로 함께 인용한다 — 08:00~08:50 NXT 직접 진입을 다시 여는 것이 아니다.
+- **US는 건드리지 않는다** — US 프리마켓·개장 실측은 본전권이라 근거 없이
+  건드릴 이유가 없다. 게이트는 `market == "KR"`에서만 평가된다(시장별 분기).
+- **청산·손절은 시간대와 무관하게 동작한다** — 이 게이트는 `on_cycle` 2)단계
+  (신규 진입 평가)에만 걸리고, 1)단계(포지션 관리: 손절/부분익절/60선 트레일/
+  EoD)는 그대로 돈다 — "진입은 미뤄도 청산은 아니다" 비대칭(2026-09-02 배포
+  원칙과 동일).
+- `kr_entry_open_delay_min: 0`이면 기존 동작과 100% 동일(하위호환·실험 롤백
+  가능). 값은 문헌·원장 둘 다 정확히 검증한 최적값이 아니라 "개장 첫 20~30분"
+  이라는 문헌 폭에 맞춘 보수적 기본값이다.
+
 ## 5초 루프 상호작용 — 같은 1분봉 안에서 중복 주문이 나지 않는 이유
 
 패턴 A/B 사용 플래그(`_pattern_a_used`/`_pattern_b_used`)는 **신호 생성 시점에
@@ -243,6 +273,10 @@ class Scalp1mStrategy:
         # 의미(개장 후 N분) 그대로 — 미설정 시 동작 보존을 위해 기본값은 90 유지,
         # 전-세션은 settings.yaml 에서 0을 명시한다. 창 밖은 관리만 계속한다.
         self.entry_window_minutes: int = params.get("entry_window_minutes_after_open", 90)
+        # KR 개장 초반 진입 지연(모듈 docstring "KR 개장 초반 진입 지연 게이트"
+        # 절, 2026-09-02 원장×문헌 교차확인). US는 무관 — market == "KR"에서만
+        # 평가한다. 0 = 비활성(기존 동작), 기본 30(문헌 "개장 첫 20~30분").
+        self.kr_entry_open_delay_min: float = params.get("kr_entry_open_delay_min", 30)
         # 패턴 A — 거래량 서지 배수/lookback(스펙: "직전 20봉 평균의 3배 이상").
         self.volume_surge_mult: float = params.get("volume_surge_mult", 3.0)
         self.volume_surge_lookback: int = params.get("volume_surge_lookback", 20)
@@ -374,6 +408,8 @@ class Scalp1mStrategy:
             raise ValueError("adx_min은 0 이상이어야 합니다.")
         if self.max_atr_ratio <= 0:
             raise ValueError("max_atr_ratio는 양수여야 합니다.")
+        if self.kr_entry_open_delay_min < 0:
+            raise ValueError("kr_entry_open_delay_min은 0(비활성) 이상이어야 합니다.")
 
         self._session_date: dict[str, dtdate] = {}
         self._pattern_a_used: dict[str, bool] = {}
@@ -492,6 +528,10 @@ class Scalp1mStrategy:
             if minutes_since_open < 0 or (
                 self.entry_window_minutes and minutes_since_open > self.entry_window_minutes
             ):
+                continue
+            # KR 개장 초반 진입 지연 게이트(모듈 docstring 참고) — US는 무관.
+            # 관리(1단계)는 이미 위에서 끝났으므로 이 continue는 신규 진입만 막는다.
+            if market == "KR" and minutes_since_open < self.kr_entry_open_delay_min:
                 continue
 
             for symbol in sorted(s for s in self.symbols if market_of_symbol(s) == market):
@@ -1150,6 +1190,7 @@ class Scalp1mPureStrategy:
         self._legacy = Scalp1mStrategy(list(symbols), params, market=market, id=f"{id}__helper")
 
         self.entry_window_minutes = self._legacy.entry_window_minutes
+        self.kr_entry_open_delay_min = self._legacy.kr_entry_open_delay_min
         self.stop_buffer_pct = self._legacy.stop_buffer_pct
         self.stop_hard_cap_pct = self._legacy.stop_hard_cap_pct
         self.partial_take_r = self._legacy.partial_take_r
@@ -1262,6 +1303,10 @@ class Scalp1mPureStrategy:
             if minutes_since_open < 0 or (
                 self.entry_window_minutes and minutes_since_open > self.entry_window_minutes
             ):
+                continue
+            # KR 개장 초반 진입 지연 게이트 — 레거시와 동일(모듈 docstring "KR
+            # 개장 초반 진입 지연 게이트" 절).
+            if market == "KR" and minutes_since_open < self.kr_entry_open_delay_min:
                 continue
 
             for symbol in sorted(s for s in self.symbols if market_of_symbol(s) == market):

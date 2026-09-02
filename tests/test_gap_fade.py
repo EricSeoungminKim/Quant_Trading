@@ -177,6 +177,8 @@ def test_requirements_declares_5m_and_1d_bars():
     {"flatten_before_close_minutes": -1},
     {"target_weight": 0},
     {"target_weight": 1.5},
+    {"rvol_reject_threshold": -1},
+    {"gap_size_reject_bp": -1},
 ])
 def test_invalid_params_rejected(params):
     with pytest.raises(ValueError):
@@ -242,6 +244,65 @@ def test_one_entry_per_symbol_per_day():
 def test_no_entry_when_gap_outside_range(open_price):
     rows = [(open_price, open_price + 0.05, open_price - 0.05, open_price + 0.02, 500.0)]
     d = _decide(_strategy(), rows, price=open_price + 0.02, now=_us_now(9, 35))
+    assert d.signals == ()
+    assert "갭 조건 불충족" in d.next_state["last_reject"][US_SYM]
+
+
+# ============================================================ ②-2 문헌 필터 3종 (2026-09-02)
+
+# RVOL 게이트 시나리오 — 안정화봉까지(0~1행) 평균 거래량이 lookback 전체
+# 평균(워밍업 20봉×500 포함)보다 훨씬 높다: window mean=5500, baseline
+# mean=(20*500+5000+6000+900)/23≈952.2 → RVOL≈5.78(>=2.0 기본 임계 초과).
+_HIGH_RVOL_ROWS = [
+    (98.00, 98.05, 97.80, 97.90, 5000.0),   # 09:30 적삼 — 당일 저가 97.80
+    (97.90, 98.30, 97.85, 98.20, 6000.0),   # 09:35 양봉 — 안정화봉(저가 97.85)
+    (98.20, 98.35, 98.10, 98.25, 900.0),    # 09:40 — 진입 평가 대상
+]
+
+
+def test_rvol_gate_rejects_high_volume_gap():
+    strat = _strategy(rvol_reject_threshold=2.0)
+    d = _decide(strat, _HIGH_RVOL_ROWS)
+    assert d.signals == ()
+    reason = d.next_state["last_reject"][US_SYM]
+    assert "고거래량 갭" in reason and "RVOL" in reason
+
+
+def test_rvol_gate_off_by_default_preserves_existing_behavior():
+    """rvol_reject_threshold 기본값은 0(비활성) — 고거래량이어도 그대로 진입."""
+    strat = _strategy()
+    assert strat.rvol_reject_threshold == 0.0
+    d = _decide(strat, _HIGH_RVOL_ROWS)
+    assert len(d.signals) == 1
+    assert d.signals[0].action is SignalAction.ENTER_LONG
+
+
+def test_gap_size_reject_gate_rejects_large_gap():
+    """표준 시나리오는 200bp 갭 — gap_size_reject_bp=150이면 거부(기존
+    gap_max_bp=400과 별개 축)."""
+    strat = _strategy(gap_size_reject_bp=150.0)
+    d = _decide(strat)
+    assert d.signals == ()
+    reason = d.next_state["last_reject"][US_SYM]
+    assert "갭 크기 상한" in reason
+
+
+def test_gap_size_reject_gate_off_by_default_preserves_existing_behavior():
+    strat = _strategy()
+    assert strat.gap_size_reject_bp == 0.0
+    d = _decide(strat)
+    assert len(d.signals) == 1
+    assert d.signals[0].action is SignalAction.ENTER_LONG
+
+
+def test_direction_is_already_gap_down_only_structurally():
+    """방향 필터는 별도 파라미터가 아니다 — gap_down_bp(상승 갭=음수) +
+    gap_min_bp(양수 하한) + ENTER_LONG 전용 구조가 이미 갭다운만 페이드하도록
+    강제한다(모듈 docstring "문헌 필터 3종" 절 3번). 상승 갭(시가>전일종가)은
+    gap_bp가 음수라 gap_min_bp 하한을 못 넘어 "갭 조건 불충족"으로 거부된다."""
+    up_gap_open = 102.00  # 전일종가(100) 위로 열림 — 상승 갭
+    rows = [(up_gap_open, up_gap_open + 0.05, up_gap_open - 0.05, up_gap_open + 0.02, 500.0)]
+    d = _decide(_strategy(), rows, price=up_gap_open + 0.02, now=_us_now(9, 35))
     assert d.signals == ()
     assert "갭 조건 불충족" in d.next_state["last_reject"][US_SYM]
 

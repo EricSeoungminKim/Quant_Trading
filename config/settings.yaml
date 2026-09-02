@@ -804,6 +804,11 @@ strategies:
       max_hold_min: 120
       flatten_before_close_minutes: 5
       target_weight: 0.5
+      # 문헌 필터 3종(2026-09-02, gap_fade.py 상단 docstring "문헌 필터 3종"
+      # 절). 원장 실측(9왕복 승률11%, 사실상 전패)과 방향이 일치하는 문헌
+      # 근거만 적용 — 0이면 기존 동작(하위호환·실험 롤백 가능).
+      rvol_reject_threshold: 2.0 # 고거래량 갭(continuation 우세)은 페이드 제외
+      gap_size_reject_bp: 300 # 3% 초과 갭은 제외 — 큰 갭 채움률 8.2%(arXiv:2605.04004)
   rsi2_dip:
     class: rsi2_dip
     # Connors RSI(2) 눌림 매수 — 지수 ETF 과매도(RSI2<10)에 마감 직전 사서 회복
@@ -849,6 +854,14 @@ strategies:
       # 90 → 0 (2026-08-26 소유자 지시): "단타 스캘핑은 언제든 해도 좋아 — 언제든
       # 시그널을 계속 대기". 0 = 진입창 없음(전 세션 대기). 양수면 개장 후 N분.
       entry_window_minutes_after_open: 0
+      # KR 개장 초반 진입 지연(2026-09-02, 원장×문헌 교차확인 — scalp_1m.py 상단
+      # docstring "KR 개장 초반 진입 지연 게이트" 절). 원장 실측: KR 08시대
+      # 13왕복 승률15% -605,764원 / 09시대 46왕복 승률30% -1,077,172원 —
+      # 전체 손실 -163만원 중 -158만원이 이 구간. 문헌(개장 첫 20~30분 변동성
+      # 3~4배·진입 승률 38%→54%, arXiv:1005.3535)과 방향이 일치해 적용한다.
+      # US는 이 파라미터의 영향을 받지 않는다(코드가 market=="KR"에서만 평가).
+      # 0 = 비활성(기존 동작 — 하위호환·실험 롤백 가능).
+      kr_entry_open_delay_min: 30
       # 패턴 A — 거래량 서지(스펙: "직전 20봉 평균의 3배 이상인 상승 1분봉")
       volume_surge_mult: 3.0
       volume_surge_lookback: 20

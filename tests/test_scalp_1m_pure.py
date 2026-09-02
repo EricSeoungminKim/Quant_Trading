@@ -615,8 +615,11 @@ def test_premarket_direct_entry_rejected_below_liquidity_guard_equivalence():
 
 
 def test_regular_session_accelerated_entry_equivalence():
-    """프리마켓 확인 심볼은 정규장에서 P1 재형성을 기다리지 않는다."""
-    legacy, pure = _strats([KR_SYMBOL], _params())
+    """프리마켓 확인 심볼은 정규장에서 P1 재형성을 기다리지 않는다.
+
+    kr_entry_open_delay_min=0 — 가속 패턴 로직 자체(2026-08-18)를 검증하는
+    것이지 개장 초반 지연 게이트(2026-09-02, 기본 30분)를 검증하는 게 아니다."""
+    legacy, pure = _strats([KR_SYMBOL], _params(kr_entry_open_delay_min=0))
     legacy._premarket_confirmed[KR_SYMBOL] = 81000.0
     legacy._session_date["KR"] = DAY1  # market="US" 인스턴스지만 심볼은 KR 추론됨(market_of_symbol)
     pure._state = {"premarket_confirmed": {KR_SYMBOL: 81000.0}, "session_date": {"KR": DAY1}}
@@ -894,3 +897,40 @@ def test_take_profit_bps_exit_equivalence():
     sig_pure = pure.on_cycle(_ctx({"AAA": 101.0}, now, positions={"AAA": pos_pure}))
     assert _keys(sig_legacy) == _keys(sig_pure)
     assert len(sig_legacy) == 1 and "익절" in sig_legacy[0].reason
+
+
+def _kr_pattern_a_bars(*, warmup_n=25, day=DAY1):
+    """KR 버전 패턴 A 시퀀스 — `test_scalp_1m.py::_kr_pattern_a_bars`와 동일 구조."""
+    open_ts = _kr_now(KR_OPEN, day)
+    idx, rows = _warmup(open_ts, warmup_n)
+    session_rows = [
+        {"open": 80000.0, "high": 81000.0, "low": 79900.0, "close": 80800.0, "volume": 3500.0},
+        {"open": 80800.0, "high": 80900.0, "low": 80500.0, "close": 80600.0, "volume": 1000.0},
+        {"open": 80600.0, "high": 81500.0, "low": 80500.0, "close": 81300.0, "volume": 1200.0},
+    ]
+    session_idx = [open_ts + timedelta(minutes=i) for i in range(3)]
+    idx += session_idx
+    rows += session_rows
+    return pd.DataFrame(rows, index=pd.DatetimeIndex(idx, tz=KST))
+
+
+def test_kr_entry_open_delay_gate_equivalence():
+    """KR 개장 초반 진입 지연 게이트(2026-09-02, 기본 30분)도 두 구현이 같은
+    판단을 해야 한다 — 개장 5분 후엔 둘 다 거부, 31분 후엔 둘 다 진입."""
+    legacy, pure = _strats([KR_SYMBOL], _params())
+    bars = {KR_SYMBOL: _kr_pattern_a_bars()}
+
+    before = _kr_now(KR_OPEN) + timedelta(minutes=5)
+    sig_legacy_before = legacy.on_cycle(
+        _ctx({KR_SYMBOL: 81300.0}, before, bars=bars, open_markets=frozenset({"KR"})))
+    sig_pure_before = pure.on_cycle(
+        _ctx({KR_SYMBOL: 81300.0}, before, bars=bars, open_markets=frozenset({"KR"})))
+    assert _keys(sig_legacy_before) == _keys(sig_pure_before) == []
+
+    after = _kr_now(KR_OPEN) + timedelta(minutes=31)
+    sig_legacy_after = legacy.on_cycle(
+        _ctx({KR_SYMBOL: 81300.0}, after, bars=bars, open_markets=frozenset({"KR"})))
+    sig_pure_after = pure.on_cycle(
+        _ctx({KR_SYMBOL: 81300.0}, after, bars=bars, open_markets=frozenset({"KR"})))
+    assert _keys(sig_legacy_after) == _keys(sig_pure_after)
+    assert len(sig_legacy_after) == 1

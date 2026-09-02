@@ -479,6 +479,18 @@ def test_invalid_partial_take_r_raises():
         Scalp1mStrategy(["AAA"], _params(partial_take_r=0))
 
 
+def test_invalid_kr_entry_open_delay_min_raises():
+    with pytest.raises(ValueError):
+        Scalp1mStrategy(["AAA"], _params(kr_entry_open_delay_min=-1))
+
+
+def test_kr_entry_open_delay_min_defaults_to_30():
+    """모듈 docstring "KR 개장 초반 진입 지연 게이트" 절 — 기본값 30(2026-09-02
+    원장×문헌 교차확인, 하위호환용 0이 아니라 명시적으로 켜진 기본값)."""
+    strat = Scalp1mStrategy(["AAA"], {})
+    assert strat.kr_entry_open_delay_min == 30
+
+
 # ============================================================ 랏 소유권
 
 def test_does_not_manage_another_strategys_position():
@@ -748,8 +760,13 @@ def test_premarket_confirmation_evaluated_once_per_session():
 
 def test_regular_session_accelerated_entry_uses_premarket_high_as_p1():
     """프리마켓 확인 심볼은 정규장에서 P1 재형성을 기다리지 않는다 — 되돌림+
-    재돌파 단 2봉만으로 진입한다(기존 패턴 A의 3봉 최소 요건보다 빠르다)."""
-    strat = Scalp1mStrategy([KR_SYMBOL], _params())
+    재돌파 단 2봉만으로 진입한다(기존 패턴 A의 3봉 최소 요건보다 빠르다).
+
+    kr_entry_open_delay_min=0 — 이 테스트는 가속 패턴 로직 자체(2026-08-18)를
+    검증하는 것이지 개장 초반 지연 게이트(2026-09-02, 기본 30분)를 검증하는
+    것이 아니다. 그 게이트는 별도 테스트(test_kr_entry_open_delay_gate_*)가
+    고정한다."""
+    strat = Scalp1mStrategy([KR_SYMBOL], _params(kr_entry_open_delay_min=0))
     strat._premarket_confirmed[KR_SYMBOL] = 81000.0
     strat._session_date["KR"] = DAY1
 
@@ -775,8 +792,11 @@ def test_regular_session_accelerated_entry_uses_premarket_high_as_p1():
 
 
 def test_regular_session_accelerated_entry_invalidated_below_open():
-    """되돌림이 정규장 시가 아래로 뚫리면 가속 경로도 기존 규칙대로 무효."""
-    strat = Scalp1mStrategy([KR_SYMBOL], _params())
+    """되돌림이 정규장 시가 아래로 뚫리면 가속 경로도 기존 규칙대로 무효.
+
+    kr_entry_open_delay_min=0 — 위 테스트와 같은 이유(가속 패턴 로직 검증,
+    개장 초반 지연 게이트와 무관)."""
+    strat = Scalp1mStrategy([KR_SYMBOL], _params(kr_entry_open_delay_min=0))
     strat._premarket_confirmed[KR_SYMBOL] = 81000.0
     strat._session_date["KR"] = DAY1
 
@@ -1399,3 +1419,91 @@ def test_invalid_breakeven_and_trail_raise():
         Scalp1mStrategy(["AAA"], _params(breakeven_at_bp=-1))
     with pytest.raises(ValueError):
         Scalp1mStrategy(["AAA"], _params(trail_bp=-1))
+
+
+# ============================================================ KR 개장 초반 진입 지연 게이트 (2026-09-02)
+
+
+def _kr_pattern_a_bars(*, warmup_n=25, day=DAY1):
+    """KR 버전 패턴 A 시퀀스 — `_pattern_a_bars`와 동일 구조(KST/KR_OPEN, 시가 80000)."""
+    open_ts = _kr_now(KR_OPEN, day)
+    idx, rows = _warmup(KST, open_ts, warmup_n)
+    session_rows = [
+        {"open": 80000.0, "high": 81000.0, "low": 79900.0, "close": 80800.0, "volume": 3500.0},  # P1봉(서지)
+        {"open": 80800.0, "high": 80900.0, "low": 80500.0, "close": 80600.0, "volume": 1000.0},   # L1봉
+        {"open": 80600.0, "high": 81500.0, "low": 80500.0, "close": 81300.0, "volume": 1200.0},   # 재돌파봉
+    ]
+    session_idx = [open_ts + timedelta(minutes=i) for i in range(3)]
+    idx += session_idx
+    rows += session_rows
+    return pd.DataFrame(rows, index=pd.DatetimeIndex(idx, tz=KST))
+
+
+def test_kr_entry_open_delay_gate_blocks_before_delay():
+    """KR 정규장 개장 직후(5분 < 기본 30분)엔 패턴 A가 완성돼 있어도 신규
+    진입이 나가지 않는다 — 모듈 docstring "KR 개장 초반 진입 지연 게이트" 절."""
+    strat = Scalp1mStrategy([KR_SYMBOL], _params())
+    bars = {KR_SYMBOL: _kr_pattern_a_bars()}
+    now = _kr_now(KR_OPEN) + timedelta(minutes=5)
+    ctx = _kr_ctx({KR_SYMBOL: 81300.0}, now, bars=bars, kr_open=True)
+
+    signals = strat.on_cycle(ctx)
+
+    assert signals == []
+    assert strat._pattern_a_used.get(KR_SYMBOL, False) is False
+
+
+def test_kr_entry_open_delay_gate_allows_after_delay():
+    """같은 패턴 A가 30분 경과 후엔 정상 진입한다."""
+    strat = Scalp1mStrategy([KR_SYMBOL], _params())
+    bars = {KR_SYMBOL: _kr_pattern_a_bars()}
+    now = _kr_now(KR_OPEN) + timedelta(minutes=31)
+    ctx = _kr_ctx({KR_SYMBOL: 81300.0}, now, bars=bars, kr_open=True)
+
+    signals = strat.on_cycle(ctx)
+
+    assert len(signals) == 1
+    assert signals[0].action == SignalAction.ENTER_LONG
+
+
+def test_kr_entry_open_delay_gate_zero_preserves_existing_behavior():
+    """kr_entry_open_delay_min=0 — 하위호환/실험 롤백: 개장 직후에도 즉시 진입."""
+    strat = Scalp1mStrategy([KR_SYMBOL], _params(kr_entry_open_delay_min=0))
+    bars = {KR_SYMBOL: _kr_pattern_a_bars()}
+    now = _kr_now(KR_OPEN) + timedelta(minutes=1, seconds=30)
+    ctx = _kr_ctx({KR_SYMBOL: 81300.0}, now, bars=bars, kr_open=True)
+
+    signals = strat.on_cycle(ctx)
+
+    assert len(signals) == 1
+    assert signals[0].action == SignalAction.ENTER_LONG
+
+
+def test_us_entry_unaffected_by_kr_entry_open_delay_gate():
+    """US는 kr_entry_open_delay_min의 영향을 받지 않는다 — 기본값(30)이어도
+    US 정규장 개장 직후(1.5분) 진입은 그대로 나간다."""
+    strat = Scalp1mStrategy(["AAA"], _params())  # kr_entry_open_delay_min 기본 30
+    bars = {"AAA": _pattern_a_bars(surge=True)}
+    ctx = _ctx({"AAA": 102.4}, _now_within_window(1.5), bars=bars)
+
+    signals = strat.on_cycle(ctx)
+
+    assert len(signals) == 1
+    assert signals[0].action == SignalAction.ENTER_LONG
+
+
+def test_kr_entry_open_delay_gate_does_not_block_position_management():
+    """진입은 지연 게이트에 막혀도, 이미 보유 중인 포지션의 손절 관리는
+    시간대와 무관하게 동작한다 — "진입은 미뤄도 청산은 아니다" 비대칭."""
+    strat = Scalp1mStrategy([KR_SYMBOL], _params())
+    pos = Position(symbol=KR_SYMBOL, qty=10, avg_cost=81300.0, meta={
+        "lots": {"scalp_1m": {"qty": 10.0, "entry": 81300.0, "stop": 81000.0,
+                               "session": DAY1.isoformat(), "partial_taken": False}},
+    })
+    now = _kr_now(KR_OPEN) + timedelta(minutes=5)  # 지연 게이트 창 안(< 30분)
+    ctx = _kr_ctx({KR_SYMBOL: 80900.0}, now, positions={KR_SYMBOL: pos}, kr_open=True)
+
+    signals = strat.on_cycle(ctx)
+
+    assert len(signals) == 1
+    assert "손절" in signals[0].reason

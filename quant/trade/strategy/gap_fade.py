@@ -48,6 +48,32 @@
    여기서도 생성자가 0 이하를 거부해 같은 사고를 재현하지 못하게 막는다.
 8. **1일 1회**: 심볼당 하루 진입 1회(`taken`).
 
+## 문헌 필터 3종 (2026-09-02, 원장×문헌 교차확인)
+
+원장 실측: gap_fade 9왕복 승률11%(사실상 전패, `data/state/trades.jsonl` — 단
+gap_fade는 2026-08-29 도입이라 이 저장소 로컬 원장은 08-28까지만 있어 이 9건을
+로컬에서 직접 재구성하지 못했다, 아래 "원장 대조" 절 참고). 문헌 근거:
+
+1. **고거래량 갭은 continuation 우세** — 갭이 큰 거래량을 동반하면 "일시적
+   과매도"보다 정보 이벤트일 가능성이 높아 페이드(되돌림 베팅)가 불리해진다.
+2. **큰 갭의 채움률 8.2%**(arXiv:2605.04004 — "갭 채움 페이드는 테스트한 모든
+   진입 시각에서 실패") — `gap_min_bp`~`gap_max_bp`(100~400bp) 창 안에서도 갭이
+   클수록 페이드 논지가 약해진다.
+3. **갭다운 페이드(매수)가 갭업보다 근거가 강함**(NY Fed sr917) — 이 전략은
+   `gap_down_bp`(하락 갭만 양수) + `ENTER_LONG` 전용이라 애초에 갭다운만
+   페이드한다. 별도 방향 파라미터는 없다(이미 코드 구조로 강제된다).
+
+적용 필터(둘 다 settings.yaml 파라미터, 0=비활성=기존 동작):
+
+- **RVOL 게이트**(`rvol_reject_threshold`, 기본 2.0): 세션 시작~안정화봉까지의
+  평균 거래량이 lookback 전체(오늘 포함) 평균 거래량의 이 배수 이상이면 거부.
+  진짜 "동일 시각대 N일 평균" RVOL은 다수 영업일 5분봉이 필요해 이 저장소
+  (Toss 1분봉 4거래일 롤링과 같은 제약)에서 계산할 수 없으므로, lookback 전체
+  평균 대비 배수를 대리 지표로 쓴다 — `relative_volume()`.
+- **갭 크기 상한**(`gap_size_reject_bp`, 기본 300 = 3%): 갭이 이 값을 초과하면
+  거부. 기존 `gap_max_bp`(400bp, "폭락 갭=악재 실체" 배제)와는 별개의 축이다 —
+  `gap_max_bp`는 바꾸지 않는다(악재 실체 배제라는 원래 근거는 여전히 유효).
+
 ## 청산 판정 순서 (보수적)
 
 오버나잇(세션 롤) → EoD → 손절 → 목표 → 시간 청산. 손절과 목표가 같은 사이클에
@@ -147,6 +173,24 @@ def gap_down_bp(session_open: float, prev_close: float) -> float | None:
     return (prev_close - session_open) / prev_close * 1e4
 
 
+def relative_volume(session: pd.DataFrame, full_bars: pd.DataFrame, upto_idx: int) -> float | None:
+    """RVOL 대리 지표 — 세션 시작~`upto_idx`(0-based, 포함)까지의 평균 거래량 /
+    `full_bars`(오늘 포함 lookback 전체) 평균 거래량. 모듈 docstring "문헌 필터
+    3종" 절 — 진짜 "동일 시각대 N일 평균" RVOL은 다수 영업일 5분봉이 필요해
+    계산할 수 없으므로 lookback 전체 평균 대비 배수로 대체한다.
+
+    계산 불가(창 비어있음/분모 0)면 None — 지어내지 않는다."""
+    if full_bars is None or full_bars.empty or upto_idx < 0:
+        return None
+    window = session.iloc[: upto_idx + 1]
+    if window.empty:
+        return None
+    baseline_avg = float(full_bars["volume"].mean())
+    if baseline_avg <= 0:
+        return None
+    return float(window["volume"].mean()) / baseline_avg
+
+
 def find_stabilization_bar(session: pd.DataFrame, window_end: datetime) -> int | None:
     """세션 봉 중 **시가 시각이 `window_end` 이전**이고 종가>시가(양봉)로 마감한
     **가장 이른** 봉의 위치(0-based). 없으면 None.
@@ -200,6 +244,10 @@ class GapFadePureStrategy:
         self.flatten_minutes: float = float(params.get("flatten_before_close_minutes", 5.0))
         # 사이징 비중.
         self.target_weight: float = float(params.get("target_weight", 0.5))
+        # 문헌 필터 3종(모듈 docstring "문헌 필터 3종" 절, 2026-09-02) — 둘 다
+        # 0=비활성(기존 동작).
+        self.rvol_reject_threshold: float = float(params.get("rvol_reject_threshold", 0.0))
+        self.gap_size_reject_bp: float = float(params.get("gap_size_reject_bp", 0.0))
 
         if self.gap_min_bp <= 0:
             raise ValueError("gap_min_bp는 양수여야 합니다.")
@@ -221,6 +269,10 @@ class GapFadePureStrategy:
             raise ValueError("flatten_before_close_minutes는 양수여야 합니다.")
         if not 0 < self.target_weight <= 1:
             raise ValueError("target_weight는 0 초과 1 이하여야 합니다.")
+        if self.rvol_reject_threshold < 0:
+            raise ValueError("rvol_reject_threshold는 0(비활성) 이상이어야 합니다.")
+        if self.gap_size_reject_bp < 0:
+            raise ValueError("gap_size_reject_bp는 0(비활성) 이상이어야 합니다.")
 
         # 5분봉 조회 개수 — 세션 전체(78봉) + ATR 워밍업을 덮는다.
         self._lookback_bars = max(
@@ -351,6 +403,15 @@ class GapFadePureStrategy:
         if not (self.gap_min_bp <= gap_bp <= self.gap_max_bp):
             last_reject[symbol] = f"갭 조건 불충족(gap={gap_bp:.0f}bp)"
             return None
+        # 갭 크기 상한(문헌 필터, 모듈 docstring "문헌 필터 3종" 절) — 기존
+        # gap_max_bp(폭락 갭=악재 실체 배제)와 별개 축, 큰 갭일수록 채움률이
+        # 낮다는 근거(arXiv:2605.04004)로 gap_max_bp보다 더 죈다.
+        if self.gap_size_reject_bp > 0 and gap_bp > self.gap_size_reject_bp:
+            last_reject[symbol] = (
+                f"갭 크기 상한 초과(gap={gap_bp:.0f}bp > {self.gap_size_reject_bp:g}bp, "
+                "큰 갭은 채움률이 낮다)"
+            )
+            return None
 
         # (2) 안정화 확인 — entry_window_min 안의 첫 양봉.
         tz = market_tz(market)
@@ -367,6 +428,17 @@ class GapFadePureStrategy:
                 )
             else:
                 last_reject[symbol] = "안정화 대기중(양봉 없음)"
+            return None
+
+        # RVOL 게이트(문헌 필터, 모듈 docstring "문헌 필터 3종" 절) — 고거래량
+        # 갭은 continuation 우세라 페이드 논지와 맞지 않는다. 계산 불가면 통과
+        # (게이트 부재는 차단 근거가 아니다 — 이 저장소 공통 원칙).
+        rvol = relative_volume(session, bars, si)
+        if self.rvol_reject_threshold > 0 and rvol is not None and rvol >= self.rvol_reject_threshold:
+            last_reject[symbol] = (
+                f"고거래량 갭(RVOL={rvol:.1f} >= {self.rvol_reject_threshold:g}) — "
+                "continuation 우세, 페이드 제외"
+            )
             return None
 
         # (3) 진입 — 안정화봉 다음 완성봉부터.
