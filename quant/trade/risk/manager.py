@@ -1197,8 +1197,28 @@ class RiskManagerImpl:
             return None
 
         if is_stop_loss_exit:
-            bars = self._bar_ts(signal.symbol, ctx, 1, signal.strategy_id)
-            if len(bars) > 0:
+            # 이 조회(쿨다운 재진입 판정용 마지막 손절 봉 시각 기록)는 **매도 자체에
+            # 필요한 데이터가 아니다** — 순전히 부기다. 매도 Order는 이미 위에서 qty
+            # 까지 확정됐고 아래서 그대로 반환된다. 그런데 조회 실패를 여기서 삼키지
+            # 않으면 그 예외가 approve() 밖으로 터져 나가 매도 자체가 무산된다.
+            #
+            # 2026-09-02 실사고: ColdFetchBudgetExceeded(콜드 페치 예산 초과)가 여기서
+            # 던져지며 approve()가 통째로 실패해 하드레일 손절이 2분간(6회 연속) 막혔다
+            # — "청산은 절대 막지 않는다"(모듈 docstring)를 정면으로 어겼다. 근본 원인은
+            # "청산 경로가 불필요한 데이터를 요구한다"이므로, 예산 면제가 아니라 이 조회
+            # 자체를 실패에 강인하게 만든다(위 미체결 매수 가드·레버리지 헤어컷과 같은
+            # "모르면 차단하지 않고 저하(degrade)" 원칙). 실패하면 쿨다운 봉 기록만
+            # 건너뛴다 — 최악의 경우 이번 손절 건에 한해 재진입 쿨다운이 안 걸릴 뿐,
+            # 매도 자체는 항상 나간다.
+            try:
+                bars = self._bar_ts(signal.symbol, ctx, 1, signal.strategy_id)
+            except Exception as e:  # noqa: BLE001 — 부기 조회 실패가 청산을 막으면 안 된다
+                bars = None
+                logger.warning(
+                    "손절 쿨다운 봉 조회 실패 %s: %s: %s — 쿨다운 미기록으로 진행"
+                    "(매도 승인은 계속)", signal.symbol, type(e).__name__, e,
+                )
+            if bars is not None and len(bars) > 0:
                 self._stop_bar_ts[signal.symbol] = bars.index[-1]
                 self._stop_day[signal.symbol] = today
             if signal.strategy_id in self.cooldown_eod_strategies:

@@ -69,8 +69,8 @@ llm_trader가 살 종목은 **인박스가 사이클마다 새로 알려준다**
 2. **`horizon`이 "단타"/"스윙"/"장기" 중 하나여야 한다**(2026-08-30 소유자 추가
    지시). 그 외 값·누락은 거부.
 3. **시장이 열려 있고 연속거래 구간(`in_continuous_session`)일 때만.** 동시호가
-   구간에 도착한 주문은 그 사이클에 거부되고 재시도되지 않는다(아래 "아직 못
-   하는 것" 참고) — LLM이 다시 판단해 새 id로 주문을 내야 한다.
+   구간에 도착한 주문은 그 사이클엔 거부되지만 **소비 처리되지 않는다**(2026-09-02
+   수정) — 연속거래가 재개되면 같은 id가 다시 평가된다(아래 "상태" 절).
 4. **동시 보유 `max_positions`(기본 5) 초과 매수 거부.**
 5. **같은 심볼 중복 매수 거부** — 이미 내 랏이 열려 있으면 buy를 무시한다(추가
    매수 개념 없음 — LLM이 비중을 늘리고 싶으면 먼저 sell 후 재매수해야 한다.
@@ -128,19 +128,28 @@ horizon·세션·보유수·중복·비중)뿐이고, 그중 어떤 것도 종�
 결과도 LLM이 애초에 낸 정당한 매수 의도의 재실행이라 자본 안전상 치명적이지
 않다 — 지어내지 않고 정직하게 남겨 둔다.
 
+**소비 마킹 시점(2026-09-02 결함 수정).** 형식 검증(심볼/action/horizon)을
+통과해 `_enter`/`_exit`가 실제로 `Signal`을 만들어 반환하는 순간에는 **아직**
+`_consumed_ids`에 넣지 않는다 — `_process_order`가 신호를 냈다고 그게 체결됐다는
+뜻은 아니기 때문이다(loop가 대신 부르는 `risk.approve()`가 콜드 페치 예산 초과
+같은 일시적 사유로 실패할 수 있고, 이 전략은 그 결과를 직접 볼 수 없다). 대신
+다음 사이클에 `ctx.broker.positions()`로 다시 계산한 `holding`이 원하는 방향으로
+뒤집혔을 때(`_enter`가 "이미 보유 중"으로, `_exit`가 "보유 없음"으로 거부하는
+바로 그 순간) 비로소 영구 소비 처리한다 — 실사고(2026-09-02 09:25~09:42, KR
+078340) 재발 방지: 승인 실패로 판단 자체가 소실됐던 결함(이 절 다음 문단이었던
+"동시호가 중 도착한 주문은 재시도하지 않는다"도 같은 원인이라 함께 고쳤다).
+
 ## 아직 못 하는 것 (정직하게)
 
 1. **우리 원장 실측이 없다.** 신규 실험 레인 — `validation.status: burn_in`.
-2. **동시호가 중 도착한 주문은 재시도하지 않는다.** 그 사이클에 거부되면 끝 —
-   LLM이 다음 판단 때 새 id로 다시 내야 한다.
-3. **`self.symbols`는 항상 빈 리스트다.** `universe: watchlist` opt-in이 아니라
+2. **`self.symbols`는 항상 빈 리스트다.** `universe: watchlist` opt-in이 아니라
    인박스가 유니버스를 대신하므로(`quant/apps/assembly.py`의
    `rebuild_strategies`가 심볼을 갈아끼우는 대상이 아니다) — `Strategy` Protocol이
    `symbols: list[str]`를 요구해서 존재하는 자리표시자일 뿐이다. 포지션 관리는
    `ctx.broker.positions()`에서 **내 랏이 있는 심볼**을 순회하는 것만으로
    이뤄지므로(정적 유니버스와 무관), orb_scan류의 "유니버스에서 빠진 보유 종목"
    문제가 애초에 없다.
-4. **weight가 없는 buy는 거부한다.** 스펙이 "buy 시 목표 비중"을 요구하므로
+3. **weight가 없는 buy는 거부한다.** 스펙이 "buy 시 목표 비중"을 요구하므로
    비중 없는 매수는 잘못된 행으로 본다.
 """
 from __future__ import annotations
@@ -306,25 +315,48 @@ class LlmTraderStrategy:
             # 재평가" 같은 경계 사고를 만들지 않는다.
             return None
 
-        self._consumed_ids.add(oid)
-
+        # 아래부터 소비 마킹 시점이 갈린다(2026-09-02 결함 B 수정). **형식이 잘못된
+        # 행(심볼/action/horizon)은 재평가해도 결론이 똑같으므로 즉시 영구 소비한다**
+        # — 이건 기존 동작 그대로다. 반면 "시장 닫힘/동시호가"와 "risk.approve() 승인
+        # 실패"는 **일시적**이다: 실사고(2026-09-02 09:25~09:42)에서 콜드 페치 예산
+        # 초과로 approve()가 예외를 던지자, 그 시점엔 이미 여기서 oid가 영구 소비돼
+        # 있어 판단이 그대로 소실됐다(로그는 "다음 사이클"이라 말했지만 다음 사이클이
+        # 없었다). 이 전략은 loop가 대신 부르는 risk.approve()의 결과를 직접 볼 수
+        # 없다(신호를 반환했다고 체결된 게 아니다) — 그래서 "형식 검증을 통과해 신호를
+        # 만들었다"는 사실만으로는 아직 소비 처리하지 않는다.
+        #
+        # 대신 **포지션 상태로 간접 확인**한다: buy는 보유 전환, sell은 미보유 전환이
+        # 원하는 결과다. 승인이 실패했다면(일시적 사유든 자금 부족처럼 지속되는
+        # 사유든) 포지션이 그대로이므로, 다음 사이클에 이 함수가 다시 호출될 때
+        # `holding`이 그대로 미확정 → `_enter`/`_exit`가 같은 신호를 다시 만들어
+        # 자연히 재시도된다. 실제로 체결됐다면 `holding`이 뒤집혀 `_enter`/`_exit`가
+        # "이미 보유 중"/"보유 없음"으로 거부하고, 그 시점에 비로소 영구 소비한다.
+        # 재시도는 무한하지 않다 — 거래일이 바뀌면 위 ts 필터가 다음날 이 행을
+        # 영구히 걸러내고(_consumed_day 롤과 함께 _consumed_ids도 비워진다),
+        # 매수 쪽은 risk.approve() 자체의 미체결 중복 진입 가드가 같은 심볼로의
+        # 중복 제출을 막는다(quant/trade/risk/manager.py, 청산은 원래 중복이 안전
+        # 하므로 그 가드를 타지 않는다).
         symbol = order.get("symbol")
         if not _is_kr_symbol(symbol):
+            self._consumed_ids.add(oid)
             self._reject(str(symbol), f"KR 심볼 아님(#{oid}): {symbol!r}")
             return None
 
         action = order.get("action")
         if action not in ("buy", "sell"):
+            self._consumed_ids.add(oid)
             self._reject(symbol, f"알 수 없는 action(#{oid}): {action!r}")
             return None
 
         horizon = order.get("horizon")
         if horizon not in _VALID_HORIZONS:
+            self._consumed_ids.add(oid)
             self._reject(symbol, f"horizon 값 오류(#{oid}): {horizon!r} (단타/스윙/장기만 허용)")
             return None
 
         if not tradable:
-            self._reject(symbol, f"시장 닫힘/동시호가(#{oid}) — 재시도 없음")
+            # 소비하지 않는다 — 연속거래 재개 후 같은 oid가 다시 평가된다(위 설명).
+            self._reject(symbol, f"시장 닫힘/동시호가(#{oid}) — 다음 사이클 재시도")
             return None
 
         pos = positions.get(symbol)
@@ -335,8 +367,17 @@ class LlmTraderStrategy:
         )
 
         if action == "buy":
-            return self._enter(symbol, order, oid, horizon, positions, holding, ctx)
-        return self._exit(symbol, order, oid, horizon, holding)
+            signal = self._enter(symbol, order, oid, horizon, positions, holding, ctx)
+        else:
+            signal = self._exit(symbol, order, oid, horizon, holding)
+
+        if signal is None:
+            # _enter/_exit 자체 가드(중복 매수/보유 없음/비중 오류/시세 없음/한도
+            # 초과) — 재평가해도 결론이 같으므로 즉시 영구 소비(기존 동작 보존).
+            self._consumed_ids.add(oid)
+        # signal이 있으면 아직 소비하지 않는다 — 위 긴 설명대로 다음 사이클 포지션
+        # 상태로 체결 여부를 간접 확인한 뒤에야 소비한다.
+        return signal
 
     def _enter(
         self, symbol: str, order: Mapping[str, Any], oid: str, horizon: str,

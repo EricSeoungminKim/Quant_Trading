@@ -273,16 +273,93 @@ def test_order_with_unparseable_ts_is_ignored():
     assert strat.on_cycle(ctx) == []
 
 
-def test_same_id_is_not_reprocessed_within_the_same_trading_day():
+def test_same_id_is_not_reprocessed_once_fill_is_confirmed_by_position_state():
+    """2026-09-02 결함 B 수정: 소비 마킹은 신호 반환 시점이 아니라 다음 사이클의
+    포지션 상태로 체결이 "확인"된 시점에 일어난다. 매수가 실제로 체결돼 보유로
+    바뀐 뒤에는 같은 id를 다시 평가해도 "이미 보유 중"으로 거부되며, 그 시점에
+    비로소 영구 소비 처리된다 — 이후 사이클에서도 재신호가 나오지 않는다."""
     orders = [_order()]
     strat = _strategy(orders)
-    ctx = _ctx(quotes={"005930": 1000.0})
+
+    first = strat.on_cycle(_ctx(quotes={"005930": 1000.0}))
+    assert len(first) == 1
+    assert "ord-1" not in strat._consumed_ids  # 체결 미확인 — 아직 소비 안 됨
+
+    # 체결이 반영됐다고 가정(포지션에 랏이 생김).
+    ctx_filled = _ctx(quotes={"005930": 1000.0}, positions={"005930": _lot_position("005930")})
+    second = strat.on_cycle(ctx_filled)
+    assert second == []  # "이미 보유 중"으로 거부 — 이 시점에 소비됨
+    assert "ord-1" in strat._consumed_ids
+
+    third = strat.on_cycle(ctx_filled)
+    assert third == []  # 계속 소비된 채로 남는다 — 재신호 없음
+
+
+def test_buy_signal_retries_next_cycle_when_fill_not_yet_confirmed():
+    """리스크 승인이 일시적 사유(예: 콜드 페치 예산 초과, 2026-09-02 실사고)로
+    실패해도 llm_trader는 그 결과를 직접 볼 수 없다 — 포지션이 안 바뀌면(=체결
+    미확인) 다음 사이클에 같은 id로 자동 재시도된다. 과거 버그는 신호 반환
+    즉시 영구 소비해 이 재시도 기회를 없앴다."""
+    orders = [_order()]
+    strat = _strategy(orders)
+    ctx = _ctx(quotes={"005930": 1000.0})  # 포지션 불변 = 체결 미확인 시뮬레이션
+
+    first = strat.on_cycle(ctx)
+    second = strat.on_cycle(ctx)
+    third = strat.on_cycle(ctx)
+
+    assert len(first) == 1
+    assert len(second) == 1  # 같은 id, 미확인 상태라 재시도
+    assert len(third) == 1
+    assert first[0].reason == second[0].reason == third[0].reason
+
+
+def test_sell_signal_retries_next_cycle_when_fill_not_yet_confirmed():
+    """매도의 대칭 버전 — 포지션이 그대로 열려 있으면(체결 미확인) 같은 id로
+    계속 재시도된다."""
+    orders = [_order(action="sell", weight=None, horizon="스윙")]
+    strat = _strategy(orders)
+    positions = {"005930": _lot_position("005930")}
+    ctx = _ctx(quotes={"005930": 1000.0}, positions=positions)
 
     first = strat.on_cycle(ctx)
     second = strat.on_cycle(ctx)
 
     assert len(first) == 1
-    assert second == []  # 같은 id, 소비됨 — 재처리 없음
+    assert len(second) == 1
+    assert "ord-1" not in strat._consumed_ids
+
+    # 체결 확인 — 포지션이 사라졌다고 가정.
+    third = strat.on_cycle(_ctx(quotes={"005930": 1000.0}))
+    assert third == []  # "보유 없음"으로 거부 — 소비됨
+    assert "ord-1" in strat._consumed_ids
+
+
+def test_market_closed_rejection_is_retried_once_session_reopens():
+    """2026-09-02 결함 B 수정: 동시호가/장마감 거부는 일시적이다 — 소비되지 않고
+    연속거래가 재개되면 같은 id가 다시 평가된다."""
+    strat = _strategy([_order()])
+
+    first = strat.on_cycle(_ctx(quotes={"005930": 1000.0}, kr_open=False))
+    assert first == []
+    assert "ord-1" not in strat._consumed_ids  # 소비되지 않음 — 재시도 가능
+
+    second = strat.on_cycle(_ctx(quotes={"005930": 1000.0}, kr_open=True))
+    assert len(second) == 1  # 장이 열리자 같은 id가 재평가된다
+
+
+def test_permanent_rejections_are_not_retried_across_cycles():
+    """영구 거부(KR 심볼 아님/horizon 오류/알 수 없는 action)는 지금처럼 즉시
+    영구 소비되고, 다음 사이클에도 재평가되지 않는다 — 재평가해도 결론이
+    같기 때문이다."""
+    strat = _strategy([_order(symbol="TQQQ")])
+    ctx = _ctx(quotes={"TQQQ": 50.0})
+
+    first = strat.on_cycle(ctx)
+    second = strat.on_cycle(ctx)
+
+    assert first == [] and second == []
+    assert "ord-1" in strat._consumed_ids
 
 
 def test_restart_does_not_replay_a_previous_trading_days_order():

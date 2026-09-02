@@ -23,7 +23,7 @@ import pandas as pd
 import pytest
 
 from quant.core.fx import FixedFxProvider
-from quant.core.ports import Context
+from quant.core.ports import ColdFetchBudgetExceeded, Context
 from quant.core.models import Position, Quote, Side, Signal, SignalAction
 from quant.core.portfolio.portfolio import to_krw
 from quant.trade.risk.manager import RiskManagerImpl
@@ -53,15 +53,21 @@ class _FakeData:
     """price는 quote()가 매번 그대로 반환. bars[symbol]을 직접 채워 history()가 반환할
     완성봉 시퀀스를 테스트가 완전히 통제한다(쿨다운의 봉 카운트 검증용)."""
 
-    def __init__(self, price: float, now: datetime = _DEFAULT_NOW):
+    def __init__(self, price: float, now: datetime = _DEFAULT_NOW, raise_on_history: Exception | None = None):
         self._price = price
         self._now = now
         self.bars: dict[str, pd.DataFrame] = {}
+        # 콜드 페치 예산 초과 등 history() 실패를 흉내내기 위한 훅
+        # (2026-09-02 결함 A 회귀 테스트: "청산은 절대 막지 않는다"가 실제로도
+        # 그런지, history() 예외가 approve() 밖으로 새지 않는지 검증한다).
+        self.raise_on_history = raise_on_history
 
     def quote(self, symbol: str) -> Quote | None:
         return Quote(symbol=symbol, ts=self._now, price=self._price)
 
     def history(self, symbol: str, interval: str, n: int) -> pd.DataFrame:
+        if self.raise_on_history is not None:
+            raise self.raise_on_history
         df = self.bars.get(symbol)
         if df is None or len(df) == 0:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
@@ -348,6 +354,67 @@ def test_cooldown_bars_after_stop_never_blocks_exits(fake_clock_cls):
     ctx2 = Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=data, broker=_FakeBroker(10_000_000.0, positions2))
     stop2 = risk.approve(_exit(reason="마감 전 청산"), ctx2)
     assert stop2 is not None
+
+
+def test_stop_loss_exit_is_approved_even_when_cooldown_bar_fetch_raises_cold_fetch_budget_exceeded(fake_clock_cls):
+    """2026-09-02 실사고(09:25~09:42, KR 078340) 회귀 테스트: 콜드 페치 예산 초과가
+    approve() 안에서 손절 쿨다운 봉 기록(_bar_ts → ctx.data.history())을 실패시켜
+    approve() 전체가 예외로 죽었고, 그 결과 하드레일 손절이 6회 연속(2분간) 막혔다.
+    이 조회는 매도 자체에 필요한 데이터가 아니다(부기용) — 실패해도 매도는
+    반드시 승인돼야 한다("청산은 절대 막지 않는다", 모듈 docstring)."""
+    risk = RiskManagerImpl(
+        _risk_cfg(cooldown_bars_after_stop=3, cooldown_bar_interval_minutes=15),
+        capital_fraction={"donchian": 1.0}, market_of=_MARKET_OF,
+    )
+    positions = {_SYMBOL: Position(symbol=_SYMBOL, qty=50.0, avg_cost=100.0)}
+    data = _FakeData(
+        price=97.5, now=_DEFAULT_NOW,
+        raise_on_history=ColdFetchBudgetExceeded(
+            f"콜드 페치 예산 초과 (8/사이클, {_SYMBOL} 15m) — 다음 사이클"
+        ),
+    )
+    ctx = Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=data, broker=_FakeBroker(10_000_000.0, positions))
+
+    order = risk.approve(_exit(reason="손절: entry=100.00 stop=98.00 현재=97.50"), ctx)
+
+    assert order is not None
+    assert order.side is Side.SELL
+    assert order.qty == pytest.approx(50.0)
+    # 봉 조회가 실패했으니 쿨다운 상태는 기록되지 않는다 — 최악의 경우 이번 손절
+    # 건은 재진입 쿨다운이 안 걸릴 뿐(허용 가능한 저하), 매도 자체는 나갔다.
+    assert _SYMBOL not in risk.breaker_state()["cooldown_bars_after_stop"]["symbols_in_cooldown"]
+
+
+def test_entry_reentry_check_still_propagates_cold_fetch_budget_exceeded(fake_clock_cls):
+    """위 테스트와의 비대칭 확인 — 진입(재진입 쿨다운 판정)의 봉 조회는 이번
+    수정 범위 밖이다: 예산 스로틀이 진입을 이번 사이클엔 미루는 것은 기존
+    의도된 동작(loop.py의 ColdFetchBudgetExceeded 처리, 2026-08-31 수정)이고,
+    청산과 달리 진입은 미뤄도 안전하다. 이 테스트는 그 비대칭이 실제로 지켜지는
+    지 고정한다 — 진입 경로의 봉 조회는 여전히 예외를 그대로 올린다."""
+    risk = RiskManagerImpl(
+        _risk_cfg(cooldown_bars_after_stop=3, cooldown_bar_interval_minutes=15),
+        capital_fraction={"donchian": 1.0}, market_of=_MARKET_OF,
+    )
+    # 먼저 손절을 하나 기록해 쿨다운 상태(_stop_bar_ts)를 만든다(정상 조회).
+    stop_positions = {_SYMBOL: Position(symbol=_SYMBOL, qty=50.0, avg_cost=100.0)}
+    stop_data = _FakeData(price=97.5, now=_DEFAULT_NOW)
+    stop_data.bars[_SYMBOL] = _bars(1, _DEFAULT_NOW)
+    stop_ctx = Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=stop_data, broker=_FakeBroker(10_000_000.0, stop_positions))
+    assert risk.approve(_exit(reason="손절: entry=100.00 stop=98.00 현재=97.50"), stop_ctx) is not None
+
+    # 재진입 시도 — 쿨다운이 아직 살아있는 채로 이번엔 봉 조회 자체가 예산
+    # 초과로 실패한다. 진입 경로(cooldown_bars_after_stop 재진입 판정)는 이
+    # 수정 대상이 아니므로 예외가 그대로 전파돼야 한다.
+    reentry_data = _FakeData(
+        price=100.0, now=_DEFAULT_NOW,
+        raise_on_history=ColdFetchBudgetExceeded(
+            f"콜드 페치 예산 초과 (8/사이클, {_SYMBOL} 15m) — 다음 사이클"
+        ),
+    )
+    reentry_ctx = Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=reentry_data, broker=_FakeBroker(10_000_000.0, {}))
+
+    with pytest.raises(ColdFetchBudgetExceeded):
+        risk.approve(_entry(0.02), reentry_ctx)
 
 
 def test_cooldown_does_not_apply_without_a_prior_stop(fake_clock_cls):
