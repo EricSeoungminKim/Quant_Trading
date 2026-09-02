@@ -91,7 +91,12 @@ def test_seeding_liquidation_excluded_from_performance():
                market="US", reason=f"{SEEDING_LIQUIDATION_MARKER} — 소유자 지시 2026-09-01"),
     ]
     payload = build_performance_payload(trades, EXECUTION_CFG)
-    assert payload["period"]["total_fills"] == 2, "이식 정리 매도는 total_fills에서 빠져야 한다"
+    # 이 fixture 의 정상 체결 2건은 **이식 경계 이전**(2026-08-10)이라 공개 곡선이
+    # 아니라 prior_paper 로 간다(2026-09-02 곡선 재구성). 이식 정리 매도가 어느
+    # 집계에도 섞이지 않는다는 것이 이 테스트의 요지 — 그 요지는 그대로 두고
+    # 확인 대상만 실제 집계 위치로 옮긴다(약화 아님).
+    assert payload["prior_paper"]["fills"] == 2, "이식 정리 매도는 모의 시대 집계에서도 빠져야 한다"
+    assert payload["period"]["total_fills"] == 0, "이식 후 정상 체결이 없으므로 곡선은 비어 있다"
     strategy_ids = {s["id"] for s in payload["strategies"]}
     assert "legacy" not in strategy_ids
     excl = payload["excluded"]["seeding_liquidation"]
@@ -316,3 +321,33 @@ def test_no_forbidden_fields_with_carryover_snapshot():
     blob = json.dumps(payload, ensure_ascii=False)
     for forbidden in ("005930", "009150", "263416", "1435000", "1401000"):
         assert forbidden not in blob, f"금지 필드 유출: {forbidden!r}"
+
+
+def test_period_fills_counts_only_the_published_curve():
+    """period 의 start/end/sessions 가 이식 후 구간 기준이면 total_fills 도 그래야 한다.
+
+    2026-09-02 실측: 이식 후 2거래일(53체결)인데 total_fills 가 전체 602(모의
+    549 포함)로 나가 사이트 히어로에 "2 Trading days / 602 Fills" 라는 모순된
+    숫자가 찍혔다. 이식 전 체결 수는 prior_paper.fills 로 따로 보인다.
+    """
+    from quant.control.performance import build_performance_payload
+
+    trades = [
+        # 이식 전(모의) 2건
+        {"ts": "2026-09-01T00:10:00+00:00", "strategy_id": "s", "symbol": "005930",
+         "side": "buy", "qty": 1, "price": 1000.0, "fee": 1.0, "market": "KR"},
+        {"ts": "2026-09-01T01:10:00+00:00", "strategy_id": "s", "symbol": "005930",
+         "side": "sell", "qty": 1, "price": 1010.0, "fee": 1.0,
+         "realized_pnl": 10.0, "market": "KR"},
+        # 이식 정리(경계)
+        {"ts": "2026-09-01T14:01:08+00:00", "strategy_id": "seed", "symbol": "005930",
+         "side": "sell", "qty": 1, "price": 1000.0, "fee": 1.0, "realized_pnl": 0.0,
+         "market": "KR", "reason": "실계좌 이식 정리 — 레거시", "cash_after": 1_000_000.0},
+        # 이식 후 1건
+        {"ts": "2026-09-01T15:00:00+00:00", "strategy_id": "s", "symbol": "005930",
+         "side": "buy", "qty": 1, "price": 1000.0, "fee": 1.0, "market": "KR"},
+    ]
+    out = build_performance_payload(trades, {})
+    assert out["period"]["total_fills"] == sum(r["fills"] for r in out["equity"])
+    assert out["period"]["total_fills"] == 1          # 이식 후 체결만
+    assert out["prior_paper"]["fills"] == 2           # 모의 시대는 따로 보존

@@ -408,11 +408,15 @@ def build_performance_payload(
     strategies = _strategy_stats(included)
 
     days = [row["date"] for row in equity]
+    # total_fills 는 **곡선에 실린 구간의 체결 수**여야 한다 — start/end/sessions 가
+    # 이미 그 구간 기준이기 때문. 2026-09-02 실측: 이식 후 2거래일인데 체결을
+    # 전체(549 모의 + 53 이식후 = 602)로 세어 히어로에 "2 Trading days / 602 Fills"
+    # 라는 모순된 숫자가 찍혔다. 이식 전 체결 수는 prior_paper.fills 에 따로 있다.
     period = {
         "start": days[0] if days else None,
         "end": days[-1] if days else None,
         "sessions": len(days),
-        "total_fills": len(included),
+        "total_fills": sum(int(row.get("fills") or 0) for row in equity),
     }
 
     return {
