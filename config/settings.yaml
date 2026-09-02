@@ -1273,3 +1273,12 @@ watch_conditions:
       metric: change_pct
       op: "<"
       threshold: -3.0
+
+governor:
+  # 사망 판정(quant.control.experiments.consecutive_dead_candidates)이 K거래일
+  # 연속 이어져도 자동 비활성(quant.control.governor.ALLOWED_KILL_SWITCH) 대상
+  # 에서 제외되는 전략 (작업2, 2026-09-02). 소유자 지시(2026-08-30): "scalp_1m
+  # 은 핵심 무기 — 버리지 말고 파라미터·타이밍 조정으로 개선". 보호된 전략은
+  # 대신 "사망 경보 지속 중 — 개선 실험 필요" 알림만 받는다(governor-apply,
+  # 장외 시간 notify_auto) — 포지션 관리는 전략이 켜져 있는 한 그대로 계속된다.
+  protected_strategies: [scalp_1m]

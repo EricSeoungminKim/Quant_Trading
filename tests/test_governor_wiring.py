@@ -159,6 +159,15 @@ def test_missing_proposals_file_returns_empty_list(tmp_path):
 
 # --- ④ ALLOWED 경로가 실제 config/settings.yaml 에 실재 --------------------
 
+def _resolve_path(raw: dict, name: str):
+    node = raw
+    for key in name.split("."):
+        assert isinstance(node, dict) and key in node, (
+            f"{name} 경로가 config/settings.yaml 에 없음(막힌 지점: {key!r})")
+        node = node[key]
+    return node
+
+
 def test_allowed_paths_all_exist_in_real_settings_yaml():
     """2026-08-28 실측 결함 고정: 그때의 ALLOWED 7개는 하나도 config/settings.yaml
     에 없었다(analyze 평면의 파이썬 모듈 상수였다) — 제안은 나와도 반영될 곳이
@@ -171,13 +180,53 @@ def test_allowed_paths_all_exist_in_real_settings_yaml():
     settings = load_settings(str(REPO_ROOT / "config" / "settings.yaml"))
     assert governor.ALLOWED, "ALLOWED 가 비어 있다 — 재정의가 통째로 날아갔다"
     for name in governor.ALLOWED:
-        node = settings.raw
-        for key in name.split("."):
-            assert isinstance(node, dict) and key in node, (
-                f"{name} 경로가 config/settings.yaml 에 없음(막힌 지점: {key!r})")
-            node = node[key]
+        node = _resolve_path(settings.raw, name)
         assert isinstance(node, (int, float)) and not isinstance(node, bool), (
             f"{name} 의 리프가 숫자가 아님: {node!r}")
+
+
+def test_allowed_ordinal_paths_exist_and_current_value_is_a_member(tmp_path=None):
+    """ALLOWED_ORDINAL(2026-09-02, 작업1 — trend_gate_mode 등 문자열 enum 파라미터)
+    도 같은 불변식: 이름은 실제 settings.yaml 경로, 현재값은 그 항목이 나열한
+    허용 상태 중 하나."""
+    from quant.adapters.env import REPO_ROOT
+
+    settings = load_settings(str(REPO_ROOT / "config" / "settings.yaml"))
+    assert governor.ALLOWED_ORDINAL, "ALLOWED_ORDINAL 이 비어 있다"
+    for name, (order, cooldown_days) in governor.ALLOWED_ORDINAL.items():
+        node = _resolve_path(settings.raw, name)
+        assert isinstance(node, str), f"{name} 의 리프가 문자열이 아님: {node!r}"
+        assert node in order, f"{name} 의 현재값 {node!r} 이 허용 상태 {order} 에 없음"
+        assert cooldown_days > 0
+
+
+def test_allowed_kill_switch_paths_exist_and_are_boolean():
+    """ALLOWED_KILL_SWITCH(작업2 — 사망 판정 전략 자동 비활성)의 이름도 실제
+    settings.yaml 경로여야 하고, 리프는 enabled 플래그(bool)여야 한다. 보호
+    목록(scalp_1m)은 여기 등재돼 있으면 안 된다 — 사람 지시로 자동 비활성
+    대상에서 빠진 전략이 실수로 이 표에 들어가는 것을 여기서 잡는다."""
+    from quant.adapters.env import REPO_ROOT
+
+    settings = load_settings(str(REPO_ROOT / "config" / "settings.yaml"))
+    protected = set((settings.raw.get("governor") or {}).get("protected_strategies") or [])
+    assert governor.ALLOWED_KILL_SWITCH, "ALLOWED_KILL_SWITCH 가 비어 있다"
+    for name, cooldown_days in governor.ALLOWED_KILL_SWITCH.items():
+        node = _resolve_path(settings.raw, name)
+        assert isinstance(node, bool), f"{name} 의 리프가 bool 이 아님: {node!r}"
+        assert cooldown_days > 0
+        sid = name.split(".")[1]
+        assert sid not in protected, f"보호 전략 {sid} 이 ALLOWED_KILL_SWITCH 에 등재됨"
+
+
+def test_protected_strategies_are_known_settings_yaml_strategies():
+    from quant.adapters.env import REPO_ROOT
+
+    settings = load_settings(str(REPO_ROOT / "config" / "settings.yaml"))
+    protected = (settings.raw.get("governor") or {}).get("protected_strategies") or []
+    assert protected, "governor.protected_strategies 가 비어 있다"
+    for sid in protected:
+        assert sid in (settings.raw.get("strategies") or {}), (
+            f"보호 전략 {sid!r} 이 config/settings.yaml strategies 에 없음")
 
 
 # --- ⑤ --live 없이는(기본값) 제안만, 오버레이는 안 쓴다 --------------------

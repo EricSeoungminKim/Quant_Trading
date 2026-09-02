@@ -17,6 +17,8 @@ import pytest
 
 from quant.control.governor import (
     ALLOWED,
+    ALLOWED_KILL_SWITCH,
+    ALLOWED_ORDINAL,
     FORBIDDEN,
     MAX_CHANGES_PER_RUN,
     MIN_SAMPLES,
@@ -32,6 +34,9 @@ TODAY = date(2026, 8, 30)
 
 RAISE_ONLY = "strategies.vol_breakout.params.min_stop_bp"  # (raise_only, 40, 120, 20, 3)
 LOWER_ONLY = "engine.cold_fetch_budget_per_cycle"           # (lower_only, 4, 8, 2, 3)
+VOLUME_SURGE = "strategies.scalp_1m.params.volume_surge_mult"  # (raise_only, 3.0, 6.0, 1.0, 7)
+TREND_GATE = "strategies.scalp_1m.params.trend_gate_mode"  # (off, shadow, block), 7
+KILL_SWITCH = "strategies.gap_fade.enabled"  # cooldown 5
 
 
 def _p(name=RAISE_ONLY, current=40, proposed=60, samples=50, improvement=0.20):
@@ -212,3 +217,95 @@ def test_rejections_are_recorded_too(tmp_path):
 def test_summary_names_the_blocking_layer(tmp_path):
     text = summary([evaluate(_p(name="stop_loss_pct"), TODAY, [])])
     assert "0-blast-radius" in text and "stop_loss_pct" in text
+
+
+
+# --- ALLOWED_ORDINAL (작업1, 2026-09-02 — trend_gate_mode 등 문자열 enum) ---
+
+def _po(name=TREND_GATE, current="shadow", proposed="block", samples=50, improvement=0.20):
+    return Proposal(name=name, current=current, proposed=proposed,
+                    samples=samples, expected_improvement=improvement)
+
+
+def test_ordinal_strengthening_one_step_passes():
+    d = evaluate(_po(current="shadow", proposed="block"), TODAY, [])
+    assert d.accepted and d.applied_value == "block"
+
+
+def test_ordinal_loosening_is_rejected_as_wrong_direction():
+    d = evaluate(_po(current="block", proposed="shadow"), TODAY, [])
+    assert not d.accepted and d.layer == "0-direction"
+
+
+def test_ordinal_no_op_is_accepted():
+    d = evaluate(_po(current="shadow", proposed="shadow"), TODAY, [])
+    assert d.accepted
+
+
+def test_ordinal_unknown_value_is_rejected():
+    """실측 결함 재발 방지: param_propose.sh 2026-W35 제안이 실제로 "active"라는
+    scalp_1m.py 가 모르는 상태를 냈다(off/shadow/block 셋만 유효) — LLM 환각이
+    ALLOWED_ORDINAL 목록 밖 값이면 자동 반영되지 않고 거부돼야 한다."""
+    d = evaluate(_po(current="shadow", proposed="active"), TODAY, [])
+    assert not d.accepted and d.layer == "1-envelope"
+
+
+def test_ordinal_multi_step_jump_is_clamped_to_next_state():
+    d = evaluate(_po(current="off", proposed="block"), TODAY, [])
+    assert d.accepted and d.applied_value == "shadow" and d.layer == "2-step-limit"
+
+
+def test_ordinal_respects_cooldown():
+    history = [{"date": "2026-08-28", "name": TREND_GATE, "accepted": True}]
+    d = evaluate(_po(), TODAY, history)
+    assert not d.accepted and d.layer == "3-cooldown"
+
+
+def test_ordinal_respects_evidence_floor():
+    d = evaluate(_po(samples=MIN_SAMPLES - 1), TODAY, [])
+    assert not d.accepted and d.layer == "4-evidence"
+
+
+def test_volume_surge_mult_registered_raise_only_in_allowed():
+    direction, lo, hi, max_step, cooldown = ALLOWED[VOLUME_SURGE]
+    assert direction == "raise_only" and lo == 3.0 and cooldown > 0
+
+
+# --- ALLOWED_KILL_SWITCH (작업2, 2026-09-02 — 사망 판정 전략 자동 비활성) ---
+
+def _pk(name=KILL_SWITCH, current=True, proposed=False, samples=40, improvement=1.0):
+    return Proposal(name=name, current=current, proposed=proposed,
+                    samples=samples, expected_improvement=improvement)
+
+
+def test_kill_switch_disable_passes_all_layers():
+    d = evaluate(_pk(), TODAY, [])
+    assert d.accepted and d.applied_value is False
+
+
+def test_kill_switch_re_enable_is_rejected_as_wrong_direction():
+    """되살리는 것(False→True)은 항상 사람 몫 — 자동 반영 대상이 아니다."""
+    d = evaluate(_pk(current=False, proposed=True), TODAY, [])
+    assert not d.accepted and d.layer == "0-direction"
+
+
+def test_kill_switch_respects_evidence_floor():
+    d = evaluate(_pk(samples=MIN_SAMPLES - 1), TODAY, [])
+    assert not d.accepted and d.layer == "4-evidence"
+
+
+def test_kill_switch_respects_cooldown():
+    history = [{"date": "2026-08-28", "name": KILL_SWITCH, "accepted": True}]
+    d = evaluate(_pk(), TODAY, history)
+    assert not d.accepted and d.layer == "3-cooldown"
+
+
+def test_protected_strategy_scalp_1m_has_no_kill_switch_entry():
+    """소유자 지시(2026-08-30): scalp_1m 은 핵심 무기 — 자동 비활성 목록에
+    아예 없어야 governor 층에서부터 실수로도 꺼지지 않는다."""
+    assert "strategies.scalp_1m.enabled" not in ALLOWED_KILL_SWITCH
+
+
+def test_forbidden_never_overlaps_ordinal_or_kill_switch():
+    assert not (FORBIDDEN & set(ALLOWED_ORDINAL))
+    assert not (FORBIDDEN & set(ALLOWED_KILL_SWITCH))

@@ -51,10 +51,16 @@ def build_prompt(review_text: str, params_yaml: str, strategies: list[str]) -> s
         "— 거버너 층 0, 사람 영역이다)\n"
         "- 표본이 부족한 전략(주간 거래 수가 적은)은 제안하지 말라 — 확신 없으면 "
         '빈 목록 {"proposals": []} 이 정답이다\n'
-        "- verify 에는 \"어떤 숫자가 몇 주 안에 어떻게 되면 성공/철회\"를 적어라\n\n"
+        "- verify 에는 \"어떤 숫자가 몇 주 안에 어떻게 되면 성공/철회\"를 적어라\n"
+        "- 가능하면 samples(이 제안의 근거가 된 거래 건수, 정수)와 "
+        "expected_improvement(기대 개선율, 0~1 사이 소수 — 예: 0.2 = 20% 개선)를 "
+        "**정량적으로 추정 가능할 때만** 같이 채워라. 이 둘이 모두 있는 제안만 "
+        "거버너 자동 반영 심사 대상이 된다(2026-09-02) — 확신 없으면 생략해도 "
+        "되고, 그 경우 이 제안은 사람이 검토하는 제안으로만 남는다(정상 동작).\n\n"
         "반드시 JSON 하나만 출력한다: "
         '{"proposals": [{"strategy": "...", "param": "...", "current": ..., '
-        '"proposed": ..., "rationale": "...", "risk": "...", "verify": "..."}]}\n\n'
+        '"proposed": ..., "rationale": "...", "risk": "...", "verify": "...", '
+        '"samples": ..., "expected_improvement": ...}]}\n\n'
         f"[이번 주 실측]\n{review_text}\n\n[현재 파라미터]\n{params_yaml}"
     )
 

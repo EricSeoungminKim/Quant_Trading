@@ -16,8 +16,9 @@ from datetime import date
 import pytest
 
 from quant.control.experiments import (
-    daily_report, death_watch, did_compare, load_changes, params_fingerprint,
-    pending_experiments, permutation_p, record_fingerprints, split_trips, verdict,
+    KILL_P_THRESHOLD, consecutive_dead_candidates, daily_report, death_watch,
+    did_compare, load_changes, params_fingerprint, pending_experiments,
+    permutation_p, record_death_watch, record_fingerprints, split_trips, verdict,
 )
 
 D = date(2026, 8, 24)
@@ -274,3 +275,81 @@ def test_daily_report_includes_death_alert_even_without_experiments(tmp_path):
     assert msg is not None and "사망 경보" in msg
     assert "자동 정지는 하지 않는다" in msg
     assert settled == []
+
+
+
+# ── 7. 사망 판정 지속 → 자동 비활성 후보 (작업2, 2026-09-02) ────────────────
+
+def test_record_death_watch_ignores_undersampled_but_logs_healthy_as_not_dead(tmp_path):
+    path = tmp_path / "death_watch.jsonl"
+    trips = [_trip("good", "2026-08-10", 40.0) for _ in range(40)] + \
+            [_trip("thin", "2026-08-10", -80.0) for _ in range(5)]
+    added = record_death_watch(trips, D, path)
+    assert [r["strategy"] for r in added] == ["good"]
+    assert added[0]["dead"] is False and added[0]["p_value"] is None
+
+
+def test_record_death_watch_flags_significantly_negative_strategy(tmp_path):
+    path = tmp_path / "death_watch.jsonl"
+    trips = [_trip("bad", "2026-08-10", -80.0) for _ in range(40)]
+    added = record_death_watch(trips, D, path)
+    assert len(added) == 1
+    row = added[0]
+    assert row["strategy"] == "bad" and row["n"] == 40
+    assert row["p_value"] < KILL_P_THRESHOLD
+    assert row["dead"] is True
+
+
+def test_record_death_watch_is_idempotent_when_stats_are_unchanged(tmp_path):
+    """새 거래가 없는 날(주말 등) 다시 불러도 중복 기록하지 않는다 —
+    record_fingerprints 와 같은 멱등 관례. 중복 기록은 K일 연속 판정을
+    부풀린다."""
+    path = tmp_path / "death_watch.jsonl"
+    trips = [_trip("bad", "2026-08-10", -80.0) for _ in range(40)]
+    record_death_watch(trips, D, path)
+    added_again = record_death_watch(trips, D, path)  # 같은 trips, 같은 날
+    assert added_again == []
+    assert len(load_changes(path)) == 1
+
+
+def test_consecutive_dead_candidates_requires_k_consecutive_recorded_days(tmp_path):
+    path = tmp_path / "death_watch.jsonl"
+    days = [date(2026, 8, d) for d in range(10, 15)]  # 5 거래일
+    for i, d in enumerate(days):
+        # 매일 살짝 다른 숫자를 줘서 멱등 스킵에 걸리지 않게 한다(n 을 늘린다).
+        trips = [_trip("bad", "2026-08-01", -80.0) for _ in range(40 + i)]
+        record_death_watch(trips, d, path)
+    out = consecutive_dead_candidates(path, k_days=5)
+    assert len(out) == 1
+    assert out[0]["strategy"] == "bad"
+    assert out[0]["streak_days"] == 5
+    assert out[0]["since"] == days[0].isoformat()
+    assert out[0]["until"] == days[-1].isoformat()
+
+
+def test_consecutive_dead_candidates_needs_the_full_streak_not_just_enough_rows(tmp_path):
+    """4일치만 있으면(기본 K=5) 아직 후보가 아니다 — 하루짜리 나쁜 스냅샷으로
+    전략을 죽이지 않는다는 원칙의 핵심."""
+    path = tmp_path / "death_watch.jsonl"
+    days = [date(2026, 8, d) for d in range(10, 14)]  # 4 거래일뿐
+    for i, d in enumerate(days):
+        trips = [_trip("bad", "2026-08-01", -80.0) for _ in range(40 + i)]
+        record_death_watch(trips, d, path)
+    assert consecutive_dead_candidates(path, k_days=5) == []
+
+
+def test_consecutive_dead_candidates_streak_breaks_on_recovery(tmp_path):
+    """중간에 회복(양수 전환)이 끼면 그 이전 사망일은 최신 스트릭에 안 들어간다."""
+    path = tmp_path / "death_watch.jsonl"
+    d1, d2, d3, d4, d5, d6 = [date(2026, 8, d) for d in range(10, 16)]
+    for i, d in enumerate([d1, d2, d3]):
+        record_death_watch(
+            [_trip("bad", "2026-08-01", -80.0) for _ in range(40 + i)], d, path)
+    # d4: 회복(평균 양수) — _negative_edge_stats 에 안 잡혀 새 줄이 안 생긴다.
+    record_death_watch([_trip("bad", "2026-08-01", 80.0) for _ in range(43)], d4, path)
+    for i, d in enumerate([d5, d6]):
+        record_death_watch(
+            [_trip("bad", "2026-08-01", -80.0) for _ in range(44 + i)], d, path)
+    # 최신 연속 구간은 d5,d6 둘뿐 — K=5 를 못 채운다.
+    assert consecutive_dead_candidates(path, k_days=5) == []
+    assert len(consecutive_dead_candidates(path, k_days=2)) == 1

@@ -301,6 +301,65 @@ def experiment_text(cmp: dict, label: str, reason: str) -> str:
     return "\n".join(lines)
 
 
+def _sign_flip_permutation_p(vals: list[float]) -> float:
+    """평균이 0과 구분되는가(부호검정형 순열). death_watch 와
+    record_death_watch(작업2, 2026-09-02)가 공유하는 원시 계산 — 후자는
+    K일 연속 판정을 위해 death_watch 보다 넓은(유의하지 않은 것 포함) 대상에
+    같은 검정을 적용해야 해서 분리했다."""
+    rng = random.Random(_SEED)
+    mean = sum(vals) / len(vals)
+    observed = abs(mean)
+    hits = 0
+    for _ in range(PERMUTATIONS):
+        flipped = [v if rng.random() < 0.5 else -v for v in vals]
+        if abs(sum(flipped) / len(flipped)) >= observed:
+            hits += 1
+    return hits / PERMUTATIONS
+
+
+def _strategy_bps(trips: list[dict]) -> dict[str, list[float]]:
+    by: dict[str, list[float]] = {}
+    for t in trips:
+        sid, bps = t.get("strategy"), t.get("bps")
+        if sid and bps is not None:
+            by.setdefault(sid, []).append(float(bps))
+    return by
+
+
+def _negative_edge_stats(trips: list[dict], min_sample: int) -> dict[str, dict]:
+    """전략별 (n, mean_bp, p_value) — 표본이 충분하고 평균이 음수인 것만.
+    death_watch 가 쓰는 원시 통계(양수 평균은 "사망" 개념 자체가 성립하지
+    않으므로 애초에 계산하지 않는다 — 기존 death_watch 동작과 동일)."""
+    out: dict[str, dict] = {}
+    for sid, vals in sorted(_strategy_bps(trips).items()):
+        if len(vals) < min_sample:
+            continue
+        mean = sum(vals) / len(vals)
+        if mean >= 0:
+            continue
+        out[sid] = {"n": len(vals), "mean_bp": mean, "p_value": _sign_flip_permutation_p(vals)}
+    return out
+
+
+def _all_edge_stats(trips: list[dict], min_sample: int) -> dict[str, dict]:
+    """전략별 (n, mean_bp, p_value|None) — 표본이 충분하면 **부호 무관 전부**.
+    record_death_watch 전용: K거래일 연속 판정은 "매일의 상태"가 필요한데,
+    _negative_edge_stats 처럼 음수 평균만 계산하면 회복(양수 전환)일에 아무
+    줄도 안 남아 그 회복이 있었다는 사실 자체가 사라진다 — 그러면 회복 전후의
+    사망일들이 원장에서 그냥 이어붙어 보여 K일 연속을 부풀린다(2026-09-02
+    테스트 test_consecutive_dead_candidates_streak_breaks_on_recovery 로 고정).
+    양수 평균은 애초에 "사망"이 아니므로 순열검정을 돌리지 않는다(p_value=None)
+    — dead 판정에 필요 없는 계산이다."""
+    out: dict[str, dict] = {}
+    for sid, vals in sorted(_strategy_bps(trips).items()):
+        if len(vals) < min_sample:
+            continue
+        mean = sum(vals) / len(vals)
+        p = _sign_flip_permutation_p(vals) if mean < 0 else None
+        out[sid] = {"n": len(vals), "mean_bp": mean, "p_value": p}
+    return out
+
+
 def death_watch(trips: list[dict], min_sample: int = MIN_SAMPLE) -> list[dict]:
     """전략 사망 판정 — 표본이 충분한데 실현 엣지가 유의하게 음수인 전략.
 
@@ -309,31 +368,101 @@ def death_watch(trips: list[dict], min_sample: int = MIN_SAMPLE) -> list[dict]:
     자동 정지는 사이징 권한과 같은 급이라 사람 결정이다(governor 층 0 원칙).
 
     "유의하게 음수" = 순열검정으로 평균이 0과 구분되는가. 부호만 보면 표본
-    노이즈에 매주 다른 답이 나온다."""
-    by: dict[str, list[float]] = {}
-    for t in trips:
-        sid, bps = t.get("strategy"), t.get("bps")
-        if sid and bps is not None:
-            by.setdefault(sid, []).append(float(bps))
+    노이즈에 매주 다른 답이 나온다. 알림 문턱은 p<=0.05 — 아래
+    record_death_watch/consecutive_dead_candidates(작업2, 2026-09-02)의 자동
+    비활성 문턱(p<0.01, K일 연속)보다 느슨하다: 이 함수는 "사람에게 알릴
+    가치가 있는가", 그쪽은 "사람 개입 없이 꺼도 되는가"라 바가 달라야 맞다."""
+    stats = _negative_edge_stats(trips, min_sample)
+    return [
+        {"strategy": sid, **s} for sid, s in stats.items() if s["p_value"] <= 0.05
+    ]
+
+
+# ── 7. 사망 판정 지속 감시 → 자동 비활성 후보 (작업 2, 2026-09-02) ──────────
+#
+# death_watch()의 알림 문턱(p<=0.05, 하루짜리 스냅샷)은 "사람에게 알릴 가치가
+# 있는가"였다. 자동으로 전략을 끄는 건 사이징 권한과 같은 급의 결정이라
+# 문턱을 훨씬 엄격하게 잡는다: 표본 n>=30 + p<0.01 + **그 상태가 K거래일
+# 연속(기본 5)** — 하루짜리 나쁜 스냅샷으로 전략을 죽이지 않는다.
+#
+# "K거래일 연속"을 판정하려면 매일의 상태가 필요한데, death_watch()는
+# 매번 원장 전체에서 새로 계산하는 무상태 함수라 어제 뭐였는지 모른다.
+# 그래서 하루 한 번(quant.apps.cli의 cmd_experiments, 16:30 크론) 스냅샷을
+# 이 원장에 append한다 — record_fingerprints와 같은 멱등 관례로, 숫자가
+# 어제와 똑같으면(주말 등 새 거래가 없는 날) 쓰지 않는다. 그래야 장이 안
+# 열린 날이 "5일 연속"을 부풀리지도, 끊지도 않는다.
+DEFAULT_DEATH_WATCH_PATH = "data/ledger/death_watch.jsonl"
+KILL_STREAK_DAYS = 5      # "K일 연속" 기본값
+KILL_P_THRESHOLD = 0.01   # 자동 비활성 문턱 — death_watch 알림 문턱(0.05)보다 엄격
+
+
+def record_death_watch(
+    trips: list[dict], today: date, path: Path | str = DEFAULT_DEATH_WATCH_PATH,
+    min_sample: int = MIN_SAMPLE,
+) -> list[dict]:
+    """오늘의 표본충분 전략 전부(부호 무관)의 통계를 원장에 append한다. 직전
+    기록과 (n, mean_bp, p_value)가 완전히 같으면(=새 거래 없음, 주말 등) 쓰지
+    않는다 — record_fingerprints와 동일한 멱등 관례. 회복(양수 전환)일에도
+    dead=false 로 줄이 남으므로(_all_edge_stats 참고) consecutive_dead_candidates
+    가 그 지점에서 스트릭을 정확히 끊을 수 있다."""
+    existing = load_changes(path)
+    last: dict[str, dict] = {}
+    for r in existing:
+        sid = r.get("strategy")
+        if sid:
+            last[sid] = r
+
+    stats = _all_edge_stats(trips, min_sample)
+    added = []
+    for sid, s in stats.items():
+        dead = s["mean_bp"] < 0 and s["p_value"] is not None and s["p_value"] < KILL_P_THRESHOLD
+        prev = last.get(sid)
+        if (prev is not None and prev.get("n") == s["n"]
+                and prev.get("mean_bp") == s["mean_bp"] and prev.get("p_value") == s["p_value"]):
+            continue
+        added.append({
+            "date": today.isoformat(), "strategy": sid,
+            "n": s["n"], "mean_bp": s["mean_bp"], "p_value": s["p_value"], "dead": dead,
+        })
+
+    if added:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            for row in added:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return added
+
+
+def consecutive_dead_candidates(
+    path: Path | str = DEFAULT_DEATH_WATCH_PATH, k_days: int = KILL_STREAK_DAYS,
+) -> list[dict]:
+    """최근 기록이 K개 연속 `dead: true`인 전략들 — 자동 비활성 후보.
+
+    record_death_watch가 값이 안 바뀐 날은 안 쓰므로, 여기서 "최신 K개 기록"은
+    곧 "최신 K번의 실제 변화가 전부 사망 판정"이라는 뜻이다. 회복(양수 전환
+    또는 p>=0.01로 개선)이 한 번이라도 그 사이에 있었다면 그 시점에 새 기록이
+    생기고(양수면 아예 기록이 없거나, 개선이면 dead=false 기록) 스트릭이
+    끊긴다."""
+    rows = load_changes(path)
+    by_strategy: dict[str, list[dict]] = {}
+    for r in rows:
+        sid = r.get("strategy")
+        if sid:
+            by_strategy.setdefault(sid, []).append(r)
 
     out = []
-    for sid, vals in sorted(by.items()):
-        if len(vals) < min_sample:
+    for sid, entries in sorted(by_strategy.items()):
+        entries = sorted(entries, key=lambda r: r.get("date", ""))
+        tail = entries[-k_days:]
+        if len(tail) < k_days or not all(e.get("dead") for e in tail):
             continue
-        mean = sum(vals) / len(vals)
-        if mean >= 0:
-            continue
-        # 0 대비 검정: 부호를 뒤집어 섞는 부호검정형 순열
-        rng = random.Random(_SEED)
-        observed = abs(mean)
-        hits = 0
-        for _ in range(PERMUTATIONS):
-            flipped = [v if rng.random() < 0.5 else -v for v in vals]
-            if abs(sum(flipped) / len(flipped)) >= observed:
-                hits += 1
-        p = hits / PERMUTATIONS
-        if p <= 0.05:
-            out.append({"strategy": sid, "n": len(vals), "mean_bp": mean, "p_value": p})
+        latest = tail[-1]
+        out.append({
+            "strategy": sid, "streak_days": k_days,
+            "n": latest["n"], "mean_bp": latest["mean_bp"], "p_value": latest["p_value"],
+            "since": tail[0]["date"], "until": latest["date"],
+        })
     return out
 
 

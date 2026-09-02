@@ -33,6 +33,17 @@
 스키마 이탈은 `tests/test_governor_wiring.py::test_allowed_paths_all_exist_in_real_settings_yaml`
 가 실제 파일로 매 실행마다 고정한다.
 
+2026-09-02 감사 실측 대응(작업1~2) — `ALLOWED`(숫자 봉투)만으로는 실제 제안
+소스 둘을 못 받는다는 게 드러났다: (a) param_propose.sh 의 LLM 제안 중
+문자열 enum 파라미터(예: trend_gate_mode), (b) `quant.control.experiments`의
+사망 판정 지속 → 전략 on/off. 그래서 같은 층 0 철학(강화하는 방향만 자동)을
+쓰는 두 표를 추가했다 — `ALLOWED_ORDINAL`(순서형 문자열, 봉투 대신 "완화→강화
+순으로 나열한 상태 목록")과 `ALLOWED_KILL_SWITCH`(부울, True→False 전환만).
+`evaluate()`는 이름이 어느 표에 있는지로 분기한다. 이 시점까지 param_propose.sh
+가 실제로 낸 제안은 2026-W35 한 주(scalp_1m 의 trend_gate_mode/volume_surge_mult)
+뿐이었다 — 그 둘만 실측 근거로 등재했고, 그 밖의 이름은 여전히 기본값(제안만,
+반영은 사람)이다.
+
 ## 층 1~6
 
 1. **봉투(envelope)** — 각 파라미터의 하드 min/max. 밖이면 거부.
@@ -90,6 +101,60 @@ ALLOWED: dict[str, tuple[str, float, float, float, int]] = {
     #     pullback_impulse 의 params 에는 손절 관련 키가 아예 없다(min_impulse_bp/
     #     pullback_min_pct/pullback_max_pct/ema_period/atr_buffer_mult/
     #     target_mult/timeout_minutes/target_weight 뿐).
+    #
+    # 2026-09-02 (감사 실측 대응) — param_propose.sh(주간 LLM 제안, 06:40 크론)가
+    # 실제로 낸 제안은 저장소 역사상 딱 한 주(2026-W35)뿐이었고 둘 다 scalp_1m
+    # 이었다(data/ledger/param_proposals.jsonl EC2 실측, cli.py의 name 결선 버그를
+    # 고치기 전엔 이 둘조차 governor 형태로 못 넘어왔다 — 아래 참고). 그 둘 중
+    # 숫자형인 volume_surge_mult 만 여기 등재한다:
+    "strategies.scalp_1m.params.volume_surge_mult": ("raise_only", 3.0, 6.0, 1.0, 7),
+    # ↑ raise_only: 거래량 서지 배수를 올리는 것 = 진입 문턱을 엄격히 하는 것
+    # (같은 논리를 min_stop_bp 에도 쓴다 — 문턱 강화는 표본을 줄이는 대신
+    # 리스크를 줄인다). 하한 3.0 = 현재 기본값(모순 없음). 상한 6.0 = 현재의
+    # 2배 — 실측 분포 없이 잡은 보수적 캡이다(그 이상은 진입 자체가 말라
+    # 전략을 사실상 죽일 수 있어, 그 판단은 사람이 하도록 봉투 밖으로 둔다).
+    # 보폭 1.0 = 실제 관측된 유일한 제안(3.0→4.0)과 같은 크기. 냉각 7일 =
+    # 이 제안 소스의 주기(주간)와 맞춰 같은 주간 사이클 안에서 두 번 흔들리지
+    # 않게 한다.
+}
+
+# 층 0 확장 — 순서형(문자열 enum) 파라미터. 숫자 envelope 로 표현할 수 없어
+# ALLOWED 와 분리한다: 값은 (완화→강화 순으로 나열한 허용 상태들, 냉각일).
+# 방향 규칙은 "한 단계 이상 강화하는 쪽만" — 완화(되돌리기)는 항상 사람 몫이다
+# (숫자형의 raise_only/lower_only 와 같은 철학). 목록 밖의 값(예: LLM 환각)은
+# 그 값이 current 든 proposed 든 즉시 거부된다.
+ALLOWED_ORDINAL: dict[str, tuple[tuple[str, ...], int]] = {
+    # 2026-09-02 — param_propose.sh 2026-W35 제안: trend_gate_mode shadow→active.
+    # "active" 는 scalp_1m.py 가 실제로 아는 상태가 아니다(코드 관례는
+    # off/shadow/block 셋뿐 — scalp_1m.py:358 부근 주석 "동일 관례(off/shadow/
+    # block)"). LLM 환각이었을 가능성이 높고, 이 표에 없는 상태는 아래처럼
+    # 자동 거부된다 — 그 자체가 방어다(고쳐서 통과시키지 않는다).
+    # shadow(계산만, 진입 안 막음)→block(진입 차단)이 강화 방향: off/shadow 는
+    # 필터가 사실상 꺼진 상태고 block 만 실제로 진입을 줄인다.
+    "strategies.scalp_1m.params.trend_gate_mode": (("off", "shadow", "block"), 7),
+}
+
+# 층 0 확장 — 사망 판정 전략 자동 비활성(2026-09-02, 작업 2). 부울이라 봉투/
+# 보폭 개념이 없다: True(enabled)→False(disabled) 전환만 자동 대상, 되살리는
+# 것은 항상 사람이 settings.yaml 을 고친다. 값은 냉각일.
+#
+# 대상 = config/settings.yaml 상 현재 enabled: true 인 전략 중 보호 목록
+# (config/settings.yaml governor.protected_strategies, 2026-08-30 소유자 지시로
+# scalp_1m 은 항상 제외) 밖 전부. 이미 enabled: false 인 전략은 끌 것이 없어
+# 등재하지 않는다(등재해도 무해하지만 실측 근거 없는 항목을 늘리지 않는다).
+ALLOWED_KILL_SWITCH: dict[str, int] = {
+    "strategies.news_momentum.enabled": 5,
+    "strategies.frgn_accumulate.enabled": 5,
+    "strategies.close_bet.enabled": 5,
+    "strategies.overnight_drift.enabled": 5,
+    "strategies.pullback_impulse.enabled": 5,
+    "strategies.mr_vwap_quiet.enabled": 5,
+    "strategies.vol_breakout.enabled": 5,
+    "strategies.intraday_momentum.enabled": 5,
+    "strategies.gap_fade.enabled": 5,
+    "strategies.rsi2_dip.enabled": 5,
+    "strategies.llm_trader.enabled": 5,
+    # strategies.scalp_1m.enabled — 의도적으로 뺐다(보호 목록, 위 설명).
 }
 
 # 자동 반영이 절대 닿으면 안 되는 이름. ALLOWED 화이트리스트만으로도 막히지만,
@@ -161,6 +226,94 @@ def last_change(name: str, decisions: list[dict]) -> date | None:
     return best
 
 
+def _evaluate_ordinal(p: Proposal, today: date, decisions: list[dict],
+                       changes_this_run: int) -> Decision:
+    """ALLOWED_ORDINAL 전용 층 0~5 (숫자형과 같은 순서, 봉투/보폭만 순서형으로
+    바뀐다). 층 6(자동 롤백)은 숫자·문자 구분 없이 공용 rollback_candidates 가
+    담당하므로 여기 없다."""
+    order, cooldown_days = ALLOWED_ORDINAL[p.name]
+
+    if p.current not in order or p.proposed not in order:
+        unknown = p.proposed if p.proposed not in order else p.current
+        return Decision(
+            p, False, f"알 수 없는 상태 {unknown!r} (허용: {order})", layer="1-envelope")
+
+    cur_idx, prop_idx = order.index(p.current), order.index(p.proposed)
+    if prop_idx < cur_idx:
+        return Decision(
+            p, False,
+            f"완화 방향 제안 거부(강화하는 것만 자동 반영 대상): {p.current} → {p.proposed}",
+            layer="0-direction",
+        )
+
+    if p.samples < MIN_SAMPLES:
+        return Decision(p, False, f"표본 부족 {p.samples}/{MIN_SAMPLES}", layer="4-evidence")
+    if p.expected_improvement < MIN_IMPROVEMENT:
+        return Decision(
+            p, False,
+            f"기대 개선 {p.expected_improvement:.1%} < {MIN_IMPROVEMENT:.0%}",
+            layer="4-evidence",
+        )
+
+    if changes_this_run >= MAX_CHANGES_PER_RUN:
+        return Decision(p, False, f"이번 회차 변경 상한 {MAX_CHANGES_PER_RUN}건 도달", layer="5-one-at-a-time")
+
+    prev = last_change(p.name, decisions)
+    if prev is not None and (today - prev).days < cooldown_days:
+        return Decision(
+            p, False,
+            f"냉각 중 — 마지막 변경 {prev} ({cooldown_days}일 필요)",
+            layer="3-cooldown",
+        )
+
+    if prop_idx - cur_idx > 1:
+        clamped = order[cur_idx + 1]
+        return Decision(
+            p, True,
+            f"보폭 제한으로 {p.proposed} → {clamped} 로 축소 반영",
+            applied_value=clamped, layer="2-step-limit",
+        )
+
+    return Decision(p, True, "모든 층 통과", applied_value=p.proposed, layer="")
+
+
+def _evaluate_kill_switch(p: Proposal, today: date, decisions: list[dict],
+                          changes_this_run: int) -> Decision:
+    """ALLOWED_KILL_SWITCH 전용. 부울이라 봉투/보폭이 없다 — True→False 전환
+    하나만 있고 그 전환 자체가 이미 "가장 강한 강화"라 클램프할 중간값이 없다."""
+    cooldown_days = ALLOWED_KILL_SWITCH[p.name]
+
+    if p.current is not True or p.proposed is not False:
+        return Decision(
+            p, False,
+            f"킬스위치는 활성(True) → 비활성(False) 전환만 자동 반영 대상: "
+            f"{p.current!r} → {p.proposed!r}",
+            layer="0-direction",
+        )
+
+    if p.samples < MIN_SAMPLES:
+        return Decision(p, False, f"표본 부족 {p.samples}/{MIN_SAMPLES}", layer="4-evidence")
+    if p.expected_improvement < MIN_IMPROVEMENT:
+        return Decision(
+            p, False,
+            f"기대 개선 {p.expected_improvement:.1%} < {MIN_IMPROVEMENT:.0%}",
+            layer="4-evidence",
+        )
+
+    if changes_this_run >= MAX_CHANGES_PER_RUN:
+        return Decision(p, False, f"이번 회차 변경 상한 {MAX_CHANGES_PER_RUN}건 도달", layer="5-one-at-a-time")
+
+    prev = last_change(p.name, decisions)
+    if prev is not None and (today - prev).days < cooldown_days:
+        return Decision(
+            p, False,
+            f"냉각 중 — 마지막 변경 {prev} ({cooldown_days}일 필요)",
+            layer="3-cooldown",
+        )
+
+    return Decision(p, True, "모든 층 통과 — 사망 판정 전략 자동 비활성", applied_value=False, layer="")
+
+
 def evaluate(proposal: Proposal, today: date, decisions: list[dict],
              changes_this_run: int = 0) -> Decision:
     """제안 하나를 모든 층에 통과시킨다. 하나라도 걸리면 거부."""
@@ -169,6 +322,10 @@ def evaluate(proposal: Proposal, today: date, decisions: list[dict],
     # 층 0 — 폭발 반경
     if p.name in FORBIDDEN:
         return Decision(p, False, f"리스크 파라미터는 자동 반영 금지: {p.name}", layer="0-blast-radius")
+    if p.name in ALLOWED_ORDINAL:
+        return _evaluate_ordinal(p, today, decisions, changes_this_run)
+    if p.name in ALLOWED_KILL_SWITCH:
+        return _evaluate_kill_switch(p, today, decisions, changes_this_run)
     if p.name not in ALLOWED:
         return Decision(p, False, f"자동 반영 허용 목록에 없음: {p.name}", layer="0-blast-radius")
 

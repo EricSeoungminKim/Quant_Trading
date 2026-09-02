@@ -59,6 +59,14 @@
 # daily_brief.sh는 삭제하지 않고 남겨둔다 — 회사 리포트로 되돌릴 때 쓴다.
 12 8 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/own_brief.sh KR >> data/brief.log 2>&1
 
+# 평일 08:15 KST — 승격 토론(Bull/Bear/Judge) KR (2026-09-02 신규, 회사형 AI
+# 에이전트 레이어 레인 1). own_brief.sh(08:12) 직후 — 그날 확신도 게이트를
+# 통과해 자동 편입된 종목만 data/watchlist.yaml(source=auto, added_at=오늘)에서
+# 읽어 재검토한다. 관심종목은 바꾸지 않는다 — data/ledger/debate.jsonl 에
+# 유지/보류 판정만 남기고 텔레그램으로 알린다(quant/analyze/promotion_debate.py
+# 모듈 docstring). LLM: OpenRouter 무료 레인. 편입 없음/LLM 결근이면 무출력.
+15 8 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/promotion_debate.sh KR >> data/promotion_debate.log 2>&1
+
 # 장중 거래대금 발굴(2026-08-28 소유자 지시) — 아침 리포트가 못 잡은 종목이라도
 # 장중 거래대금이 쏠리면 발굴해 워치리스트에 편입한다. own_brief.sh와 같은 자동
 # 편입 체인(flow-scan 발굴 → watch-score 확신도 게이트 → watch-add)을 재사용 —
@@ -117,6 +125,11 @@
 # 편입분은 22:10 유니버스 롤(_universe_roll_bucket)에서 흡수돼 개장부터 거래된다.
 # us_watch_discover.sh는 남겨둔다 — 리포트 없이 랭킹만으로 돌릴 때의 폴백.
 50 21 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/own_brief.sh US >> data/us_discover.log 2>&1
+
+# 평일 21:53 KST — 승격 토론(Bull/Bear/Judge) US (2026-09-02, KR 08:15 항목과
+# 동일한 레인). own_brief.sh US(21:50) 직후. 서머타임 무관 — US 개장
+# 22:30(EDT)/23:30(EST) 전이면 항상 편입 데드라인(22:05) 안쪽이다.
+53 21 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/promotion_debate.sh US >> data/promotion_debate.log 2>&1
 
 # 장중 거래대금 발굴 US(2026-08-28, KR 항목과 같은 지시) — US 정규장은
 # 22:30(EDT)/23:30(EST) 개장 ~ 05:00/06:00 마감이라 22:xx~04:xx 구간을 30분
@@ -189,6 +202,12 @@
 # 원장·자본 점이 확정돼 요약에 들어간다. 읽기 전용 — 시세도 LLM 도 부르지 않는다.
 55 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/daily_wrap.sh US >> data/daily_wrap.log 2>&1
 
+# 06:58 US — PnL 귀속 요약(2026-09-02 신규, 회사형 AI 에이전트 레이어 레인 3).
+# daily_wrap.sh(06:55) 직후 — 그 세션 원장이 확정된 뒤 [엣지 − 수수료 − 세금]
+# 결정론 분해 + 전략별 상/하위 1개를 4줄로 낸다. **LLM 없음** — 숫자 요약에
+# 환각 리스크를 질 이유가 없다(quant.control.pnl_attribution 모듈 docstring).
+58 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/pnl_attribution.sh US >> data/pnl_attribution.log 2>&1
+
 # --- 장타(가치·팩터) 전략 전제 데이터 (2026-08-19: 수집기는 있었지만 아무도
 # 부르지 않았던 배선 누락 — naver_quant.py/dart_financials.py의 fetch_and_persist가
 # 호출부 0건이었다) ---
@@ -238,6 +257,9 @@
 # 16:20 → daily-feedback 16:45 → capital-review 16:50) **맨 끝**에 둔다 —
 # 앞 단계가 남긴 원장·판정·조치까지 요약에 들어가야 "오늘 하루"가 완성된다.
 55 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/daily_wrap.sh KR >> data/daily_wrap.log 2>&1
+
+# 16:58 KR — PnL 귀속 요약(US 06:58 항목과 같은 레인, 2026-09-02 신규).
+58 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/pnl_attribution.sh KR >> data/pnl_attribution.log 2>&1
 
 # 매일 05:40 KST — 1분봉 적재 (scalp_1m, 2026-08-18). Toss 1m API는 **과거
 # 4거래일 롤링만** 제공한다(docs/data-availability.md 실측) — 매일 당겨 쌓지
@@ -417,6 +439,20 @@
 # delivery_check.sh, 판정은 quant.control.delivery_check(순수 함수).
 35 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/delivery_check.sh >> data/delivery_check.log 2>&1
 
+# --- 독립 리스크 리뷰 (2026-09-02 신규, 회사형 AI 에이전트 레이어 레인 2) ---
+#
+# 06:37 KST 화~토 — 소유자 지시 원 시각은 06:35("US 마감 후")이지만
+# delivery_check.sh 가 그 분을 이미 쓰고 있어(바로 위 항목) 2분 비켜 심었다
+# (08-31 몰림 분산 항목과 같은 관례). session-pnl(06:10)·equity(06:15)·
+# daily-feedback(06:25)·delivery-check(06:35) 뒤 — 그날 원장·거래가 확정된
+# 뒤에 리뷰한다. ops_judge.sh(운영 정합성 교차검증)와 분리된 별도 프롬프트다
+# — 이쪽은 드로다운·집중도·상쇄쌍 노출·연속 손실만 전담한다(quant.control.
+# risk_review 모듈 docstring: "리스크는 트레이딩과 보고 라인 분리"). 임계
+# 초과 여부는 결정론 코드가 정하고 LLM 은 상위 3문제+권고 서술만 맡는다 —
+# LLM 이 결근해도 판정 자체는 흔들리지 않는다. 임계 초과면 notify_auto,
+# 아니면 notify_defer(마감 HTML 로만).
+37 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/risk_review.sh >> data/risk_review.log 2>&1
+
 # --- 판단하는 워치독 (2026-08-19, 사용자 지시) ---
 #
 # ops_watch.sh(매시 05분, 규칙 기반 — "파일이 있나/신선한가")와 역할이 다르다:
@@ -452,3 +488,11 @@
 # 배포 키(~/.ssh/id_portfolio)가 GitHub 에 등록돼 있을 때만 동작, 아니면 조용히 스킵.
 25 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_portfolio.sh >> data/portfolio_publish.log 2>&1
 25 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_portfolio.sh >> data/portfolio_publish.log 2>&1
+
+# LLM 섀도우 판단(Phase 7.4, 2026-09-02 배선) — 만들어진 지 2주가 넘도록 크론에
+# 등록된 적이 없던 "조립됐지만 배선 안 됨" 사례를 감사에서 발견해 연결한다.
+# 선정 원장 attributes만 보고 LLM이 순위 판단 → 실현 수익 IC로 채점 → 결정론
+# 스코어러를 이겨야만 승격 후보(주문 경로 없음 — 아키텍처 테스트가 보장).
+# 시각: 선정 적재가 끝난 뒤(KR 16:10 적재 후 16:33, US 07:10 적재 후 07:33).
+33 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.cli shadow-judge --date $(TZ=Asia/Seoul date +\%F) --market KR >> data/shadow.log 2>&1
+33 7 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.cli shadow-judge --date $(TZ=Asia/Seoul date -d yesterday +\%F) --market US >> data/shadow.log 2>&1

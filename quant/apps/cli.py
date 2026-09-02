@@ -1720,11 +1720,14 @@ def cmd_experiments(args: argparse.Namespace) -> None:
     from datetime import date as _date
 
     from quant.adapters.env import REPO_ROOT
-    from quant.control.experiments import daily_report, load_changes, record_fingerprints
+    from quant.control.experiments import (
+        daily_report, load_changes, record_death_watch, record_fingerprints,
+    )
     from quant.control.ledger import load_trades, round_trips
 
     settings = load_settings()
     changes_path = REPO_ROOT / "data" / "ledger" / "param_changes.jsonl"
+    death_watch_path = REPO_ROOT / "data" / "ledger" / "death_watch.jsonl"
     today = _date.today()
 
     added = record_fingerprints(
@@ -1737,6 +1740,12 @@ def cmd_experiments(args: argparse.Namespace) -> None:
 
     trips = round_trips(load_trades(ledger_state_path()))
     msg, settled = daily_report(trips, load_changes(changes_path), today)
+
+    # 사망 판정 지속 감시 스냅샷(작업2, 2026-09-02) — 판정/반영과 분리된
+    # 순수 기록 단계다. governor-apply(주간, --live 게이트)가 이 원장을 읽어
+    # "K거래일 연속 사망"인 전략의 자동 비활성을 심사한다 — 이 커맨드는 여전히
+    # 읽고 기록만 한다(위 docstring "판정만, 반영은 사람/governor" 원칙 그대로).
+    record_death_watch(trips, today, death_watch_path)
 
     # 하트비트 — **이 잡이 멈춘 것과 "판정할 게 없는 것"은 겉보기가 같다**
     # (둘 다 텔레그램 무소식). 매 실행 기록해 규칙 기반 감시(cli health 의
@@ -3039,6 +3048,138 @@ def cmd_ai_trader(args: argparse.Namespace) -> None:
         print(note)
 
 
+def cmd_promotion_debate(args: argparse.Namespace) -> None:
+    """승격 토론(Bull/Bear) — 오늘 own_brief.sh 가 확신도 게이트를 통과시켜
+    자동 편입한 종목을 Bull(찬성)/Bear(반대)/Judge(심판) 3역할 토론으로
+    재검토한다(2026-09-02, 회사형 AI 에이전트 레이어 레인 1). **관심종목을
+    바꾸지 않는다** — data/ledger/debate.jsonl 에 유지/보류 판정만 남긴다.
+
+    stdout = 텔레그램 카드 텍스트(ai_trader.sh 관례 — 셸이 그대로 notify_auto
+    로 넘긴다). 오늘 자동 편입이 없거나 LLM 결근이면 무출력(침묵)."""
+    import json as _json
+    from datetime import date as _date
+    from pathlib import Path
+
+    import yaml as _yaml
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.adapters.narrate import make_json_narrator
+    from quant.analyze import promotion_debate as pd
+    from quant.analyze.watch_scorer import resolve_regime_label, run_watch_score
+    from quant.apps.assembly import MissingCredentials, _load_symbol_names, build_toss_client
+
+    settings = load_settings()
+    root = Path(args.root) if args.root else REPO_ROOT
+    market = args.market
+    today = args.date or _date.today().isoformat()
+
+    watchlist_path = root / "data" / "watchlist.yaml"
+    if not watchlist_path.exists():
+        logger.info("promotion-debate: watchlist.yaml 없음 — 오늘 편입분 없음")
+        return
+    try:
+        raw = _yaml.safe_load(watchlist_path.read_text(encoding="utf-8")) or {}
+    except Exception as e:  # noqa: BLE001 — 워치리스트 파싱 실패가 이 레인을 죽여도 매매엔 영향 없다
+        logger.warning("promotion-debate: watchlist.yaml 파싱 실패: %s", e)
+        return
+
+    def _is_kr(sym: str) -> bool:
+        return sym.isdigit() and len(sym) == 6
+
+    tokens: list[str] = []
+    for e in (raw.get("symbols") or []):
+        if not isinstance(e, dict) or e.get("source") != "auto":
+            continue
+        if not str(e.get("added_at") or "").startswith(today):
+            continue
+        sym = str(e.get("symbol") or "")
+        if not sym or _is_kr(sym) != (market == "KR"):
+            continue
+        tags = e.get("tags") or []
+        tokens.append(sym + (":" + "+".join(tags) if tags else ""))
+
+    if not tokens:
+        logger.info("promotion-debate: %s %s 오늘 자동 편입 없음 — 토론 없음", today, market)
+        return
+
+    # 재실행 가드 — 같은 (날짜, 시장) 토론은 하루 한 번(LLM 호출 중복 방지).
+    dpath = root / pd.DEBATE_LEDGER
+    if dpath.exists():
+        for line in dpath.read_text(encoding="utf-8").splitlines():
+            try:
+                r = _json.loads(line)
+            except ValueError:
+                continue
+            if (r.get("date") == today and r.get("market") == market
+                    and r.get("producer") == pd.PRODUCER):
+                logger.info("promotion-debate: %s %s 이미 기록됨 — 건너뜀", today, market)
+                return
+
+    # 오늘 통과 종목의 점수 내역 — watch-score 를 재실행해 재구성한다(own_brief.sh
+    # 가 오늘 아침 이미 계산했지만 결과를 persist 하지 않는다 — cmd_watch_score
+    # 와 동일한 조립을 여기서도 한다).
+    auto_score_cfg = settings.universe.get("watchlist", {}).get("auto_score", {})
+    threshold = auto_score_cfg.get("threshold", 50)
+    regime_state = None
+    regime_path = regime_state_path()
+    if regime_path.exists():
+        try:
+            regime_state = _json.loads(regime_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — regime 읽기 실패는 neutral 폴백으로 이미 처리됨
+            pass
+    regime_label, _stale = resolve_regime_label(regime_state)
+
+    try:
+        client = build_toss_client()
+    except MissingCredentials as e:
+        logger.warning("promotion-debate: Toss 클라이언트 구성 실패 — 결근: %s", e)
+        return
+
+    results = run_watch_score(
+        tokens, client, threshold, regime_label, enabled=True,
+        allow_kr_stocks=auto_score_cfg.get("allow_kr_stocks", False),
+    )
+    items = [
+        {"symbol": r.symbol, "score": r.score, "eff_threshold": r.eff_threshold,
+         "profile": r.profile, "breakdown": r.breakdown, "reasons": r.reasons}
+        for r in results
+    ]
+    if not items:
+        logger.info("promotion-debate: %s %s 채점 결과 없음 — 결근", today, market)
+        return
+
+    def _report_summary() -> str:
+        try:
+            d = _date.fromisoformat(today)
+            payload = _json.loads(
+                (root / "out" / f"{d:%Y/%m/%d}" / f"{market}_engine.json").read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 — 리포트 요약은 있으면 좋은 참고자료일 뿐
+            return ""
+        exec_summary = payload.get("exec_summary")
+        if not isinstance(exec_summary, dict):
+            return ""
+        parts = [exec_summary.get(k) for k in ("market", "flow", "catalyst")]
+        return " ".join(p for p in parts if p)
+
+    narrator = make_json_narrator(max_tokens=6000)
+    result = pd.run_debate(items, _report_summary(), narrator.narrate)
+    if result is None:
+        logger.warning("promotion-debate: 토론 실패(LLM) — 오늘 결근")
+        return
+
+    records = pd.to_records(result["final"], items, market, today)
+    pd.append_ledger(records, dpath)
+
+    try:
+        names = _load_symbol_names(root / "data" / "state" / "symbol_names.json")
+    except Exception:  # noqa: BLE001 — 이름 캐시 없어도 심볼만으로 카드는 완전하다
+        names = {}
+
+    text = pd.notify_text(records, market, names)
+    if text:
+        print(text)
+
+
 def cmd_ml_scorer(args: argparse.Namespace) -> None:
     """학습형 선정자 `ml_scorer` (2026-08-28) — 과거 `selection`⋈`forward_return`
     (D+1)으로 릿지 회귀를 학습해 오늘 선정 원장 후보를 채점한다. `ai_trader`와
@@ -3140,6 +3281,123 @@ def cmd_ml_scorer(args: argparse.Namespace) -> None:
 
     names = {str(r.get("symbol")): r.get("name") for r in rows if r.get("name")}
     print(ml_scorer.daily_note(scores, market, names))
+
+
+def cmd_risk_review(args: argparse.Namespace) -> None:
+    """독립 리스크 리뷰 — 드로다운·집중도·상쇄쌍 노출·연속 손실만 전담
+    (2026-09-02, 회사형 AI 에이전트 레이어 레인 2). `ops-judge`와 분리된 별도
+    프롬프트다(리스크는 트레이딩·보고 라인과 분리 — quant.control.risk_review
+    모듈 docstring). 임계 초과 판정은 결정론이고, LLM 은 상위 3문제+권고
+    서술만 맡는다 — LLM 이 결근해도 판정 자체는 흔들리지 않는다.
+
+    stdout 첫 줄 `BREACH: yes|no`(셸이 notify_auto/notify_defer 를 가른다),
+    이후 카드 본문."""
+    import json as _json
+    from datetime import date as _date
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.adapters.narrate import make_json_narrator
+    from quant.control import exposure as _exposure
+    from quant.control import risk_review as rr
+    from quant.control.ledger import load_trades, round_trips, scoreboard_text
+
+    root = Path(args.root) if args.root else REPO_ROOT
+    today = args.date or _date.today().isoformat()
+
+    dpath = root / rr.RISK_LEDGER
+    if dpath.exists():
+        for line in dpath.read_text(encoding="utf-8").splitlines():
+            try:
+                r = _json.loads(line)
+            except ValueError:
+                continue
+            if r.get("producer") == rr.PRODUCER and r.get("date") == today:
+                logger.info("risk-review: %s 이미 기록됨 — 건너뜀", today)
+                print(rr.format_card(r))
+                return
+
+    trades = load_trades(root / "data" / "state" / "trades.jsonl")
+    trips = round_trips(trades)
+    board_text = scoreboard_text(trips)
+
+    try:
+        portfolio = _json.loads(
+            (root / "data" / "state" / "portfolio.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        portfolio = {}
+    positions = portfolio.get("positions") or {}
+
+    # portfolio.json → exposure.build_report 가 원하는 (lots, prices). 네트워크
+    # 조회 없이 평단가로 저하한다 — daily_wrap.build_exposure_summary 와 동일한
+    # "읽기만 한다" 원칙(quant.control.daily_wrap._lots_from_positions 참고).
+    lots: dict[str, dict[str, float]] = {}
+    prices: dict[str, float] = {}
+    for symbol, p in positions.items():
+        qty = float(p.get("qty", 0) or 0)
+        if qty <= 0:
+            continue
+        meta = p.get("meta") or {}
+        active = {
+            sid: float(lot.get("qty", 0.0))
+            for sid, lot in (meta.get("lots") or {}).items()
+            if float(lot.get("qty", 0.0)) > 0
+        }
+        if not active:
+            active = {str(meta.get("strategy") or "?"): qty}
+        lots[symbol] = active
+        prices[symbol] = float(p.get("avg_cost", 0) or 0)
+
+    exposure_report = _exposure.build_report(lots=lots, prices=prices).to_dict() if lots else None
+
+    consecutive = rr.strategy_consecutive_losses(trips)
+    flags = rr.deterministic_flags(exposure_report, consecutive)
+    dossier = rr.build_dossier(board_text, exposure_report, flags)
+
+    narrator = make_json_narrator(max_tokens=1200)
+    issues = rr.run_review(dossier, narrator.narrate)
+
+    record = rr.to_record(today, flags, issues)
+    rr.append_ledger(record, dpath)
+    print(rr.format_card(record))
+
+
+def cmd_pnl_attribution(args: argparse.Namespace) -> None:
+    """PnL 귀속 요약 — [엣지(수수료 전 실현) − 수수료 − 세금] 결정론 분해 +
+    전략별 상/하위 1개(2026-09-02, 회사형 AI 에이전트 레이어 레인 3). **LLM
+    없음** — 숫자 요약에 환각 리스크를 질 이유가 없다(quant.control.
+    pnl_attribution 모듈 docstring). 기존 session_pnl_summary/round_trips 를
+    재사용할 뿐 새 통계를 만들지 않는다.
+
+    stdout = 정확히 4줄 카드. 이 세션에 체결이 없으면 무출력(침묵) — 셸이
+    notify_auto 로 넘긴다."""
+    from datetime import date as _date
+    from pathlib import Path
+    from zoneinfo import ZoneInfo
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.control import pnl_attribution as pa
+    from quant.control.ledger import load_trades, session_pnl_summary, trades_in_session
+
+    settings = load_settings()
+    root = Path(args.root) if args.root else REPO_ROOT
+    market = args.market
+    tz = ZoneInfo("Asia/Seoul") if market == "KR" else ZoneInfo("America/New_York")
+    on = _date.fromisoformat(args.date) if args.date else datetime.now(tz).date()
+
+    trades = load_trades(root / "data" / "state" / "trades.jsonl")
+    session = session_pnl_summary(trades, market, on)
+    if not session["has_trades"]:
+        logger.info("pnl-attribution: %s %s 체결 없음 — 침묵", market, on)
+        return
+    session_trades = trades_in_session(trades, market, on)
+
+    execution_cfg = settings.raw.get("execution") or {}
+    tax_bps = float(execution_cfg.get("kr_stock_sell_tax_bps", 0.0))
+
+    decomp = pa.decompose(session, session_trades, tax_bps)
+    top, bottom = pa.top_bottom_strategies(session["by_strategy"])
+    print(pa.format_summary(market, on.isoformat(), decomp, top, bottom))
 
 
 def cmd_flow_scan(args: argparse.Namespace) -> None:
@@ -3444,6 +3702,17 @@ def cmd_param_propose(args: argparse.Namespace) -> None:
     # samples/expected_improvement 가 실제로 있을 때만** 골라 담는다 — 못 뽑으면
     # 추측해서 채우지 않고 그 제안은 governor-apply 에 안 보인다(정량 근거 없는
     # 제안을 자동 반영 심사에 넣지 않는다는 뜻이라 옳은 동작이다).
+    #
+    # name = "strategies.<strategy>.params.<param>" — governor.ALLOWED*의 이름은
+    # config/settings.yaml 의 점(.) 표기 전체 경로인데, LLM이 돌려주는 param은
+    # 그 리프 이름뿐이다(예: "volume_surge_mult"). 2026-09-02까지 여기서 그냥
+    # p["param"]을 name으로 썼는데, 그건 ALLOWED의 어떤 키와도 절대 일치하지
+    # 않는다 — governor 형태로 남아도 _load_recent_governor_proposals가 읽어
+    # decide()에 넣는 순간 항상 "0-blast-radius: 허용 목록에 없음"으로 거부됐다
+    # (실측: EC2 data/ledger/param_proposals.jsonl 2026-W35 제안 2건은 애초에
+    # samples/expected_improvement가 없어 governor_rows 자체가 비었지만, 있었더라도
+    # 이 경로 결합 버그 때문에 반영될 수 없었다 — governor 자동 반영이 저장소
+    # 역사상 한 번도 일어나지 않은 실제 원인 중 하나).
     import re as _re
     governor_rows: list[dict] = []
     raw_by_key: dict[tuple, dict] = {}
@@ -3463,7 +3732,8 @@ def cmd_param_propose(args: argparse.Namespace) -> None:
         if not isinstance(samples, (int, float)) or not isinstance(improvement, (int, float)):
             continue
         governor_rows.append({
-            "date": today.isoformat(), "strategy": p["strategy"], "name": p["param"],
+            "date": today.isoformat(), "strategy": p["strategy"],
+            "name": f"strategies.{p['strategy']}.params.{p['param']}",
             "current": p["current"], "proposed": p["proposed"], "samples": samples,
             "expected_improvement": improvement, "rationale": p["rationale"], "llm": used,
         })
@@ -3641,8 +3911,11 @@ def _governor_revert(key: str, overlay_path: Path, decisions_path: Path, today,
     "되돌리기는 그 파일에서 키를 지우는 것뿐" 원칙)."""
     from quant.control import governor
 
-    if key not in governor.ALLOWED:
-        logger.error("governor-apply --revert: %s 는 governor.ALLOWED 에 없음 — 되돌릴 수 없음", key)
+    if (key not in governor.ALLOWED and key not in governor.ALLOWED_ORDINAL
+            and key not in governor.ALLOWED_KILL_SWITCH):
+        logger.error(
+            "governor-apply --revert: %s 는 governor.ALLOWED/ALLOWED_ORDINAL/"
+            "ALLOWED_KILL_SWITCH 어디에도 없음 — 되돌릴 수 없음", key)
         return
 
     if not overlay_path.exists():
@@ -3713,6 +3986,7 @@ def cmd_governor_apply(args: argparse.Namespace) -> None:
 
     from quant.adapters.env import REPO_ROOT
     from quant.control import governor
+    from quant.control.experiments import DEFAULT_DEATH_WATCH_PATH, consecutive_dead_candidates
 
     root = Path(args.root) if args.root else REPO_ROOT
     today = _date.fromisoformat(args.date) if args.date else _date.today()
@@ -3724,13 +3998,40 @@ def cmd_governor_apply(args: argparse.Namespace) -> None:
         return
 
     proposals_path = root / "data" / "ledger" / "param_proposals.jsonl"
+    death_watch_path = root / DEFAULT_DEATH_WATCH_PATH
 
     proposals = _load_recent_governor_proposals(proposals_path, today, args.window_days)
-    if not proposals:
+
+    # 사망 판정 지속 → 자동 비활성 후보(작업2, 2026-09-02). cmd_experiments가
+    # 매일 쌓아 온 death_watch.jsonl(K거래일 연속 p<0.01)을 읽어, 여기서 이미
+    # 도는 governor.decide() 파이프라인에 그대로 태운다 — 새 반영 경로를
+    # 만들지 않는다(governor.ALLOWED_KILL_SWITCH가 방향·냉각·표본 심사를 한다).
+    # 보호 목록(config/settings.yaml governor.protected_strategies — 2026-08-30
+    # 소유자 지시 scalp_1m)은 제안 자체를 만들지 않고 별도 알림 문구로만 남긴다.
+    settings = load_settings()
+    protected = set((settings.raw.get("governor") or {}).get("protected_strategies") or [])
+    protected_notes: list[str] = []
+    for c in consecutive_dead_candidates(death_watch_path):
+        sid = c["strategy"]
+        if sid in protected:
+            protected_notes.append(
+                f"⚠️ [{sid}] 사망 경보 {c['streak_days']}거래일 연속 지속 "
+                f"(평균 {c['mean_bp']:+.1f}bp/건, p={c['p_value']:.3f}, n={c['n']}) "
+                "— 보호 목록이라 자동 비활성 대상에서 제외. 개선 실험 필요."
+            )
+            continue
+        proposals.append(governor.Proposal(
+            name=f"strategies.{sid}.enabled", current=True, proposed=False,
+            samples=c["n"], expected_improvement=1.0,
+            rationale=(f"{c['streak_days']}거래일 연속 사망 판정: 평균 {c['mean_bp']:+.1f}bp/건 "
+                       f"(p={c['p_value']:.3f}, n={c['n']}, {c['since']}~{c['until']})"),
+        ))
+
+    if not proposals and not protected_notes:
         logger.info("governor-apply: 최근 %d일 governor 형태 제안 없음 — 침묵", args.window_days)
         return
 
-    decisions = governor.decide(proposals, today, ledger_path=decisions_path)
+    decisions = governor.decide(proposals, today, ledger_path=decisions_path) if proposals else []
     # 아래 _apply_live_gate 가 accepted 를 내리기 전에, "governor 가 실제로
     # 뭐라고 판단했는가"를 사람이 보는 요약용으로 먼저 굳혀 둔다 — --live 여부와
     # 무관하게 항상 진짜 판정을 보여준다.
@@ -3760,7 +4061,8 @@ def cmd_governor_apply(args: argparse.Namespace) -> None:
     rollback_decisions: list[governor.Decision] = []
     for c in candidates:
         name = c["name"]
-        if name not in governor.ALLOWED:
+        if (name not in governor.ALLOWED and name not in governor.ALLOWED_ORDINAL
+                and name not in governor.ALLOWED_KILL_SWITCH):
             logger.warning("governor-apply: 롤백 대상 %s 가 ALLOWED 밖 — 되돌릴 곳이 없다", name)
             continue
         prev_value = c.get("current")
@@ -3794,9 +4096,19 @@ def cmd_governor_apply(args: argparse.Namespace) -> None:
                 _write_overlay(overlay_path, rollback_updates)
             governor.record(rollback_decisions, today, decisions_path)
 
-    if not would_apply and not rollback_decisions:
-        logger.info("governor-apply: 수락 0건 — 침묵")
-        return
+    if protected_notes:
+        report_lines.append("\n".join(protected_notes))
+
+    if not would_apply and not rollback_decisions and not protected_notes:
+        if not decisions:
+            logger.info("governor-apply: 판단할 제안 없음 — 침묵")
+            return
+        # 제안은 있었지만 전부 거부됐다 — "ALLOWED 밖/방향 위반/증거 부족이라
+        # 제안만, 반영은 사람"이라는 사실 자체가 정보다(작업1.3, 소유자 지시:
+        # 양방향 튜닝이라 자동 반영 대상이 아닌 제안은 그 사실을 로그·텔레그램에
+        # 남겨라). report_lines[0]에 이미 governor.summary(decisions)의 거부
+        # 사유별 목록이 있으므로 여기서는 조용히 반환하지 않고 그대로 출력한다.
+        logger.info("governor-apply: 수락 0건 — 제안만 남음(반영은 사람)")
 
     if not args.live:
         report_lines.append("⚠️ --live 없이 실행 — 위 ✅ 는 반영 대기(제안) 상태다. "
@@ -4794,6 +5106,37 @@ def main() -> None:
     p_ml.add_argument("--ridge-lambda", type=float, default=10.0,
                       help="릿지 정규화 강도 (기본 10.0 — 소표본 과최적합 억제)")
     p_ml.set_defaults(func=cmd_ml_scorer)
+
+    p_pd = sub.add_parser(
+        "promotion-debate",
+        help="승격 토론(Bull/Bear/Judge) — 오늘 own_brief 자동 편입분을 재검토, "
+             "유지/보류 판정만 기록(관심종목은 바꾸지 않는다). "
+             "stdout = 텔레그램 카드(편입 없음/LLM 결근이면 무출력).",
+    )
+    p_pd.add_argument("--market", required=True, choices=["KR", "US"])
+    p_pd.add_argument("--root", default=None, help="기본: 저장소 루트")
+    p_pd.add_argument("--date", default=None, help="오늘로 볼 날짜 (YYYY-MM-DD)")
+    p_pd.set_defaults(func=cmd_promotion_debate)
+
+    p_rr = sub.add_parser(
+        "risk-review",
+        help="독립 리스크 리뷰 — 드로다운·집중도·상쇄쌍 노출·연속 손실만 전담, "
+             "ops-judge 와 분리된 별도 프롬프트. 판정은 결정론, LLM 은 상위 3문제+"
+             "권고만. stdout 첫 줄 `BREACH: yes|no` + 카드.",
+    )
+    p_rr.add_argument("--root", default=None, help="기본: 저장소 루트")
+    p_rr.add_argument("--date", default=None, help="오늘로 볼 날짜 (YYYY-MM-DD)")
+    p_rr.set_defaults(func=cmd_risk_review)
+
+    p_pa = sub.add_parser(
+        "pnl-attribution",
+        help="PnL 귀속 요약 — [엣지 − 수수료 − 세금] 결정론 분해 + 전략별 상/하위 1개. "
+             "LLM 없음. stdout = 4줄 카드(체결 없으면 무출력).",
+    )
+    p_pa.add_argument("--market", required=True, choices=["KR", "US"])
+    p_pa.add_argument("--root", default=None, help="기본: 저장소 루트")
+    p_pa.add_argument("--date", default=None, help="오늘로 볼 날짜 (YYYY-MM-DD)")
+    p_pa.set_defaults(func=cmd_pnl_attribution)
 
     p_fs = sub.add_parser(
         "flow-scan",
