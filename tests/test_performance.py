@@ -2,18 +2,25 @@
 
 이 스위트가 고정하는 것 (프롬프트 계약):
 - 손익은 수수료 차감 후.
-- 통화 혼합 없음(KR/US 각자 통화로 집계, KRW 환산은 고정환율 한 곳에서만).
+- 지분곡선은 아시아(KRW)/미국(USD)로 완전히 분리되고, FX 환산 없이 각자 통화
+  그대로 집계된다(오너 지시 2026-09-02) — `phases[].seed_krw`(총자산 KRW 요약)만
+  FX를 쓴다.
 - 실계좌 이식 정리 매도는 성과에서 제외되고 `excluded`에만 집계된다.
 - 날짜 귀속은 KST 08:00 경계(US 밤 체결도 시작일 거래일로).
-- 표본 30건 미만은 `sample_warning: true`.
+- 표본 30건 미만은 `sample_warning: true` — `strategies[].total`과
+  `by_market.{asia,us}` 각각 독립으로.
 - 종목 코드·수량·계좌 잔고 절대값 문자열이 출력에 없다.
+- 사용자 노출 문구는 전부 `_en` 짝을 가지고, 한글이 섞이지 않는다.
 """
 from __future__ import annotations
 
 import json
+import re
 
 from quant.control.performance import (
     FX_KRW_PER_USD,
+    PAPER_SEED_KRW,
+    PAPER_SEED_USD,
     SEEDING_LIQUIDATION_MARKER,
     build_performance_payload,
 )
@@ -22,6 +29,8 @@ EXECUTION_CFG = {
     "fee_bps": {"US": 10, "KR": 1.5},
     "kr_stock_sell_tax_bps": 20,
 }
+
+_HANGUL_RE = re.compile(r"[가-힣]")
 
 
 def _trade(
@@ -37,7 +46,8 @@ def _trade(
 
 def test_pnl_is_after_fees_not_gross():
     """라운드트립 1건: gross realized_pnl=1000, 수수료(매수+매도)=120 →
-    strategies[].expectancy_bp는 순손익(880) 기준이어야지 gross(1000) 기준이면 안 된다."""
+    strategies[].total.expectancy_bp는 순손익(880) 기준이어야지 gross(1000)
+    기준이면 안 된다."""
     trades = [
         _trade(ts="2026-08-10T00:00:00+00:00", strategy_id="orb_scan", symbol="069500",
                side="buy", qty=10, price=10000.0, fee=50.0, realized_pnl=0.0),
@@ -49,15 +59,16 @@ def test_pnl_is_after_fees_not_gross():
     notional = 10 * 10000.0
     net_pnl = 1000.0 - (50.0 + 70.0)
     expected_bps = net_pnl / notional * 1e4
-    assert strat["trips"] == 1 and strat["wins"] == 1
-    assert strat["expectancy_bp"] == round(expected_bps, 2)
+    assert strat["total"]["trips"] == 1 and strat["total"]["wins"] == 1
+    assert strat["total"]["expectancy_bp"] == round(expected_bps, 2)
     # gross 기준(수수료 무시)이었다면 1000/100000*1e4 = 100bp — 순손익 기준과 달라야 한다
-    assert strat["expectancy_bp"] != round(1000.0 / notional * 1e4, 2)
+    assert strat["total"]["expectancy_bp"] != round(1000.0 / notional * 1e4, 2)
 
 
 def test_currencies_are_not_mixed_in_equity():
-    """같은 날 KR(원화)과 US(달러) 손익이 섞이지 않고, USD→KRW 환산은
-    고정환율 FX_KRW_PER_USD 한 곳(equity의 day_pnl 합산)에서만 일어난다."""
+    """아시아(KRW)/미국(USD) 지분곡선이 완전히 분리돼 있고, FX 환산이 곡선
+    계산 자체엔 전혀 쓰이지 않는다 — 각자 자기 통화 시드(paper 시대는
+    PAPER_SEED_KRW/PAPER_SEED_USD)로만 정규화한다."""
     trades = [
         _trade(ts="2026-08-10T00:00:00+00:00", strategy_id="a", symbol="069500",
                side="buy", qty=1, price=10000.0, fee=0.0, realized_pnl=0.0, market="KR"),
@@ -69,13 +80,18 @@ def test_currencies_are_not_mixed_in_equity():
                side="sell", qty=1, price=72.0, fee=0.0, realized_pnl=2.0, market="US"),
     ]
     payload = build_performance_payload(trades, EXECUTION_CFG)
-    (row,) = payload["equity"]
-    expected_krw = 500.0 + 2.0 * FX_KRW_PER_USD
-    seed = payload["phases"][0]["seed_krw"]
-    assert row["day_pct"] == round(expected_krw / seed * 100, 4)
-    # 전략 통계는 통화 무관 bps 축이라 US/KR 라운드트립이 동일 전략에 함께 잡힌다
+    assert payload["equity_asia"]["currency"] == "KRW"
+    assert payload["equity_us"]["currency"] == "USD"
+    (asia_row,) = payload["equity_asia"]["rows"]
+    (us_row,) = payload["equity_us"]["rows"]
+    assert asia_row["day_pct"] == round(500.0 / PAPER_SEED_KRW * 100, 4)
+    assert us_row["day_pct"] == round(2.0 / PAPER_SEED_USD * 100, 4)
+    # 전략 통계는 통화 무관 bps 축이라 total 엔 US/KR 라운드트립이 함께 잡히고,
+    # by_market 엔 시장별로 각각 따로 잡힌다.
     (strat,) = payload["strategies"]
-    assert strat["trips"] == 2 and set(strat["markets"]) == {"KR", "US"}
+    assert strat["total"]["trips"] == 2 and set(strat["total"]["markets"]) == {"KR", "US"}
+    assert strat["by_market"]["asia"]["trips"] == 1
+    assert strat["by_market"]["us"]["trips"] == 1
 
 
 def test_seeding_liquidation_excluded_from_performance():
@@ -115,7 +131,8 @@ def test_us_overnight_fill_attributed_to_start_trading_day():
                side="buy", qty=1, price=70.0, fee=0.0, realized_pnl=0.0, market="US"),
     ]
     payload = build_performance_payload(trades, EXECUTION_CFG)
-    (row,) = payload["equity"]
+    assert payload["equity_asia"]["rows"] == []
+    (row,) = payload["equity_us"]["rows"]
     assert row["date"] == "2026-08-15"
     assert payload["period"]["start"] == "2026-08-15"
     assert payload["period"]["end"] == "2026-08-15"
@@ -130,8 +147,8 @@ def test_sample_warning_below_min_trips():
     ]
     payload = build_performance_payload(trades, EXECUTION_CFG)
     (strat,) = payload["strategies"]
-    assert strat["trips"] == 1
-    assert strat["sample_warning"] is True
+    assert strat["total"]["trips"] == 1
+    assert strat["total"]["sample_warning"] is True
 
 
 def test_sample_warning_false_at_30_trips():
@@ -149,8 +166,8 @@ def test_sample_warning_false_at_30_trips():
                               realized_pnl=100.0))
     payload = build_performance_payload(trades, EXECUTION_CFG)
     (strat,) = payload["strategies"]
-    assert strat["trips"] == 30
-    assert strat["sample_warning"] is False
+    assert strat["total"]["trips"] == 30
+    assert strat["total"]["sample_warning"] is False
 
 
 def test_no_forbidden_fields_in_output():
@@ -169,15 +186,25 @@ def test_no_forbidden_fields_in_output():
         assert forbidden not in blob, f"금지 필드 유출: {forbidden!r}"
     # 구조적으로도 종목/수량 키가 전략 통계에 없어야 한다
     for strat in payload["strategies"]:
-        assert set(strat.keys()) == {
-            "id", "name_ko", "trips", "wins", "win_rate", "ci_low", "ci_high",
+        assert set(strat.keys()) == {"id", "name_ko", "total", "by_market"}
+        assert set(strat["total"].keys()) == {
+            "trips", "wins", "win_rate", "ci_low", "ci_high",
             "expectancy_bp", "verdict", "sample_warning", "markets",
         }
+        for block in strat["by_market"].values():
+            if block is not None:
+                assert set(block.keys()) == {
+                    "trips", "wins", "win_rate", "ci_low", "ci_high",
+                    "expectancy_bp", "verdict", "sample_warning",
+                }
 
 
 def test_real_seed_krw_derived_from_cash_after_and_usd_proceeds():
-    """real_seeded 시대 seed_krw = 마지막 이식 정리 행의 cash_after(KRW) +
-    US 이식 정리 매도 체결대금 합(qty*price - fee) * FX_KRW_PER_USD."""
+    """real_seeded 시대 phases[].seed_krw(총자산 KRW 요약) = 마지막 이식 정리
+    행의 cash_after(KRW) + US 이식 정리 매도 체결대금 합(qty*price - fee) *
+    FX_KRW_PER_USD. (이 값은 phases 스텝퍼 카드 서술용 — 지분곡선 자체의 시드는
+    별도로 통화별 분리, 아래 `test_seed_krw_includes_carryover_position_valuation`
+    계열 참고.)"""
     reason = f"{SEEDING_LIQUIDATION_MARKER} — 소유자 지시 2026-09-01"
     trades = [
         _trade(ts="2026-09-01T13:00:00+00:00", strategy_id="legacy", symbol="009150",
@@ -196,7 +223,8 @@ def test_real_seed_krw_derived_from_cash_after_and_usd_proceeds():
 def test_empty_ledger_returns_no_phases_or_equity():
     payload = build_performance_payload([], EXECUTION_CFG)
     assert payload["phases"] == []
-    assert payload["equity"] == []
+    assert payload["equity_asia"]["rows"] == []
+    assert payload["equity_us"]["rows"] == []
     assert payload["strategies"] == []
     assert payload["period"] == {"start": None, "end": None, "sessions": 0, "total_fills": 0}
     assert payload["prior_paper"] == {}
@@ -204,7 +232,7 @@ def test_empty_ledger_returns_no_phases_or_equity():
 
 # ---------------------------------------------------------------------------
 # 2026-09-02 소유자 지시: 경계는 거래일이 아니라 시각, 공개 곡선은 real_seeded만,
-# 시드는 이월 보유 포함 총자산.
+# 시드는 이월 보유 포함 총자산 + 지분곡선은 아시아/미국 통화별 분리.
 # ---------------------------------------------------------------------------
 
 REASON = f"{SEEDING_LIQUIDATION_MARKER} — 소유자 지시 2026-09-01"
@@ -223,19 +251,24 @@ SNAPSHOT = {
 
 
 def _mixed_day_trades():
-    """같은 거래일(2026-09-01)에 경계 이전(paper) KR 라운드트립과 경계 이후
-    (real_seeded) US 체결 2건(다른 거래일 2건)이 섞인 원장."""
+    """같은 거래일(2026-09-01)에 경계 이전(paper) KR 라운드트립과, 경계
+    (KR+US 이식 정리 매도 각각 — 두 통화 풀 모두에 시드를 남긴다), 경계
+    이후(real_seeded) US 체결 2건(다른 거래일 2건)이 섞인 원장."""
     return [
         # 경계 이전 — paper 시대, prior_paper로만 집계돼야 한다
         _trade(ts="2026-09-01T00:30:00+00:00", strategy_id="scalp_1m", symbol="069500",
                side="buy", qty=1, price=10000.0, fee=5.0, realized_pnl=0.0, market="KR"),
         _trade(ts="2026-09-01T00:45:00+00:00", strategy_id="scalp_1m", symbol="069500",
                side="sell", qty=1, price=10500.0, fee=5.0, realized_pnl=500.0, market="KR"),
-        # 경계(이식 정리 매도) — 성과에서 제외
+        # 경계(이식 정리 매도, KR) — 성과에서 제외, KRW 풀 최종 cash_after
         _trade(ts=BOUNDARY_TS, strategy_id="legacy", symbol="009150",
                side="sell", qty=1, price=1401000.0, fee=2802.0, realized_pnl=-34000.0,
                market="KR", reason=REASON, cash_after=1000000.0),
-        # 경계 이후, 같은 거래일(2026-09-01) — real_seeded 곡선에 이 체결만 잡혀야 한다
+        # 경계(이식 정리 매도, US) — 성과에서 제외, USD 풀 시드(FX 미적용, 5000.0)
+        _trade(ts=BOUNDARY_TS, strategy_id="legacy", symbol="SOXL",
+               side="sell", qty=100, price=50.0, fee=0.0, realized_pnl=-500.0,
+               market="US", reason=REASON),
+        # 경계 이후, 같은 거래일(2026-09-01) — US 지분곡선에 이 체결만 잡혀야 한다
         _trade(ts="2026-09-01T15:00:00+00:00", strategy_id="gap_fade", symbol="TQQQ",
                side="sell", qty=1, price=71.0, fee=1.0, realized_pnl=100.0, market="US"),
         # 경계 이후, 다음 거래일(2026-09-02)
@@ -245,31 +278,36 @@ def _mixed_day_trades():
 
 
 def test_same_trading_day_boundary_split_by_timestamp_not_date():
-    """경계 시각이 하루 중간이면, 그 거래일의 equity 행에는 경계 이후 체결만
-    잡혀야 한다 — 이전엔 trading_day() 단위로만 나눠 이식 전/후가 한 점에 섞였다."""
+    """경계 시각이 하루 중간이면, 그 거래일의 US 지분곡선 행에는 경계 이후
+    체결만 잡혀야 한다 — 이전엔 trading_day() 단위로만 나눠 이식 전/후가 한
+    점에 섞였다. 이 fixture의 KR 라운드트립은 전부 경계 이전(같은 거래일)이라
+    equity_asia에는 아예 안 잡힌다(통화별로 분리된 곡선이라 애초에 섞일 길이
+    없다는 것도 함께 확인한다)."""
     payload = build_performance_payload(_mixed_day_trades(), EXECUTION_CFG,
                                          real_account_snapshot=SNAPSHOT)
-    row = next(r for r in payload["equity"] if r["date"] == "2026-09-01")
-    assert row["fills"] == 1, "경계 이전 KR 라운드트립 2건이 섞이면 안 된다"
+    assert payload["equity_asia"]["rows"] == [], "경계 이전 KR 라운드트립이 곡선에 새면 안 된다"
+    row = next(r for r in payload["equity_us"]["rows"] if r["date"] == "2026-09-01")
+    assert row["fills"] == 1
     assert row["phase"] == "real_seeded"
-    assert row["day_pct"] == 5.2817
-    assert row["cum_pct"] == 5.2817, "real_seeded 첫 점은 0에서 출발해야 한다"
+    assert row["day_pct"] == 1.98  # 99(=100-1 수수료) / 5000(USD 시드) * 100
+    assert row["cum_pct"] == 1.98, "real_seeded 첫 점은 0에서 출발해야 한다"
 
 
 def test_real_seeded_equity_curve_starts_at_zero_and_accumulates():
     payload = build_performance_payload(_mixed_day_trades(), EXECUTION_CFG,
                                          real_account_snapshot=SNAPSHOT)
-    rows = payload["equity"]
+    rows = payload["equity_us"]["rows"]
     assert [r["date"] for r in rows] == ["2026-09-01", "2026-09-02"]
-    assert rows[0]["cum_pct"] == rows[0]["day_pct"] == 5.2817
-    assert rows[1]["day_pct"] == 2.6408
-    assert rows[1]["cum_pct"] == 7.9225
+    assert rows[0]["cum_pct"] == rows[0]["day_pct"] == 1.98
+    assert rows[1]["day_pct"] == 0.99  # 49.5(=50-0.5) / 5000 * 100
+    assert rows[1]["cum_pct"] == 2.97
 
 
 def test_prior_paper_excluded_from_equity_but_summarized():
     payload = build_performance_payload(_mixed_day_trades(), EXECUTION_CFG,
                                          real_account_snapshot=SNAPSHOT)
-    dates = {r["date"] for r in payload["equity"]}
+    dates = {r["date"] for r in payload["equity_us"]["rows"]}
+    dates |= {r["date"] for r in payload["equity_asia"]["rows"]}
     assert "2026-08-31" not in dates  # 경계 이전 날짜 자체가 없다는 것도 재확인
     assert payload["prior_paper"] == {
         "sessions": 1,
@@ -277,6 +315,10 @@ def test_prior_paper_excluded_from_equity_but_summarized():
         "net_krw": 490,
         "note": (
             "가상 자본 1천만원 시대 — 실계좌 이식 전 기록이라 현재 곡선에 포함하지 않는다"
+        ),
+        "note_en": (
+            "From the virtual-capital (10,000,000 KRW) era — predates the "
+            "real-account transition, so it is excluded from the current curve"
         ),
     }
 
@@ -293,13 +335,15 @@ def test_phases_boundary_is_timestamp_not_date():
 
 
 def test_seed_krw_includes_carryover_position_valuation():
-    """시드 총자산 = 정리 매도의 cash_after(현금) + 이월 보유(005930) 6주 ×
-    스냅샷 평단(263,416.67) — 현금만 쓰면 이월 보유분(약 158만원)만큼 분모가
-    작아 수익률이 부풀려진다."""
+    """phases[].seed_krw(총자산 KRW 요약) = KR 정리 매도의 cash_after(현금,
+    1,000,000) + US 정리 매도 체결대금(5,000 USD) * FX_KRW_PER_USD(1376.7) +
+    이월 보유(005930) 6주 × 스냅샷 평단(263,416.67) — 현금만 쓰면 이월 보유분
+    (약 158만원)만큼 분모가 작아 수익률이 부풀려진다."""
     payload = build_performance_payload(_mixed_day_trades(), EXECUTION_CFG,
                                          real_account_snapshot=SNAPSHOT)
     real = next(p for p in payload["phases"] if p["id"] == "real_seeded")
-    assert real["seed_krw"] == 2580500  # 1,000,000 + round(6*263,416.666667)
+    # 1,000,000 + 5,000*1376.7 + round(6*263,416.666667) = 9,464,000
+    assert real["seed_krw"] == 9464000
     assert real["seed_basis"] == "현금+이월보유"
 
 
@@ -308,7 +352,7 @@ def test_seed_krw_falls_back_to_cash_only_without_snapshot_file():
     한다 — 이월 보유 평가액 없이 현금만으로 폴백하고 그 사실을 note에 남긴다."""
     payload = build_performance_payload(_mixed_day_trades(), EXECUTION_CFG)
     real = next(p for p in payload["phases"] if p["id"] == "real_seeded")
-    assert real["seed_krw"] == 1_000_000
+    assert real["seed_krw"] == 7883500  # 1,000,000 + 5,000*1376.7
     assert real["seed_basis"] == "현금만"
     assert "스냅샷 파일 없어" in real["note"]
 
@@ -328,8 +372,8 @@ def test_period_fills_counts_only_the_published_curve():
 
     2026-09-02 실측: 이식 후 2거래일(53체결)인데 total_fills 가 전체 602(모의
     549 포함)로 나가 사이트 히어로에 "2 Trading days / 602 Fills" 라는 모순된
-    숫자가 찍혔다. 이식 전 체결 수는 prior_paper.fills 로 따로 보인다.
-    """
+    숫자가 찍혔다. 이식 전 체결 수는 prior_paper.fills 로 따로 보인다. 아시아/
+    미국 두 곡선으로 나뉜 뒤에도 total_fills 는 두 곡선 fills 의 합이어야 한다."""
     from quant.control.performance import build_performance_payload
 
     trades = [
@@ -348,6 +392,108 @@ def test_period_fills_counts_only_the_published_curve():
          "side": "buy", "qty": 1, "price": 1000.0, "fee": 1.0, "market": "KR"},
     ]
     out = build_performance_payload(trades, {})
-    assert out["period"]["total_fills"] == sum(r["fills"] for r in out["equity"])
+    curve_fills = sum(r["fills"] for r in out["equity_asia"]["rows"])
+    curve_fills += sum(r["fills"] for r in out["equity_us"]["rows"])
+    assert out["period"]["total_fills"] == curve_fills
     assert out["period"]["total_fills"] == 1          # 이식 후 체결만
     assert out["prior_paper"]["fills"] == 2           # 모의 시대는 따로 보존
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-02 소유자 지시: 영문 짝(_en) + 렌더 준비 완료 JSON.
+# ---------------------------------------------------------------------------
+
+
+def test_every_user_facing_note_has_an_english_pair():
+    """disclaimer/phases.note/phases.seed_basis/prior_paper.note/
+    excluded.note/costs.note/equity_*.seed_basis 전부 `_en` 짝이 있어야
+    한다 — 없으면 프론트가 한/영 대응표를 못 찾아 한글이 그대로 샌다."""
+    payload = build_performance_payload(_mixed_day_trades(), EXECUTION_CFG,
+                                         real_account_snapshot=SNAPSHOT)
+    assert payload["disclaimer_en"]
+    for phase in payload["phases"]:
+        assert phase.get("note_en"), phase
+        assert phase.get("label_en"), phase
+        if "seed_basis" in phase:
+            assert phase.get("seed_basis_en"), phase
+    assert payload["prior_paper"].get("note_en")
+    assert payload["excluded"]["seeding_liquidation"].get("note_en")
+    assert payload["costs"].get("note_en")
+    for book in (payload["equity_asia"], payload["equity_us"]):
+        assert book.get("seed_basis_en")
+
+
+def test_english_fields_contain_no_hangul():
+    """`_en` 문구 자체에 한글이 섞이면(반쪽 번역) 영어 화면에 한/영 혼재가
+    남는다 — 실제로 관측된 결함(단계 카드/각주에 한글 문장이 그대로 붙어
+    나온 것)의 재발 방지."""
+    payload = build_performance_payload(_mixed_day_trades(), EXECUTION_CFG,
+                                         real_account_snapshot=SNAPSHOT)
+
+    def _en_values(obj, path=""):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k.endswith("_en"):
+                    yield f"{path}.{k}", v
+                else:
+                    yield from _en_values(v, f"{path}.{k}")
+        elif isinstance(obj, list):
+            for i, v in enumerate(obj):
+                yield from _en_values(v, f"{path}[{i}]")
+
+    for path, value in _en_values(payload):
+        if isinstance(value, str):
+            assert not _HANGUL_RE.search(value), f"{path} 에 한글 잔존: {value!r}"
+
+
+def test_strategy_stats_split_by_market_with_own_sample_threshold():
+    """by_market.asia/us 는 각자 시장의 라운드트립만으로 독립적으로
+    win_rate/CI/sample_warning을 계산해야 한다 — total(통화 무관 합산)과
+    섞이면 안 된다."""
+    trades = [
+        _trade(ts="2026-08-10T00:00:00+00:00", strategy_id="confluence", symbol="069500",
+               side="buy", qty=1, price=10000.0, fee=0.0, realized_pnl=0.0, market="KR"),
+        _trade(ts="2026-08-10T01:00:00+00:00", strategy_id="confluence", symbol="069500",
+               side="sell", qty=1, price=10100.0, fee=0.0, realized_pnl=100.0, market="KR"),
+        _trade(ts="2026-08-10T02:00:00+00:00", strategy_id="confluence", symbol="TQQQ",
+               side="buy", qty=1, price=70.0, fee=0.0, realized_pnl=0.0, market="US"),
+        _trade(ts="2026-08-10T03:00:00+00:00", strategy_id="confluence", symbol="TQQQ",
+               side="sell", qty=1, price=69.0, fee=0.0, realized_pnl=-1.0, market="US"),
+    ]
+    payload = build_performance_payload(trades, EXECUTION_CFG)
+    (strat,) = payload["strategies"]
+    assert strat["total"]["trips"] == 2
+    assert strat["by_market"]["asia"]["trips"] == 1
+    assert strat["by_market"]["asia"]["win_rate"] == 1.0
+    assert strat["by_market"]["us"]["trips"] == 1
+    assert strat["by_market"]["us"]["win_rate"] == 0.0
+    # 표본이 없는 시장은 지어내지 않고 None
+    assert strat["by_market"]["asia"] is not None and strat["by_market"]["us"] is not None
+
+
+def test_by_market_is_none_when_no_trips_in_that_market():
+    trades = [
+        _trade(ts="2026-08-10T00:00:00+00:00", strategy_id="scalp_1m", symbol="069500",
+               side="buy", qty=1, price=10000.0, fee=0.0, realized_pnl=0.0, market="KR"),
+        _trade(ts="2026-08-10T01:00:00+00:00", strategy_id="scalp_1m", symbol="069500",
+               side="sell", qty=1, price=10100.0, fee=0.0, realized_pnl=100.0, market="KR"),
+    ]
+    payload = build_performance_payload(trades, EXECUTION_CFG)
+    (strat,) = payload["strategies"]
+    assert strat["by_market"]["us"] is None
+    assert strat["by_market"]["asia"] is not None
+
+
+def test_equity_chart_axis_is_render_ready():
+    """`equity_us.chart.y_axis`는 프론트가 하던 min/max/18% 패딩/5눈금 계산을
+    그대로 옮긴 값이어야 한다 — 0이 항상 눈금에 포함되고 min<=0<=max."""
+    payload = build_performance_payload(_mixed_day_trades(), EXECUTION_CFG,
+                                         real_account_snapshot=SNAPSHOT)
+    axis = payload["equity_us"]["chart"]["y_axis"]
+    assert axis["min"] <= 0.0 <= axis["max"]
+    assert len(axis["ticks"]) == 5
+    assert axis["ticks"][2] == 0.0
+    assert axis["zero"] == 0.0
+    # equity_asia 는 이 fixture에서 빈 곡선이라 폴백 범위(-1..1)를 써야 한다
+    empty_axis = payload["equity_asia"]["chart"]["y_axis"]
+    assert empty_axis == {"min": -1.0, "max": 1.0, "ticks": [1.0, 0.5, 0.0, -0.5, -1.0], "zero": 0.0}
