@@ -194,3 +194,125 @@ def test_empty_ledger_returns_no_phases_or_equity():
     assert payload["equity"] == []
     assert payload["strategies"] == []
     assert payload["period"] == {"start": None, "end": None, "sessions": 0, "total_fills": 0}
+    assert payload["prior_paper"] == {}
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-02 소유자 지시: 경계는 거래일이 아니라 시각, 공개 곡선은 real_seeded만,
+# 시드는 이월 보유 포함 총자산.
+# ---------------------------------------------------------------------------
+
+REASON = f"{SEEDING_LIQUIDATION_MARKER} — 소유자 지시 2026-09-01"
+
+# 실제 이식(2026-09-01T14:01:08 UTC = 23:01:08 KST)과 같은 모양의 경계.
+BOUNDARY_TS = "2026-09-01T14:01:08+00:00"
+
+SNAPSHOT = {
+    "holdings": [
+        {"symbol": "005930", "currency": "KRW", "qty": 6.0, "avg_cost": 263416.666667,
+         "price": 255000.0},
+        {"symbol": "009150", "currency": "KRW", "qty": 1.0, "avg_cost": 1435000.0,
+         "price": 1401000.0},
+    ],
+}
+
+
+def _mixed_day_trades():
+    """같은 거래일(2026-09-01)에 경계 이전(paper) KR 라운드트립과 경계 이후
+    (real_seeded) US 체결 2건(다른 거래일 2건)이 섞인 원장."""
+    return [
+        # 경계 이전 — paper 시대, prior_paper로만 집계돼야 한다
+        _trade(ts="2026-09-01T00:30:00+00:00", strategy_id="scalp_1m", symbol="069500",
+               side="buy", qty=1, price=10000.0, fee=5.0, realized_pnl=0.0, market="KR"),
+        _trade(ts="2026-09-01T00:45:00+00:00", strategy_id="scalp_1m", symbol="069500",
+               side="sell", qty=1, price=10500.0, fee=5.0, realized_pnl=500.0, market="KR"),
+        # 경계(이식 정리 매도) — 성과에서 제외
+        _trade(ts=BOUNDARY_TS, strategy_id="legacy", symbol="009150",
+               side="sell", qty=1, price=1401000.0, fee=2802.0, realized_pnl=-34000.0,
+               market="KR", reason=REASON, cash_after=1000000.0),
+        # 경계 이후, 같은 거래일(2026-09-01) — real_seeded 곡선에 이 체결만 잡혀야 한다
+        _trade(ts="2026-09-01T15:00:00+00:00", strategy_id="gap_fade", symbol="TQQQ",
+               side="sell", qty=1, price=71.0, fee=1.0, realized_pnl=100.0, market="US"),
+        # 경계 이후, 다음 거래일(2026-09-02)
+        _trade(ts="2026-09-02T01:00:00+00:00", strategy_id="gap_fade", symbol="TQQQ",
+               side="sell", qty=1, price=70.5, fee=0.5, realized_pnl=50.0, market="US"),
+    ]
+
+
+def test_same_trading_day_boundary_split_by_timestamp_not_date():
+    """경계 시각이 하루 중간이면, 그 거래일의 equity 행에는 경계 이후 체결만
+    잡혀야 한다 — 이전엔 trading_day() 단위로만 나눠 이식 전/후가 한 점에 섞였다."""
+    payload = build_performance_payload(_mixed_day_trades(), EXECUTION_CFG,
+                                         real_account_snapshot=SNAPSHOT)
+    row = next(r for r in payload["equity"] if r["date"] == "2026-09-01")
+    assert row["fills"] == 1, "경계 이전 KR 라운드트립 2건이 섞이면 안 된다"
+    assert row["phase"] == "real_seeded"
+    assert row["day_pct"] == 5.2817
+    assert row["cum_pct"] == 5.2817, "real_seeded 첫 점은 0에서 출발해야 한다"
+
+
+def test_real_seeded_equity_curve_starts_at_zero_and_accumulates():
+    payload = build_performance_payload(_mixed_day_trades(), EXECUTION_CFG,
+                                         real_account_snapshot=SNAPSHOT)
+    rows = payload["equity"]
+    assert [r["date"] for r in rows] == ["2026-09-01", "2026-09-02"]
+    assert rows[0]["cum_pct"] == rows[0]["day_pct"] == 5.2817
+    assert rows[1]["day_pct"] == 2.6408
+    assert rows[1]["cum_pct"] == 7.9225
+
+
+def test_prior_paper_excluded_from_equity_but_summarized():
+    payload = build_performance_payload(_mixed_day_trades(), EXECUTION_CFG,
+                                         real_account_snapshot=SNAPSHOT)
+    dates = {r["date"] for r in payload["equity"]}
+    assert "2026-08-31" not in dates  # 경계 이전 날짜 자체가 없다는 것도 재확인
+    assert payload["prior_paper"] == {
+        "sessions": 1,
+        "fills": 2,
+        "net_krw": 490,
+        "note": (
+            "가상 자본 1천만원 시대 — 실계좌 이식 전 기록이라 현재 곡선에 포함하지 않는다"
+        ),
+    }
+
+
+def test_phases_boundary_is_timestamp_not_date():
+    payload = build_performance_payload(_mixed_day_trades(), EXECUTION_CFG,
+                                         real_account_snapshot=SNAPSHOT)
+    paper = next(p for p in payload["phases"] if p["id"] == "paper")
+    real = next(p for p in payload["phases"] if p["id"] == "real_seeded")
+    assert paper["from"] == "2026-09-01T09:30:00+09:00"
+    assert paper["to"] == "2026-09-01T23:01:08+09:00"
+    assert real["from"] == "2026-09-01T23:01:08+09:00"
+    assert real["to"] is None
+
+
+def test_seed_krw_includes_carryover_position_valuation():
+    """시드 총자산 = 정리 매도의 cash_after(현금) + 이월 보유(005930) 6주 ×
+    스냅샷 평단(263,416.67) — 현금만 쓰면 이월 보유분(약 158만원)만큼 분모가
+    작아 수익률이 부풀려진다."""
+    payload = build_performance_payload(_mixed_day_trades(), EXECUTION_CFG,
+                                         real_account_snapshot=SNAPSHOT)
+    real = next(p for p in payload["phases"] if p["id"] == "real_seeded")
+    assert real["seed_krw"] == 2580500  # 1,000,000 + round(6*263,416.666667)
+    assert real["seed_basis"] == "현금+이월보유"
+
+
+def test_seed_krw_falls_back_to_cash_only_without_snapshot_file():
+    """스냅샷이 없는 환경(로컬 테스트, 스냅샷 파일 미존재)에서도 정상 동작해야
+    한다 — 이월 보유 평가액 없이 현금만으로 폴백하고 그 사실을 note에 남긴다."""
+    payload = build_performance_payload(_mixed_day_trades(), EXECUTION_CFG)
+    real = next(p for p in payload["phases"] if p["id"] == "real_seeded")
+    assert real["seed_krw"] == 1_000_000
+    assert real["seed_basis"] == "현금만"
+    assert "스냅샷 파일 없어" in real["note"]
+
+
+def test_no_forbidden_fields_with_carryover_snapshot():
+    """이월 보유 스냅샷을 넣어도 종목코드·평단·수량이 출력에 새지 않아야 한다 —
+    시드 총액 하나로만 녹여야 한다."""
+    payload = build_performance_payload(_mixed_day_trades(), EXECUTION_CFG,
+                                         real_account_snapshot=SNAPSHOT)
+    blob = json.dumps(payload, ensure_ascii=False)
+    for forbidden in ("005930", "009150", "263416", "1435000", "1401000"):
+        assert forbidden not in blob, f"금지 필드 유출: {forbidden!r}"

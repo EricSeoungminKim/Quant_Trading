@@ -1,8 +1,10 @@
 """공개 포트폴리오 사이트용 성과 JSON — `quant.apps.cli publish-performance`의 순수 로직.
 
-**입력은 `data/state/trades.jsonl` 원장 하나뿐**(+ 필요시 `execution` 설정 비용
-상수). 다른 파일(포지션 마크, 자본 곡선 원장 등)을 읽지 않는다 — 대시보드 숫자가
-원장 하나로 재현 가능해야 감사 가능하다.
+**입력은 `data/state/trades.jsonl` 원장 하나**(+ 필요시 `execution` 설정 비용
+상수, `real_account_snapshot`은 선택)다. `real_account_snapshot`을 안 줘도
+정상 동작한다(현금만으로 폴백) — 이 함수 자체는 파일 I/O를 하지 않는다, 호출부
+(CLI)가 있으면 읽어서 넘길 뿐이다. 대시보드 숫자가 원장 하나(+선택 스냅샷)로
+재현 가능해야 감사 가능하다.
 
 ## 정직성 규칙(호출부/유지보수자를 위한 요약, 상세는 각 함수 docstring)
 
@@ -15,6 +17,16 @@
    재사용한다(중복 구현 금지).
 5. 날짜 귀속은 `quant.core.models.trading_day`(KST 08:00 경계) 그대로 쓴다 —
    이미 "그날 KR장 + 그날 밤 US장 = 하루"를 정확히 구현하고 있다.
+6. paper→real_seeded 경계는 **거래일이 아니라 시각**이다(소유자 지시 2026-09-02).
+   이식이 하루 중간에 일어나면(예: 2026-09-01 23:01 KST) 같은 거래일 버킷에
+   이식 전 거래와 이식 후 거래가 섞인다 — `trading_day()` 단위로 나누면 이 결함을
+   못 잡는다. 경계 시각은 이식 정리 매도 행들의 **최대 ts**(정리가 끝난 순간).
+7. 공개 `equity` 곡선은 **경계 이후(real_seeded)만** 보여준다. 경계 이전(paper)
+   기록은 숨기지 않되 곡선에서 빼고 `prior_paper`에 사실만 요약해 남긴다 — 소유자
+   지시("성과는 실계좌 이식 이후만 보여야 한다")와 정직성 원칙(숨기지 않기)을
+   동시에 만족시킨다. 이식 이벤트가 아직 없으면(옛 테스트/이전 동작) `equity`는
+   지금까지처럼 전체 paper 기록을 보여준다 — 대체할 real_seeded 구간이 없으니
+   숨길 이유가 없다.
 
 ## `seed_krw`에 대한 알려진 한계 (정직하게 밝힌다)
 
@@ -29,6 +41,13 @@
   변경기록: "US 5종목+USD 0")에 의존한다 — 원장 자체에는 이 사전 잔액이 없어 확인할
   방법이 없다. 이 가정이 깨지면(다음 이식 이벤트가 USD 잔액이 있는 채로 시작하면)
   이 함수가 조용히 과소평가한다 — 그럴 땐 이 함수를 갱신해라.
+- **이월 보유(청산하지 않은 포지션)**: 2026-09-01 이식에서 005930(삼성전자) 6주는
+  정리 매도하지 않고 그대로 이어받았다(`quant.apps.cli.cmd_seed_real`의
+  `KEEP_SYMBOL`). 이 보유의 평가액을 더하지 않으면 시드가 "그때 실제로 가진 전부"보다
+  작게 잡혀 수익률이 부풀려진다. `real_account_snapshot`이 주어지면 그 보유의
+  `qty*avg_cost`를 시드에 더한다(현재가가 아니라 평단 기준 — 소유자가 그렇게 계산해
+  지시했다). 스냅샷이 없으면 0으로 폴백하고 `seed_basis`/`note`에 그 사실을 남긴다 —
+  종목코드·수량 자체는 출력에 없고 시드 총액 하나로만 녹인다(공개 안전 규칙).
 """
 from __future__ import annotations
 
@@ -51,6 +70,12 @@ SEEDING_LIQUIDATION_MARKER = "실계좌 이식 정리"
 
 # paper 시대 참고 시드 — 위 모듈 docstring "알려진 한계" 참고.
 PAPER_SEED_KRW = 10_000_000
+
+# 2026-09-01 이식에서 청산하지 않고 이어받은 종목 — `quant.apps.cli.cmd_seed_real`의
+# KEEP_SYMBOL과 동일한 일회성 결정. 다음 이식이 다른 종목을 유지한다면 이 상수를 고쳐라.
+CARRYOVER_POSITION_SYMBOL = "005930"
+
+_KST = ZoneInfo("Asia/Seoul")
 
 # 전략 id → 한글 표시명. 종목/파라미터는 절대 넣지 않는다 — 공개 대시보드용.
 STRATEGY_NAME_KO: dict[str, str] = {
@@ -84,6 +109,11 @@ def _parse_ts(trade: dict) -> datetime:
     return ts
 
 
+def _ts_iso(ts: datetime) -> str:
+    """사람이 읽을 phases from/to용 — KST, 초 단위."""
+    return ts.astimezone(_KST).isoformat(timespec="seconds")
+
+
 def _is_seeding_liquidation(trade: dict) -> bool:
     return SEEDING_LIQUIDATION_MARKER in str(trade.get("reason") or "")
 
@@ -96,12 +126,37 @@ def _split_excluded(trades: list[dict]) -> tuple[list[dict], list[dict]]:
     return included, excluded
 
 
-def _real_seed_krw(excluded: list[dict]) -> float | None:
-    """real_seeded 시대 시드(KRW) — 모듈 docstring "알려진 한계" 참고.
+def _boundary_ts(excluded: list[dict]) -> datetime | None:
+    """paper→real_seeded 경계 시각 — 이식 정리 매도 행들의 최대 ts(정리가 끝난
+    순간부터 새 시대). 이식 이벤트가 없으면 None."""
+    if not excluded:
+        return None
+    return max(_parse_ts(t) for t in excluded)
+
+
+def _carryover_position_krw(snapshot: dict | None) -> tuple[float, bool]:
+    """(이월 보유 평가액 KRW, 스냅샷을 읽었는지).
+
+    스냅샷이 없으면 (0.0, False) — 호출부가 이 사실을 `seed_basis`/note에 남긴다.
+    스냅샷은 있지만 이월 종목이 없으면(전량 청산됐다면) (0.0, True) — 이건 "몰라서
+    0"이 아니라 "확인했더니 0"이라 폴백이 아니다."""
+    if not snapshot:
+        return 0.0, False
+    for h in snapshot.get("holdings", []):
+        if h.get("symbol") == CARRYOVER_POSITION_SYMBOL:
+            return float(h["qty"]) * float(h["avg_cost"]), True
+    return 0.0, True
+
+
+def _real_seed_krw(
+    excluded: list[dict], carryover_krw: float, carryover_sourced: bool,
+) -> tuple[float | None, str, str]:
+    """(real_seeded 시대 시드 KRW, seed_basis, note 접미사) — 모듈 docstring
+    "알려진 한계" 참고.
 
     이식 정리 행 중 KRW 풀 최종 상태(`cash_after`, 시간순 마지막 값)에 US 정리
-    매도의 체결대금(`qty*price - fee`, USD 풀에 실제 credit된 금액)을 환산해 더한다.
-    `cash_after`가 하나도 없으면(구버전 원장) None — 지어내지 않는다.
+    매도의 체결대금(`qty*price - fee`, USD 풀에 실제 credit된 금액)과 이월 보유
+    평가액을 더한다. `cash_after`가 하나도 없으면(구버전 원장) None — 지어내지 않는다.
     """
     ordered = sorted(excluded, key=lambda t: str(t.get("ts", "")))
     krw_component = None
@@ -109,67 +164,78 @@ def _real_seed_krw(excluded: list[dict]) -> float | None:
         if t.get("cash_after") is not None:
             krw_component = float(t["cash_after"])
     if krw_component is None:
-        return None
+        return None, "현금만", ""
     usd_component = sum(
         float(t.get("qty", 0) or 0) * float(t.get("price", 0) or 0) - float(t.get("fee", 0) or 0)
         for t in excluded if str(t.get("market")) == "US"
     )
-    return round(krw_component + usd_component * FX_KRW_PER_USD)
+    seed = round(krw_component + usd_component * FX_KRW_PER_USD + carryover_krw)
+    if carryover_krw > 0:
+        basis = "현금+이월보유"
+        suffix = " / 이월 보유 평가액 포함(스냅샷 평단 기준, 종목·수량은 비공개)"
+    elif not carryover_sourced:
+        basis = "현금만"
+        suffix = " / 이월 보유 평가액 미포함 — 실계좌 스냅샷 파일 없어 현금만 집계"
+    else:
+        basis = "현금만"
+        suffix = ""
+    return seed, basis, suffix
 
 
-def _build_phases(included: list[dict], excluded: list[dict]) -> tuple[list[dict], date | None]:
-    """(phases 목록, real_seeded 시작 거래일 — 이식 이벤트가 없으면 None)."""
-    all_days = sorted({trading_day(_parse_ts(t)) for t in included})
-    if not excluded:
-        phases = []
-        if all_days:
-            phases.append({
-                "id": "paper", "label": "모의 운용",
-                "from": all_days[0].isoformat(), "to": None,
-                "seed_krw": PAPER_SEED_KRW,
-                "note": "가상 자본 1천만원(고정 참고값 — 원장에 시작 자본 기록 없음)",
-            })
-        return phases, None
+def _build_phases(
+    included: list[dict], excluded: list[dict], boundary_ts: datetime | None,
+    carryover_krw: float, carryover_sourced: bool,
+) -> list[dict]:
+    """phases 목록. `from`/`to`는 사람이 읽을 KST 시각(초 단위)."""
+    if boundary_ts is None:
+        all_days = sorted({trading_day(_parse_ts(t)) for t in included})
+        if not all_days:
+            return []
+        first_ts = min(_parse_ts(t) for t in included)
+        return [{
+            "id": "paper", "label": "모의 운용",
+            "from": _ts_iso(first_ts), "to": None,
+            "seed_krw": PAPER_SEED_KRW,
+            "note": "가상 자본 1천만원(고정 참고값 — 원장에 시작 자본 기록 없음)",
+        }]
 
-    boundary = min(trading_day(_parse_ts(t)) for t in excluded)
     phases = []
-    paper_days = [d for d in all_days if d < boundary]
-    if paper_days:
+    paper_included = [t for t in included if _parse_ts(t) <= boundary_ts]
+    if paper_included:
+        first_ts = min(_parse_ts(t) for t in paper_included)
         phases.append({
             "id": "paper", "label": "모의 운용",
-            "from": paper_days[0].isoformat(), "to": boundary.isoformat(),
+            "from": _ts_iso(first_ts), "to": _ts_iso(boundary_ts),
             "seed_krw": PAPER_SEED_KRW,
             "note": "가상 자본 1천만원(고정 참고값 — 원장에 시작 자본 기록 없음)",
         })
-    real_seed = _real_seed_krw(excluded)
+    real_seed, seed_basis, seed_note_suffix = _real_seed_krw(
+        excluded, carryover_krw, carryover_sourced,
+    )
     phases.append({
         "id": "real_seeded", "label": "실계좌 스냅샷 이식",
-        "from": boundary.isoformat(), "to": None,
+        "from": _ts_iso(boundary_ts), "to": None,
         "seed_krw": real_seed,
+        "seed_basis": seed_basis,
         "note": (
-            f"실계좌 현금·보유를 이어받아 재시작 (KRW/USD 풀 분리, USD→KRW 환산은 "
-            f"고정환율 {FX_KRW_PER_USD} — 2026-09-01 스냅샷)"
+            "실계좌 현금·보유를 이어받아 재시작 (KRW/USD 풀 분리, USD→KRW 환산은 "
+            f"고정환율 {FX_KRW_PER_USD} — 2026-09-01 스냅샷)" + seed_note_suffix
         ),
     })
-    return phases, boundary
+    return phases
 
 
-def _phase_id_for(day: date, boundary: date | None) -> str:
-    if boundary is None or day < boundary:
-        return "paper"
-    return "real_seeded"
-
-
-def _equity_rows(included: list[dict], phases: list[dict], boundary: date | None) -> list[dict]:
-    """일별 실현손익(수수료 차감 후) 기반 지분 곡선.
+def _equity_rows(trades: list[dict], seed: float | None, phase_id: str) -> list[dict]:
+    """일별 실현손익(수수료 차감 후) 기반 지분 곡선(단일 phase 분량).
 
     시가평가(마크투마켓)가 아니라 **실현손익 누적**이다 — 포지션 마크는 이
     함수의 입력(trades.jsonl 단독)으로는 알 수 없다. 매수 체결의 수수료도
     그날 순손익에서 빠진다(수수료는 진입 시점에도 이미 나간 돈).
-    """
-    seed_by_phase = {p["id"]: p["seed_krw"] for p in phases}
+
+    `trades`는 호출부가 이미 보여줄 phase(경계 이후만, 또는 경계 자체가 없으면
+    전체)로 걸러 넘긴다 — 여기서는 날짜/통화별 합산만 한다."""
     by_day_market: dict[tuple[date, str], dict] = {}
-    for t in included:
+    for t in trades:
         day = trading_day(_parse_ts(t))
         market = str(t.get("market") or "US")
         b = by_day_market.setdefault((day, market), {"gross": 0.0, "fees": 0.0, "n": 0})
@@ -179,25 +245,50 @@ def _equity_rows(included: list[dict], phases: list[dict], boundary: date | None
             b["gross"] += float(t["realized_pnl"])
 
     days = sorted({d for d, _ in by_day_market})
-    cum_krw_by_phase: dict[str, float] = {}
+    cum_krw = 0.0
     rows = []
     for day in days:
-        phase = _phase_id_for(day, boundary)
         kr = by_day_market.get((day, "KR"), {"gross": 0.0, "fees": 0.0, "n": 0})
         us = by_day_market.get((day, "US"), {"gross": 0.0, "fees": 0.0, "n": 0})
         day_pnl_krw = (kr["gross"] - kr["fees"]) + (us["gross"] - us["fees"]) * FX_KRW_PER_USD
-        seed = seed_by_phase.get(phase)
-        cum_krw_by_phase[phase] = cum_krw_by_phase.get(phase, 0.0) + day_pnl_krw
+        cum_krw += day_pnl_krw
         day_pct = round(day_pnl_krw / seed * 100, 4) if seed else None
-        cum_pct = round(cum_krw_by_phase[phase] / seed * 100, 4) if seed else None
+        cum_pct = round(cum_krw / seed * 100, 4) if seed else None
         rows.append({
             "date": day.isoformat(),
             "cum_pct": cum_pct,
             "day_pct": day_pct,
             "fills": kr["n"] + us["n"],
-            "phase": phase,
+            "phase": phase_id,
         })
     return rows
+
+
+def _prior_paper_summary(paper_included: list[dict]) -> dict:
+    """경계 이전(paper) 기록 요약 — 공개 곡선에서는 빠지지만 숨기지 않는다.
+    일별 세부가 아니라 세션수/체결수/누적 순손익(KRW)만 남긴다."""
+    if not paper_included:
+        return {}
+    days = {trading_day(_parse_ts(t)) for t in paper_included}
+    net_krw = 0.0
+    for t in paper_included:
+        market = str(t.get("market") or "US")
+        fee = float(t.get("fee", 0) or 0)
+        pnl = 0.0
+        if str(t.get("side", "")).upper() != "BUY" and t.get("realized_pnl") is not None:
+            pnl = float(t["realized_pnl"])
+        net = pnl - fee
+        if market == "US":
+            net *= FX_KRW_PER_USD
+        net_krw += net
+    return {
+        "sessions": len(days),
+        "fills": len(paper_included),
+        "net_krw": round(net_krw),
+        "note": (
+            "가상 자본 1천만원 시대 — 실계좌 이식 전 기록이라 현재 곡선에 포함하지 않는다"
+        ),
+    }
 
 
 def _strategy_stats(included: list[dict]) -> list[dict]:
@@ -286,14 +377,34 @@ def _costs(execution_cfg: dict) -> dict:
 
 def build_performance_payload(
     trades: list[dict], execution_cfg: dict, *, now: datetime | None = None,
+    real_account_snapshot: dict | None = None,
 ) -> dict:
     """`trades.jsonl` 원장(dict 리스트, `ledger.load_trades` 출력) → 공개 성과 JSON.
 
-    순수 함수 — 파일 I/O는 호출부(CLI)가 한다."""
-    now = now or datetime.now(ZoneInfo("Asia/Seoul"))
+    순수 함수 — 파일 I/O는 호출부(CLI)가 한다. `real_account_snapshot`은 선택
+    (`quant.apps.cli.cmd_seed_real`이 쓰는 것과 같은 형식의 dict) — 없으면 이월
+    보유 평가액 없이 현금만으로 계산한다(모듈 docstring "알려진 한계" 참고)."""
+    now = now or datetime.now(_KST)
     included, excluded = _split_excluded(trades)
-    phases, boundary = _build_phases(included, excluded)
-    equity = _equity_rows(included, phases, boundary)
+    boundary_ts = _boundary_ts(excluded)
+    carryover_krw, carryover_sourced = _carryover_position_krw(real_account_snapshot)
+    phases = _build_phases(included, excluded, boundary_ts, carryover_krw, carryover_sourced)
+
+    if boundary_ts is not None:
+        # 경계가 있으면 공개 곡선은 경계 이후(real_seeded)만 — 경계 이전은 곡선에서
+        # 빼고 prior_paper에 요약만 남긴다(모듈 docstring 규칙 7).
+        paper_included = [t for t in included if _parse_ts(t) <= boundary_ts]
+        real_included = [t for t in included if _parse_ts(t) > boundary_ts]
+        visible_seed = next((p["seed_krw"] for p in phases if p["id"] == "real_seeded"), None)
+        equity = _equity_rows(real_included, visible_seed, "real_seeded")
+        prior_paper = _prior_paper_summary(paper_included)
+    else:
+        # 이식 이벤트가 아직 없으면 대체할 real_seeded 구간이 없다 — 지금까지처럼
+        # 전체 paper 기록을 그대로 보여준다(숨길 이유가 없다).
+        visible_seed = phases[0]["seed_krw"] if phases else None
+        equity = _equity_rows(included, visible_seed, "paper")
+        prior_paper = {}
+
     strategies = _strategy_stats(included)
 
     days = [row["date"] for row in equity]
@@ -310,6 +421,7 @@ def build_performance_payload(
         "period": period,
         "phases": phases,
         "equity": equity,
+        "prior_paper": prior_paper,
         "strategies": strategies,
         "excluded": _excluded_summary(excluded),
         "costs": _costs(execution_cfg),

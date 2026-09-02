@@ -1975,7 +1975,18 @@ def cmd_publish_performance(args: argparse.Namespace) -> None:
 
     trades = load_trades(ledger_state_path())
     settings = load_settings()
-    payload = build_performance_payload(trades, settings.execution)
+
+    # 이식 시점(2026-09-01) 이월 보유(005930)의 평가액을 시드에 반영하려면 이
+    # 스냅샷이 필요하다 — 없어도(다른 환경/구버전 원장) 현금만으로 정상 동작한다
+    # (build_performance_payload가 알아서 폴백한다, 여기선 있으면 읽어 넘길 뿐).
+    snapshot_path = ledger_state_path().parent / "real_account_snapshot.json"
+    real_account_snapshot = (
+        _json.loads(snapshot_path.read_text(encoding="utf-8")) if snapshot_path.exists() else None
+    )
+
+    payload = build_performance_payload(
+        trades, settings.execution, real_account_snapshot=real_account_snapshot,
+    )
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
