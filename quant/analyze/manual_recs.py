@@ -42,6 +42,16 @@ __init__.py`의 `rsi()`와 동일해야 한다(시드는 첫 `period`개의 단�
 3배). 그 판단을 뒤집을 근거가 없으므로 여기서도 QQQ만 추천한다 — 지시문 예시
 문구보다 실제 코드의 판단을 따른다.
 
+## 단기반전/거래량충격 — 스윙 시그널(2026-09-03, quant-backtest 워크포워드)
+
+`quant/analyze/swing_signals.py`의 `short_term_reversal_candidates`/
+`volume_shock_candidates`(둘 다 순수 pandas)를 감싼다. 이 둘도 스윙(각 5일/10일
+보유)이라 자동매매 대상이 아니다 — 위 결정과 같은 이유로 수동 계좌 추천으로만
+나간다. 유니버스는 `data/state/kr_largecap_universe.json`
+(`quant/collect/kr_largecap_daily.py`가 채운다, 시총≥3,000억 상위 ~300종목)에서
+읽는다 — 그 파일이 없으면(백필이 아직 안 됐거나 로컬 dev 환경) 이 두 생산자는
+**조용히 0건**을 낸다(에러 아님, 다른 추천 종류에는 영향 없음).
+
 ## 이 파일이 하지 않는 것
 
 - 시세 조회(네트워크)를 하지 않는다 — `quant/adapters/`는 analyze 평면에서 임포트
@@ -61,7 +71,7 @@ from typing import Callable, Iterable
 import pandas as pd
 import yaml
 
-from quant.analyze import foreign_trend
+from quant.analyze import foreign_trend, swing_signals
 from quant.control import frgn_flow as frgn_flow_ledger
 from quant.control import selections
 from quant.core.models import market_of_symbol
@@ -96,6 +106,29 @@ _OVERNIGHT_DRIFT_SYMBOLS = ("QQQ",)
 # watchlist에 없어도 항상 후보에 넣는다(지수 ETF라 관심종목 등록과 무관하게
 # 매일 판정할 가치가 있다).
 _RSI2_ALWAYS_KR_SYMBOLS = ("069500",)
+
+# 단기반전/거래량충격(2026-09-03, quant-backtest 워크포워드) — 프로듀서 ID는
+# manual_rec_v1과 분리한다(과제 지시: 스코어보드가 신호별로 따로 채점해야
+# 한다). 상한 5건/일(과제 지시) — 신호 강도(swing_signals가 이미 정렬)순 앞부터.
+PRODUCER_STR = "manual_rec_str_v1"  # 단기반전(5일)
+PRODUCER_VSP = "manual_rec_vsp_v1"  # 거래량충격(10일)
+_STR_MAX_RECS = 5
+_VSP_MAX_RECS = 5
+_STR_KIND = "단기반전(5일)"
+_VSP_KIND = "거래량충격(10일)"
+# 텔레그램에 한 번만 붙이는 근거 문구(kind별) — quant-backtest 워크포워드(KR
+# 일봉 2016→2026, 유니버스=시총≥3,000억+20일 중앙값 거래대금≥50억, 왕복비용
+# 23bp) OOS 실측. 인샘플이 아니라는 점과 표본 정의를 항상 함께 밝힌다.
+_KIND_EVIDENCE = {
+    _STR_KIND: (
+        "OOS 백테스트 2016→2026: 기준선 대비 +17.5bp/거래 (t=3.2) — 인샘플 아님, "
+        "표본 KR 대형주(시총≥3,000억+20일 중앙값 거래대금≥50억) walk-forward"
+    ),
+    _VSP_KIND: (
+        "OOS 백테스트 2016→2026: 기준선 대비 +51bp/거래 (t=2.95) — 인샘플 아님, "
+        "표본 KR 대형주(시총≥3,000억+20일 중앙값 거래대금≥50억) walk-forward"
+    ),
+}
 
 
 # ========================================================================
@@ -134,29 +167,40 @@ def _sma(close: pd.Series, period: int) -> pd.Series:
 # {symbol}/1d/YYYY/MM.parquet), analyze 평면에서 직접 읽는다(adapters 임포트 금지).
 # ========================================================================
 
-def _read_daily_closes(history_root: Path, symbol: str, months: int = 14) -> pd.Series:
-    """`symbol`의 최근 `months`개월치 종가(오름차순). 데이터 없으면 빈 Series.
+def _read_daily_bars(history_root: Path, symbol: str, months: int = 14) -> pd.DataFrame:
+    """`symbol`의 최근 `months`개월치 일봉 전체 컬럼(OHLCV, 오름차순). 데이터
+    없으면 빈 DataFrame.
 
     `months=14`는 RSI(2) 트렌드 필터(SMA 200 영업일 ≈ 9.5개월)에 워밍업 여유를
     더한 값이다. 파일이 없거나 깨져도 예외를 던지지 않는다 — 추천 하나 못 만드는
     것과 전체 명령이 죽는 것은 전혀 다르다.
-    """
+
+    (2026-09-03) 원래 종가만 돌려주던 `_read_daily_closes`에서 분리했다 —
+    `swing_signals.volume_shock_candidates`가 open/volume도 필요해서다. 파티션
+    읽기 로직은 하나뿐이고, `_read_daily_closes`가 이 함수를 감싼다."""
     d = history_root / symbol / "1d"
     parts = sorted(d.glob("*/*.parquet"))
     if not parts:
-        return pd.Series(dtype=float)
+        return pd.DataFrame()
     frames = []
     for p in parts[-months:]:
         try:
             df = pd.read_parquet(p)
         except Exception:  # noqa: BLE001 — 파손된 파티션 하나가 전체를 죽이면 안 된다
             continue
-        if not df.empty and "close" in df.columns:
+        if not df.empty:
             frames.append(df)
     if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames).sort_index()
+
+
+def _read_daily_closes(history_root: Path, symbol: str, months: int = 14) -> pd.Series:
+    """`symbol`의 최근 `months`개월치 종가(오름차순). 데이터 없으면 빈 Series."""
+    df = _read_daily_bars(history_root, symbol, months=months)
+    if df.empty or "close" not in df.columns:
         return pd.Series(dtype=float)
-    full = pd.concat(frames).sort_index()
-    return full["close"].dropna()
+    return df["close"].dropna()
 
 
 def latest_close(history_root: Path, symbol: str) -> tuple[float, str] | None:
@@ -440,17 +484,84 @@ def overnight_drift_recs(root: Path) -> list[dict]:
 
 
 # ========================================================================
+# (e)/(f) 단기반전(5일) / 거래량충격(10일) — swing_signals.py 감싸기
+# (2026-09-03, quant-backtest 워크포워드 — 모듈 docstring 참고)
+# ========================================================================
+
+def _largecap_symbols(root: Path) -> list[str]:
+    """`quant.collect.kr_largecap_daily`가 채우는 시총 상위 유니버스 캐시에서
+    심볼만 뽑는다. `quant.collect`를 임포트하지 않는다 — JSON 하나 읽는 데 평면을
+    가로지를 이유가 없다(`_close_bet_reasons`가 리포트 엔진 JSON을 직접 읽는
+    것과 같은 관례). 파일이 없거나 깨졌으면 빈 리스트 — 두 생산자가 조용히
+    0건을 내게 한다(모듈 docstring)."""
+    path = root / "data" / "state" / "kr_largecap_universe.json"
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    symbols = payload.get("symbols") if isinstance(payload, dict) else None
+    if not isinstance(symbols, list):
+        return []
+    return [str(s["symbol"]) for s in symbols if isinstance(s, dict) and s.get("symbol")]
+
+
+def _largecap_daily_bars(root: Path) -> dict[str, pd.DataFrame]:
+    """대형주 유니버스 심볼별 일봉(OHLCV) — `swing_signals`에 그대로 넘긴다.
+    데이터가 없는 심볼(아직 백필 전)은 빈 DataFrame이라 `swing_signals`가
+    알아서 건너뛴다."""
+    history_root = root / "data" / "history"
+    return {sym: _read_daily_bars(history_root, sym) for sym in _largecap_symbols(root)}
+
+
+def short_term_reversal_recs(root: Path) -> list[dict]:
+    """대형주 유니버스에서 직전 5일 수익률 하위 10분위 후보(최대 5건, 신호
+    강도순 — `swing_signals`가 이미 정렬). 기준가는 신호 계산에 쓴 바로 그
+    종가라 항상 존재한다(rsi2_dip과 같은 이유로 `price_of` 불필요)."""
+    bars = _largecap_daily_bars(root)
+    candidates = swing_signals.short_term_reversal_candidates(bars)[:_STR_MAX_RECS]
+    return [
+        _rec_row(
+            symbol=c["symbol"], name=None, market="KR", kind=_STR_KIND,
+            reason=f"최근 5일 수익률 {c['value'] * 100:+.1f}% (대형주 유니버스 하위 10분위)",
+            ref_price=c["ref_price"], ref_date=c["ref_date"], price_source="history",
+            invalidation=c["invalidation"], horizon=c["horizon"],
+        )
+        for c in candidates
+    ]
+
+
+def volume_shock_recs(root: Path) -> list[dict]:
+    """대형주 유니버스에서 거래대금 20일 중앙값 대비 2.5배 이상 + 상승마감
+    후보(최대 5건, 배율 내림차순 — `swing_signals`가 이미 정렬)."""
+    bars = _largecap_daily_bars(root)
+    candidates = swing_signals.volume_shock_candidates(bars)[:_VSP_MAX_RECS]
+    return [
+        _rec_row(
+            symbol=c["symbol"], name=None, market="KR", kind=_VSP_KIND,
+            reason=f"거래대금 20일 중앙값 대비 {c['value']:.1f}배 · 상승마감",
+            ref_price=c["ref_price"], ref_date=c["ref_date"], price_source="history",
+            invalidation=c["invalidation"], horizon=c["horizon"],
+        )
+        for c in candidates
+    ]
+
+
+# ========================================================================
 # 시장별 조립
 # ========================================================================
 
 def build_recs(root: Path, market: str, on: _date, price_of: PriceLookup | None = None) -> list[dict]:
-    """시장별 추천 목록. KR = 외국인 적립 + 종가배팅 + RSI(2) 눌림. US = 오버나이트
-    드리프트. `on`은 close_bet의 리포트 조회 + 향후 결정론 확장을 위해 받는다.
+    """시장별 추천 목록. KR = 외국인 적립 + 종가배팅 + RSI(2) 눌림 + 단기반전(5일)
+    + 거래량충격(10일). US = 오버나이트 드리프트. `on`은 close_bet의 리포트
+    조회 + 향후 결정론 확장을 위해 받는다.
 
     `price_of`(2026-09-03, F1)는 frgn_accumulate/close_bet에만 넘어간다 —
-    rsi2_dip은 RSI 계산에 쓴 바로 그 일봉 종가를 기준가로 쓰므로(항상 존재)
-    별도 조회가 필요 없고, overnight_drift는 US 고정 지수 ETF(QQQ) 하나뿐이라
-    로컬 일봉 결측이 실측된 적 없다(감사 B8은 KR 12/26에 한정된 문제)."""
+    rsi2_dip과 단기반전/거래량충격은 신호 계산에 쓴 바로 그 일봉 종가를
+    기준가로 쓰므로(항상 존재) 별도 조회가 필요 없고, overnight_drift는 US
+    고정 지수 ETF(QQQ) 하나뿐이라 로컬 일봉 결측이 실측된 적 없다(감사 B8은
+    KR 12/26에 한정된 문제)."""
     if market == "KR":
         wl_path = root / "data" / "watchlist.yaml"
         rsi2_symbols = _kr_symbols_from_watchlist(wl_path) | set(_RSI2_ALWAYS_KR_SYMBOLS)
@@ -458,6 +569,8 @@ def build_recs(root: Path, market: str, on: _date, price_of: PriceLookup | None 
             foreign_accumulate_recs(root, price_of=price_of)
             + close_bet_recs(root, on, price_of=price_of)
             + rsi2_dip_recs(root, rsi2_symbols)
+            + short_term_reversal_recs(root)
+            + volume_shock_recs(root)
         )
     if market == "US":
         return overnight_drift_recs(root)
@@ -471,6 +584,16 @@ def build_recs(root: Path, market: str, on: _date, price_of: PriceLookup | None 
 # 같은 이유로 행을 직접 만들어 append()만 재사용하는 것과 같은 관례.
 # ========================================================================
 
+# kind → producer(2026-09-03) — 단기반전/거래량충격만 별도 producer id를 쓴다
+# (과제 지시: "distinct so the scorecard separates them"). 나머지 4종(kind가
+# 여기 없는 경우)은 그대로 PRODUCER(manual_rec_v1)로 떨어진다 — 기존 행/테스트와
+# 하위 호환.
+_KIND_TO_PRODUCER = {
+    _STR_KIND: PRODUCER_STR,
+    _VSP_KIND: PRODUCER_VSP,
+}
+
+
 def to_selection_rows(recs: list[dict], today: str) -> list[dict]:
     rows: list[dict] = []
     for r in recs:
@@ -478,7 +601,7 @@ def to_selection_rows(recs: list[dict], today: str) -> list[dict]:
             "schema": selections.SCHEMA,
             "date": today,
             "market": r["market"],
-            "producer": PRODUCER,
+            "producer": _KIND_TO_PRODUCER.get(r["kind"], PRODUCER),
             "symbol": r["symbol"],
             "is_candidate": True,
             "kind": r["kind"],
@@ -524,7 +647,14 @@ def render_telegram_message(recs: list[dict], market: str, max_n: int = 8) -> st
         return f"{header}\n오늘은 추천 후보 없음"
 
     lines = [header]
+    shown_evidence: set[str] = set()
     for r in recs[:max_n]:
+        # 근거 문구(2026-09-03) — kind별로 한 번만, 그 kind의 첫 추천 앞에 붙인다
+        # (_KIND_EVIDENCE에 없는 kind는 그냥 스킵 — 기존 4종은 이 문구가 없다).
+        kind = r["kind"]
+        if kind in _KIND_EVIDENCE and kind not in shown_evidence:
+            lines.append(f"\n— {kind} 근거: {_KIND_EVIDENCE[kind]}")
+            shown_evidence.add(kind)
         name = r.get("name") or r["symbol"]
         if r.get("ref_price") is not None:
             # price_source(F1) — "toss"면 로컬 일봉이 없어 실시세로 대체한

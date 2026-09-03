@@ -2252,6 +2252,14 @@ def cmd_manual_recs(args: argparse.Namespace) -> None:
     if args.scorecard:
         rows = selections.load(REPO_ROOT / "data" / "ledger" / "selections.jsonl")
         print(manual_recs.scorecard_text(rows))
+        # 단기반전/거래량충격(2026-09-03) — producer가 달라 별도 줄로 낸다("distinct
+        # so the scorecard separates them"). VSP는 실제 보유기간이 10일이지만
+        # outcomes의 채점 지평 그리드(quant.control.judgment.HOLD_HORIZONS)는
+        # 1/5/20 고정이라 정확한 D+10 컬럼이 없다 — D+5는 이르고 D+20이 그나마
+        # 가깝다(과대평가 방향은 아니다: 10일 뒤 이미 청산했을 포지션의 이후
+        # 10일치 추가 변동까지 포함하므로 오차는 있지만 존재하는 컬럼 중 최선).
+        print(manual_recs.scorecard_text(rows, producer=manual_recs.PRODUCER_STR, horizon=5))
+        print(manual_recs.scorecard_text(rows, producer=manual_recs.PRODUCER_VSP, horizon=20))
         return
 
     if not args.market:

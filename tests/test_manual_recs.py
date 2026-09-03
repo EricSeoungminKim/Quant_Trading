@@ -271,6 +271,150 @@ def test_overnight_drift_recs_excludes_tqqq_even_without_data():
     assert manual_recs._OVERNIGHT_DRIFT_SYMBOLS == ("QQQ",)
 
 
+# --------------------------------------------------------------------------- (e)/(f) 단기반전/거래량충격
+
+
+def _write_largecap_universe(root: Path, symbols: list[str]) -> None:
+    import json
+
+    path = root / "data" / "state" / "kr_largecap_universe.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"as_of": "2026-09-03", "symbols": [{"symbol": s} for s in symbols]}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_daily_bars(
+    history_dir: Path, closes: list[float], opens: list[float] | None = None,
+    volumes: list[float] | None = None, start: str = "2025-11-01",
+) -> None:
+    """`_write_daily_closes`의 OHLCV 버전 — 거래량충격 테스트가 open/volume을
+    독립적으로 조절해야 해서 분리했다."""
+    n = len(closes)
+    opens = opens if opens is not None else closes
+    volumes = volumes if volumes is not None else [1000.0] * n
+    dates = pd.bdate_range(start=start, periods=n, tz="UTC") + pd.Timedelta(hours=4)
+    df = pd.DataFrame({
+        "open": opens, "high": closes, "low": closes, "close": closes, "volume": volumes,
+    }, index=dates)
+    for (year, month), part in df.groupby([df.index.year, df.index.month]):
+        path = history_dir / f"{year:04d}" / f"{month:02d}.parquet"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        part.to_parquet(path)
+
+
+def test_short_term_reversal_recs_empty_without_largecap_universe_cache(tmp_path):
+    """캐시(quant.collect.kr_largecap_daily가 채우는 파일)가 없으면 조용히
+    0건 — 에러도, 다른 생산자에 대한 영향도 없다(모듈 docstring)."""
+    assert manual_recs.short_term_reversal_recs(tmp_path) == []
+    assert manual_recs.volume_shock_recs(tmp_path) == []
+
+
+def test_short_term_reversal_recs_uses_universe_cache_and_swing_signals(tmp_path):
+    _write_largecap_universe(tmp_path, ["005930", "000660", "035720"])
+    # 6개 세션: 5일 전부터 오늘까지. 005930만 크게 빠져(-10%) 하위 10분위.
+    _write_daily_bars(tmp_path / "data" / "history" / "005930" / "1d",
+                       [100.0, 100.0, 100.0, 100.0, 100.0, 90.0])
+    _write_daily_bars(tmp_path / "data" / "history" / "000660" / "1d",
+                       [100.0, 100.0, 100.0, 100.0, 100.0, 101.0])
+    _write_daily_bars(tmp_path / "data" / "history" / "035720" / "1d",
+                       [100.0, 100.0, 100.0, 100.0, 100.0, 102.0])
+
+    recs = manual_recs.short_term_reversal_recs(tmp_path)
+
+    assert len(recs) == 1
+    rec = recs[0]
+    assert rec["symbol"] == "005930"
+    assert rec["kind"] == "단기반전(5일)"
+    assert rec["market"] == "KR"
+    assert rec["horizon"] == "D+5"
+    assert rec["price_source"] == "history"
+    assert rec["ref_price"] == pytest.approx(90.0)
+    assert "-5%" in rec["invalidation"]
+    assert "-10.0%" in rec["reason"]
+
+
+def test_short_term_reversal_recs_caps_at_five(tmp_path):
+    """80종목이면 바닥 10분위가 8종목이라 swing_signals는 8개를 내지만, 생산자는
+    최대 5건(과제 지시)만 담는다 — 신호가 가장 강한(가장 많이 빠진) 5개."""
+    symbols = [f"{100000 + i:06d}" for i in range(80)]
+    _write_largecap_universe(tmp_path, symbols)
+    for i, sym in enumerate(symbols):
+        ret = -0.01 * (i + 1)  # i가 클수록 더 많이 빠짐
+        closes = [100.0] * 5 + [100.0 * (1 + ret)]
+        _write_daily_bars(tmp_path / "data" / "history" / sym / "1d", closes)
+
+    recs = manual_recs.short_term_reversal_recs(tmp_path)
+
+    assert len(recs) == 5
+    assert recs[0]["symbol"] == symbols[79]  # -80%, 가장 강한 신호
+    assert recs[-1]["symbol"] == symbols[75]
+
+
+def test_volume_shock_recs_uses_universe_cache_and_swing_signals(tmp_path):
+    _write_largecap_universe(tmp_path, ["005930"])
+    volumes = [1000.0] * 20 + [3000.0]
+    closes = [100.0] * 21
+    opens = [100.0] * 20 + [95.0]
+    _write_daily_bars(tmp_path / "data" / "history" / "005930" / "1d", closes, opens=opens, volumes=volumes)
+
+    recs = manual_recs.volume_shock_recs(tmp_path)
+
+    assert len(recs) == 1
+    rec = recs[0]
+    assert rec["symbol"] == "005930"
+    assert rec["kind"] == "거래량충격(10일)"
+    assert rec["horizon"] == "D+10"
+    assert rec["price_source"] == "history"
+    assert "3.0배" in rec["reason"]
+    assert "-5%" in rec["invalidation"]
+
+
+def test_build_recs_kr_includes_reversal_and_volume_shock(tmp_path):
+    # short_term_reversal_candidates의 min_names=3 기본값을 충족하려면 유효
+    # 데이터가 있는 종목이 최소 3개 필요하다.
+    _write_largecap_universe(tmp_path, ["005930", "000660", "035720"])
+    _write_daily_bars(tmp_path / "data" / "history" / "005930" / "1d",
+                       [100.0, 100.0, 100.0, 100.0, 100.0, 90.0])
+    _write_daily_bars(tmp_path / "data" / "history" / "000660" / "1d",
+                       [100.0, 100.0, 100.0, 100.0, 100.0, 100.0])
+    _write_daily_bars(tmp_path / "data" / "history" / "035720" / "1d",
+                       [100.0, 100.0, 100.0, 100.0, 100.0, 101.0])
+
+    recs = manual_recs.build_recs(tmp_path, "KR", date(2026, 9, 3))
+
+    kinds = {r["kind"] for r in recs}
+    assert "단기반전(5일)" in kinds
+
+
+# --------------------------------------------------------------------------- kind → producer 라우팅
+
+
+def test_to_selection_rows_routes_producer_by_kind():
+    recs = [
+        manual_recs._rec_row(
+            symbol="005930", name=None, market="KR", kind="단기반전(5일)",
+            reason="근거", ref_price=90.0, ref_date="2026-09-03",
+            invalidation="-5%", horizon="D+5", price_source="history",
+        ),
+        manual_recs._rec_row(
+            symbol="000660", name=None, market="KR", kind="거래량충격(10일)",
+            reason="근거", ref_price=100.0, ref_date="2026-09-03",
+            invalidation="-5%", horizon="D+10", price_source="history",
+        ),
+        manual_recs._rec_row(
+            symbol="035720", name=None, market="KR", kind="frgn_accumulate",
+            reason="근거", ref_price=1.0, ref_date="2026-09-03",
+            invalidation="FRGN_EXIT", horizon="D+20",
+        ),
+    ]
+
+    rows = manual_recs.to_selection_rows(recs, "2026-09-03")
+
+    assert rows[0]["producer"] == manual_recs.PRODUCER_STR
+    assert rows[1]["producer"] == manual_recs.PRODUCER_VSP
+    assert rows[2]["producer"] == manual_recs.PRODUCER  # 기존 kind는 그대로
+
+
 # --------------------------------------------------------------------------- 선정 원장 기록
 
 
@@ -389,6 +533,29 @@ def test_render_telegram_message_labels_toss_sourced_price_as_live():
 
     assert "12,345(2026-09-03 실시간)" in msg
     assert "종가" not in msg
+
+
+def test_render_telegram_message_shows_evidence_line_once_per_kind():
+    """단기반전(5일)/거래량충격(10일) 근거 문구는 그 kind의 첫 추천 앞에 한 번만
+    붙는다 — 같은 kind 두 번째 추천부터는 반복하지 않는다."""
+    recs = [
+        manual_recs._rec_row(
+            symbol=f"{i:06d}", name=None, market="KR", kind="단기반전(5일)",
+            reason="근거", ref_price=90.0, ref_date="2026-09-03",
+            invalidation="-5%", horizon="D+5", price_source="history",
+        )
+        for i in range(2)
+    ] + [manual_recs._rec_row(
+        symbol="999999", name=None, market="KR", kind="frgn_accumulate",
+        reason="근거", ref_price=1.0, ref_date="2026-09-03",
+        invalidation="FRGN_EXIT", horizon="D+20",
+    )]
+
+    msg = manual_recs.render_telegram_message(recs, "KR")
+
+    assert msg.count("단기반전(5일) 근거:") == 1
+    assert "+17.5bp" in msg
+    assert "frgn_accumulate 근거:" not in msg  # 기존 4종은 이 문구 자체가 없다
 
 
 # --------------------------------------------------------------------------- 성적표

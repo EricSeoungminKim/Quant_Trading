@@ -8,7 +8,10 @@
 # 주문을 내지 않는다, 소유자가 별도 계좌에서 직접 판단한다.
 #
 # 사용법: server/scripts/manual_recs.sh {KR|US}
-# 크론: KR 15:40 KST 월~금 (정규장 마감 15:30 직후) / US 06:30 KST 화~토
+# 크론: KR 15:50 KST 월~금 (정규장 마감 15:30 직후 — 2026-09-03: KR 대형주
+#       일봉 백필 backfill_kr_largecap_daily.sh(15:36, 단기반전/거래량충격
+#       스윙 시그널 전제 데이터)에 예산을 내주려고 15:40→15:50으로 미뤘다,
+#       server/crontab.txt 참고) / US 06:30 KST 화~토
 #       (정규장 마감 직후 — 서머타임은 quant.apps.cli manual-recs 내부에서
 #       America/New_York 기준으로 자동 반영, 이 스크립트는 크론 실행 시각만
 #       맞추면 된다 — session_pnl.sh와 같은 관례).

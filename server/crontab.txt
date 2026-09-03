@@ -184,11 +184,25 @@
 10 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/session_pnl.sh US >> data/session_pnl.log 2>&1
 15 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.cli equity-snapshot --market US >> data/equity.log 2>&1
 
+# KR 대형주 일봉 백필(2026-09-03, quant-backtest 워크포워드 신규 스윙 시그널
+# 단기반전/거래량충격 전제 데이터) — KR 정규장 마감(15:30) 직후. 유니버스 캐시
+# (data/state/kr_largecap_universe.json)가 있으면 그 심볼들만 증분 백필해
+# 보통 수초~수십초로 끝나지만, 캐시가 없거나 30일 넘게 낡은 날은 시총 재계산
+# (Toss stock_info 심볼당 1회, ~2,500종목)에 수 분이 걸릴 수 있다 — 그래서
+# 아래 manual_recs KR을 15:40에서 15:50으로 10분 미뤄 예산을 넉넉히 뒀다
+# (server/scripts/backfill_kr_largecap_daily.sh 상단 주석 — timeout 700초).
+# 재계산이 그마저 못 끝나도 안전하다: backfill()이 심볼 단위 멱등이라 다음날
+# 이어서 받고, manual_recs의 단기반전/거래량충격 두 프로듀서는 유니버스가
+# 비어 있으면 조용히 0건만 낸다(다른 4종 추천에는 영향 없음).
+36 15 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backfill_kr_largecap_daily.sh >> data/backfill.log 2>&1
+
 # --- 수동 계좌 추천 (2026-09-03 소유자 결정: 자동매매는 단타·스캘핑만) ---
-# 오버나이트/장기 아이디어(외국인 적립·종가배팅·RSI(2) 눌림·오버나이트 드리프트)는
-# 자동매매 대신 텔레그램 추천으로만 나간다 — 소유자가 별도 계좌에서 직접 판단.
-# 각 시장 정규장 마감 직후(session_pnl과 같은 관례).
-40 15 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/manual_recs.sh KR >> data/manual_recs.log 2>&1
+# 오버나이트/장기 아이디어(외국인 적립·종가배팅·RSI(2) 눌림·오버나이트 드리프트) +
+# 스윙 시그널(단기반전·거래량충격, 2026-09-03 신규)은 자동매매 대신 텔레그램
+# 추천으로만 나간다 — 소유자가 별도 계좌에서 직접 판단. 각 시장 정규장 마감
+# 직후(session_pnl과 같은 관례). KR은 15:40이 아니라 15:50이다 — 바로 위
+# backfill_kr_largecap_daily.sh(15:36)에 예산을 내주기 위해 2026-09-03 미뤘다.
+50 15 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/manual_recs.sh KR >> data/manual_recs.log 2>&1
 30 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/manual_recs.sh US >> data/manual_recs.log 2>&1
 
 # 06:20 US — 공개 포트폴리오 사이트용 성과 JSON(data/public/performance.json).
