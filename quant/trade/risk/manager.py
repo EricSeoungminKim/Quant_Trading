@@ -39,6 +39,14 @@ capital_fraction은 전략별로 스칼라(양 시장 동일, 기존 동작) 또
 있는 시장에서 리스크 레일이 손실 포지션을 가두지 않는다는 뜻이지, 존재하지 않는
 호가에 억지로 체결시키라는 뜻이 아니다. 전략은 계속 신호를 낸다(관측 가능) — 주문만
 다음 개장까지 보류된다.
+
+**전일/당일 상한가 진입 금지**(`risk.prev_limit_up_block`, 2026-09-03 소유자 결정):
+KR 일봉 2016~2026 실측(3,263종목)에서 상한가(+29.5%) 다음날 매수가 전체 스크린
+최강·최일관된 음의 엣지(−227~−358bp)였다. 마지막 완성 일봉이 threshold 이상
+올랐거나(전일), 지금 quote가 전일 종가 대비 threshold 이상 올라 있으면(당일 진행
+중) ENTER_LONG/SCALE_IN을 막는다(`_prev_limit_up_blocked`) — 청산은 영향 없음.
+일봉 조회 실패는 차단 아님(위 회로차단기와 같은 원칙): 데이터 장애가 거래 정지로
+번지면 안 된다.
 """
 from __future__ import annotations
 
@@ -50,7 +58,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from quant.core.fx import FixedFxProvider, FxProvider
-from quant.core.ports import Context
+from quant.core.ports import Context, DataSourceError
 from quant.core import strategy_ids
 from quant.core.models import (
     Order,
@@ -95,6 +103,12 @@ MARKET_CLOSED_MARKER = "장 마감"
 # 반올림 잡음 흡수). 이 파일은 reconcile.py를 import하지 않으므로(duck-typing 콜백만
 # 받는다) 값을 여기 별도로 둔다.
 _QTY_EPSILON = 1e-6
+
+# 상승률(prev_close/prev_prev_close - 1) 비교 허용 오차 — 정확히 29.5%인 종가쌍도
+# 부동소수 나눗셈은 0.29499999999999993처럼 근소하게 낮게 떨어질 수 있다
+# (예: 129.5/100 - 1). 리스크 레일에서는 이 근소한 차이로 "경계값은 통과시킨다"가
+# 되면 안 된다 — 실데이터에서도 같은 잡음이 나므로 안전측(차단 쪽)으로 반올림한다.
+_PCT_EPSILON = 1e-9
 
 logger = logging.getLogger(__name__)
 
@@ -307,6 +321,32 @@ class RiskManagerImpl:
         self._intraday_rail_overnight: set[str] = set(
             risk_cfg.get("overnight_strategies", []) or []
         )
+        # 전일 상한가 진입 금지 레일(2026-09-03, 소유자 결정 — 근거: KR 일봉
+        # 2016~2026 3,263종목 실측, 상한가(+29.5%) 익일 매수가 −227bp(1일 보유)~
+        # −358bp(대형주 유니버스)로 전체 스크린에서 가장 강하고 일관된 음의
+        # 엣지였다). ENTER_LONG/SCALE_IN에만 적용 — 청산은 절대 막지 않는다(이
+        # 파일의 공통 원칙, `_ENTRY_ACTIONS`). 텔레그램으로 수동 추가된 종목을
+        # 포함해 **모든 진입 경로**를 통과하므로 전략별이 아니라 이 레일(모든
+        # 전략 공통)에 둔다 — watch_scorer._check_prerequisites(L2, 자동등록
+        # 자체를 막음)와는 다른 방어선이다.
+        prev_lu_cfg = risk_cfg.get("prev_limit_up_block", {}) or {}
+        self.prev_limit_up_block_enabled = bool(prev_lu_cfg.get("enabled", True))
+        self.prev_limit_up_threshold_pct = float(prev_lu_cfg.get("threshold_pct", 29.5)) / 100
+        self.prev_limit_up_markets: set[str] = {
+            str(m).upper() for m in (prev_lu_cfg.get("markets") or ["KR"])
+        }
+        # 지금은 "직전 1세션"만 판정한다(사유 문구 "전일"이 그 의미다) — 이 값은
+        # 조회할 일봉 개수(n = lookback+2, 기본 3)를 정할 뿐이다.
+        self.prev_limit_up_lookback_sessions = max(
+            1, int(prev_lu_cfg.get("lookback_sessions", 1))
+        )
+        # 데이터 장애로 판정을 건너뛴 횟수 — 절대 차단으로 이어지지 않지만(아래
+        # `_prev_limit_up_blocked` 참고) 조용히 늘 통과되는 것과 breaker_state()로
+        # 드러나는 것은 다르다(운영자가 데이터 소스 상태를 알아야 한다).
+        self._prev_limit_up_data_missing_count = 0
+        # {symbol: 거래일} — 같은 심볼의 데이터 누락 로그를 하루 1회로 줄인다
+        # (사이클마다 재조회되므로 dedup 없으면 로그가 도배된다).
+        self._prev_limit_up_warned_today: dict[str, str] = {}
         # 기본값은 기존 동작(capital_fraction) — 설정에 없으면 결과가 바뀌지 않는다.
         self.sizing_mode = str(risk_cfg.get("sizing_mode", "capital_fraction"))
         # 전략별 독립 명목계정(2026-08-19). 기본값 "shared" — 설정에 명시하지 않으면
@@ -639,6 +679,14 @@ class RiskManagerImpl:
                 "max_total_exposure_pct": self.max_total_exposure_pct * 100,
             },
             "sizing_mode": self.sizing_mode,
+            "prev_limit_up_block": {
+                "enabled": self.prev_limit_up_block_enabled,
+                "threshold_pct": self.prev_limit_up_threshold_pct * 100,
+                "markets": sorted(self.prev_limit_up_markets),
+                # 일봉 조회 실패로 판정을 건너뛴 누적 횟수 — 절대 차단으로 이어지지
+                # 않지만(생성자 주석) 데이터 소스 상태를 운영자가 볼 수 있어야 한다.
+                "data_missing_skips": self._prev_limit_up_data_missing_count,
+            },
         }
 
     def _capital_fraction_for(self, strategy_id: str, market: str) -> float:
@@ -712,6 +760,85 @@ class RiskManagerImpl:
             strategy_id in self._intraday_rail_overnight
             or _base_strategy_id(strategy_id) in self._intraday_rail_overnight
         )
+
+    def _log_prev_limit_up_data_missing(
+        self, symbol: str, ctx: Context, err: Exception | None,
+    ) -> None:
+        """전일 상한가 레일이 데이터 부재로 판정을 건너뛸 때의 관측 경로 — 스탯
+        카운터는 매번 올리되(breaker_state() 노출용), 로그는 심볼당 하루 1회로
+        줄인다(사이클마다 재조회되므로 dedup 없으면 도배된다)."""
+        self._prev_limit_up_data_missing_count += 1
+        try:
+            today = trading_day(ctx.clock.now()).isoformat()
+        except Exception:  # noqa: BLE001 — 로그 dedup 실패는 그냥 매번 로그한다
+            today = None
+        if today is not None and self._prev_limit_up_warned_today.get(symbol) == today:
+            return
+        if today is not None:
+            self._prev_limit_up_warned_today[symbol] = today
+        if err is not None:
+            logger.debug(
+                "전일 상한가 레일: %s 일봉 조회 실패 — 차단하지 않고 통과: %s: %s",
+                symbol, type(err).__name__, err,
+            )
+        else:
+            logger.debug("전일 상한가 레일: %s 일봉 데이터 없음 — 차단하지 않고 통과", symbol)
+
+    def _prev_limit_up_blocked(
+        self, signal: Signal, ctx: Context, market: str, price: float,
+    ) -> bool:
+        """전일 상한가(또는 당일 진행 중인 상한가) 종목의 신규 진입을 막는다
+        (생성자 `prev_limit_up_block` 주석 — 소유자 결정 + 실측 근거).
+
+        블로킹 판정 둘:
+        1. **전일**: 마지막 완성 일봉 종가가 그 전날 대비 threshold 이상 상승.
+        2. **당일**: 지금 quote가 전일 종가 대비 threshold 이상 상승(상한가
+           진행 중인 종목을 지금 쫓아 들어가는 것도 같은 논지로 막는다).
+
+        일봉 조회 실패(빈 프레임/`DataSourceError`, `ColdFetchBudgetExceeded`
+        포함 — 그 하위클래스)는 **차단하지 않는다** — 데이터 장애가 거래 정지로
+        번지면 안 된다는 이 파일의 회로차단기 철학 그대로다."""
+        if not self.prev_limit_up_block_enabled or market not in self.prev_limit_up_markets:
+            return False
+        try:
+            bars = self._bar_ts_daily(signal.symbol, ctx)
+        except DataSourceError as e:
+            self._log_prev_limit_up_data_missing(signal.symbol, ctx, e)
+            return False
+        if bars is None or bars.empty or "close" not in bars.columns:
+            self._log_prev_limit_up_data_missing(signal.symbol, ctx, None)
+            return False
+        closes = bars["close"].dropna()
+        if closes.empty:
+            self._log_prev_limit_up_data_missing(signal.symbol, ctx, None)
+            return False
+
+        prev_close = float(closes.iloc[-1])
+        if prev_close > 0 and math.isfinite(price):
+            current_move = price / prev_close - 1
+            if current_move >= self.prev_limit_up_threshold_pct - _PCT_EPSILON:
+                self._block(
+                    f"당일 상한가 진입 금지(리스크 레일): +{current_move * 100:.1f}%"
+                )
+                return True
+
+        if len(closes) >= 2:
+            prev_prev_close = float(closes.iloc[-2])
+            if prev_prev_close > 0:
+                prev_move = prev_close / prev_prev_close - 1
+                if prev_move >= self.prev_limit_up_threshold_pct - _PCT_EPSILON:
+                    self._block(
+                        f"전일 상한가 종목 진입 금지(리스크 레일): +{prev_move * 100:.1f}%"
+                    )
+                    return True
+        return False
+
+    def _bar_ts_daily(self, symbol: str, ctx: Context):
+        """전일 상한가 레일 전용 일봉 조회 — `n = lookback_sessions + 2`
+        (기본 lookback=1 → n=3: prev_close/prev_prev_close 계산에 필요한
+        최소 2개 + 여유 1). `_bar_ts`(쿨다운 전용, 전략 봉 간격 기준)와는
+        조회 목적이 달라 별도로 둔다 — 이 레일은 항상 일봉만 본다."""
+        return ctx.data.history(symbol, "1d", self.prev_limit_up_lookback_sessions + 2)
 
     def _approve_entry_per_strategy(
         self,
@@ -1090,6 +1217,11 @@ class RiskManagerImpl:
                     return None
                 del self._stop_bar_ts[key]  # 쿨다운 종료 — 상태 정리
                 self._stop_day.pop(key, None)
+
+        if signal.action in _ENTRY_ACTIONS and self._prev_limit_up_blocked(
+            signal, ctx, market, price,
+        ):
+            return None
 
         if signal.action in _ENTRY_ACTIONS and self._pending_entry_qty is not None:
             # 미체결 중복 진입 가드(2026-09-01). `held_lot`/`my_lot`(strategy/kernel.py)이

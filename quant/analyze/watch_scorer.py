@@ -182,6 +182,20 @@ _STRUCTURAL_EXCLUSIONS = {
 # 게이트는 별도 지시가 없다 — _check_prerequisites 호출부에서 is_kr로 이미 막는다).
 _MIN_MARKET_CAP_KRW = 300_000_000_000
 
+# 전일 상한가 종목 자동등록 차단(2026-09-03 소유자 결정, L2 — 프리퍼시티 게이트).
+# KR 일봉 2016~2026 실측(3,263종목): 상한가(+29.5%) 다음날 매수가 −227~−358bp로
+# 전체 스크린 최강·최일관된 음의 엣지였다. **이 파일은 quant/trade/를 임포트할
+# 수 없어**(평면 규칙, 루트 CLAUDE.md) risk/manager.py `prev_limit_up_block.
+# threshold_pct`와 값을 코드로 공유하지 못한다 — 이 상수를 바꾸면 그쪽도 같이
+# 맞출 것(이 파일의 다른 하드코딩 게이트, 예 `_MIN_MARKET_CAP_KRW`, ATR 0.5~15%
+# 와 같은 처지). 이 게이트는 **자동등록만** 막는다 — 수동 /watch는 여전히 가능
+# (다른 프리퍼시티 실패와 동일한 원칙).
+_PREV_LIMIT_UP_THRESHOLD_PCT = 29.5
+# 부동소수 나눗셈 오차 흡수(risk/manager.py `_PCT_EPSILON`과 같은 이유) — 정확히
+# 29.5%인 종가쌍도 (last_close/prev_prev_close-1)*100이 29.499999...로 근소하게
+# 낮게 나올 수 있다. 안전측(차단 쪽)으로 반올림한다.
+_PCT_EPSILON = 1e-9
+
 
 def _market_cap_krw(info: dict | None, last_close: float) -> int | None:
     """`stock_info`(ETF 판정·레버리지 정규화에 이미 쓰는 그 응답)의
@@ -282,6 +296,18 @@ def _check_prerequisites(
             )
         else:
             info.append(f"시총 확인: {market_cap:,.0f}원 (≥3,000억 통과)")
+
+        # 전일 상한가 게이트(L2 — 소유자 결정, 근거는 모듈 상단 상수 주석 참고).
+        # ATR/시총 게이트와 같은 `daily`(이미 조회된 일봉)를 재사용한다 — 별도
+        # 조회 없음. daily는 `score_symbol`이 이미 오늘(미완성) 행을 잘라냈으므로
+        # iloc[-1]이 "마지막 완성 세션"이다.
+        prev_prev_close = float(daily["close"].iloc[-2])
+        if prev_prev_close > 0:
+            prev_session_return_pct = (last_close / prev_prev_close - 1) * 100
+            if prev_session_return_pct >= _PREV_LIMIT_UP_THRESHOLD_PCT - _PCT_EPSILON:
+                failures.append(
+                    f"전일 상한가: +{prev_session_return_pct:.1f}% (자동등록 차단, 수동 /watch는 가능)"
+                )
 
         is_etf, product_reason = _check_kr_product(stock_info)
         if is_etf is False:

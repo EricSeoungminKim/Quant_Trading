@@ -1421,6 +1421,20 @@ risk:
     - close_bet
     - overnight_drift
     - rsi2_dip
+  # 전일/당일 상한가 진입 금지(2026-09-03, 소유자 결정 — "상한가 종목 진입 금지
+  # 필터 단타 전략에 바로 적용해줘"). 근거: KR 일봉 2016~2026 3,263종목 실측에서
+  # 상한가(+29.5%) 다음날 매수가 −227bp(1일 보유)~−358bp(대형주 유니버스)로
+  # 전체 스크린에서 가장 강하고 일관된 음의 엣지였다. **전 전략·모든 진입 경로**
+  # (텔레그램으로 손으로 추가한 종목 포함)에 적용되는 회로차단기다 — 전략별로
+  # 심지 않는다(risk/manager.py `_prev_limit_up_blocked`). 청산은 절대 막지
+  # 않는다(이 파일 상단 원칙과 동일). markets에 없는 시장은 완전히 통과(현재
+  # KR만 — 미국은 상하한가 제도 자체가 다르다). 이 게이트는 자동등록 단계에서도
+  # 한 번 더 걸린다(watch_scorer._check_prerequisites, L2 — 사유 "전일 상한가").
+  prev_limit_up_block:
+    enabled: true
+    threshold_pct: 29.5
+    markets: [KR]
+    lookback_sessions: 1 # 지금은 "직전 1세션"만 판정 — 조회할 일봉 개수(n=lookback+2)만 조절
 
 execution:
   broker: toss # toss | kiwoom

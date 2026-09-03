@@ -874,6 +874,15 @@ def cmd_watch_score(args: argparse.Namespace) -> None:
     if cap_rejected:
         print(f"시총 <3,000억 탈락 {cap_rejected}건")
 
+    # 전일 상한가 게이트 탈락 요약(2026-09-03 소유자 결정) — 위 시총 요약과 같은
+    # 패턴. watch_scorer._check_prerequisites의 "전일 상한가: +X.X%" 사유 문자열과
+    # 접두어를 맞춘다.
+    prev_limit_up_rejected = sum(
+        1 for r in results if any(reason.startswith("전일 상한가") for reason in r.reasons)
+    )
+    if prev_limit_up_rejected:
+        print(f"전일 상한가 탈락 {prev_limit_up_rejected}건")
+
     print(f"PASS: {' '.join(passing) if passing else '없음'}")
 
 

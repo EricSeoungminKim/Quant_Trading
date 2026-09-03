@@ -1018,6 +1018,71 @@ def test_market_cap_gate_not_applied_to_us_symbols():
 
 
 # ---------------------------------------------------------------------------
+# 전일 상한가 게이트 (소유자 결정, 2026-09-03 — L2, risk/manager.py의
+# prev_limit_up_block(L1 회로차단기)와 짝을 이루는 자동등록 단계 방어선). 근거는
+# 모듈 상단 `_PREV_LIMIT_UP_THRESHOLD_PCT` 주석의 실측 수치와 같은 원장이다.
+# ---------------------------------------------------------------------------
+
+def _kr_daily_with_prev_session_return(pct: float) -> pd.DataFrame:
+    """`_uptrend_kr_daily()` 기반, 마지막 완성 세션의 종가만 전날 종가 대비 pct%로
+    덮어쓴다 — 다른 프리퍼시티(ATR/유동성/시총)에 쓰이는 나머지 행은 그대로 둬서
+    이 게이트만 격리해서 검증한다."""
+    d = _uptrend_kr_daily().copy()
+    close_col, open_col = d.columns.get_loc("close"), d.columns.get_loc("open")
+    high_col, low_col = d.columns.get_loc("high"), d.columns.get_loc("low")
+    prev_close = float(d.iloc[-2, close_col])
+    new_close = prev_close * (1 + pct / 100)
+    d.iloc[-1, open_col] = prev_close
+    d.iloc[-1, close_col] = new_close
+    d.iloc[-1, high_col] = max(new_close, prev_close) * 1.01
+    d.iloc[-1, low_col] = min(new_close, prev_close) * 0.99
+    return d
+
+
+def test_prev_limit_up_blocks_prereq_at_exactly_threshold():
+    d = _kr_daily_with_prev_session_return(29.5)
+    client = _FakeClient(d)  # 기본 stock_info = ETF + 시총 통과(모듈 상단 주석 참고)
+    failures, _info = _check_prerequisites(d, "005930", is_kr=True, client=client, today=d.index[-1].date())
+    assert any(reason.startswith("전일 상한가") for reason in failures)
+
+
+def test_prev_limit_up_blocks_above_threshold():
+    d = _kr_daily_with_prev_session_return(35.0)
+    client = _FakeClient(d)
+    failures, _info = _check_prerequisites(d, "005930", is_kr=True, client=client, today=d.index[-1].date())
+    assert any(reason.startswith("전일 상한가") for reason in failures)
+
+
+def test_prev_limit_up_allows_just_below_threshold():
+    d = _kr_daily_with_prev_session_return(29.4)
+    client = _FakeClient(d)
+    failures, _info = _check_prerequisites(d, "005930", is_kr=True, client=client, today=d.index[-1].date())
+    assert not any(reason.startswith("전일 상한가") for reason in failures)
+
+
+def test_prev_limit_up_gate_not_applied_to_us_symbols():
+    d = _kr_daily_with_prev_session_return(50.0)
+    client = _FakeClient(d)
+    failures, _info = _check_prerequisites(d, "TQQQ", is_kr=False, client=client, today=d.index[-1].date())
+    assert not any("상한가" in f for f in failures)
+
+
+def test_prev_limit_up_fails_prereq_via_score_symbol():
+    """`_check_prerequisites` 단위가 아니라 `score_symbol` 경유로도 prereq_ok가
+    False로 떨어지는지 확인 — cmd_watch_score의 자동등록 차단이 실제로 이 실패에
+    묶여 있다."""
+    d = _kr_daily_with_prev_session_return(40.0)
+    client = _FakeClient(d)
+    # today는 마지막 봉 날짜의 **다음날**이어야 한다 — score_symbol은 `today` 당일
+    # (및 이후) 행을 미완성으로 간주해 잘라낸다(개장 전후 RVOL 붕괴 방지). 마지막
+    # 봉 날짜를 그대로 today로 주면 방금 조작한 마지막 행 자체가 잘려나간다.
+    today = d.index[-1].date() + timedelta(days=1)
+    r = score_symbol(d, "005930", ["TREND"], None, client, today=today)
+    assert r.prereq_ok is False
+    assert any(reason.startswith("전일 상한가") for reason in r.reasons)
+
+
+# ---------------------------------------------------------------------------
 # 주도 섹터 보너스 (sector_daily_adjustment) — 소유자 철학 지시 B, 2026-09-03
 # ---------------------------------------------------------------------------
 
