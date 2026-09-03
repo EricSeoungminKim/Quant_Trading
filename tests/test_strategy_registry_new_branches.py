@@ -74,6 +74,18 @@ def test_enabled_in_real_config_now_that_tag_wiring_is_done():
     # 내려갔다. 오버나이트/장기 아이디어는 이제 quant/analyze/manual_recs.py(텔레그램
     # 추천) 레인으로 간다 — 코드·params·capital_fraction은 보존(측정 기준점 +
     # 추후 복원, 자본 재분배 없음).
+    #
+    # **정당한 승격이 이 assert 넷 중 하나를 깰 수 있다** — `quant.apps.cli promote`
+    # (quant/control/promotion.py, 2026-09-03)가 백테스트 게이트 GO를 반영하면
+    # 해당 전략의 `enabled`가 `false → true`로 뒤집힌다. 이 테스트는 그걸 회귀로
+    # 오인해 막으면 안 된다: 실제로 그 전략을 승격했다면(백테스트 게이트 GO +
+    # `promote` 실행이 config/settings.yaml에 반영된 게 맞다면) **이 테스트를 같은
+    # 커밋에서 그 전략의 기대값을 `True`로 고치고, 위 소유자 결정 이력에 승격
+    # 근거(게이트 파일 경로 등)를 남긴다** — assert를 지우거나 완화하지 않는다
+    # (여기 없는 전략을 새로 승격했을 때도 동일한 절차: 그 전략용 assert를
+    # 추가한다). 반대로 이 assert가 실패했는데 승격한 기억이 없다면 그건 진짜
+    # 회귀다(누군가 settings.yaml을 실수로 건드렸거나 promote를 잘못된 대상에
+    # 돌렸다는 뜻).
     assert strat_cfg["frgn_accumulate"]["enabled"] is False
     assert strat_cfg["close_bet"]["enabled"] is False
     assert strat_cfg["overnight_drift"]["enabled"] is False

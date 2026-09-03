@@ -98,13 +98,22 @@ universe:
       allow_kr_stocks: true
 
 # --- 전략 검증 게이트 (2026-08-11 사용자 지시: "검증 규율을 따르게끔 구축") ---
-# 모든 전략은 validation.status를 선언해야 한다:
-#   verified — 백테스트/라이브로 검증됨. evidence(근거 문자열) 필수 — 없으면
-#              조립이 burn_in으로 강등하고 경고한다. 거짓 선언을 막는 최소 장치.
-#   burn_in  — 미검증. capital_fraction이 아래 상한으로 강제 캡핑된다.
-# 승격 조건: 스코어보드 종결 30건 이상 + 승률 신뢰구간이 50%를 위로 벗어날 것
-# (ledger.py의 판정 기준과 동일). 사람이 evidence를 채워 verified로 올린다 —
-# 코드가 자동 승격하지 않는다(숫자 조작 유인 차단).
+# 모든 전략은 validation.status를 선언해야 한다(2026-09-03: 3단계로 확장):
+#   burn_in       — 미검증. capital_fraction이 아래 상한(0.2)으로 강제 캡핑된다.
+#                   (기본값 — validation 블록 자체가 없어도 이 취급.)
+#   backtest_pass — `quant.apps.cli promote`(quant/control/promotion.py)가 붙이는
+#                   중간 상태: 백테스트 게이트(backtest-gate CLI)가 GO 판정을
+#                   냈지만 아직 paper 라운드트립 검증 전. capital_fraction 캡은
+#                   burn_in과 동일(0.2) — 기동 로그에만 evidence 요약이 별도로
+#                   찍힌다(assembly.validated_capital_fractions).
+#   verified      — 위 backtest_pass에서 paper 30 라운드트립 + 승률 신뢰구간이
+#                   50%를 위로 벗어난 뒤 사람이 승격. evidence(근거 문자열/dict)
+#                   필수 — 없으면 조립이 burn_in으로 강등하고 경고한다(거짓 선언을
+#                   막는 최소 장치).
+# 경로: burn_in → (backtest-gate GO + promote) → backtest_pass →
+#       (paper 30 라운드트립 + 승률 유의, ledger.py 판정 기준과 동일) → verified.
+# backtest_pass→verified 승격은 여전히 사람이 evidence를 채워서 한다 — 코드가
+# 자동 승격하지 않는다(숫자 조작 유인 차단).
 validation_gate:
   burn_in_max_capital_fraction: 0.2
 

@@ -42,8 +42,14 @@ from datetime import datetime
 import pandas as pd
 
 from quant.apps.config import load_settings
-from quant.core.models import market_of
-from quant.trade.loop import CycleTimings, run_cycle
+from quant.core.models import Signal, SignalAction, market_of
+# `_execute_signal`은 비공개지만 **의도적으로** 재사용한다. 봉내(intrabar) 청산이
+# 승인(risk.approve) → 주문 → 체결 → 싱크 → 랏 정리를 거치는 경로가 전략이 낸
+# EXIT 시그널과 **한 글자도 다르면 안 되기 때문**이다. 브로커를 직접 조작해
+# 포지션을 깎는 지름길을 쓰면 수수료·원장·books·lots 정리가 정상 경로와 갈라지고,
+# 그 갈라짐은 백테스트 숫자에만 나타나 아무도 못 본다. `quant/trade/loop.py`의
+# `_hard_rail_exit`(엔진 레벨 하드레일)이 쓰는 것과 정확히 같은 패턴이다.
+from quant.trade.loop import CycleTimings, _execute_signal, run_cycle
 from quant.core.clock import SimClock
 from quant.adapters.data.history import HistoryDataFeed
 from quant.adapters.data.resample import resample_1m
@@ -64,7 +70,14 @@ _DEFAULT_START_CASH_KRW = 5_000_000.0
 _TRADE_COLUMNS = [
     "ts", "symbol", "side", "qty", "price", "fee",
     "fee_krw", "realized_pnl_krw", "notional_krw", "pnl", "reason",
+    # 이 체결이 어떤 체결 모델로 났는가 — "close"(봉 마감가) 또는 "intrabar"
+    # (봉 안에서 손절/목표선이 닿아 그 가격으로 체결). 체결 로그를 나중에 읽는
+    # 사람이 "이 손절은 15분 뒤 종가로 난 것"과 "봉 안에서 난 것"을 구분할 수
+    # 없으면 비용 가정이 통째로 틀어진다.
+    "fill_model",
 ]
+
+FILL_MODELS = ("close", "intrabar")
 
 # 항등식 허용 오차. 이 항등식은 대수적으로 **정확히** 성립하므로(아래 _reconcile
 # 참고) 남는 것은 float64 누적 오차뿐이다. 체결 수천 건 x 자산 규모 1e7 KRW에서
@@ -104,6 +117,19 @@ class BacktestResult:
     # KR 봉을 모른다는 ValueError를 run_cycle이 삼킴). 키는 strategy_id, 값은
     # {"cycles_skipped": int, "last_error": str}.
     strategy_errors: dict = field(default_factory=dict)
+    # 이 결과를 만든 체결 모델("close" | "intrabar", 2026-09-03). 성과 숫자와
+    # **반드시 붙어 다녀야 하는 가정**이다 — 봉 마감 체결은 타이트한 손절을 쓰는
+    # 일중 전략을 구조적으로 실제보다 좋게 만든다(손절선이 봉 안에서 닿아도 다음
+    # 마감까지 못 본다). 두 숫자를 비교할 때 모델이 다르면 비교 자체가 무의미하다.
+    fill_model: str = "close"
+    # 봉내 체결 모델이 실제로 몇 번 발동했나. 0이면 "봉내 손절이 한 번도 없었다"는
+    # 뜻이고, 그건 결과가 close 모델과 같아야 한다는 검증 가능한 주장이 된다.
+    intrabar_stop_fills: int = 0
+    intrabar_target_fills: int = 0
+    # 같은 봉에서 손절선과 목표선이 **둘 다** 닿은 횟수. 어느 쪽이 먼저였는지는
+    # 봉 데이터로 알 수 없으므로 보수적으로 손절을 택했다 — 이 횟수가 크면
+    # 그 백테스트의 결과는 봉 간격을 줄이기 전까지 신뢰도가 낮다.
+    both_touched_conservative: int = 0
 
 
 def _interval_to_minutes(interval: str) -> int:
@@ -175,6 +201,191 @@ def _union_bar_closes(indexes: list[pd.DatetimeIndex]) -> pd.DatetimeIndex:
     return closes
 
 
+def _interval_bars_of(data, symbol: str, interval: str, minutes: int) -> pd.DataFrame:
+    """피드에서 `interval` 완성봉 OHLC 프레임(인덱스 = 봉 **시가** 시각)을 얻는다.
+
+    `HistoryDataFeed`는 `interval_bars()`로 자기 선택 규칙(1분봉 리샘플 vs native
+    저장소)을 캡슐화하고 있으므로 그걸 그대로 쓴다. `StubDataFeed`는 1분봉만
+    합성하므로(`bars_1m` 공개) 엔진이 리플레이 타임라인을 뽑을 때와 **정확히 같은**
+    리샘플을 여기서도 한다 — 타임라인과 봉 내용이 서로 다른 규칙에서 나오면
+    "그 시각에 봉이 없다"는 판정이 조용히 어긋난다.
+
+    `data.history()`를 쓰지 않는 이유: 그쪽은 리플레이 시각 기준 look-ahead 방지
+    경계(마감된 봉만)를 적용하느라 세션 마지막 봉이 빠지는 등 경계가 다르다.
+    체결 모델이 보는 것은 "지금 리플레이 중인 그 봉"이고 그 봉은 정의상 이미
+    확정돼 있다(엔진이 그 마감 시각에 서 있다)."""
+    getter = getattr(data, "interval_bars", None)
+    if callable(getter):
+        return getter(symbol, interval)
+    bars_1m = getattr(data, "bars_1m", {}).get(symbol)
+    if bars_1m is None or bars_1m.empty:
+        return pd.DataFrame()
+    return resample_1m(bars_1m, minutes)
+
+
+def _open_lot_keys(broker) -> set[tuple[str, str]]:
+    """지금 열려 있는 (심볼, 전략) 랏 키 집합. 봉내 체결의 look-ahead 방지에 쓴다."""
+    keys: set[tuple[str, str]] = set()
+    for symbol, pos in broker.positions().items():
+        if not pos.is_open:
+            continue
+        for strategy_id, lot in (pos.meta.get("lots") or {}).items():
+            try:
+                if float(lot.get("qty", 0.0) or 0.0) > 0:
+                    keys.add((symbol, strategy_id))
+            except (TypeError, ValueError):
+                continue
+    return keys
+
+
+def _lot_level(lot: dict, key: str) -> float | None:
+    """랏의 stop/target 을 숫자로. 숫자가 아니면 **없는 것으로 친다** — 문자열
+    "없음"이나 None을 0으로 떨어뜨리면 저가 0 비교가 항상 참이 돼 전 포지션이
+    첫 봉에서 손절된다."""
+    value = lot.get(key)
+    if value is None:
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    return num if num > 0 else None
+
+
+class _IntrabarFiller:
+    """`fill_model="intrabar"` 의 전부 — 봉 **안에서** 닿은 손절/목표를 그 봉의
+    마감 전에 체결시킨다.
+
+    ## 왜 필요한가 (이 저장소 최대의 백테스트 정확도 결함)
+
+    리플레이 엔진은 봉 마감마다 1회 판단한다. 그래서 15분봉 백테스트에서 손절선이
+    봉 시작 1분 뒤에 닿아도 엔진은 **15분 뒤 종가**에서야 그것을 본다. 종가가
+    손절선 위로 되돌아왔다면 그 손절은 아예 일어나지 않은 것이 된다. 타이트한
+    손절을 쓰는 일중 전략일수록 이 왜곡이 크고, 방향은 항상 **낙관** 쪽이다.
+
+    ## 규칙 (전부 보수적인 쪽)
+
+    - 손절: `bar.low <= stop` 이면 `min(stop, bar.open)` 에 체결. 시가가 이미
+      손절선 아래로 갭했으면 시가 체결이고, 그 외에는 손절선 체결이다 —
+      **손절선보다 좋은 가격은 절대 주지 않는다**. KR 동시호가/세션 첫 봉의
+      갭 관통도 이 한 줄이 그대로 덮는다.
+    - 목표: `bar.high >= target` 이면 `max(target, bar.open)` 에 체결(같은 원리의 반대편).
+    - 한 봉에서 **둘 다** 닿으면 손절이 이긴다. 봉 데이터로는 선후를 알 수 없고,
+      모르는 것은 불리한 쪽으로 가정한다(`both_touched_conservative` 로 센다).
+    - 부분청산 개념은 두지 않는다 — 해당 랏의 **잔량 전부**를 청산한다.
+    - 진입은 여전히 봉 마감가다. 전략은 **완성된 봉**을 보고 판단하고 루프의
+      시세는 그 마감가이기 때문이다 — 봉 안에서 진입가를 지어내면 그건 체결
+      모델이 아니라 전략을 바꾸는 것이다.
+
+    ## look-ahead 방지
+
+    봉 t 의 OHLC 로 판정하는 대상은 **봉 t 이전에 이미 열려 있던 랏뿐**이다.
+    직전 사이클이 끝난 뒤 스냅샷한 `_eligible` 이 그 경계다 — 봉 t 마감에
+    진입한 랏은 봉 t 의 저가에 걸리지 않는다(그 저가는 진입 전에 이미 지나갔다).
+    """
+
+    def __init__(self, data, interval: str, minutes: int, ctx, risk, sinks, set_mode) -> None:
+        self._data = data
+        self._interval = interval
+        self._minutes = minutes
+        self._ctx = ctx
+        self._risk = risk
+        self._sinks = sinks
+        self._set_mode = set_mode
+        self._frames: dict[str, tuple | None] = {}
+        self._eligible: set[tuple[str, str]] = set()
+        self.stop_fills = 0
+        self.target_fills = 0
+        self.both_touched = 0
+
+    def _bar(self, symbol: str, ts: pd.Timestamp):
+        """그 심볼의 `ts` 마감 봉 (open, high, low). 없으면 None(휴장·상장 전 등)."""
+        frame = self._frames.get(symbol, False)
+        if frame is False:
+            df = _interval_bars_of(self._data, symbol, self._interval, self._minutes)
+            if df is None or df.empty:
+                frame = None
+            else:
+                frame = (
+                    df.index + pd.Timedelta(minutes=self._minutes),
+                    df["open"].to_numpy(dtype=float),
+                    df["high"].to_numpy(dtype=float),
+                    df["low"].to_numpy(dtype=float),
+                )
+            self._frames[symbol] = frame
+        if frame is None:
+            return None
+        closes, opens, highs, lows = frame
+        i = int(closes.searchsorted(ts))
+        if i >= len(closes) or closes[i] != ts:
+            return None
+        return opens[i], highs[i], lows[i]
+
+    def snapshot(self, broker) -> None:
+        """사이클 종료 시점의 열린 랏을 다음 봉의 판정 대상으로 굳힌다."""
+        self._eligible = _open_lot_keys(broker)
+
+    def scan(self, ts: pd.Timestamp, broker) -> None:
+        """봉 `ts` 의 전략 사이클 **직전**에 호출한다."""
+        if not self._eligible:
+            return
+        # list(): 청산이 체결되면 positions/lots 딕셔너리가 순회 중에 줄어든다
+        # (PaperBroker가 전량 청산 랏을 pop 한다) — loop.py의 하드레일과 같은 이유.
+        for symbol, pos in list(broker.positions().items()):
+            if not pos.is_open:
+                continue
+            bar = self._bar(symbol, ts)
+            if bar is None:
+                continue
+            bar_open, bar_high, bar_low = bar
+            for strategy_id, lot in list((pos.meta.get("lots") or {}).items()):
+                if (symbol, strategy_id) not in self._eligible:
+                    continue  # 이 봉 마감에 새로 생긴 랏 — 이 봉의 고저로 판정하지 않는다
+                try:
+                    if float(lot.get("qty", 0.0) or 0.0) <= 0:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                stop = _lot_level(lot, "stop")
+                target = _lot_level(lot, "target")
+                hit_stop = stop is not None and bar_low <= stop
+                hit_target = target is not None and bar_high >= target
+                if hit_stop and hit_target:
+                    self.both_touched += 1
+                if hit_stop:
+                    price = min(stop, bar_open)
+                    reason = f"봉내 손절(intrabar): stop={stop:g} low={bar_low:g}"
+                    self.stop_fills += 1
+                elif hit_target:
+                    price = max(target, bar_open)
+                    reason = f"봉내 익절(intrabar): target={target:g} high={bar_high:g}"
+                    self.target_fills += 1
+                else:
+                    continue
+                self._exit(symbol, strategy_id, price, reason, broker)
+
+    def _exit(self, symbol: str, strategy_id: str, price: float, reason: str, broker) -> None:
+        signal = Signal(
+            strategy_id=strategy_id,
+            symbol=symbol,
+            action=SignalAction.EXIT_LONG,
+            target_weight=0.0,
+            exit_fraction=1.0,
+            reason=reason,
+        )
+        self._sinks.on_signal(signal)
+        previous = getattr(broker, "fill_price_override", None)
+        broker.fill_price_override = price
+        self._set_mode("intrabar")
+        try:
+            _execute_signal(signal, self._ctx, self._risk, self._sinks, None)
+        finally:
+            # try/finally 가 아니면 예외 한 번에 오버라이드가 남아 **그 뒤 모든
+            # 체결이 손절가로 난다** — 조용히 전 구간이 오염된다.
+            broker.fill_price_override = previous
+            self._set_mode("close")
+
+
 def run_backtest(
     strategy_id: str = "donchian",
     days: int = 90,
@@ -185,6 +396,7 @@ def run_backtest(
     param_overrides: dict | None = None,
     symbols: list[str] | None = None,
     history_dir: str | Path | None = None,
+    fill_model: str = "close",
 ) -> BacktestResult:
     """`end`/`param_overrides`는 quant/research/(walk-forward·파라미터 탐색)가
     임의의 과거 구간·파라미터 조합으로 이 함수를 반복 호출하기 위해 추가된 것 —
@@ -201,9 +413,20 @@ def run_backtest(
     그날의 관심종목으로 채우지만, 백테스트는 그 조립을 재현하지 않으므로 호출자가
     직접 지정해야 한다. 지정하지 않았는데 전략의 symbols가 비어 있으면(watchlist
     전략을 심볼 없이 돌리면) 명확한 에러로 멈춘다 — symbols[0] 접근이 IndexError로
-    죽게 두면 원인을 알 수 없다."""
+    죽게 두면 원인을 알 수 없다.
+
+    fill_model: "close"(기본) = 지금까지의 동작 그대로 — 모든 체결이 봉 마감가다.
+    "intrabar" = 봉 안에서 닿은 손절/목표를 그 봉 안에서 체결시킨다(규칙은
+    `_IntrabarFiller` docstring). 기본값이 "close"인 이유는 **기존 결과를 한 글자도
+    바꾸지 않기 위해서**다 — 두 모델의 숫자를 나란히 봐야 봉 마감 체결이 얼마나
+    낙관적이었는지 알 수 있고, 기본값을 바꿔 버리면 그 비교 기준선이 사라진다."""
     if source not in ("stub", "history"):
         raise ValueError(f"지원하지 않는 데이터 소스: {source}")
+    if fill_model not in FILL_MODELS:
+        raise ValueError(
+            f"모르는 체결 모델: {fill_model!r} — 지원값은 {list(FILL_MODELS)}. "
+            "조용히 기본값으로 떨어뜨리지 않는다(어느 모델로 돈 결과인지 모르게 된다)."
+        )
 
     settings = load_settings(settings_path)
     cfg = settings.raw
@@ -380,6 +603,13 @@ def run_backtest(
 
     fx = broker.fx
     trade_rows: list[dict] = []
+    # 지금 집행 중인 체결이 어떤 모델로 나는가. 평소에는 "close"(봉 마감가)이고,
+    # `_IntrabarFiller`가 봉내 청산을 낼 때만 그 한 건 동안 "intrabar"로 바뀐다 —
+    # 리스트에 담는 이유는 클로저에서 재바인딩 없이 갈아끼우기 위해서다.
+    fill_mode = ["close"]
+
+    def _set_fill_mode(mode: str) -> None:
+        fill_mode[0] = mode
 
     class _TradeCapture:
         def on_signal(self, signal) -> None:
@@ -405,6 +635,7 @@ def run_backtest(
                 # 조용히 무한대가 된다. 환산은 여기서 한 번만 한다.
                 "notional_krw": to_krw(abs(fill.qty) * fill.price, market, fx),
                 "pnl": realized_krw - fee_krw, "reason": fill.reason,
+                "fill_model": fill_mode[0],
             })
 
     sinks = MultiSink([_TradeCapture()])
@@ -421,11 +652,24 @@ def run_backtest(
     # 넘어가, "거래 0건"이 조건 미충족인지 매 사이클 침묵 실패인지 구분할 수 없었다.
     strategy_error_counts: dict[str, int] = {}
     strategy_error_last: dict[str, str] = {}
+    # fill_model="close"면 filler 자체를 만들지 않는다 — 봉 프레임 로딩도, 랏
+    # 스냅샷도 일어나지 않으므로 기존 경로가 문자 그대로 그대로다.
+    filler = (
+        _IntrabarFiller(data, interval, minutes, ctx, risk, sinks, _set_fill_mode)
+        if fill_model == "intrabar" else None
+    )
     for ts in replay_closes:
         clock.set(_clock_now_for(ts, minutes))
         data.set_now(ts)
+        # 봉내 체결 판정은 **전략 사이클보다 먼저** 온다. 손절선은 봉 안에서
+        # 닿았으므로 그 봉의 마감 판단(신규 진입·추가매수 포함)보다 시간상 앞선다.
+        if filler is not None:
+            filler.scan(ts, broker)
         timings = CycleTimings()
         run_cycle(strategies, ctx, risk, sinks, notifier=None, timings=timings)
+        if filler is not None:
+            # 이 사이클이 끝난 시점의 열린 랏 = 다음 봉의 판정 대상(look-ahead 경계).
+            filler.snapshot(broker)
         for sid, err in timings.strategy_errors.items():
             strategy_error_counts[sid] = strategy_error_counts.get(sid, 0) + 1
             strategy_error_last[sid] = err
@@ -464,6 +708,10 @@ def run_backtest(
     return BacktestResult(
         equity_curve=equity_curve, trades=trades, metrics=metrics, reconciliation=reconciliation,
         benchmark=benchmark, strategy_errors=strategy_errors,
+        fill_model=fill_model,
+        intrabar_stop_fills=(filler.stop_fills if filler is not None else 0),
+        intrabar_target_fills=(filler.target_fills if filler is not None else 0),
+        both_touched_conservative=(filler.both_touched if filler is not None else 0),
     )
 
 

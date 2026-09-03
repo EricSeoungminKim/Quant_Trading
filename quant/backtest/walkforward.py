@@ -61,13 +61,18 @@ def run_walkforward(
     settings_path: str = "config/settings.yaml",
     anchor: datetime | pd.Timestamp | None = None,
     history_dir: str | None = None,
+    fill_model: str = "close",
 ) -> list[dict]:
     """`rolling_windows`가 뽑은 창마다 `run_backtest` → `fitness.evaluate`를 돌려
     fold별 결과 목록을 낸다. 파라미터는 전부 settings.yaml 그대로(param_overrides
     없음) — 창마다 바뀌는 것은 시간 구간뿐이다.
 
     `anchor`(기본 현재 시각)는 오프셋 계산의 기준점이다. 테스트가 결정론적으로
-    돌게 하려면 고정된 `anchor`를 넘긴다."""
+    돌게 하려면 고정된 `anchor`를 넘긴다.
+
+    `fill_model`은 `run_backtest`으로 **그대로 통과**시킬 뿐 이 모듈은 해석하지
+    않는다 — fold 마다 다른 체결 모델을 쓰면 fold 비교가 무의미해지므로 선택은
+    호출자가 한 번만 한다."""
     anchor_ts = pd.Timestamp(anchor) if anchor is not None else pd.Timestamp.now()
     windows = rolling_windows(total_days, window_days, step_days)
     folds: list[dict] = []
@@ -76,7 +81,7 @@ def run_walkforward(
         result = run_backtest(
             strategy_id=strategy_id, days=window_days, interval=interval, source=source,
             settings_path=settings_path, end=end_ts, symbols=symbols,
-            history_dir=history_dir,
+            history_dir=history_dir, fill_model=fill_model,
         )
         fit = evaluate(result)
         folds.append({

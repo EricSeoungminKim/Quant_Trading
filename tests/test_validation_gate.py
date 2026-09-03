@@ -66,6 +66,36 @@ def test_missing_validation_block_defaults_to_burn_in():
     assert validated_capital_fractions(cfg) == {"s": _both(0.2)}
 
 
+def test_backtest_pass_is_capped_like_burn_in():
+    """2026-09-03: 승격 CLI(quant/control/promotion.py)가 붙이는 backtest_pass는
+    백테스트 게이트 GO는 통과했지만 실거래/paper 검증 전이라 burn_in과 같은
+    상한을 받는다 — 자동 승격은 없다(사람이 30 라운드트립 이후 verified로 올린다)."""
+    cfg = _cfg({
+        "s": {
+            "capital_fraction": 0.4,
+            "validation": {"status": "backtest_pass", "evidence": {"gate_path": "x"}},
+        },
+    })
+    assert validated_capital_fractions(cfg) == {"s": _both(0.2)}
+
+
+def test_backtest_pass_does_not_log_as_unknown_status(caplog):
+    """backtest_pass는 인식된 상태다 — '알 수 없는 status' 경고(오타 감지용)를
+    타면 안 된다. info 로그(승격 진행 상황)만 남긴다."""
+    import logging
+
+    cfg = _cfg({
+        "s": {
+            "capital_fraction": 0.1,
+            "validation": {"status": "backtest_pass", "evidence": {"gate_path": "x"}},
+        },
+    })
+    with caplog.at_level(logging.INFO):
+        validated_capital_fractions(cfg)
+    assert not any("알 수 없음" in r.message for r in caplog.records)
+    assert any("backtest_pass" in r.message for r in caplog.records)
+
+
 def test_unknown_status_is_treated_as_burn_in():
     """오타(varified 등)가 게이트를 우회하면 안 된다."""
     cfg = _cfg({

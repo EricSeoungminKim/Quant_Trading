@@ -71,6 +71,19 @@ class PaperBroker:
         # portfolio.cash_usd만 움직이고 portfolio.cash(KRW)는 건드리지 않는다.
         # 환전 코드는 어디에도 없다 — 두 풀은 서로 절대 섞이지 않는다.
         self.dual_currency = dual_currency
+        # 체결 기준가 오버라이드(2026-09-03, 봉내 체결 모델용). None(기본)이면
+        # 기존 동작 100% 그대로 — `data.quote()`의 현재가로 체결한다. 값이 있으면
+        # 그 값을 **기준가**로 삼아 슬리피지를 평소와 똑같이 얹는다(슬리피지를
+        # 건너뛰지 않는다 — 봉내 손절은 오히려 슬리피지가 더 큰 국면이다).
+        #
+        # 왜 이 훅이 필요한가: 리플레이 백테스트(`quant.backtest.engine`)의
+        # `fill_model="intrabar"`은 봉 **안에서** 손절선이 닿았을 때 그 봉의
+        # 종가가 아니라 `min(stop, open)`으로 체결시켜야 한다. 브로커를 직접
+        # 조작해 포지션을 깎으면 수수료·원장·랏 상태가 정상 청산 경로와 갈라지므로,
+        # 체결 경로는 그대로 두고 **가격만** 갈아끼운다.
+        #
+        # paper/live 루프는 이 속성을 절대 건드리지 않는다(기본값 None 그대로).
+        self.fill_price_override: float | None = None
 
     def _fee_bps_for(self, market: str) -> float:
         """시장별 수수료(bp, 편도). dict인데 해당 시장이 없으면 0이 아니라 명시된 값 중
@@ -134,10 +147,15 @@ class PaperBroker:
             return oms.not_submitted(
                 order, "시세 없음/0 이하 — 주문 생성 불가", at=datetime.now(timezone.utc))
         slippage_bps = self._slippage_bps_for(order.symbol)
+        # 기준가: 평소엔 현재가, 오버라이드가 걸려 있으면(봉내 체결 모델) 그 값.
+        # 0 이하 오버라이드는 무시한다 — 가격 0으로 체결시키면 회계가 거짓말을 한다.
+        base_price = quote.price
+        if self.fill_price_override is not None and self.fill_price_override > 0:
+            base_price = float(self.fill_price_override)
         if order.side is Side.BUY:
-            price = quote.price * (1 + slippage_bps / 10_000)
+            price = base_price * (1 + slippage_bps / 10_000)
         else:
-            price = quote.price * (1 - slippage_bps / 10_000)
+            price = base_price * (1 - slippage_bps / 10_000)
         # dict는 힌트일 뿐 — 없으면 "US"로 떨어뜨리지 않고 심볼에서 계산한다.
         # market_of는 부팅 시점 스냅샷이라 장중에 편입된 관심종목이 빠져 있고,
         # KR 종목이 "US"로 오인되면 to_krw가 현금에 환율을 곱해 **장부가 통째로

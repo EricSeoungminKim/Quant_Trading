@@ -671,6 +671,11 @@ def validated_capital_fractions(cfg: dict) -> dict[str, dict[str, float]]:
       capital_fraction 그대로(시장별로).
     - `verified`인데 evidence가 없으면 **burn_in으로 강등** + 경고. 근거 없는 검증
       선언은 검증이 아니다.
+    - `backtest_pass`(2026-09-03, `quant/control/promotion.py`의 승격 CLI가 붙이는
+      상태 — 백테스트 게이트 GO는 통과했지만 아직 실거래/paper 라운드트립으로
+      검증되진 않았다) → capital_fraction 캡은 `burn_in`과 동일(0.2)하되, evidence
+      요약을 info 로그로 남기고 로그 메시지 자체로 burn_in과 구분한다("승격 근거는
+      있지만 실거래 검증 전"이라는 상태를 기동 로그에서 바로 읽을 수 있어야 한다).
     - `burn_in`(또는 validation 블록 자체가 없음 — 기본값이 안전한 쪽) →
       `validation_gate.burn_in_max_capital_fraction`(기본 0.2)으로 시장별 각각 캡.
     - 알 수 없는 status → burn_in 취급 + 경고. 오타가 게이트를 우회하면 안 된다.
@@ -693,6 +698,16 @@ def validated_capital_fractions(cfg: dict) -> dict[str, dict[str, float]]:
         if status == "verified":
             logger.warning(
                 "검증 게이트: %s가 verified를 선언했지만 evidence가 없음 — burn_in으로 강등", sid
+            )
+        elif status == "backtest_pass":
+            # burn_in과 같은 캡을 받지만(아래 capped 계산 공용) 로그로 구분한다 —
+            # "백테스트 게이트는 통과했지만 실거래/paper 검증 전"이라는 중간
+            # 상태를 burn_in(애초에 게이트를 안 돌렸을 수도 있음)과 뭉뚱그리면
+            # 기동 로그만 보고 승격 진행 상황을 알 수 없다.
+            logger.info(
+                "검증 게이트: %s는 backtest_pass — 백테스트 게이트 GO, 실거래/paper 검증은 "
+                "아직(30 라운드트립 + 승률 유의 전까지 burn_in과 동일 상한 0.2 적용). 근거: %s",
+                sid, evidence or "(evidence 없음)",
             )
         elif status != "burn_in":
             logger.warning(

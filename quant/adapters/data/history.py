@@ -139,19 +139,36 @@ class HistoryDataFeed:
             for interval, parts in by_interval.items()
         }
 
+    def interval_bars(self, symbol: str, interval: str) -> pd.DataFrame:
+        """`interval` 완성봉 OHLCV 프레임(인덱스 = 봉 **시가** 시각). 1분봉이 있으면
+        리샘플해서 만들고, 없으면 native interval 저장소에서 정확히 일치하는 것만
+        쓴다(업샘플 금지) — `bar_closes`와 **같은 선택 규칙**이며, 실제로
+        `bar_closes`가 이 프레임의 인덱스에서 유도된다(규칙이 두 곳으로 갈라지면
+        타임라인과 봉 내용이 서로 다른 소스를 가리키게 된다).
+
+        왜 공개하는가: 봉내(intrabar) 체결 모델(`backtest.engine`의
+        `fill_model="intrabar"`)은 봉의 고가/저가/시가를 봐야 한다 — 마감 시각만
+        주는 `bar_closes`로는 "봉 안에서 손절선이 닿았는가"를 답할 수 없다.
+        `history()`는 리플레이 시각 기준 완성봉만 주므로(look-ahead 방지) 세션
+        마지막 봉이 빠지는 등 경계가 다르다 — 그 경계는 전략용이지 체결 모델용이
+        아니다. 읽기 전용이며 리플레이 시각(`_now`)과 무관하다.
+        """
+        bars = self.bars_1m.get(symbol)
+        if bars is not None and not bars.empty:
+            return resample_1m(bars, _interval_minutes(interval))
+        native_bars = self._native.get(symbol, {}).get(interval)
+        if native_bars is None or native_bars.empty:
+            return pd.DataFrame(columns=_COLUMNS)
+        return native_bars
+
     def bar_closes(self, symbol: str, interval: str) -> pd.DatetimeIndex:
         """`interval` 완성봉들의 마감 시각(백테스트 리플레이 타임라인용). 1분봉이
         있으면 리샘플해서 뽑고, 없으면 native interval 저장소에서 정확히 일치하는
         것만 쓴다(업샘플 금지)."""
-        bars = self.bars_1m.get(symbol)
-        if bars is not None and not bars.empty:
-            minutes = _interval_minutes(interval)
-            return resample_1m(bars, minutes).index + pd.Timedelta(minutes=minutes)
-        native_bars = self._native.get(symbol, {}).get(interval)
-        if native_bars is None or native_bars.empty:
+        bars = self.interval_bars(symbol, interval)
+        if bars.empty:
             return pd.DatetimeIndex([])
-        minutes = _interval_minutes(interval)
-        return native_bars.index + pd.Timedelta(minutes=minutes)
+        return bars.index + pd.Timedelta(minutes=_interval_minutes(interval))
 
     def set_now(self, now: datetime) -> None:
         self._now = now

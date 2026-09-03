@@ -85,13 +85,17 @@ def cmd_walkforward(args: argparse.Namespace) -> None:
     from quant.backtest.walkforward import run_walkforward, stability_summary
 
     symbols = args.symbols.split() if args.symbols else None
+    fill_model = getattr(args, "fill_model", "close")
     folds = run_walkforward(
         strategy_id=args.strategy, total_days=args.days, window_days=args.window,
         step_days=args.step, interval=args.interval, source=args.source, symbols=symbols,
-        history_dir=getattr(args, "history_dir", None),
+        history_dir=getattr(args, "history_dir", None), fill_model=fill_model,
     )
     out = {
         "strategy": args.strategy, "source": args.source, "interval": args.interval,
+        # 체결 모델은 fold 숫자와 반드시 붙어 다녀야 한다 — 모델이 다른 두 JSON을
+        # 나란히 놓고 비교하면 그 비교 자체가 틀린다.
+        "fill_model": fill_model,
         "folds": folds, "summary": stability_summary(folds),
     }
     print(_json.dumps(out, ensure_ascii=False, indent=2))
@@ -122,15 +126,17 @@ def cmd_strategy_report(args: argparse.Namespace) -> None:
 
     symbols = args.symbols.split() if args.symbols else None
     history_dir = getattr(args, "history_dir", None)
+    fill_model = getattr(args, "fill_model", "close")
     result = run_backtest(
         strategy_id=args.strategy, days=args.days, interval=args.interval,
         source=args.source, symbols=symbols, history_dir=history_dir,
+        fill_model=fill_model,
     )
     fit = evaluate(result)
     folds = run_walkforward(
         strategy_id=args.strategy, total_days=args.total_days, window_days=args.window,
         step_days=args.step, interval=args.interval, source=args.source, symbols=symbols,
-        history_dir=history_dir,
+        history_dir=history_dir, fill_model=fill_model,
     )
 
     # 비용은 **원장 실측**이 우선이다. 이 전략의 트립이 모자라면 cost_model이
@@ -239,11 +245,13 @@ def cmd_backtest_gate(args: argparse.Namespace) -> None:
 
     symbols = args.symbols.split() if args.symbols else None
     history_dir = getattr(args, "history_dir", None)
+    fill_model = getattr(args, "fill_model", "close")
 
     try:
         result = run_backtest(
             strategy_id=args.strategy, days=args.days, interval=args.interval,
             source=args.source, symbols=symbols, history_dir=history_dir,
+            fill_model=fill_model,
         )
     except ValueError as e:
         print(f"오류: {e}", file=_sys.stderr)
@@ -256,6 +264,9 @@ def cmd_backtest_gate(args: argparse.Namespace) -> None:
     wf_params = inspect.signature(run_walkforward).parameters
     if "history_dir" in wf_params and history_dir is not None:
         wf_kwargs["history_dir"] = history_dir
+    # history_dir 과 같은 이유로 시그니처를 먼저 확인한다(동시 수정 중인 모듈).
+    if "fill_model" in wf_params:
+        wf_kwargs["fill_model"] = fill_model
     try:
         folds = run_walkforward(**wf_kwargs)
     except ValueError as e:
@@ -300,6 +311,18 @@ def cmd_backtest_gate(args: argparse.Namespace) -> None:
     out_path.write_text(_json.dumps({
         "strategy": args.strategy, "source": args.source, "interval": args.interval,
         "generated_at": datetime.now().isoformat(),
+        # 2026-09-03: `promote` 가 fail-closed 로 요구하는 증거 3종 — 어느 구간·어떤
+        # 체결 가정·어떤 비용으로 판정했는지가 JSON 에 없으면 승격 자체를 거부한다.
+        "fill_model": getattr(result, "fill_model", fill_model),
+        "data_range": {
+            "start": str(result.equity_curve.index.min()) if len(result.equity_curve) else None,
+            "end": str(result.equity_curve.index.max()) if len(result.equity_curve) else None,
+            "days": args.days, "total_days": args.total_days, "window_days": args.window,
+            "step_days": args.step, "interval": args.interval, "source": args.source,
+            "history_dir": str(history_dir) if history_dir else None,
+            "symbols": universe_symbols,
+        },
+        "cost_assumptions": {"round_trip_bp": cost_bp, "label": cost_label, "market": market},
         "backtest_metrics": result.metrics,
         "fitness": fit.to_dict(),
         "walkforward_folds": folds,
@@ -332,11 +355,16 @@ def cmd_backtest(args: argparse.Namespace) -> None:
     # settings.yaml의 빈 symbols로 돌아 symbols[0] 접근에서 IndexError로 죽는다 —
     # run_backtest이 그 대신 명확한 에러로 멈춘다.
     symbols = args.symbols.split() if args.symbols else None
+    fill_model = getattr(args, "fill_model", "close")
     result = run_backtest(
         strategy_id=args.strategy, days=args.days, interval=args.interval, source=args.source,
         symbols=symbols, history_dir=getattr(args, "history_dir", None),
+        fill_model=fill_model,
     )
-    print(f"\n=== Backtest: {args.strategy} ({args.days}d, {args.interval}, {args.source}) ===")
+    print(
+        f"\n=== Backtest: {args.strategy} ({args.days}d, {args.interval}, {args.source}, "
+        f"fill={result.fill_model}) ==="
+    )
     for key, value in result.metrics.items():
         print(f"{key:>18}: {value}")
     print(f"{'n_bars':>18}: {len(result.equity_curve)}")
@@ -354,6 +382,16 @@ def cmd_backtest(args: argparse.Namespace) -> None:
     # 회계 검산 내역을 항상 함께 낸다. run_backtest이 이미 통과를 강제하지만, 성과
     # 숫자만 단독으로 떠다니면 그게 어떤 통화의 무엇을 합산한 것인지 아무도 모른다 —
     # 손익이 USD, 자산곡선이 KRW인 채로 몇 달을 보낸 적이 있다.
+    # 봉내 체결 모델을 썼다면 **몇 번 발동했는지**를 성과 옆에 붙인다. 0이면
+    # "봉 안에서 손절선이 닿은 적이 없다"는 뜻이고, 그건 close 모델과 결과가
+    # 같아야 한다는 검증 가능한 주장이다.
+    if result.fill_model == "intrabar":
+        print(
+            f"{'봉내 체결':>18}: 손절 {result.intrabar_stop_fills}건 · "
+            f"익절 {result.intrabar_target_fills}건 · "
+            f"동일봉 양쪽 터치(손절 우선) {result.both_touched_conservative}건"
+        )
+
     rec = result.reconciliation
     ccy = rec["currency"]
     print(f"\n--- 회계 검산 ({ccy}) ---")
@@ -4584,6 +4622,99 @@ def _capital_review_summary(demotions: list) -> str:
     return "\n".join(lines)
 
 
+def _promote_evidence_summary(evidence) -> str:
+    """`promote --list`용 한 줄 요약. evidence는 backtest_pass/verified 승격
+    시 dict(quant/control/promotion.py `_build_evidence`)거나, 전작에서 계승한
+    구식 문자열(예: donchian)일 수 있다 — 둘 다 사람이 읽을 한 줄로 낮춘다."""
+    if isinstance(evidence, dict) and evidence:
+        return (
+            f"verdict={evidence.get('verdict')} oos={evidence.get('oos_trades')} "
+            f"exp={evidence.get('expectancy_bp')}bp dsr={evidence.get('deflated_sharpe')} "
+            f"promoted_at={evidence.get('promoted_at')}"
+        )
+    if evidence:
+        return str(evidence)
+    return "(없음)"
+
+
+def cmd_promote(args: argparse.Namespace) -> None:
+    """백테스트 게이트 GO → config/settings.yaml 반영 (2026-09-03).
+
+    로컬 워크플로: `backtest-gate`로 게이트 JSON을 만들고 → `promote --dry-run`으로
+    정확히 무엇이 바뀔지 확인하고 → `promote`로 실제 반영한다. 심사(`check_promotable`)는
+    `--dry-run` 여부와 무관하게 항상 먼저 돈다 — 막는 이유가 하나라도 있으면 그
+    이유 전부를 출력하고 종료코드 2로 끝난다(파일은 건드리지 않는다). 통과했을 때만
+    `--dry-run`이 "실제로 쓰지 않고 정확한 diff만 보여주기"와 "그대로 반영" 사이를
+    가른다.
+
+    `--capital-fraction KR=0.05,US=0.05`는 선택 — 안 주면 settings.yaml에 이미
+    선언된 capital_fraction을 그대로 둔다(단순 승격은 enabled/validation만 바꾼다).
+
+    settings.yaml에 직접 쓰는 이유·주석 보존 방식은 `quant/control/promotion.py`
+    모듈 docstring 참고 — 오버레이(config/auto_params.yaml)가 아니라 대상 전략
+    블록의 필드 줄만 텍스트 수준으로 교체한다.
+    """
+    import difflib
+    import sys as _sys
+    from pathlib import Path
+
+    import yaml as _yaml
+
+    from quant.apps.config import DEFAULT_SETTINGS_PATH
+    from quant.control import promotion
+
+    settings_path = Path(args.settings) if args.settings else Path(DEFAULT_SETTINGS_PATH)
+
+    if args.list:
+        settings = _yaml.safe_load(settings_path.read_text(encoding="utf-8")) or {}
+        for sid, strat_cfg in sorted((settings.get("strategies") or {}).items()):
+            v = (strat_cfg or {}).get("validation") or {}
+            status = v.get("status", "burn_in")
+            print(
+                f"{sid}: enabled={strat_cfg.get('enabled', True)} status={status} "
+                f"evidence={_promote_evidence_summary(v.get('evidence'))}"
+            )
+        return
+
+    if not args.strategy or not args.gate:
+        print("오류: --strategy 와 --gate 가 필요하다 (또는 --list)", file=_sys.stderr)
+        raise SystemExit(2)
+
+    gate = promotion.load_gate(args.gate)
+    original_text = settings_path.read_text(encoding="utf-8")
+    settings = _yaml.safe_load(original_text) or {}
+
+    reasons = promotion.check_promotable(gate, strategy_id=args.strategy, settings=settings)
+    if reasons:
+        print(f"승격 불가 — {args.strategy}:")
+        for r in reasons:
+            print(f"  - {r}")
+        raise SystemExit(2)
+
+    capital_fraction = None
+    if args.capital_fraction:
+        capital_fraction = {}
+        for kv in args.capital_fraction.split(","):
+            key, _sep, value = kv.partition("=")
+            capital_fraction[key.strip().upper()] = float(value)
+
+    if args.dry_run:
+        new_text = promotion.render_promoted_settings(
+            original_text, args.strategy, gate, capital_fraction=capital_fraction,
+        )
+        diff = difflib.unified_diff(
+            original_text.splitlines(keepends=True), new_text.splitlines(keepends=True),
+            fromfile=str(settings_path), tofile=f"{settings_path} (승격 후)",
+        )
+        _sys.stdout.writelines(diff)
+        return
+
+    promotion.apply_promotion(settings_path, args.strategy, gate, capital_fraction=capital_fraction)
+    print(f"승격 완료: {args.strategy} → enabled=true, validation.status=backtest_pass ({settings_path})")
+    print()
+    print("다음 단계: 커밋 → make deploy (KR 마감 후) → scoreboard 30왕복 → 소유자 라이브 판단")
+
+
 def cmd_capital_review(args: argparse.Namespace) -> None:
     """자본 자동 강등 장치 — "지는 곳에서 자본을 뺀다"(소유자 북극성, 2026-08-28).
 
@@ -5178,6 +5309,10 @@ def main() -> None:
         help="파티션 루트(기본: data/history). 별도 데이터 레이크를 같은 레이아웃으로 "
              "두고 그쪽을 읽거나 쓰려면 지정한다 — --source history 에서만 의미가 있다.",
     )
+    p_wf.add_argument(
+        "--fill-model", default="close", choices=["close", "intrabar"],
+        help="close(기본, 봉 마감가 체결) | intrabar(봉 안에서 닿은 손절/목표를 그 봉 안에서 체결 — 봉 마감 체결이 타이트한 손절 전략을 실제보다 좋게 보이게 하는 왜곡을 제거한다. 보수적: 같은 봉에서 둘 다 닿으면 손절이 이기고, 갭 관통은 시가 체결)",
+    )
     p_wf.set_defaults(func=cmd_walkforward)
 
     p_sr = sub.add_parser(
@@ -5204,6 +5339,10 @@ def main() -> None:
         help="파티션 루트(기본: data/history). 별도 데이터 레이크를 같은 레이아웃으로 "
              "두고 그쪽을 읽거나 쓰려면 지정한다 — --source history 에서만 의미가 있다.",
     )
+    p_sr.add_argument(
+        "--fill-model", default="close", choices=["close", "intrabar"],
+        help="close(기본, 봉 마감가 체결) | intrabar(봉 안에서 닿은 손절/목표를 그 봉 안에서 체결 — 봉 마감 체결이 타이트한 손절 전략을 실제보다 좋게 보이게 하는 왜곡을 제거한다. 보수적: 같은 봉에서 둘 다 닿으면 손절이 이기고, 갭 관통은 시가 체결)",
+    )
     p_sr.set_defaults(func=cmd_strategy_report)
 
     p_bg = sub.add_parser(
@@ -5227,6 +5366,10 @@ def main() -> None:
         "--history-dir", default=None,
         help="파티션 루트(기본: data/history). --source history 에서만 의미가 있다.",
     )
+    p_bg.add_argument(
+        "--fill-model", default="close", choices=["close", "intrabar"],
+        help="close(기본, 봉 마감가 체결) | intrabar(봉 안에서 닿은 손절/목표를 그 봉 안에서 체결 — 봉 마감 체결이 타이트한 손절 전략을 실제보다 좋게 보이게 하는 왜곡을 제거한다. 보수적: 같은 봉에서 둘 다 닿으면 손절이 이기고, 갭 관통은 시가 체결)",
+    )
     p_bg.set_defaults(func=cmd_backtest_gate)
 
     p_kelly = sub.add_parser(
@@ -5249,6 +5392,10 @@ def main() -> None:
         "--history-dir", default=None,
         help="파티션 루트(기본: data/history). 별도 데이터 레이크를 같은 레이아웃으로 "
              "두고 그쪽을 읽거나 쓰려면 지정한다 — --source history 에서만 의미가 있다.",
+    )
+    p_bt.add_argument(
+        "--fill-model", default="close", choices=["close", "intrabar"],
+        help="close(기본, 봉 마감가 체결) | intrabar(봉 안에서 닿은 손절/목표를 그 봉 안에서 체결 — 봉 마감 체결이 타이트한 손절 전략을 실제보다 좋게 보이게 하는 왜곡을 제거한다. 보수적: 같은 봉에서 둘 다 닿으면 손절이 이기고, 갭 관통은 시가 체결)",
     )
     p_bt.set_defaults(func=cmd_backtest)
 
@@ -5641,6 +5788,23 @@ def main() -> None:
                             "하나를 오버레이에서 제거해 settings.yaml 기본값으로 되돌린다. 지정하면 "
                             "그 외 심사는 건너뛴다")
     p_ga.set_defaults(func=cmd_governor_apply)
+
+    p_promote = sub.add_parser(
+        "promote",
+        help="백테스트 게이트 GO → config/settings.yaml 승격 반영 "
+             "(enabled: true + validation.status: backtest_pass + evidence)",
+    )
+    p_promote.add_argument("--strategy", default=None, help="승격 대상 전략 id (settings.yaml strategies 키)")
+    p_promote.add_argument("--gate", default=None,
+                            help="backtest-gate CLI가 쓴 게이트 JSON (data/backtest/gate_<전략>_<날짜>.json)")
+    p_promote.add_argument("--capital-fraction", default=None, metavar="KR=0.05,US=0.05",
+                            help="선택. 주지 않으면 settings.yaml의 기존 capital_fraction을 그대로 둔다")
+    p_promote.add_argument("--dry-run", action="store_true",
+                            help="심사만 하고 정확한 YAML diff를 출력 — 파일은 쓰지 않는다")
+    p_promote.add_argument("--settings", default=None, help="기본: config/settings.yaml")
+    p_promote.add_argument("--list", action="store_true",
+                            help="모든 전략의 enabled/validation.status/evidence 요약만 출력하고 종료")
+    p_promote.set_defaults(func=cmd_promote)
 
     p_cap = sub.add_parser(
         "capital-review",
