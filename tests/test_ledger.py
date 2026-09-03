@@ -499,3 +499,234 @@ def test_daily_equity_series_empty_file_returns_empty_dict(tmp_path):
     empty.write_text("", encoding="utf-8")
     assert daily_equity_series_by_market(empty) == {}
     assert daily_benchmark_series_by_market(empty) == {}
+
+
+# --- 실계좌 이식(2026-09-01)이 만든 결함 3건 (2026-09-02 수정) -----------------
+#
+# 프로덕션 원장(EC2 data/state/trades.jsonl) 2026-09-01 US 세션의 실제 행들로
+# 고정한다 — 합성 데이터로는 이 결함들이 재현되지 않았다.
+
+SEEDING_REASON = "실계좌 이식 정리 — 소유자 지시 2026-09-01: 005930만 보유 유지, 나머지 정리"
+
+# 그날 US 세션에서 프로그램이 실제로 낸 손익(수수료 전 -77.77 / 수수료 25.13).
+_PROGRAM_ROWS_2026_09_01 = [
+    _row("QQQ", "SELL", 5.0, 707.4330975, "2026-09-01T13:30:00+00:00",
+         pnl=-49.43093750000003, fee=3.610861096542501, strategy="overnight_drift"),
+    _row("TQQQ", "BUY", 9, 69.397345, "2026-09-01T13:50:30+00:00",
+         fee=0.624576105, strategy="gap_fade"),
+    # --- 이식 경계(14:01:08) ---
+    _row("TQQQ", "BUY", 1, 69.20729750000001, "2026-09-01T14:06:20+00:00",
+         fee=0.0692072975, strategy="gap_fade"),
+    _row("TQQQ", "SELL", 1.0, 70.4923725, "2026-09-01T15:47:26+00:00",
+         pnl=1.285074999999992, fee=0.08065837249999999, strategy="gap_fade"),
+]
+_SEEDING_ROWS_2026_09_01 = [
+    _row("GOOGL", "SELL", 1.0, 334.07, "2026-09-01T14:01:08.315330+00:00",
+         pnl=-54.639999999999986, fee=0.344236, strategy="legacy"),
+    _row("SOXL", "SELL", 13.0, 105.67, "2026-09-01T14:01:08.315330+00:00",
+         pnl=-706.4199999999998, fee=1.4041664260000002, strategy="legacy"),
+]
+for _r in _SEEDING_ROWS_2026_09_01:
+    _r["reason"] = SEEDING_REASON
+
+
+def test_session_pnl_excludes_seeding_liquidation_and_reports_it_separately():
+    """F1: 이식 정리 매도가 프로그램 손익으로 발송됐다(실측: 프로그램 -$102.90 인데
+    -$1,214.65 로 나갔다). 이제 빼되 조용히 빼지 않는다 — 제외 줄이 반드시 보인다."""
+    from quant.control.ledger import session_pnl_summary, session_pnl_text
+
+    trades = _PROGRAM_ROWS_2026_09_01 + _SEEDING_ROWS_2026_09_01
+    s = session_pnl_summary(trades, "US", date(2026, 9, 1))
+
+    program_gross = sum(float(r["realized_pnl"]) for r in _PROGRAM_ROWS_2026_09_01
+                        if r["realized_pnl"] is not None)
+    program_fees = sum(float(r["fee"]) for r in _PROGRAM_ROWS_2026_09_01)
+    assert s["gross_realized"] == pytest.approx(program_gross)
+    assert s["net_realized"] == pytest.approx(program_gross - program_fees)
+    assert s["n_fills"] == len(_PROGRAM_ROWS_2026_09_01)      # 정리 매도는 체결 수에서도 빠진다
+    assert "legacy" not in s["by_strategy"]
+
+    assert s["excluded_seeding"]["n"] == 2
+    assert s["excluded_seeding"]["gross"] == pytest.approx(-761.06, abs=0.01)
+
+    text = session_pnl_text(s)
+    assert "이식 정리 2건 제외" in text
+
+
+def test_session_pnl_excluded_line_shows_even_when_no_program_trades():
+    """정리 매도만 있는 세션은 "거래 없음"이지만, 원장 총액과 왜 안 맞는지는 밝힌다."""
+    from quant.control.ledger import session_pnl_summary, session_pnl_text
+
+    s = session_pnl_summary(_SEEDING_ROWS_2026_09_01, "US", date(2026, 9, 1))
+    assert s["has_trades"] is False
+    text = session_pnl_text(s)
+    assert "이 세션에 체결된 거래 없음" in text
+    assert "이식 정리 2건 제외" in text
+
+
+def test_round_trips_treats_transplant_as_epoch_boundary():
+    """F2: 이식 시점에 열려 있던 lot(gap_fade TQQQ 9주)은 상계 행 없이 사라졌다.
+    그걸 안 버리면 이식 이후의 정상 왕복(+$1.13)이 트립으로 안 세진다."""
+    from quant.control.ledger import round_trips
+
+    trades = _PROGRAM_ROWS_2026_09_01 + _SEEDING_ROWS_2026_09_01
+    trips = round_trips(trades)
+
+    gap = [t for t in trips if t["strategy"] == "gap_fade" and t["symbol"] == "TQQQ"]
+    assert len(gap) == 1
+    assert gap[0]["entry_ts"] == "2026-09-01T14:06:20+00:00"
+    assert gap[0]["pnl"] == pytest.approx(1.135209, abs=1e-5)
+    # 정리 매도 행 자체는 트립 재료가 아니다
+    assert not [t for t in trips if t["strategy"] == "legacy"]
+
+
+def test_round_trips_never_pairs_a_sell_across_the_transplant_boundary():
+    """이식으로 물려받은 주식을 나중에 팔면 모의 시대 매수와 짝지어져 **없던
+    트립**이 만들어진다 — 경계 이후 재고 없는 매도는 아무것도 열지 않는다."""
+    from quant.control.ledger import round_trips
+
+    trades = [
+        _row("005930", "BUY", 1, 70000.0, "2026-08-20T01:00:00+00:00",
+             fee=10.0, strategy="frgn_accumulate"),
+        _SEEDING_ROWS_2026_09_01[0],
+        # 이식으로 받은 6주를 이식 이후에 매도 — 8/20 매수와 짝지으면 안 된다
+        _row("005930", "SELL", 6.0, 80000.0, "2026-09-02T01:00:00+00:00",
+             pnl=60000.0, fee=100.0, strategy="frgn_accumulate"),
+    ]
+    assert round_trips(trades) == []
+
+
+def test_session_cash_delta_uses_usd_pool_for_us_market():
+    """F3: US 체결은 KRW 풀을 안 건드린다 — 예전엔 "계좌 현금 변화 +0원"을 찍었다."""
+    from quant.control.ledger import session_pnl_summary, session_pnl_text
+
+    buy = _row("TQQQ", "BUY", 1, 70.0, "2026-09-02T14:00:00+00:00", fee=0.07)
+    sell = _row("TQQQ", "SELL", 1.0, 72.0, "2026-09-02T15:00:00+00:00", pnl=2.0, fee=0.072)
+    prior = _row("TQQQ", "BUY", 1, 70.0, "2026-09-01T14:00:00+00:00", fee=0.07)
+    for row, usd in ((prior, 1000.0), (buy, 929.93), (sell, 1001.86)):
+        row["cash_after"] = 5_000_000.0   # KRW 풀은 US 체결로 안 변한다
+        row["cash_after_usd"] = usd
+
+    s = session_pnl_summary([prior, buy, sell], "US", date(2026, 9, 2))
+    assert s["cash_delta_krw"] == pytest.approx(0.0)
+    assert s["cash_delta_usd"] == pytest.approx(1.86)
+    text = session_pnl_text(s)
+    assert "계좌 USD 현금 변화 $+1.86" in text
+    assert "계좌 현금 변화(KRW" not in text
+
+
+def test_us_session_says_unavailable_when_cash_after_usd_missing():
+    """구 형식 원장(필드 없음)은 0으로 위장하지 않고 "집계 불가"라고 말한다."""
+    from quant.control.ledger import session_pnl_summary, session_pnl_text
+
+    rows = [
+        _row("TQQQ", "BUY", 1, 70.0, "2026-09-02T14:00:00+00:00", fee=0.07, cash_after=1.0),
+        _row("TQQQ", "SELL", 1.0, 72.0, "2026-09-02T15:00:00+00:00", pnl=2.0, fee=0.07,
+             cash_after=2.0),
+    ]
+    s = session_pnl_summary(rows, "US", date(2026, 9, 2))
+    assert s["cash_delta_usd"] is None
+    assert "집계 불가(구 형식" in session_pnl_text(s)
+
+
+def test_kr_session_cash_line_is_unchanged():
+    """KR 라인은 예전 그대로(KRW 풀) — 이 수정이 건드리는 건 US 쪽뿐이다."""
+    from quant.control.ledger import session_pnl_summary, session_pnl_text
+
+    rows = [
+        _row("069500", "BUY", 10, 10000.0, "2026-08-12T00:30:00+00:00", cash_after=9_802_000.0),
+        _row("069500", "SELL", 10, 10200.0, "2026-08-12T01:00:00+00:00", pnl=2000.0,
+             cash_after=9_904_000.0),
+    ]
+    text = session_pnl_text(session_pnl_summary(rows, "KR", date(2026, 8, 12)))
+    assert "계좌 현금 변화(KRW, paper 브로커 체결시점 환산 반영) +102,000원" in text
+
+
+# ── A/B 갈래 비교 (2026-09-03) ────────────────────────────────────────────────
+# 중심 주장: **표본이 얇으면 아무 말도 하지 않는다.** 한쪽만 30건이어도 안 된다 —
+# 차이의 신뢰구간은 얇은 쪽이 지배한다. 그리고 같은 원장에서 같은 p 값이 나와야
+# 한다(리포트가 실행마다 흔들리면 판단 근거로 못 쓴다).
+
+def _ab_trip(strategy: str, bps: float, market: str = "US", pnl: float | None = None) -> dict:
+    return {
+        "strategy": strategy, "symbol": "X", "market": market,
+        "pnl": bps if pnl is None else pnl, "fees": 0.0, "notional": 1000.0,
+        "bps": bps, "pnl_known": True, "n_fills": 2,
+    }
+
+
+def test_base_strategy_id_strips_only_the_catalyst_suffix():
+    from quant.control.ledger import base_strategy_id
+
+    assert base_strategy_id("scalp_1m_cat") == "scalp_1m"
+    assert base_strategy_id("scalp_1m") == "scalp_1m"
+    assert base_strategy_id("") == ""
+
+
+def test_ab_pairs_from_config_needs_both_arms_present():
+    from quant.control.ledger import ab_pairs_from_config
+
+    cfg = {"strategies": {"a": {}, "a_cat": {}, "b": {}, "c_cat": {}}}
+    assert ab_pairs_from_config(cfg) == ["a"]
+
+
+def test_ab_compare_reports_judgement_impossible_below_the_sample_floor():
+    from quant.control.ledger import MIN_TRIPS_FOR_JUDGEMENT, ab_compare
+
+    trips = ([_ab_trip("s", 10.0)] * MIN_TRIPS_FOR_JUDGEMENT) + [_ab_trip("s_cat", 50.0)] * 5
+    (row,) = ab_compare(trips)
+    assert row["judgeable"] is False
+    assert row["reason"] == f"판단 불가(n<{MIN_TRIPS_FOR_JUDGEMENT})"
+    assert row["delta_expectancy_bp"] is None and row["p_value"] is None
+    # 판정을 못 해도 각 갈래의 표본 수·기대값은 보여준다(그게 다음 판단의 재료다)
+    assert row["baseline"]["n"] == MIN_TRIPS_FOR_JUDGEMENT and row["catalyst"]["n"] == 5
+
+
+def test_ab_compare_with_no_trips_still_lists_configured_pairs():
+    from quant.control.ledger import ab_compare
+
+    (row,) = ab_compare([], bases=["scalp_1m"])
+    assert row["base"] == "scalp_1m" and row["market"] is None
+    assert row["baseline"]["n"] == 0 and not row["judgeable"]
+
+
+def test_ab_compare_separates_markets():
+    from quant.control.ledger import ab_compare
+
+    trips = [_ab_trip("s", 1.0, "KR"), _ab_trip("s_cat", 2.0, "US")]
+    assert [r["market"] for r in ab_compare(trips)] == ["KR", "US"]
+
+
+def test_ab_compare_measures_the_difference_when_both_arms_are_thick_enough():
+    from quant.control.ledger import ab_compare
+
+    # 촉매가 명백히 낫다: -20bp 대 +30bp, 각 40건(잡음 섞어 분산이 0이 아니게).
+    base = [_ab_trip("s", -20.0 + (i % 5) - 2) for i in range(40)]
+    cat = [_ab_trip("s_cat", 30.0 + (i % 5) - 2) for i in range(40)]
+    (row,) = ab_compare(base + cat, permutations=400)
+    assert row["judgeable"] is True and row["reason"] == ""
+    assert row["delta_expectancy_bp"] == pytest.approx(50.0, abs=0.5)
+    lo, hi = row["delta_ci"]
+    assert lo > 0, "차이가 명백한데 신뢰구간이 0을 포함한다"
+    assert row["p_value"] < 0.01
+
+
+def test_ab_compare_p_value_is_deterministic():
+    """시드 고정 — 같은 원장이면 같은 p 값. 리포트가 실행마다 흔들리면 안 된다."""
+    from quant.control.ledger import ab_compare
+
+    trips = ([_ab_trip("s", (i % 7) - 3.0) for i in range(35)]
+             + [_ab_trip("s_cat", (i % 5) - 1.0) for i in range(35)])
+    first = ab_compare(trips, permutations=300)[0]["p_value"]
+    second = ab_compare(trips, permutations=300)[0]["p_value"]
+    assert first == second
+
+
+def test_ab_compare_ignores_trips_with_unknown_pnl():
+    """손익미상은 승패도 기대값도 모른다 — 0으로 위장하지 않고 표본에서 뺀다."""
+    from quant.control.ledger import ab_compare
+
+    unknown = {**_ab_trip("s_cat", 0.0), "pnl_known": False}
+    (row,) = ab_compare([_ab_trip("s", 5.0), unknown])
+    assert row["catalyst"]["n"] == 0 and row["catalyst"]["n_unknown"] == 1
+    assert row["catalyst"]["expectancy_bp"] is None

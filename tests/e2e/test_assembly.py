@@ -16,13 +16,19 @@ WHY THIS EXISTS의 결함(a)를 직접 겨냥한다: FxProvider를 만들어 놓
 from __future__ import annotations
 
 import json
+import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
 
-from quant.apps.assembly import MissingCredentials, build_paper_runtime
+from quant.apps.assembly import (
+    MissingCredentials,
+    build_paper_runtime,
+    validated_capital_fractions,
+)
 from quant.apps.config import load_settings
 from quant.core.fx import DailyFxProvider, FixedFxProvider
 
@@ -348,3 +354,341 @@ def test_equal_split_preserves_existing_books_when_cash_lookup_fails_on_restart(
     assert runtime.books.books["donchian"] == existing_book, (
         "이미 굴러간 장부는 손익이 쌓여 있으므로 재계산·재조정되면 안 된다"
     )
+
+
+# ------------------------------------------------- live 브로커 배선 (2026-09-02 C1)
+
+def test_live_broker_gets_fx_and_market_of_so_strategy_books_can_update(tmp_path, monkeypatch):
+    """MODE=live 의 TossBroker 에도 fx/market_of 가 붙어야 한다.
+
+    2026-09-02 감사 C1: 루프의 전략별 장부 갱신(`loop._execute_signal`)은
+    `ctx.broker.fx` 를 duck-typing 으로 읽는데 live 브로커에는 그게 없어서
+    `books.apply_fill` 이 매 체결마다 스킵됐다 — 실계좌에서만 전략별 현금·노출
+    레일이 눈이 먼 상태로 돌았다(2026-08-19 P0 의 live 판 재발).
+
+    market_of 는 risk 와 **같은 dict 객체**여야 한다 — cli._rebuild 가 유니버스
+    롤마다 이 dict 를 in-place update 해서 양쪽을 함께 갱신하기 때문이다.
+    """
+    settings = load_settings(str(_SETTINGS_PATH))
+    monkeypatch.chdir(tmp_path)
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("TOSS_CLIENT_ID", "fake-client-id")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "fake-client-secret")
+    monkeypatch.setenv("TOSS_ACCOUNT_SEQ", "1234567890")
+    monkeypatch.setenv("MODE", "live")
+
+    from quant.adapters.brokers.toss.broker import TossBroker
+    # capital_policy: equal_split 이 실계좌 현금을 조회한다 — 네트워크를 타지 않게 고정.
+    monkeypatch.setattr(TossBroker, "cash", lambda self: 20_000_000.0)
+
+    runtime = build_paper_runtime(settings)
+
+    assert isinstance(runtime.ctx.broker, TossBroker)
+    assert runtime.ctx.broker.fx is runtime.fx
+    assert runtime.ctx.broker.market_of is runtime.risk.market_of
+
+
+def test_per_strategy_capital_mode_refuses_broker_without_fx():
+    """배선 누락은 사이클마다 WARNING 이 아니라 **부팅 실패**여야 한다(C1)."""
+    from quant.apps.assembly import require_books_capable_broker
+
+    class _NoFxBroker:
+        def positions(self):
+            return {}
+
+    with pytest.raises(RuntimeError, match="per_strategy"):
+        require_books_capable_broker(_NoFxBroker())
+
+    class _WithFxBroker(_NoFxBroker):
+        fx = FixedFxProvider(1500.0)
+
+    require_books_capable_broker(_WithFxBroker())  # 예외 없음
+
+
+# ------------------------------------- 과거데이터 폴백 라우트의 간격 (2026-09-02 C3)
+
+def _write_1m_partition(history_dir: Path, symbol: str) -> None:
+    """1분봉 레이아웃(data/history/{symbol}/{YYYY}/{MM}.parquet, 2단계)."""
+    idx = pd.date_range("2024-01-02T14:30:00Z", "2024-01-04T21:00:00Z", freq="1min")
+    prices = [100.0 + (i % 50) * 0.01 for i in range(len(idx))]
+    df = pd.DataFrame({
+        "open": prices, "high": [p + 0.2 for p in prices], "low": [p - 0.2 for p in prices],
+        "close": prices, "volume": [1000.0] * len(idx),
+    }, index=idx)
+    part_path = history_dir / symbol / "2024" / "01.parquet"
+    part_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_parquet(part_path)
+
+
+def test_history_fallback_serves_the_intervals_strategies_actually_request(tmp_path, monkeypatch):
+    """폴백 라우트가 프로브 간격(15m) 하나로만 등록되면, 실제 전략이 요구하는
+    1m/5m/1d 에서는 후보에도 오르지 못해 **한 번도 선택되지 않는 죽은 폴백**이
+    된다(2026-09-02 감사 C3 — 활성 전략 중 15m 를 쓰는 것이 하나도 없었다).
+
+    1차 소스(Toss)가 죽었을 때 로컬 Parquet 이 1m/1d 를 실제로 서빙하는지 본다.
+    """
+    from quant.adapters.brokers.toss.datafeed import TossDataFeed
+    from quant.apps.assembly import build_market_data
+    from quant.core.ports import DataSourceError
+
+    monkeypatch.chdir(tmp_path)
+    _write_1m_partition(tmp_path / "data" / "history", "TQQQ")
+
+    def _dead_history(self, symbol, interval, n):
+        raise DataSourceError("429 rate limited")
+
+    monkeypatch.setattr(TossDataFeed, "history", _dead_history)
+
+    class _Clock:
+        def now(self):
+            return datetime(2024, 1, 6, tzinfo=timezone.utc)
+
+    service = build_market_data(
+        object(), _Clock(), interval="15m", symbols=["TQQQ"], cfg={},
+    )
+    assert "history" in service.health().sources, "로컬 데이터가 있는데 폴백이 등록되지 않았다"
+
+    for interval in ("1m", "5m", "1d"):
+        bars = service.history("TQQQ", interval, 10)
+        assert not bars.empty, f"{interval}: 1차 소스 실패 시 로컬 폴백이 서빙해야 한다"
+
+
+# ── capital_policy: declared — 선언한 capital_fraction을 그대로 집행한다 ──────
+#
+# 2026-09-03. equal_split은 총현금을 활성 전략 수로 똑같이 나눠 `capital_fraction`의
+# 크기 정보를 통째로 죽였다(12개 전략이 전부 1/12). 그래서 설정 파일이 "scalp_1m
+# US 18%"라고 말하는데 실제로는 8.3%인 상태였다 — 선언과 실행의 조용한 불일치.
+# declared는 시장별 현금 풀에 각 전략의 선언 비중을 곱한다.
+
+class _PoolBroker:
+    """KRW/USD 두 지갑을 가진 브로커 스텁."""
+
+    def __init__(self, krw: float, usd: float | None = None):
+        self._krw, self._usd = krw, usd
+
+    def cash(self) -> float:
+        return self._krw
+
+    def cash_usd(self):
+        return self._usd
+
+
+class _Fx1000:
+    def usd_krw(self) -> float:
+        return 1000.0
+
+
+def test_declared_initial_krw_splits_by_market_pools():
+    """KR 비중은 KRW 풀에서, US 비중은 USD 풀(KRW 환산)에서 나온다 —
+    총현금 하나에 곱하지 않는다(실제 지출 한도가 통화별 지갑이므로)."""
+    from quant.apps.assembly import declared_initial_krw
+
+    got = declared_initial_krw(
+        _PoolBroker(10_000_000.0, 5_000.0),   # KRW 1,000만 / USD 5,000 = 500만 KRW
+        {"kr_only": {"KR": 0.5, "US": 0.0}, "us_only": {"KR": 0.0, "US": 0.4}},
+        ["kr_only", "us_only"],
+        fx=_Fx1000(),
+    )
+    assert got == {
+        "kr_only": pytest.approx(5_000_000.0),   # 1,000만 x 0.5
+        "us_only": pytest.approx(2_000_000.0),   # 500만 x 0.4
+    }
+
+
+def test_declared_initial_krw_sums_both_pools_for_a_dual_market_strategy():
+    """scalp_1m(KR .15 / US .18)처럼 양 시장에 비중이 있는 전략은 두 풀의 몫을
+    합산한다 — 그 전략은 실제로 양쪽 지갑에서 쓴다."""
+    from quant.apps.assembly import declared_initial_krw
+
+    got = declared_initial_krw(
+        _PoolBroker(10_000_000.0, 5_000.0),
+        {"scalp_1m": {"KR": 0.15, "US": 0.18}},
+        ["scalp_1m"],
+        fx=_Fx1000(),
+    )
+    # 1,000만 x 0.15 + 500만 x 0.18 = 150만 + 90만
+    assert got["scalp_1m"] == pytest.approx(2_400_000.0)
+
+
+def test_declared_initial_krw_normalizes_market_overshoot(caplog):
+    """한 시장의 비중 합이 1.0을 넘으면 그 시장만 비례 축소 + WARNING. 초과 배분은
+    존재하지 않는 현금이고 곧 의도치 않은 레버리지다. 다른 시장은 손대지 않는다."""
+    from quant.apps.assembly import declared_initial_krw
+
+    with caplog.at_level(logging.WARNING):
+        got = declared_initial_krw(
+            _PoolBroker(10_000_000.0, 1_000.0),   # USD 풀 = 100만 KRW
+            {"a": {"KR": 0.8, "US": 0.5}, "b": {"KR": 0.8, "US": 0.5}},  # KR 합 1.6, US 합 1.0
+            ["a", "b"],
+            fx=_Fx1000(),
+        )
+    # KR만 x0.625로 축소 → 각 0.5 → 500만. US는 그대로 0.5 → 50만.
+    assert got["a"] == pytest.approx(5_500_000.0)
+    assert got["b"] == pytest.approx(5_500_000.0)
+    assert sum(v for k, v in got.items()) == pytest.approx(11_000_000.0)  # 두 풀 합계와 일치
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("KR" in m and "초과" in m for m in msgs)
+    assert not any("US 시장 capital_fraction" in m for m in msgs)
+
+
+def test_declared_initial_krw_excludes_strategies_with_zero_fraction():
+    """양 시장 모두 0인 전략은 반환 dict에서 빠진다 — 어차피 진입이 차단돼 있어
+    명목자본을 줄 이유가 없고, 0원 장부를 만들면 그게 곧 "영원히 못 사는 장부"다."""
+    from quant.apps.assembly import declared_initial_krw
+
+    got = declared_initial_krw(
+        _PoolBroker(10_000_000.0, 1_000.0),
+        {"live": {"KR": 0.2, "US": 0.0}, "off": {"KR": 0.0, "US": 0.0}},
+        ["live", "off"],
+        fx=_Fx1000(),
+    )
+    assert set(got) == {"live"}
+
+
+def test_declared_initial_krw_ignores_usd_pool_without_fx():
+    """fx가 없으면 USD 풀을 환산할 수 없다 — KRW 풀만으로 계산한다
+    (equal_split_initial_krw와 같은 계약)."""
+    from quant.apps.assembly import declared_initial_krw
+
+    got = declared_initial_krw(
+        _PoolBroker(10_000_000.0, 5_000.0),
+        {"us_only": {"KR": 0.0, "US": 0.4}, "kr_only": {"KR": 0.5, "US": 0.0}},
+        ["us_only", "kr_only"],
+    )
+    assert set(got) == {"kr_only"}   # USD 풀 0 → us_only 몫도 0 → 제외
+    assert got["kr_only"] == pytest.approx(5_000_000.0)
+
+
+def test_declared_initial_krw_returns_none_when_cash_is_unknown():
+    """`None`은 "0원"이 아니라 "모른다" — equal_split과 같은 계약. 0으로 위장하면
+    호출부가 신규 전략을 0원으로 시딩해 영원히 못 사는 상태로 굳힌다."""
+    from quant.apps.assembly import declared_initial_krw
+
+    class _RaisingBroker:
+        def cash(self) -> float:
+            raise RuntimeError("Toss API 500")
+
+    frac = {"a": {"KR": 0.5, "US": 0.0}}
+    assert declared_initial_krw(_RaisingBroker(), frac, ["a"]) is None
+    assert declared_initial_krw(_PoolBroker(0.0), frac, ["a"]) is None
+    assert declared_initial_krw(_PoolBroker(-1234.0), frac, ["a"]) is None
+
+
+def test_declared_seeds_each_book_with_its_own_declared_amount(tmp_path, monkeypatch):
+    """조립 경로 회귀: 전략마다 **서로 다른** 시작 명목자본으로 시딩된다
+    (equal_split처럼 전부 같은 값이 아니다)."""
+    settings = load_settings(str(_SETTINGS_PATH))
+    monkeypatch.chdir(tmp_path)
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("TOSS_CLIENT_ID", "fake-client-id")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "fake-client-secret")
+    monkeypatch.setenv("START_CAPITAL_KRW", "10000000")
+
+    settings.raw.setdefault("risk", {})["capital_mode"] = "per_strategy"
+    settings.raw["risk"]["capital_policy"] = "declared"
+    runtime = build_paper_runtime(settings)
+
+    assert runtime.books is not None
+    books = runtime.books.books
+    assert books, "declared 정책에서 활성 전략 장부가 하나도 만들어지지 않았다"
+    initials = {sid: b["initial_krw"] for sid, b in books.items()}
+    assert all(v > 0 for v in initials.values()), f"0원 장부가 생겼다: {initials}"
+    assert len(set(round(v, 6) for v in initials.values())) > 1, (
+        f"전략마다 선언 비중이 다른데 시작금이 전부 같다 — equal_split로 떨어졌다: {initials}"
+    )
+    # 시작금 = 선언 비중에 비례한다: 두 전략의 비율이 비중 비율과 같아야 한다.
+    fractions = validated_capital_fractions(settings.raw)
+    for sid, book in books.items():
+        assert book["cash_krw"] == pytest.approx(book["initial_krw"])
+        assert sum(fractions[sid].values()) > 0, f"{sid}: 비중 0인데 장부가 생겼다"
+
+
+def test_declared_skips_seeding_when_cash_is_unknown(tmp_path, monkeypatch):
+    """총현금 미상 기동에서는 declared도 신규 시딩을 보류한다(equal_split과 동일)."""
+    settings = load_settings(str(_SETTINGS_PATH))
+    monkeypatch.chdir(tmp_path)
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("TOSS_CLIENT_ID", "fake-client-id")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "fake-client-secret")
+    monkeypatch.setenv("START_CAPITAL_KRW", "0")
+
+    settings.raw.setdefault("risk", {})["capital_mode"] = "per_strategy"
+    settings.raw["risk"]["capital_policy"] = "declared"
+    runtime = build_paper_runtime(settings)
+
+    assert runtime.books is not None
+    assert runtime.books.books == {}, "총현금을 모르는데 신규 전략이 시딩됐다 — 0원 시작자본 사고"
+
+
+# ── A/B 갈래 분할 (2026-09-03) ────────────────────────────────────────────────
+# 중심 주장: **두 갈래가 같은 종목을 절대 동시에 보지 않는다.** 겹치면 원장의
+# strategy_id 로 성적을 갈라 채점할 수 없고("어느 갈래가 벌었나"에 답이 없어진다),
+# 같은 종목에 두 갈래가 동시 진입해 노출이 조용히 두 배가 된다.
+
+def _ab_symbols(cfg: dict, tags_of: dict[str, list[str]], symbols: list[str]) -> dict[str, list[str]]:
+    """실제 settings.yaml 로 전략을 조립해 (전략 id → 실제 감시 심볼)을 얻는다."""
+    from quant.trade.strategy import build_strategies
+
+    raw = {**cfg, "strategies": {
+        sid: ({**c, "symbols": list(symbols)} if c.get("universe") == "watchlist" else c)
+        for sid, c in cfg["strategies"].items()
+    }}
+    built = build_strategies(raw, tags_of=tags_of, inbox_reader=lambda: [])
+    return {s.id: list(s.symbols) for s in built}
+
+
+def test_ab_arms_receive_disjoint_symbol_sets_from_real_settings():
+    """scalp_1m(기준)과 scalp_1m_cat(촉매)이 같은 관심종목에서 **서로 겹치지 않는**
+    집합을 받는다 — KR 은 FRGN 단일 요인, US 는 EVENT+TREND."""
+    settings = load_settings(str(_SETTINGS_PATH))
+    symbols = ["005930", "000660", "TQQQ", "SOXL"]
+    tags_of = {
+        "005930": ["FRGN"],            # KR 촉매(외국인 순매수)
+        "000660": ["EVENT"],           # KR 뉴스만 — 단일 요인 게이트에선 기준 갈래
+        "TQQQ": ["EVENT", "TREND"],    # US 촉매
+        "SOXL": ["TREND"],             # US 추세만 — 기준 갈래
+    }
+    got = _ab_symbols(settings.raw, tags_of, symbols)
+
+    base, cat = set(got["scalp_1m"]), set(got["scalp_1m_cat"])
+    assert not (base & cat), f"두 갈래가 같은 종목을 본다: {sorted(base & cat)}"
+    assert base | cat == set(symbols), "필터가 종목을 잃어버렸다(합집합이 유니버스와 다름)"
+    assert cat == {"005930", "TQQQ"}
+    assert base == {"000660", "SOXL"}
+
+    for pair in ("pullback_impulse", "vol_breakout"):
+        b, c = set(got[pair]), set(got[f"{pair}_cat"])
+        assert not (b & c), f"{pair}: 두 갈래가 같은 종목을 본다: {sorted(b & c)}"
+
+
+def test_ab_arms_share_identical_params_in_settings():
+    """진입 규칙이 다르면 A/B 가 아니라 두 전략의 비교다. settings.yaml 은 YAML
+    앵커로 params 를 공유하므로 여기서 그 사실을 못박는다(손편집 드리프트 방지)."""
+    import yaml
+
+    cfg = yaml.safe_load(_SETTINGS_PATH.read_text(encoding="utf-8"))
+    pairs = [sid for sid in cfg["strategies"] if sid.endswith("_cat")]
+    assert pairs, "A/B 갈래가 하나도 없다 — 설정이 되돌려졌나?"
+    for cat in pairs:
+        base = cat[: -len("_cat")]
+        assert base in cfg["strategies"], f"{cat} 의 기준 갈래 {base} 가 없다"
+        assert cfg["strategies"][cat]["class"] == cfg["strategies"][base]["class"]
+        assert cfg["strategies"][cat]["params"] == cfg["strategies"][base]["params"], (
+            f"{cat} 와 {base} 의 params 가 다르다 — A/B 전제(진입 규칙 동일) 붕괴"
+        )
+
+
+def test_held_symbol_survives_universe_filter_so_open_position_stays_managed():
+    """보유 중인 종목은 태그가 사라져도 갈래에 남는다 — 안 그러면 그 포지션의
+    손절·청산 로직이 통째로 사라진다(고아 포지션)."""
+    settings = load_settings(str(_SETTINGS_PATH))
+    from quant.trade.strategy import build_strategies
+
+    raw = {**settings.raw, "_held_symbols": ["005930"], "strategies": {
+        sid: ({**c, "symbols": ["005930", "000660"]} if c.get("universe") == "watchlist" else c)
+        for sid, c in settings.raw["strategies"].items()
+    }}
+    built = {s.id: list(s.symbols) for s in build_strategies(raw, tags_of={}, inbox_reader=lambda: [])}
+    # tags_of 가 비었으므로 촉매 갈래는 원래 아무것도 못 고른다 — 보유분만 남아야 한다.
+    assert built["scalp_1m_cat"] == ["005930"]
+    assert "005930" in built["scalp_1m"]

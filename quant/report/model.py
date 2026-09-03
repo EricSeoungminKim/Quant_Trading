@@ -78,6 +78,13 @@ class ReportModel:
     # KR 상장사 전체 이름표(load_name_map). relation_items 의 마지막 이름 폴백 —
     # 없으면 관련 종목 섹션에 6자리 코드가 그대로 노출된다(2026-09-02 실측 결함).
     name_map: dict[str, str] | None = None
+    # 주도 섹터(sector_daily, 2026-09-03 소유자 철학 지시 B) — 거래대금 상위
+    # 업종 + 외국인 순매수 + 5일 순위 추이(quant.report.collect.sector.
+    # _build_sector_daily_view). `{"date": ..., "sectors": [...]}`이면 표를
+    # 그린다. `{"missing": True}`면 KR 리포트인데 그날 데이터가 결측(§C) —
+    # 렌더가 "결측 — 섹터 데이터 없음"을 보인다. `None`이면 US 리포트 등
+    # 애초에 해당 없음 — 섹션 자체를 생략한다(다른 KR 전용 필드와 같은 관례).
+    sector_daily: dict | None = None
 
 
 @dataclass

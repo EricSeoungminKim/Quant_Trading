@@ -15,6 +15,7 @@ import yaml
 from quant.apps.config import _deep_merge, _read_merged, load_settings
 from quant.apps.cli import _load_recent_governor_proposals, cmd_governor_apply
 from quant.control import governor
+from quant.control.ledger import base_strategy_id
 
 TODAY = date(2026, 8, 30)
 
@@ -216,6 +217,11 @@ def test_allowed_kill_switch_paths_exist_and_are_boolean():
         assert cooldown_days > 0
         sid = name.split(".")[1]
         assert sid not in protected, f"보호 전략 {sid} 이 ALLOWED_KILL_SWITCH 에 등재됨"
+        # A/B 촉매 갈래(`<id>_cat`)는 기준 전략의 보호를 상속한다(2026-09-03) —
+        # `scalp_1m` 이 보호 목록이면 `scalp_1m_cat` 도 이 표에 있으면 안 된다.
+        assert base_strategy_id(sid) not in protected, (
+            f"보호 전략의 A/B 갈래 {sid} 이 ALLOWED_KILL_SWITCH 에 등재됨"
+        )
 
 
 def test_protected_strategies_are_known_settings_yaml_strategies():

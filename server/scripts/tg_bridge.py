@@ -348,6 +348,8 @@ AUTO_ENTRY_TTL_DAYS = 3
 # 포화시키는 설정**이다 — 봉 캐시 정렬·닫힌 시장 스킵·배치 quote로 조회량을 줄이는
 # 작업이 선행돼야 안정적이다(대기열 최상단).
 WATCHLIST_CAP_PER_MARKET = 20
+# 한 심볼에 동시에 있을 수 없는 태그 쌍 — watch-add 병합 시 새 쪽이 옛 쪽을 지운다(2026-09-03).
+_EXCLUSIVE_TAG_PAIRS: tuple[tuple[str, str], ...] = (("FRGN", "FRGN_EXIT"),)
 
 # 적립 태그(FRGN/FRGN_EXIT) 보존 신선도 — own_brief가 매일 FRGN 신호가 살아있는
 # 종목에 태그를 다시 붙이므로(watch-add), 이 기간 넘게 tags_updated_at 갱신이 없다는
@@ -445,7 +447,18 @@ def _handle_watch_unlocked(
         if symbol in existing:
             if tags:
                 entry = by_symbol[symbol]
-                merged = sorted(set(entry.get("tags") or []) | set(tags))
+                # 2026-09-03: 상호배타 쌍은 새 분류가 옛 분류를 **대체**한다.
+                # 합집합만 하면 FRGN 위에 FRGN_EXIT 가 얹힌 채 영원히 공존해
+                # (실측 000660·096770) 전략은 우선순위로 버티지만 태그 저장소는
+                # 거짓을 말한다 — 외국인 수급은 "적립" 아니면 "이탈" 하나다.
+                incoming = set(tags)
+                current = set(entry.get("tags") or [])
+                for a, b in _EXCLUSIVE_TAG_PAIRS:
+                    if a in incoming:
+                        current.discard(b)
+                    if b in incoming:
+                        current.discard(a)
+                merged = sorted(current | incoming)
                 changed = merged != (entry.get("tags") or [])
                 # 태그 내용이 그대로여도 도장은 찍는다 — own_brief가 매일 살아있는
                 # 신호에 같은 태그를 다시 붙이는 것 자체가 "신호 생존" 신호이므로,

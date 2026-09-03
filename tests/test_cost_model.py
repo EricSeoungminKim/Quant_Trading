@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from quant.control.cost_model import (
     ASSUMED_ROUND_TRIP_BP,
+    DEFAULT_EXECUTION_CFG,
     FALLBACK_ROUND_TRIP_BP,
     MAX_SPREAD_SAMPLE_GAP_SECONDS,
     MIN_LEGS_FOR_SLIPPAGE,
@@ -21,6 +22,7 @@ from quant.control.cost_model import (
     compare_spread_cost,
     effective_round_trip_bp,
     measure,
+    round_trip_bp_from_settings,
 )
 
 
@@ -262,9 +264,36 @@ def test_verdict_near_within_tolerance():
 
 
 def test_assumed_round_trip_bp_has_the_three_named_buckets():
-    """전략 docstring들이 인용해 온 세 값(overnight_drift.py/rsi2_dip.py) —
-    daily_wrap 6절의 대조 기준."""
-    assert ASSUMED_ROUND_TRIP_BP == {"US": 26.0, "KR_ETF": 4.0, "KR_STOCK": 30.0}
+    """daily_wrap 6절의 대조 기준 — 2026-09-02부터 `execution` 설정에서 유도한
+    **수수료·세금만**이다(스프레드 미포함). 예전엔 전략 docstring의 체감치
+    26/4/30 을 따로 적어 뒀는데, 같은 원장을 읽는 세 리포트가 서로 다른 왕복
+    비용을 쓰고 있었다(cost_model 상단 주석)."""
+    assert ASSUMED_ROUND_TRIP_BP == {"US": 20.0, "KR_ETF": 3.0, "KR_STOCK": 23.0}
+    assert ASSUMED_ROUND_TRIP_BP == round_trip_bp_from_settings(DEFAULT_EXECUTION_CFG)
+    assert FALLBACK_ROUND_TRIP_BP == ASSUMED_ROUND_TRIP_BP["US"]
+
+
+def test_round_trip_bp_from_settings_is_the_single_source():
+    """세 비용 표(cost_model / forensics / performance._costs)가 같은 helper 에서
+    나온다 — 이게 깨지면 "엣지가 남았나" 판정이 리포트마다 갈린다."""
+    from quant.control.forensics import DEFAULT_ROUND_TRIP_BP
+    from quant.control.performance import _costs
+
+    cfg = {"fee_bps": {"US": 10, "KR": 1.5}, "kr_stock_sell_tax_bps": 20}
+    table = round_trip_bp_from_settings(cfg)
+    assert table == {"US": 20.0, "KR_ETF": 3.0, "KR_STOCK": 23.0}
+    costs = _costs(cfg)
+    assert costs["us_roundtrip_bp"] == table["US"]
+    assert costs["kr_etf_roundtrip_bp"] == table["KR_ETF"]
+    assert costs["kr_stock_roundtrip_bp"] == table["KR_STOCK"]
+    assert DEFAULT_ROUND_TRIP_BP == FALLBACK_ROUND_TRIP_BP
+
+
+def test_round_trip_bp_from_settings_accepts_scalar_fee_bps():
+    """`fee_bps`가 숫자 하나면 전 시장 공통(PaperBroker 하위호환 계약과 동일)."""
+    assert round_trip_bp_from_settings({"fee_bps": 5, "kr_stock_sell_tax_bps": 20}) == {
+        "US": 10.0, "KR_ETF": 10.0, "KR_STOCK": 30.0,
+    }
 
 
 def test_n_trips_counts_dustless_trips_even_when_unpriced():

@@ -260,6 +260,10 @@ class PaperBroker:
             reason=order.reason,
             realized_pnl=realized_pnl,
             cash_after=self.portfolio.cash,
+            # dual_currency=False 면 USD 풀 자체가 개념적으로 없다 — 0.0 을 적으면
+            # "USD 현금이 0원이었다"는 사실 주장이 되므로 None 으로 남긴다
+            # (`cash_usd()`가 None 을 돌려주는 것과 같은 계약, 2026-09-02).
+            cash_after_usd=self.portfolio.cash_usd if self.dual_currency else None,
         )
         # qty 가 order.qty 보다 작을 수 있다(매도 가능 수량 클램프) — 그러면
         # filled_from 이 자동으로 부분체결로 만들고 잔량을 남긴다.

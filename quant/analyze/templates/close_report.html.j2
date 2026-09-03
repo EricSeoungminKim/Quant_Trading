@@ -161,7 +161,7 @@ a{color:inherit}
   <div class="stamp">
     <b class="mono">{{ snap.generated_at.strftime('%H:%M') }} KST</b>
     <span>
-      {%- if snap.missing() %}결측 {{ snap.missing()|length }}건{% else %}전 소스 정상{% endif -%}
+      {%- if snap.missing() %}결측 {{ snap.missing()|length }}건{% else %}핵심 시세·뉴스 소스 정상{% endif -%}
       · 스키마 v{{ snap.schema_version }}
     </span>
   </div>

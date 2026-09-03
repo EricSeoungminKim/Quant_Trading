@@ -226,6 +226,14 @@ def machine_payload(
         if q:
             entry["close"] = q.get("close")
             entry["change_pct"] = q.get("change_pct")
+            # date(D2, 2026-09-03): close 가 실제로 어느 거래일 종가인지 —
+            # `fetch_symbol_quotes` 가 준 "date"(quant/collect/sources/market.py)
+            # 를 그대로 싣는다. 선정 원장 writer(`quant/report/collect/ledger.py`
+            # 의 `_record_intraday_selections` 등)가 `base.get("date")` 로 이미
+            # 읽고 있었지만 이 필드가 없어 늘 None 이었다 — outcomes.py 가
+            # 전방수익률 지평을 셀 기준 세션(`base_session_date`)을 정하는 값이다.
+            if q.get("date") is not None:
+                entry["date"] = q["date"]
         sc = (scores or {}).get(symbol)
         if sc:
             entry["ai_score"] = sc["score"]
@@ -895,6 +903,7 @@ def render(
     holiday_synthesis: dict | None = None,
     symbol_payload: dict[str, dict] | None = None,
     money_flow: dict | None = None,
+    sector_daily: dict | None = None,
 ) -> str:
     from quant.analyze.indicators import describe
 
@@ -1063,6 +1072,12 @@ def render(
         # 템플릿이 섹션을 생략한다(us_kr_bridge와 같은 관례 — 원장이 비어
         # 있는 초기 배포 등).
         money_flow=money_flow,
+        # 주도 섹터(sector_daily, 2026-09-03 소유자 철학 지시 B) — 거래대금
+        # 상위 업종 + 외국인 순매수 + 5일 추이(quant.report.collect.sector.
+        # _build_sector_daily_view). `{"missing": True}`면 KR인데 그날 데이터가
+        # 결측(§C, "결측 — 섹터 데이터 없음" 카드). `None`이면 US 등 해당 없음
+        # — 섹션 자체를 생략한다(money_flow와 같은 관례).
+        sector_daily=sector_daily,
         # 뉴스 노출 상위 종목 카드의 "점수 내역" 접힘에서 트렌딩 요인을 보여주기
         # 위한 심볼별 machine_payload 조회. 없으면(호출부 하위호환) 트렌딩
         # 내역 없이 AI 점수 내역만 보인다.
@@ -1097,7 +1112,7 @@ def write_html(
     agent_interpret_view=None, midterm_view=None, us_news_kr_view=None,
     usnews_headlines=None, us_kr_bridge=None, us_wrap=None,
     index_outlook=None, holiday_synthesis=None, symbol_payload=None,
-    money_flow=None, name_map=None,
+    money_flow=None, name_map=None, sector_daily=None,
 ) -> Path:
     path = _dated_dir(root, snap) / f"{snap.market}_report.html"
     path.write_text(
@@ -1118,7 +1133,7 @@ def write_html(
                us_kr_bridge=us_kr_bridge, us_wrap=us_wrap,
                index_outlook=index_outlook, holiday_synthesis=holiday_synthesis,
                symbol_payload=symbol_payload, money_flow=money_flow,
-               name_map=name_map),
+               name_map=name_map, sector_daily=sector_daily),
         encoding="utf-8",
     )
     return path

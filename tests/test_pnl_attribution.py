@@ -123,3 +123,33 @@ def test_format_summary_is_exactly_four_lines():
     assert "엣지" in lines[1] and "수수료" in lines[1] and "세금" in lines[1]
     assert "최고 기여" in lines[2]
     assert "최저 기여" in lines[3]
+
+
+# ⑤ 이식 정리 제외가 귀속까지 전파되는가 (2026-09-02) --------------------------
+
+def test_attribution_sees_program_only_pnl_after_seeding_exclusion():
+    """`decompose`는 `session_pnl_summary` 출력을 그대로 쓴다 — 그 출력이 이식
+    정리를 빼고 나면 귀속 카드도 자동으로 프로그램 매매분만 말한다."""
+    from datetime import date
+
+    from quant.control.ledger import session_pnl_summary, trades_in_session
+
+    reason = "실계좌 이식 정리 — 소유자 지시 2026-09-01"
+    trades = [
+        {"ts": "2026-09-01T14:30:00+00:00", "strategy_id": "gap_fade", "symbol": "TQQQ",
+         "side": "buy", "qty": 1, "price": 69.2, "fee": 0.07, "market": "US"},
+        {"ts": "2026-09-01T15:30:00+00:00", "strategy_id": "gap_fade", "symbol": "TQQQ",
+         "side": "sell", "qty": 1, "price": 70.5, "fee": 0.08, "realized_pnl": 1.3,
+         "market": "US"},
+        {"ts": "2026-09-01T14:01:08+00:00", "strategy_id": "legacy", "symbol": "SOXL",
+         "side": "sell", "qty": 13, "price": 105.67, "fee": 1.4,
+         "realized_pnl": -706.42, "market": "US", "reason": reason},
+    ]
+    session = session_pnl_summary(trades, "US", date(2026, 9, 1))
+    session_trades = [t for t in trades_in_session(trades, "US", date(2026, 9, 1))
+                      if reason not in (t.get("reason") or "")]
+    decomp = decompose(session, session_trades, kr_stock_sell_tax_bps=20.0)
+    assert decomp["edge"] == 1.3                      # -706.42 가 섞이지 않는다
+    assert round(decomp["net"], 4) == 1.15
+    top, bottom = top_bottom_strategies(session["by_strategy"])
+    assert top["strategy"] == "gap_fade" and bottom["strategy"] == "gap_fade"

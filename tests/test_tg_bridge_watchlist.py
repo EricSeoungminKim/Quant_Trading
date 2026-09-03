@@ -587,6 +587,21 @@ def test_watch_add_merges_tags_into_existing_entry(tmp_path):
     assert entries[0]["tags"] == ["EVENT", "EVENT_SCALP"]
 
 
+def test_watch_add_exclusive_pair_replaces_opposite_tag(tmp_path):
+    """2026-09-03 — 외국인 수급은 '적립'(FRGN) 아니면 '이탈'(FRGN_EXIT) 하나다.
+    합집합만 하던 병합이 둘을 영원히 공존시켰다(실측 000660·096770). 새 분류가
+    옛 분류를 지우고, 무관한 태그(EVENT)는 그대로 남는다."""
+    path = tmp_path / "watchlist.yaml"
+    toss = FakeTossClient()
+    tg_bridge.handle_watch("005930", toss, path=path, source="auto", tags=["EVENT", "FRGN"])
+
+    tg_bridge.handle_watch("005930", toss, path=path, source="auto", tags=["FRGN_EXIT"])
+    assert tg_bridge.load_watchlist(path)[0]["tags"] == ["EVENT", "FRGN_EXIT"]
+
+    tg_bridge.handle_watch("005930", toss, path=path, source="auto", tags=["FRGN"])
+    assert tg_bridge.load_watchlist(path)[0]["tags"] == ["EVENT", "FRGN"]
+
+
 def test_watch_add_existing_entry_without_tags_still_says_already_here(tmp_path):
     """태그 없이(tags=None) 재호출하면 기존 동작(이미 있음, 변경 없음) 그대로다."""
     path = tmp_path / "watchlist.yaml"
@@ -612,7 +627,7 @@ def test_watch_add_tags_only_updates_existing_but_skips_new_registration(tmp_pat
     )
 
     entries = {e["symbol"]: e for e in tg_bridge.load_watchlist(path)}
-    assert entries["005930"]["tags"] == ["FRGN", "FRGN_EXIT"]
+    assert entries["005930"]["tags"] == ["FRGN_EXIT"]  # 2026-09-03: 상호배타 쌍 — 새 분류가 옛 분류를 대체
     assert "000660" not in entries, "미등록 종목은 --tags-only로 신규 등록되면 안 된다"
     assert "000660" in reply and "아님" in reply  # "태그 전용 갱신 대상 아님" 안내
 
@@ -629,7 +644,7 @@ def test_parse_watch_add_argv_and_handle_watch_tags_only_cli_path_end_to_end(tmp
     tg_bridge.handle_watch(arg, toss, path=path, source=source, tags=tags, tags_only=tags_only)
 
     entries = tg_bridge.load_watchlist(path)
-    assert entries[0]["tags"] == ["FRGN", "FRGN_EXIT"]
+    assert entries[0]["tags"] == ["FRGN_EXIT"]  # 2026-09-03: 상호배타 쌍
 
 
 # ---------------------------------------------------------------------------
@@ -1142,7 +1157,7 @@ def test_watch_add_stamps_tags_updated_at_on_new_registration_and_merge(tmp_path
     time.sleep(1.1)
     tg_bridge._handle_watch_unlocked("005930", _Toss(), path, source="auto", tags=["FRGN_EXIT"])
     entries = {e["symbol"]: e for e in tg_bridge.load_watchlist(path)}
-    assert set(entries["005930"]["tags"]) == {"FRGN", "FRGN_EXIT"}
+    assert set(entries["005930"]["tags"]) == {"FRGN_EXIT"}  # 2026-09-03: 상호배타 쌍
     assert entries["005930"]["tags_updated_at"] != second_stamp
 
 

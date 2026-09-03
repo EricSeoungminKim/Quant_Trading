@@ -25,9 +25,12 @@ NOW = datetime(2026, 8, 31, 10, 0, tzinfo=KST)
 
 
 class FakeClock:
-    def __init__(self, now=NOW, kr_open=True):
+    def __init__(self, now=NOW, kr_open=True, flatten=False):
         self._now = now
         self._kr_open = kr_open
+        # 2026-09-03 일중 전환(EoD 강제청산) 회귀 테스트용 — 기본은 False(기존
+        # 테스트 전부가 이 값에 의존해 청산이 안 걸리는 걸 전제한다).
+        self._flatten = flatten
 
     def now(self):
         return self._now
@@ -42,7 +45,7 @@ class FakeClock:
         return 1.0
 
     def should_flatten(self, market, m):
-        return False
+        return self._flatten
 
 
 class FakeFeed:
@@ -68,9 +71,9 @@ class FakeBroker:
         return 10_000_000.0
 
 
-def _ctx(now=NOW, quotes=None, positions=None, kr_open=True):
+def _ctx(now=NOW, quotes=None, positions=None, kr_open=True, flatten=False):
     return Context(
-        clock=FakeClock(now, kr_open), data=FakeFeed(quotes), broker=FakeBroker(positions),
+        clock=FakeClock(now, kr_open, flatten), data=FakeFeed(quotes), broker=FakeBroker(positions),
     )
 
 
@@ -419,6 +422,67 @@ def test_hard_stop_not_checked_outside_continuous_session():
     )
 
     assert strat.on_cycle(ctx) == []
+
+
+# ------------------------------------------------------------- EoD 강제청산(2026-09-03 일중 전환)
+
+
+def test_eod_flatten_exits_open_position_before_close():
+    strat = _strategy([])
+    positions = {"005930": _lot_position("005930", qty=10.0, entry=1000.0, stop=950.0)}
+    ctx = _ctx(quotes={"005930": 1010.0}, positions=positions, flatten=True)
+
+    signals = strat.on_cycle(ctx)
+
+    assert len(signals) == 1
+    sig = signals[0]
+    assert sig.action == SignalAction.EXIT_LONG
+    assert sig.exit_fraction == 1.0
+    assert "EoD 강제청산" in sig.reason
+
+
+def test_eod_flatten_does_not_fire_when_not_near_close():
+    strat = _strategy([])
+    positions = {"005930": _lot_position("005930", qty=10.0, entry=1000.0, stop=950.0)}
+    ctx = _ctx(quotes={"005930": 1010.0}, positions=positions, flatten=False)
+
+    assert strat.on_cycle(ctx) == []
+
+
+def test_eod_flatten_skips_symbols_without_my_lot():
+    strat = _strategy([])
+    positions = {"005930": Position(symbol="005930", qty=10.0, avg_cost=1000.0, meta={})}
+    ctx = _ctx(quotes={"005930": 1010.0}, positions=positions, flatten=True)
+
+    assert strat.on_cycle(ctx) == []
+
+
+def test_eod_flatten_takes_priority_over_hard_stop_no_duplicate_signal():
+    """마감 직전 + 손절가 이하가 동시에 성립해도 신호는 하나(중복 청산 금지)."""
+    strat = _strategy([])
+    positions = {"005930": _lot_position("005930", qty=10.0, entry=1000.0, stop=950.0)}
+    ctx = _ctx(quotes={"005930": 900.0}, positions=positions, flatten=True)
+
+    signals = strat.on_cycle(ctx)
+
+    assert len(signals) == 1
+    assert "EoD 강제청산" in signals[0].reason
+
+
+def test_eod_flatten_fires_even_outside_continuous_session():
+    """오버나이트 방지가 목적이므로 하드 손절과 달리 연속거래 여부와 무관하게 작동한다
+    (should_flatten 자체가 동시호가/장마감 이후는 걸러준다 — clock.py)."""
+    strat = _strategy([])
+    positions = {"005930": _lot_position("005930", qty=10.0, entry=1000.0, stop=950.0)}
+    ctx = _ctx(
+        now=datetime(2026, 8, 31, 15, 25, tzinfo=KST),  # 연속거래 종료(15:20) 이후 — 동시호가 구간
+        quotes={"005930": 1010.0}, positions=positions, flatten=True,
+    )
+
+    signals = strat.on_cycle(ctx)
+
+    assert len(signals) == 1
+    assert "EoD 강제청산" in signals[0].reason
 
 
 # --------------------------------------------------------------------------- 생성자 검증

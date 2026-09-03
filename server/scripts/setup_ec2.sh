@@ -39,6 +39,14 @@ echo "[setup_ec2] systemd 유닛 설치"
 sudo cp server/systemd/quant-engine.service /etc/systemd/system/
 sudo cp server/systemd/tg-bridge.service /etc/systemd/system/
 sudo systemctl daemon-reload
+
+# 저널 용량 상한 (2026-09-03) — 상한이 없어 엔진 저널이 1.8GB 박스에서 1.8GB까지
+# 자랐다. 저널이 디스크를 채우면 장중에 상태 파일을 못 쓰고 그건 금전적 손실이다.
+# journald 재시작은 엔진을 건드리지 않는다(별도 데몬).
+echo "[setup_ec2] journald 용량 상한 설치"
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo cp server/systemd/journald.conf.d/quant.conf /etc/systemd/journald.conf.d/
+sudo systemctl restart systemd-journald
 sudo systemctl enable --now quant-engine
 sudo systemctl enable --now tg-bridge
 

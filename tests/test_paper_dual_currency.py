@@ -243,3 +243,23 @@ def test_equal_split_includes_usd_pool_when_fx_given():
     # fx 미주입 → KRW만 (구 호출부 하위호환)
     got = equal_split_initial_krw(_FakeBroker(1_000_000, 500.0), ["a", "b"])
     assert got == 500_000.0
+
+
+# --- (d) cash_after_usd 기록 (2026-09-02) --------------------------------------
+
+def test_fill_records_usd_cash_snapshot_under_dual_currency():
+    """`cash_after`는 시장 무관 항상 KRW 풀이라 US 체결의 현금 변화를 전혀 남기지
+    못했고, 세션 리포트가 "US … 계좌 현금 변화 +0원"이라는 거짓을 찍었다."""
+    broker = _broker(dual_currency=True, cash=1_000_000.0, cash_usd=100.0)
+    state = broker.place_order(Order(symbol="TQQQ", side=Side.BUY, qty=1, strategy_id="t"))
+    fill = state.fill
+    assert fill.cash_after == pytest.approx(1_000_000.0)      # KRW 풀은 그대로
+    assert fill.cash_after_usd == pytest.approx(50.0)         # USD 풀이 실제로 줄었다
+
+
+def test_fill_usd_cash_snapshot_is_none_without_dual_currency():
+    """dual_currency=False면 USD 풀이 개념적으로 없다 — 0.0을 적으면 "USD 현금이
+    0이었다"는 사실 주장이 된다(cash_usd()가 None을 주는 것과 같은 계약)."""
+    broker = _broker(dual_currency=False, cash=1_000_000.0, cash_usd=100.0)
+    state = broker.place_order(Order(symbol="TQQQ", side=Side.BUY, qty=1, strategy_id="t"))
+    assert state.fill.cash_after_usd is None

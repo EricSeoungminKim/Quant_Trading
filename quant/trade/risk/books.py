@@ -53,6 +53,13 @@ class StrategyBooks:
     path: Path
     initial_krw: float
     books: dict[str, dict] = field(default_factory=dict)
+    # 전략별 시작 명목자본 override (2026-09-03, `capital_policy: declared`).
+    # fixed/equal_split은 전략마다 같은 금액이라 스칼라 `initial_krw` 하나면 됐지만,
+    # declared는 전략마다 선언된 capital_fraction이 달라 금액도 다르다. 비어 있으면
+    # (fixed/equal_split) 이 필드는 전혀 읽히지 않는다 — 기존 동작 100% 보존.
+    # **영속화하지 않는다**: 매 기동에 정책이 다시 계산하고, 이미 만들어진 장부의
+    # `book["initial_krw"]`는 생성 시점에 못박히므로(_ensure) 저장할 이유가 없다.
+    initial_by_strategy: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: "Path | str", initial_krw: float) -> "StrategyBooks":
@@ -100,9 +107,12 @@ class StrategyBooks:
         """
         book = self.books.get(strategy_id)
         if book is None:
+            # declared 정책은 전략마다 시작금이 다르다 — 선언이 있으면 그 값을,
+            # 없으면 지금까지처럼 컨테이너 스칼라를 쓴다.
+            initial = float(self.initial_by_strategy.get(strategy_id, self.initial_krw))
             book = {
-                "cash_krw": self.initial_krw,
-                "initial_krw": self.initial_krw,
+                "cash_krw": initial,
+                "initial_krw": initial,
                 "realized_pnl_krw": 0.0,
                 "fees_krw": 0.0,
                 "positions": {},

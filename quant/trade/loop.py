@@ -105,13 +105,38 @@ _STRATEGY_LABELS = {
     "gap_fade": "갭하락 되돌림",
     "rsi2_dip": "RSI2 눌림 매수",
     "llm_trader": "LLM 트레이더(실험)",
+    # 문헌 기반 일중 3종(2026-09-03) — 등록만, 번인 전까지 비활성.
+    "orb_rvol": "개장 돌파(거래량 선별)",
+    "eod_reversal": "장막판 역추세",
+    "open_reversal": "전일 패자 개장 매수",
 }
+
+
+# A/B 촉매 갈래 접미사(2026-09-03) — `<id>_cat` 은 `<id>` 와 **같은 클래스**를
+# 다른 유니버스로 돌리는 갈래다(config/settings.yaml `universe_filter`).
+# 그래서 표시명·오버나이트 판정 같은 클래스 단위 처리는 전부 상속돼야 한다.
+# `quant.control.ledger.CATALYST_ARM_SUFFIX` 와 같은 값이지만 임포트하지
+# 않는다 — `quant/trade/` 는 `quant/control/` 을 모른다(평면 규칙).
+_CATALYST_ARM_SUFFIX = "_cat"
+
+
+def _base_strategy_id(sid: str) -> str:
+    """`_pure`(순수 계약 껍질)·`_cat`(A/B 촉매 갈래) 접미사를 벗긴 기준 id."""
+    return sid.removesuffix(_CATALYST_ARM_SUFFIX).removesuffix("_pure")
 
 
 def _strategy_label(strategy_id: str | None) -> str:
     if not strategy_id:
         return "전략 미상"
-    return f"{_STRATEGY_LABELS.get(strategy_id, strategy_id)} ({strategy_id})"
+    label = _STRATEGY_LABELS.get(strategy_id)
+    if label is None:
+        base = _base_strategy_id(strategy_id)
+        # 촉매 갈래는 기준 전략의 표시명 + 꼬리표. id 원문만 보이면 소유자가
+        # 텔레그램에서 "이건 또 뭐지"가 된다(표시명 등록 원칙, 2026-08-29).
+        if base != strategy_id and base in _STRATEGY_LABELS:
+            suffix = "촉매" if strategy_id.endswith(_CATALYST_ARM_SUFFIX) else "순수"
+            label = f"{_STRATEGY_LABELS[base]}·{suffix}"
+    return f"{label or strategy_id} ({strategy_id})"
 
 
 def _is_kr(symbol: str) -> bool:
@@ -520,7 +545,13 @@ def _execute_signal(
                 fill_market = broker_market_of.get(fill.symbol) or market_of_symbol(fill.symbol)
                 fx = getattr(ctx.broker, "fx", None)
                 if fx is None:
-                    logger.warning("전략별 장부 갱신 생략 — 브로커에 fx 없음: %s", fill.symbol)
+                    # 여기 오면 조립 배선 버그다 — 정상 기동이면 assembly가
+                    # 브로커에 fx를 붙였거나(paper/live 양쪽) 아예 부팅을
+                    # 거부했어야 한다(2026-09-02 C1). 최후 방어선으로만 남긴다.
+                    logger.warning(
+                        "전략별 장부 갱신 생략 — 브로커에 fx 없음(조립 배선 버그, "
+                        "assembly.build_paper_runtime 확인 필요): %s", fill.symbol,
+                    )
                 else:
                     books.apply_fill(
                         fill.strategy_id, fill.symbol, fill.side, fill.qty, fill.price,
@@ -1218,11 +1249,13 @@ _OVERNIGHT_STRATEGIES = frozenset({
     # rsi2_dip(2026-08-29): 마감 직전 매수 → 며칠 보유(RSI 회복/시간/하드레일
     # 청산)가 전략 정의다. overnight_drift 와 같은 이유로 누락 시 무효화된다.
     "rsi2_dip",
-    # llm_trader(2026-08-30, 소유자 승인): "LLM이 청산도 스스로 판단하는 실험" —
-    # 오버나이트 허용이 설계 자체다. EoD 강제청산이 걸리면 LLM의 보유 판단이
-    # 매일 마감에 무효화된다. 하드 손절(stop_pct)만 엔진이 지킨다(llm_trader.py
-    # 모듈 docstring "방어선" 절).
-    "llm_trader",
+    # llm_trader는 여기 없다(2026-09-03 소유자 결정: 자동매매는 단타·스캘핑만).
+    # 2026-08-30~2026-09-02에는 "LLM이 청산도 스스로 판단하는 실험"으로 오버나이트를
+    # 허용했지만, 오버나이트/장기 아이디어는 이제 자동매매가 아니라
+    # quant/analyze/manual_recs.py(텔레그램 추천) 레인으로 간다. llm_trader.py가
+    # 마감 전 강제청산(should_flatten)을 스스로 호출하도록 바뀌었으므로 여기 남아
+    # 있으면 안 된다 — 남기면 EoD 강제청산이 걸리지 않는 것과 소스 대조
+    # (test_position_report_wording.py)가 즉시 어긋난다.
 })
 
 
@@ -1240,12 +1273,110 @@ def _is_overnight(sid: str | None) -> bool:
     가 이 집합을 **전략 모듈 파일명**에서 유도해 대조한다(should_flatten 을
     호출하지 않는 모듈 = 오버나이트). 순수 구현은 같은 모듈 안에 있으므로
     목록에 새 이름을 넣으면 그 대조가 깨진다 — 대조를 약화시키는 대신
-    판정 쪽을 관대하게 만든다."""
+    판정 쪽을 관대하게 만든다.
+
+    `_cat`(2026-09-03 A/B 촉매 갈래)도 같은 이유로 벗긴다 — `<id>_cat` 은
+    `<id>` 와 같은 클래스라 보유 기한 성격이 같다. 지금 A/B 를 건 셋
+    (scalp_1m/pullback_impulse/vol_breakout)은 전부 일중 전략이라 실제
+    동작은 안 바뀌지만, 오버나이트 전략에 A/B 를 걸었을 때 EoD 강제청산이
+    한쪽 갈래만 털어 비교를 무의미하게 만드는 사고를 미리 막는다."""
     # sid 가 None 일 수 있다 — 소유 전략을 모르는 포지션(수동 매수·구버전 lot).
     # 그때는 오버나이트로 단정하지 않는다(호출부가 기한 없는 문구를 쓴다).
     if not sid:
         return False
-    return sid in _OVERNIGHT_STRATEGIES or sid.removesuffix("_pure") in _OVERNIGHT_STRATEGIES
+    return sid in _OVERNIGHT_STRATEGIES or _base_strategy_id(sid) in _OVERNIGHT_STRATEGIES
+
+
+def _hard_rail_exit(
+    strategy_id: str, symbol: str, ctx: Context, risk: RiskManager, sinks: EventSink,
+    notifier: Notifier | None, books: StrategyBooks | None, reason: str,
+) -> None:
+    """`_intraday_hard_stop_check`가 만드는 강제 시장가 청산 — `_flatten_all`의
+    `_flatten_signal`과 같은 패턴(전략 lot 단위 EXIT_LONG → `_execute_signal`).
+    risk.approve()가 여전히 최종 승인자다(장 마감 게이트 등 물리적 제약은 여기서도
+    그대로 적용된다) — 이 함수는 그 앞에 놓을 *신호*만 만든다."""
+    signal = Signal(
+        strategy_id=strategy_id,
+        symbol=symbol,
+        action=SignalAction.EXIT_LONG,
+        target_weight=0.0,
+        exit_fraction=1.0,
+        reason=reason,
+    )
+    sinks.on_signal(signal)
+    _execute_signal(signal, ctx, risk, sinks, notifier, books=books)
+
+
+def _intraday_hard_stop_check(
+    ctx: Context,
+    risk: RiskManager,
+    sinks: EventSink,
+    notifier: Notifier | None,
+    books: StrategyBooks | None,
+    marks: dict[str, float],
+) -> None:
+    """엔진 레벨 장중 하드레일(2026-09-03, 소유자 지시: "장중 매매는 최대 손실
+    −5%, 최대 목표 +10%를 유지한다"). `risk.manager.RiskManagerImpl.approve()`의
+    진입 클램프(Order.stop/target + lot state_update 동기화)는 **진입 시점**에만
+    걸린다 — 그 이후 전략의 `on_cycle` 자체가 멎으면(`ColdFetchBudgetExceeded`,
+    또는 흔한 `quote is None -> return None` 패턴) 전략이 스스로 손절을 내지
+    못한다. 그래서 이 레일은 **전략과 무관하게** 사이클마다 브로커 포지션(lot)을
+    직접 보고 이번 사이클의 시세(marks — 이미 만든 quote 캐시, 추가 네트워크
+    없음)와 대조한다.
+
+    시세가 없는(marks에 없는) 종목은 건너뛴다 — 이미 `unpriced_since` 경보가
+    "손절 판정이 멈춘 상태"를 알린다(이 함수까지 같은 경보를 중복으로 내지
+    않는다). 오버나이트(캐리 설계) 전략은 `_is_overnight`으로 제외한다 — 이
+    레일이 잡으려는 것은 장중 관리 실패이지, 정의상 밤을 넘기는 포지션이 아니다.
+
+    익절(+10%) 강제 청산은 `risk.intraday_take_profit_cap_enabled`가 true일
+    때만 낸다(기본 false, `RiskManagerImpl` 생성자 주석에 두 가지 해석과 기본값
+    근거가 있다). 하드 손절 문자열은 리터럴로 고정한다 — 알림/원장에서 이 레일이
+    낸 청산을 사유 문자열로 식별할 수 있어야 한다."""
+    hard_stop_pct = getattr(risk, "intraday_hard_stop_pct", 0.0) or 0.0
+    if hard_stop_pct <= 0:
+        return
+    take_profit_pct = getattr(risk, "intraday_max_target_pct", 0.0) or 0.0
+    take_profit_enabled = bool(getattr(risk, "intraday_take_profit_cap_enabled", False))
+    try:
+        positions = ctx.broker.positions()
+    except Exception:  # noqa: BLE001 — 조회 실패가 사이클을 죽이면 안 된다
+        logger.warning("장중 하드레일 — 포지션 조회 실패, 이번 사이클 건너뜀", exc_info=True)
+        return
+    # list(...)로 스냅샷한다 — _hard_rail_exit이 부르는 _execute_signal이 체결 시
+    # pos.meta["lots"]에서 청산된 전략의 lot을 pop한다(paper.py). 브로커가 돌려주는
+    # positions()/lots는 살아있는 참조라(paper.py: `return self.portfolio.positions`),
+    # 순회 중에 그 사전이 줄어들면 "dictionary changed size during iteration"으로
+    # 이 함수 자체가 죽는다 — 뒤 종목/전략의 하드레일 판정이 함께 날아간다.
+    for symbol, pos in list(positions.items()):
+        if not pos.is_open:
+            continue
+        price = marks.get(symbol)
+        if price is None:
+            continue  # 시세 없음 — unpriced 경보가 이미 다룬다
+        lots = pos.meta.get("lots") or {}
+        for strategy_id, lot in list(lots.items()):
+            qty = float(lot.get("qty", 0.0) or 0.0)
+            if qty <= 0 or _is_overnight(strategy_id):
+                continue
+            entry = lot.get("entry", lot.get("avg_cost", pos.avg_cost))
+            try:
+                entry = float(entry)
+            except (TypeError, ValueError):
+                continue
+            if entry <= 0:
+                continue
+            if price <= entry * (1 - hard_stop_pct):
+                _hard_rail_exit(
+                    strategy_id, symbol, ctx, risk, sinks, notifier, books,
+                    "하드 손절 −5%(리스크 레일)",
+                )
+                continue
+            if take_profit_enabled and take_profit_pct > 0 and price >= entry * (1 + take_profit_pct):
+                _hard_rail_exit(
+                    strategy_id, symbol, ctx, risk, sinks, notifier, books,
+                    "하드 익절 +10%(리스크 레일)",
+                )
 
 
 def _position_report_text(ctx: Context, marks: dict[str, float], risk: RiskManager | None = None) -> str | None:
@@ -1507,11 +1638,19 @@ def _breaker_line(state: dict) -> str | None:
         loss = state["daily_loss_limit_pct"]
         cooldown = state["cooldown_bars_after_stop"]["symbols_in_cooldown"]
         cooldown_text = ", ".join(_display(s) for s in cooldown) if cooldown else "없음"
+        # per_strategy 모드에서는 "어느 전략이" 막혔는지까지 보여준다 — 한도 도달
+        # 사실만 알려주고 대상을 숨기면 운영자가 확인할 곳이 없다(2026-09-02 C2).
+        tripped_ids = [
+            sid for sid, v in (loss.get("per_strategy") or {}).items() if v["tripped"]
+        ]
+        loss_text = " — ⛔ 도달, 신규 진입 중단" if loss["tripped"] else " (아직 여유 있음)"
+        if tripped_ids:
+            loss_text += f" [{', '.join(_strategy_label(s) for s in tripped_ids)}]"
         return (
             f"🚦 안전장치\n"
             f"   • 오늘 진입 {_entry_budget_text(orders)}\n"
             f"   • 하루 손실 한도 -{loss['limit_pct']:.1f}%"
-            f"{' — ⛔ 도달, 신규 진입 중단' if loss['tripped'] else ' (아직 여유 있음)'}\n"
+            f"{loss_text}\n"
             f"   • 손절 후 재진입 대기: {cooldown_text}"
         )
     except Exception:
@@ -1560,10 +1699,14 @@ def _session_summary_text(
     if equity is not None:
         lines.append(f"💰 추정 자산: {equity:,.0f}원")
 
-    day_pnl = (breaker or {}).get("daily_loss_limit_pct", {}).get("day_pnl_pct")
+    loss_state = (breaker or {}).get("daily_loss_limit_pct", {})
+    day_pnl = loss_state.get("day_pnl_pct")
     if day_pnl is not None:
         mark = "🔺" if day_pnl > 0 else ("🔻" if day_pnl < 0 else "➖")
-        lines.append(f"📊 오늘 손익: {mark} {day_pnl:+.2f}%")
+        # per_strategy 모드의 day_pnl_pct 는 계좌 전체가 아니라 **가장 나쁜 전략**의
+        # 값이다(2026-09-02 C2). 라벨을 붙이지 않으면 계좌 손익으로 오독된다.
+        label = "오늘 손익(최악 전략)" if loss_state.get("scope") == "per_strategy" else "오늘 손익"
+        lines.append(f"📊 {label}: {mark} {day_pnl:+.2f}%")
 
     # 비용 회계 한 줄 — 체결 수·수수료에 거래대금 대비 bp를 붙인다. 체결 0건이어도
     # 반드시 찍는다("오늘 아무것도 안 했다"는 것 자체가 매일 확인해야 할 신호다).
@@ -2082,6 +2225,10 @@ async def run_paper_loop(
         try:
             if reconciler is not None:
                 reconciler.check()  # 주기 미도달이면 내부에서 즉시 반환한다
+            # 장중 하드레일(2026-09-03) — halt/flatten 여부와 무관하게 매 사이클
+            # 돈다. 청산은 절대 막지 않는다는 이 레일 전체의 원칙(모듈 상단 참고)
+            # 그대로, 하드 손절도 예외가 아니다.
+            _intraday_hard_stop_check(ctx, risk, sinks, notifier, books, marks)
             flatten_scope = control.consume_flatten_scope()
             if flatten_scope:
                 # flatten은 승인을 거치지 않는다 — kill switch가 승인 대기로 막히면

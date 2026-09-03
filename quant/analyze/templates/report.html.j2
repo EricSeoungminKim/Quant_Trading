@@ -714,7 +714,7 @@ html{overflow-x:hidden}
   <div class="stamp">
     <b class="mono">{{ snap.generated_at.strftime('%H:%M') }} KST</b>
     <span>
-      {%- if snap.missing() %}결측 {{ snap.missing()|length }}건{% else %}전 소스 정상{% endif -%}
+      {%- if snap.missing() %}결측 {{ snap.missing()|length }}건{% else %}핵심 시세·뉴스 소스 정상{% endif -%}
       · 스키마 v{{ snap.schema_version }}
     </span>
   </div>
@@ -726,7 +726,7 @@ html{overflow-x:hidden}
   {% if holiday_synthesis %}<a href="#ch2">2. 휴장 기간 종합</a>{% endif %}
   <a href="#ch3">3. 오늘의 지수 전망</a>
   <a href="#ch4">4. 시장 흐름</a>
-  {% if top_movers or sector_view %}<a href="#ch5">5. 섹터·테마</a>{% endif %}
+  {% if top_movers or sector_view or sector_daily %}<a href="#ch5">5. 섹터·테마</a>{% endif %}
   <a href="#ch6">6. 종목 후보</a>
   <a href="#ch7">7. 우리 시스템의 대응</a>
   <a href="#ch8">8. 부록</a>
@@ -762,7 +762,7 @@ html{overflow-x:hidden}
     <span class="v {{ 'up' if q.change_pct > 0 else ('down' if q.change_pct < 0 else 'flat') }}">
       {{ '{:+.2f}'.format(q.change_pct) }}%</span></div>
   {% endfor %}
-  <div class="kv"><span class="k">결측 소스</span>
+  <div class="kv"><span class="k">결측 시세·뉴스 소스</span>
     <span class="v">{% if snap.missing() %}{{ snap.missing()|length }}건{% else %}없음{% endif %}</span></div>
   <div class="key-note">{{ quote_time_label }}</div>
 </div>
@@ -1026,6 +1026,10 @@ html{overflow-x:hidden}
 {% if news_flow %}
 <details class="mod">
   <summary>오늘의 뉴스 흐름<span class="sub">전 매체 · 사건 단위 · 다매체 보도량 순</span>{% if tldr.news_flow %}<span class="mod-tldr">{{ tldr.news_flow }}</span>{% endif %}</summary>
+  {% set nd = d('news') %}
+  {% if nd and nd.window_start %}
+  <p class="foot">수집창 {{ nd.window_start[5:7] }}-{{ nd.window_start[8:10] }} {{ nd.window_start[11:16] }} → {{ snap.generated_at.strftime('%m-%d %H:%M') }} · 기사 {{ nd.kept }}건 (누적 저장소 {{ nd.from_store }} / 실시간 {{ nd.from_live }})</p>
+  {% endif %}
   <ul class="news-list">
     {% for item in news_flow[:12] %}
     <li>
@@ -1323,7 +1327,7 @@ html{overflow-x:hidden}
 {% endif %}
 </div>
 
-{% if top_movers or sector_view %}
+{% if top_movers or sector_view or sector_daily %}
 
 <div class="chapter-head" id="ch5"><span class="chapter-no">5</span><h2 class="chapter-title">섹터·테마</h2></div>
 
@@ -1463,6 +1467,36 @@ html{overflow-x:hidden}
   <p class="foot">
     <b>업종</b> 네이버 금융 업종 분류 · 종목 옆 <b>[배지]</b> 는 네이버 테마
   </p>
+</details>
+{% endif %}
+{# ── 주도 섹터: 프로그램이 스스로 고르는 오늘의 주도 업종(거래대금 순위 ·
+   외국인 순매수 · 5일 추이) — 소유자 철학 지시 B(2026-09-03). 랭킹 기준은
+   등락률이 아니라 거래대금이라는 게 소유자의 정의라, 위 "업종별 시세"(등락률
+   기준)와는 다른 판단축이다. `sector_daily`가 `{"missing": True}`면 KR
+   리포트인데 그날 데이터가 결측(§C) — 빈 표 대신 결측 문구를 보인다. `None`
+   이면(US 리포트 등) 섹션 자체를 생략한다. #}
+{% if sector_daily %}
+<details class="mod">
+  <summary>주도 섹터<span class="sub">거래대금 · 외국인 순매수 · 5일 추이</span></summary>
+  {% if sector_daily.missing %}
+  <p class="idx-sub">결측 — 섹터 데이터 없음</p>
+  {% else %}
+  <p class="idx-sub">{{ sector_daily.date }} 기준 거래대금 상위 {{ sector_daily.sectors|length }}개 업종</p>
+  <table>
+    <tr><th>순위</th><th>업종</th><th>5일 추이</th><th class="num">외국인 순매수</th><th>대표 종목</th></tr>
+    {% for s in sector_daily.sectors %}
+    <tr>
+      <td>{{ s.rank }}</td>
+      <td>{{ s.sector }}</td>
+      <td>{{ s.trend }}</td>
+      <td class="num {{ 'up' if s.foreign_net and s.foreign_net > 0 else ('down' if s.foreign_net and s.foreign_net < 0 else '') }}">
+        {% if s.foreign_net is not none %}{{ shares(s.foreign_net) }}{% else %}미확인{% endif %}
+      </td>
+      <td>{% for m in s.top_members[:3] %}<a class="sym-link" href="{{ sym_link(m.code) }}" target="_blank" rel="noopener">{{ m.name }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
 </details>
 {% endif %}
 
@@ -1938,7 +1972,7 @@ html{overflow-x:hidden}
       같은 디렉토리의 <b>{{ snap.market }}_engine.json</b> 에 정규화 피처가 들어 있다
       (종목별 AI 점수·트렌딩 점수·랭킹 보드 순위·뉴스 건수).
       이 줄은 거래 엔진의 watch-score 확신도 엔진 입력 형식과 같고,
-      <b>{{ '08:40' if snap.market == 'KR' else '21:50' }} KST 자동 편입 크론이 실제로 이 값을 읽는다</b>
+      <b>{{ '08:12' if snap.market == 'KR' else '21:50' }} KST 자동 편입 크론이 실제로 이 값을 읽는다</b>
       — 통과한 종목만 관심종목에 등록된다.
     </p>
   </details>
@@ -2409,7 +2443,7 @@ html{overflow-x:hidden}
 {# ── 결측 ── #}
 {% if snap.missing() %}
 <section class="mod half miss">
-  <h2>결측 소스<span class="sub">{{ snap.missing()|length }}건</span></h2>
+  <h2>결측 시세·뉴스 소스<span class="sub">{{ snap.missing()|length }}건</span></h2>
   {% for key in snap.missing() %}
   <div style="padding:7px 0;border-bottom:1px solid var(--hair)">
     <b style="font-size:12.5px">{{ key }}</b>

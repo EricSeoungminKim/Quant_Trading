@@ -1,6 +1,6 @@
 """관심종목 자동 스코어링 v2 — LLM 리포트 분석이 제안한 후보 종목을, 그 후보를
 추천한 근거(테마: 추세/눌림목반등/이벤트)에 맞춰 결정론적 규칙으로 채점해, 근거가
-있는 종목만 data/watchlist.yaml에 자동 추가되게 한다. 08:40 KST daily-brief cron이
+있는 종목만 data/watchlist.yaml에 자동 추가되게 한다. 08:12 KST own_brief.sh cron이
 부르는 리포팅 레이어 전용이다 — 거래 핫패스가 아니다.
 
 v1 → v2 변경 배경 (적대적 리뷰 verdict REJECT 반영):
@@ -177,6 +177,38 @@ _STRUCTURAL_EXCLUSIONS = {
     "225130": "합성(스왑) 레버리지 — 거래상대방 위험",
 }
 
+# 소유자 철학 지시 A(2026-09-03): 시가총액 3,000억원 미만 KR 후보는 자동등록
+# 대상에서 뺀다. KRW 표시 기준 규칙이라 US에는 적용하지 않는다(달러 시총
+# 게이트는 별도 지시가 없다 — _check_prerequisites 호출부에서 is_kr로 이미 막는다).
+_MIN_MARKET_CAP_KRW = 300_000_000_000
+
+
+def _market_cap_krw(info: dict | None, last_close: float) -> int | None:
+    """`stock_info`(ETF 판정·레버리지 정규화에 이미 쓰는 그 응답)의
+    `sharesOutstanding` × 마지막 종가로 시가총액(KRW)을 근사한다. 시가총액
+    전용 API를 새로 부르지 않는다 — `_check_prerequisites`가 KR 종목마다 이미
+    호출하는 stock_info 하나로 충분하다.
+
+    실측(2026-09-03): naver_quant 거래대금 상위 100 원장(fundamentals_naver.
+    jsonl)으로 워치리스트 커버리지를 재보니 8/20(40%)뿐이라 시총 판정
+    소스로 못 쓴다 — 그 원장은 "오늘 거래대금 상위 100" 이라는 별개 부분집합
+    이지 채점 대상 전체가 아니다. stock_info는 채점되는 KR 종목마다 예외 없이
+    호출되므로(위 ETF/레버리지 게이트) 커버리지가 구조적으로 100%다.
+
+    `sharesOutstanding`이 없거나 파싱 불가하면 `None` — 0으로 위장하지 않는다."""
+    if not info:
+        return None
+    raw = info.get("sharesOutstanding")
+    if raw is None:
+        return None
+    try:
+        shares = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if shares <= 0 or last_close <= 0:
+        return None
+    return int(shares * last_close)
+
 
 def _check_prerequisites(
     daily: pd.DataFrame, symbol: str, is_kr: bool, client, today: date,
@@ -233,6 +265,24 @@ def _check_prerequisites(
             failures.append(f"변동성 비정상: {detail} (기준 0.5~15% {bound})")
 
     if is_kr:
+        # 시가총액 게이트(소유자 철학 지시 A, 2026-09-03) — ETF/개별주 구분 없이
+        # 적용한다(ETF는 시가총액이 곧 순자산 규모 근사다). 미확인은 조용히
+        # 통과시키지 않는다 — 근거 없이 미확인이면 자동등록을 막는다(수동
+        # /watch는 이 게이트를 안 탄다).
+        last_close = float(daily["close"].iloc[-1])
+        market_cap = _market_cap_krw(stock_info, last_close)
+        if market_cap is None:
+            failures.append(
+                "시총 미확인 — sharesOutstanding 조회 불가 (자동등록 차단, 수동 /watch는 가능)"
+            )
+        elif market_cap < _MIN_MARKET_CAP_KRW:
+            failures.append(
+                f"시총 <3,000억: {market_cap:,.0f}원 < {_MIN_MARKET_CAP_KRW:,.0f}원 "
+                "(자동등록 차단, 수동 /watch는 가능)"
+            )
+        else:
+            info.append(f"시총 확인: {market_cap:,.0f}원 (≥3,000억 통과)")
+
         is_etf, product_reason = _check_kr_product(stock_info)
         if is_etf is False:
             if allow_kr_stocks:
@@ -457,6 +507,36 @@ def macro_sector_adjustment(
     return score, reason
 
 
+def sector_daily_adjustment(
+    symbol: str, sector_map: dict[str, str] | None, sector_daily_ctx: dict | None,
+) -> tuple[int, str] | None:
+    """주도 섹터(소유자 철학 지시 B, 2026-09-03) → 증거점수 보너스/페널티.
+
+    `sector_daily_ctx`는 `quant.analyze.sector_daily.scoring_context()` 결과
+    (`{"top3_positive": {업종명,...}, "negative_streak3": {업종명,...}}`) —
+    호출부(`run_watch_score`)가 `data/ledger/sector_daily.jsonl`을 읽어 미리
+    계산해 넘긴다. `macro_sector_adjustment`(§4, ±2, "돈이 어디로 쏠릴지" 거시
+    추정)와는 다른 축이다 — 이건 "오늘 실제로 거래대금이 몰린 업종인가 + 그
+    업종에 외국인이 사고 있는가"라는 더 직접적인 근거라 사이즈를 의도적으로
+    더 크게 잡았다(+8/-4, macro의 ±2보다 큼). 그래도 하드 게이트가 아니라
+    여전히 bounded 가감이다.
+
+    +8: 오늘 거래대금 상위3 업종 소속 + 그 업종 외국인 순매수 합계가 양수.
+    -4: 그 업종 외국인 순매수가 3거래일 연속 음수.
+    섹터를 모르거나 컨텍스트가 없으면(원장 초기 배포·그날 데이터 결측)
+    `None` — 불이익 없이 0으로 취급된다(§C)."""
+    if not sector_map or not sector_daily_ctx:
+        return None
+    sector = sector_map.get(symbol)
+    if not sector:
+        return None
+    if sector in (sector_daily_ctx.get("top3_positive") or ()):
+        return 8, f"주도섹터: {sector} 거래대금 top3 + 외국인 순매수 (+8)"
+    if sector in (sector_daily_ctx.get("negative_streak3") or ()):
+        return -4, f"주도섹터: {sector} 외국인 순매수 3일 연속 이탈 (-4)"
+    return None
+
+
 def score_symbol(
     daily: pd.DataFrame,
     symbol: str,
@@ -467,6 +547,7 @@ def score_symbol(
     extra_reasons: list[str] | None = None,
     allow_kr_stocks: bool = False,
     macro_sector_adj: tuple[int, str] | None = None,
+    sector_daily_adj: tuple[int, str] | None = None,
 ) -> ScoreResult:
     """일봉 DataFrame(open/high/low/close/volume, 시간 오름차순) 하나를 채점한다.
     `tags`가 비어있으면(무태그) 세 프로필을 모두 계산해 최고점을 취한다(best-of).
@@ -474,11 +555,16 @@ def score_symbol(
 
     `macro_sector_adj`(선택) — `macro_sector_adjustment()`가 계산한
     `(점수, 사유)`. 있으면 최종 점수에 그대로 더하고(±2 한도는 호출부가 이미
-    보장) breakdown/reasons에 "매크로 섹터 기울기" 항목으로 남긴다."""
+    보장) breakdown/reasons에 "매크로 섹터 기울기" 항목으로 남긴다.
+
+    `sector_daily_adj`(선택, 2026-09-03) — `sector_daily_adjustment()`가 계산한
+    `(점수, 사유)`(+8/-4). 있으면 마찬가지로 최종 점수에 더하고 breakdown/
+    reasons에 "주도 섹터 보너스" 항목으로 남긴다 — macro_sector_adj와 독립적으로
+    둘 다 적용될 수 있다."""
     today = today or date.today()
     reasons: list[str] = list(extra_reasons or [])
 
-    # 오늘(및 미래) 날짜의 미완성 행 제거 — 08:40 채점 시점에 오늘 행이 거래량
+    # 오늘(및 미래) 날짜의 미완성 행 제거 — 08:12 채점 시점에 오늘 행이 거래량
     # 0/일부로 끼어 있으면 RVOL·갭이 0으로 붕괴한다(2026-08-10 개장 전후 실측).
     # 채점은 항상 "마지막 완성 거래일"까지만 본다.
     if daily is not None and len(daily):
@@ -507,6 +593,12 @@ def score_symbol(
         score += adj
         reasons.append(adj_reason)
         breakdown.append(("매크로 섹터 기울기", adj, 2, adj_reason))
+
+    if sector_daily_adj is not None:
+        adj, adj_reason = sector_daily_adj
+        score += adj
+        reasons.append(adj_reason)
+        breakdown.append(("주도 섹터 보너스", adj, 8, adj_reason))
 
     prereq_ok = not prereq_failures
     if prereq_failures:
@@ -655,6 +747,7 @@ def run_watch_score(
     allow_kr_stocks: bool = False,
     sector_map: dict[str, str] | None = None,
     sector_tilt: dict[str, dict] | None = None,
+    sector_daily_ctx: dict | None = None,
 ) -> list[ScoreResult]:
     """토큰(`SYMBOL[:TAGS[:YYYYMMDD]]`) 목록을 채점한다. `enabled=False`면 네트워크를
     전혀 부르지 않고 전부 FAIL 처리한다(설정으로 자동채점을 끈 경우). 종목 하나의
@@ -665,7 +758,13 @@ def run_watch_score(
     `quant.analyze.money_flow.analyze_money_flow(...)["sector_tilt"]["KR"]`.
     둘 다 있으면 KR 종목에 `macro_sector_adjustment()`로 증거점수 ±2를
     가감한다. US 종목은 섹터 매핑이 없어(모듈 docstring 조사 결과) 항상
-    영향받지 않는다 — 모르는 건 불이익이 아니다."""
+    영향받지 않는다 — 모르는 건 불이익이 아니다.
+
+    `sector_daily_ctx`(선택, 2026-09-03 소유자 지시 B) —
+    `quant.analyze.sector_daily.scoring_context()` 결과. 있으면 KR 종목에
+    `sector_daily_adjustment()`로 증거점수 +8/-4를 가감한다(macro_sector_adj와
+    독립적으로 함께 적용될 수 있다). US 종목은 sector_map과 마찬가지로 항상
+    영향받지 않는다."""
     if not enabled:
         results = []
         for token in tokens:
@@ -698,11 +797,13 @@ def run_watch_score(
             elif flow_adj:
                 eff_threshold += flow_adj
         macro_adj = None if is_us else macro_sector_adjustment(symbol, sector_map, sector_tilt)
+        sd_adj = None if is_us else sector_daily_adjustment(symbol, sector_map, sector_daily_ctx)
         try:
             daily = client.candles(symbol, interval="day", count=90)
             result = score_symbol(
                 daily, symbol, tags, report_date, client, today=today, extra_reasons=parse_reasons,
                 allow_kr_stocks=allow_kr_stocks, macro_sector_adj=macro_adj,
+                sector_daily_adj=sd_adj,
             )
         except Exception as e:
             result = ScoreResult(

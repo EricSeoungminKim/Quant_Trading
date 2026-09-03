@@ -3,6 +3,7 @@
 `telegram_preview_disabled.html`: `report_figure_by_offset` 리다이렉트 목적지).
 """
 import json
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from quant.collect.sources.telegram_channels import (
@@ -10,7 +11,11 @@ from quant.collect.sources.telegram_channels import (
     append_ledger,
     channels_for,
     fetch_all,
+    load_window,
+    prune,
 )
+
+UTC = timezone.utc
 
 _TAZASTOCK_FIXTURE = Path(__file__).parent / "report" / "fixtures" / "telegram_tazastock.html"
 _DISABLED_FIXTURE = Path(__file__).parent / "report" / "fixtures" / "telegram_preview_disabled.html"
@@ -146,3 +151,89 @@ def test_append_ledger_skips_rows_missing_keys(tmp_path):
     path = tmp_path / "telegram_msgs.jsonl"
     added = append_ledger([{"handle": "tazastock", "text": "no msg_id"}], path)
     assert added == 0
+
+
+# --- 저장소 창 읽기 (`load_window`, 2026-09-03) ---
+#
+# `fetch_all()`은 채널당 최신 20개뿐이다 — 오후 빌드 시점엔 오전 메시지가 이미
+# 그 20개 밖으로 밀려나 있을 수 있다. `load_window`는 30분마다 도는 수집기
+# (`telegram-collect`)가 쌓은 원장에서 리포트 창에 해당하는 메시지를 읽는다.
+
+def _row(handle, msg_id, published, text="t"):
+    return {"handle": handle, "msg_id": msg_id, "text": text, "published": published,
+            "links": [], "images": []}
+
+
+def test_load_window_filters_by_published_range(tmp_path):
+    path = tmp_path / "telegram_msgs.jsonl"
+    append_ledger([
+        _row("tazastock", "1", "2026-09-02T22:00:00Z"),  # 창 밖(이전)
+        _row("tazastock", "2", "2026-09-03T00:30:00Z"),  # 창 안
+        _row("tazastock", "3", "2026-09-03T05:00:00Z"),  # 창 밖(이후)
+    ], path)
+
+    rows = load_window(
+        path,
+        since=datetime(2026, 9, 3, 0, 0, tzinfo=UTC),
+        until=datetime(2026, 9, 3, 1, 0, tzinfo=UTC),
+    )
+    assert [r["msg_id"] for r in rows] == ["2"]
+
+
+def test_load_window_keeps_undated_rows(tmp_path):
+    """발행시각을 못 읽은 행은 창 밖이어도 버리지 않는다 — collector.load_window와
+    같은 원칙."""
+    path = tmp_path / "telegram_msgs.jsonl"
+    append_ledger([_row("tazastock", "1", None)], path)
+
+    rows = load_window(path, since=datetime(2026, 9, 3, tzinfo=UTC))
+    assert [r["msg_id"] for r in rows] == ["1"]
+
+
+def test_load_window_sorts_newest_first(tmp_path):
+    path = tmp_path / "telegram_msgs.jsonl"
+    append_ledger([
+        _row("tazastock", "1", "2026-09-03T00:00:00Z"),
+        _row("tazastock", "2", "2026-09-03T02:00:00Z"),
+        _row("mootda", "1", "2026-09-03T01:00:00Z"),
+    ], path)
+
+    rows = load_window(
+        path, since=datetime(2026, 9, 2, tzinfo=UTC), until=datetime(2026, 9, 3, 3, 0, tzinfo=UTC),
+    )
+    assert [(r["handle"], r["msg_id"]) for r in rows] == [
+        ("tazastock", "2"), ("mootda", "1"), ("tazastock", "1"),
+    ]
+
+
+def test_load_window_missing_file_returns_empty(tmp_path):
+    assert load_window(tmp_path / "nope.jsonl", since=datetime(2026, 9, 3, tzinfo=UTC)) == []
+
+
+# --- 보존 (`prune`, 2026-09-03) ---
+
+def test_prune_removes_rows_older_than_keep_days(tmp_path):
+    path = tmp_path / "telegram_msgs.jsonl"
+    append_ledger([
+        _row("tazastock", "1", "2026-08-01T00:00:00Z"),  # 오래됨
+        _row("tazastock", "2", "2026-09-01T00:00:00Z"),  # 최근
+    ], path)
+
+    removed = prune(path, today=date(2026, 9, 3), keep_days=14)
+
+    assert removed == 1
+    remaining = load_window(path, since=datetime(2026, 1, 1, tzinfo=UTC))
+    assert [r["msg_id"] for r in remaining] == ["2"]
+
+
+def test_prune_keeps_undated_rows(tmp_path):
+    path = tmp_path / "telegram_msgs.jsonl"
+    append_ledger([_row("tazastock", "1", None)], path)
+
+    removed = prune(path, today=date(2026, 9, 3), keep_days=14)
+
+    assert removed == 0
+
+
+def test_prune_missing_file_is_noop(tmp_path):
+    assert prune(tmp_path / "nope.jsonl", today=date(2026, 9, 3)) == 0

@@ -45,6 +45,30 @@ logger = logging.getLogger(__name__)
 _SUFFIXES = (".KS", ".KQ")  # 우선순위: 유가 → 코스닥
 
 
+class _ExpectedDelistFilter(logging.Filter):
+    """이번 호출이 이중 조회(`.KS`/`.KQ`)를 위해 만든 **추측 후보 심볼**에 대한
+    ERROR 만 DEBUG 로 낮춘다 (D3, 2026-09-03). 실제로 지워지지 않는다 — 레코드는
+    그대로 전달하되 레벨만 낮춰서, DEBUG 로 로깅을 켠 사람은 여전히 볼 수 있다.
+
+    **메시지에 "delisted" 가 있다고 다 낮추지 않는다.** KIND 매핑으로 이미 확정된
+    심볼(`mapped`)이 정말로 상장폐지됐다면 그건 진짜 장애이고 그대로 ERROR 로
+    보여야 한다 — 그래서 이 호출에서 만든 추측 후보 심볼 집합(`probe_symbols`)에
+    실제로 등장하는 메시지만 낮춘다.
+    """
+
+    def __init__(self, probe_symbols: frozenset[str]) -> None:
+        super().__init__()
+        self._probe_symbols = probe_symbols
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.ERROR and self._probe_symbols:
+            msg = record.getMessage()
+            if any(sym in msg for sym in self._probe_symbols):
+                record.levelno = logging.DEBUG
+                record.levelname = "DEBUG"
+        return True
+
+
 def fetch_kr_quotes(
     codes: list[str], cache_dir: Path, *, map_loader=None, quote_fetcher=None,
 ) -> tuple[dict[str, dict], str]:
@@ -94,11 +118,23 @@ def fetch_kr_quotes(
             candidates.append(sym)
             owner.setdefault(sym, code)
 
+    # D3(2026-09-03): .KS/.KQ 이중 조회는 한쪽이 결측인 게 **정상**이다(§폴백 방식).
+    # yfinance 는 그 결측을 자기 로거("yfinance")에 ERROR 로 찍는데, KIND 가 죽어
+    # 다수 종목이 이 경로를 타면 매 종목마다 ERROR 가 찍혀 진짜 장애(배치 전체
+    # 실패 등)가 로그에 묻힌다. 이번에 만든 추측 후보 심볼(unmapped 의 .KS/.KQ)
+    # 에 대해서만 DEBUG 로 낮춘다 — KIND 로 이미 확정된 심볼의 진짜 실패는 그대로
+    # ERROR 로 보인다.
+    _probe_symbols = frozenset(f"{c}{suf}" for c in unmapped for suf in _SUFFIXES)
+    _yf_logger = logging.getLogger("yfinance")
+    _filter = _ExpectedDelistFilter(_probe_symbols)
+    _yf_logger.addFilter(_filter)
     try:
         raw = _fetch(candidates) or {}
     except Exception as e:  # noqa: BLE001 — 시세 실패가 리포트를 막지 않는다
         logger.warning("KR 시세 조회 실패: %s: %s", type(e).__name__, e)
         return {}, f"{route} · 조회 실패({type(e).__name__})"
+    finally:
+        _yf_logger.removeFilter(_filter)
 
     out: dict[str, dict] = {}
     # candidates 순서대로 훑어 먼저 잡힌 후보가 이긴다(.KS 우선 — 결정론).

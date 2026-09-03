@@ -12,13 +12,23 @@ description: 매일 08:40 KST 회사 데일리 리포트를 우리 트레이딩 
 
 ## 우리 시스템의 사실 (해석의 기준 — 리포트보다 우선)
 
+이 목록은 config/settings.yaml 과 대조해 갱신한다 — 어긋나면 settings 가 맞다.
+
 - **비용 구조가 전략을 지배한다.** 국내 상장 ETF는 거래세 면제로 왕복 3~6bp —
   우리 엣지(8~24bp)가 비용을 넘는 **유일한** 시장. 미국주식은 토스 왕복 20bp라
   마진이 0 근처 — US 후보는 그만큼 보수적으로 제안하라.
-- 전략: donchian(TQQQ/SQQQ 15분 돌파, 가동 중), orb_scan(관심종목 개장 5분
-  양봉 +0.5% 초과 시 진입, 롱 온리 — 갭·개장 방향성이 중요).
+- 가동 중 전략(config/settings.yaml `strategies:` enabled: true): news_momentum(뉴스
+  EVENT 태그 종목 개장매수 후 사다리 청산, 롱 온리), frgn_accumulate(외국인 수급
+  추세 적립매수, 오버나이트 보유), close_bet(마감 무렵 강세 종목 종가매수 → 익일
+  시초 갭 매도), overnight_drift(마감 직전 매수 → 익일 개장 직후 매도, US ETF
+  전용), pullback_impulse(5분봉 눌림목 임펄스 스캘프), mr_vwap_quiet(저거래량
+  종목 VWAP 평균회귀 스캘핑), vol_breakout(전일 레인지 기반 변동성 돌파, 마감
+  직전 청산), intraday_momentum(5분봉 일중 모멘텀), gap_fade(갭하락 되돌림 매수,
+  롱 온리), rsi2_dip(추세 위 RSI(2) 눌림매수), scalp_1m(1분봉 조기 진입 스캘프),
+  llm_trader(LLM이 직접 판단하는 실험 레인). donchian/orb/intraday_scan/orb_scan은
+  현재 `enabled: false`.
 - **기계 국면 모듈이 거래의 유일한 국면 입력이다** (QQQ 추세/변동성 기반,
-  방어 0.5x/중립 1.0x/공격 1.3x). 네 판단이 기계와 다르면 **다르다고 명시**하되,
+  방어 0.5x/중립 1.0x/공격 1.5x). 네 판단이 기계와 다르면 **다르다고 명시**하되,
   네 판단이 엔진에 반영되지는 않는다는 사실을 잊지 마라.
 
 ## 분석에서 뽑아낼 것

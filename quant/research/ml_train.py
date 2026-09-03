@@ -65,8 +65,16 @@ exit 0 한다(에러가 아니다) — 그게 지금 매일의 정상 상태다.
 
 `quant/control/selections.py`의 의도는 각 행의 `outcome_*`를 사후 갱신하는
 것이지만, 2026-08-30 EC2 실측(`selections.jsonl` 2,133행 전수 확인)으로는
-`outcome_filled`가 **단 한 건도 True가 아니다** — 전방 수익률은 실제로는
-MySQL `forward_return` 테이블에만 있고 JSONL에는 반영되지 않는다. 그래서
+`outcome_filled`가 **단 한 건도 True가 아니다** — 정정(2026-09-03 D4 감사): 이건
+JSONL에 값이 없다는 뜻이 아니다. `outcome_dN_bps` 개별 필드는 그 실측 시점에도
+채워지고 있었다(`cmd_outcomes`가 `apply_outcome`으로 매일 채운다) — `outcome_filled`
+은 D+1·D+5·D+20 **셋 다** 채워져야만 True로 뒤집히는 별도 플래그라, 아직 D+20이
+안 된 최근 행은 개별 outcome 이 있어도 항상 False다(`quant/control/outcomes.py`의
+`apply_outcome` 참고). 실제 문제는 D1/D2 결함(같은 세션 조회의 가짜 0bp, 기준가에
+날짜가 없어 세션 카운트가 틀렸던 것 — 2026-09-03 수리)으로 D+1이 영구히 못 채워진
+행이 많았다는 것이지, 필드 자체가 비어 있었던 게 아니다. 그래도 이 모듈이
+`local/ml/remote_dump.py`로 MySQL `forward_return`을 직접 받아오는 이유는 남는다:
+JSONL은 append-only 로그라 대량 조인·purged 폴드 연산에 MySQL만큼 적합하지 않다.
 `local/ml/run.sh`는 `local/ml/remote_dump.py`로 그 MySQL 조인 결과를 직접
 받아온다. 이 모듈은 그 결과만 안다 — JSONL의 `outcome_*`는 신경 쓰지 않는다.
 

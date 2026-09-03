@@ -265,6 +265,23 @@ def test_record_midterm_selections_writes_producer_and_grade(tmp_path):
     assert rows[0]["close"] == 71_000.0
 
 
+def test_record_midterm_selections_writes_close_date_from_payload(tmp_path):
+    """render.py 가 payload["symbols"] 항목에 실은 date(quote 의 실제 거래일,
+    D2 2026-09-03)가 close_date 로 그대로 옮겨진다."""
+    payload = _payload(symbols=[
+        {"symbol": "005930", "name": "삼성전자", "close": 71_000.0, "change_pct": 1.2,
+         "date": "2026-08-14"},
+    ])
+    view = [{
+        "symbol": "005930", "name": "삼성전자", "mentions": 3, "grade": 5,
+        "grade_label": "적극 매수", "reasons": [], "telegram_snippets": [], "prose": None,
+    }]
+    report_cli._record_midterm_selections(view, payload, tmp_path)
+
+    rows = selections.load(tmp_path / "data" / "ledger" / "selections.jsonl")
+    assert rows[0]["close_date"] == "2026-08-14"
+
+
 def test_record_midterm_selections_empty_view_writes_nothing(tmp_path):
     report_cli._record_midterm_selections([], _payload(), tmp_path)
     assert not (tmp_path / "data" / "ledger" / "selections.jsonl").exists()

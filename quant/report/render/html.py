@@ -47,7 +47,7 @@ def write_open_report(model: ReportModel, snap: Snapshot, out_root: Path) -> tup
         us_kr_bridge=model.us_kr_bridge, us_wrap=model.us_wrap,
         index_outlook=model.index_outlook, holiday_synthesis=model.holiday_synthesis,
         symbol_payload=symbol_payload, money_flow=model.money_flow,
-        name_map=model.name_map,
+        name_map=model.name_map, sector_daily=model.sector_daily,
     )
     jp = _render.write_machine(model.payload, snap, out_root)
     cp = _render.write_candidates(model.payload["auto_watch"], snap, out_root)

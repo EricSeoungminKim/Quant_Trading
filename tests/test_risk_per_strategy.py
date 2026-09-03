@@ -395,3 +395,50 @@ def test_weight_based_signals_unaffected_by_target_qty_feature(fake_clock_cls, t
 
     assert order is not None
     assert order.qty == pytest.approx(_expected_qty(INITIAL_KRW))
+
+
+def test_breaker_state_reports_the_worst_strategy_daily_loss(fake_clock_cls, tmp_path):
+    """per_strategy 모드에서 하트비트/세션요약의 손실 한도 줄이 거짓말을 하면 안 된다.
+
+    2026-09-02 감사 C2: approve()는 per_strategy 분기에서 전략별 dict만 채우고
+    `_last_day_pnl_pct`(계좌 전체)는 절대 건드리지 않는데, `breaker_state()`가
+    그 계좌 전체 값만 읽었다 — 전략이 -20%로 진입 차단당해도 운영자에게 가는
+    줄은 영원히 "하루 손실 한도 -5.0% (아직 여유 있음)"였다.
+    """
+    from quant.trade.loop import _breaker_line
+
+    books = _books(tmp_path)
+    risk = _risk(books, capital_fraction={"a": 1.0, "b": 1.0}, daily_loss_limit_pct=5)
+
+    # 두 전략 모두 오늘 시작자산을 스냅샷시킨다(target_weight=0은 예산 부족으로
+    # 거부되지만 스냅샷은 그 전에 일어난다).
+    risk.approve(_entry("a", target_weight=0.0), _ctx(fake_clock_cls))
+    risk.approve(_entry("b", target_weight=0.0), _ctx(fake_clock_cls))
+
+    books.books["a"]["cash_krw"] -= INITIAL_KRW * 0.20  # "a"만 -20%
+    assert risk.approve(_entry("a"), _ctx(fake_clock_cls)) is None
+
+    loss = risk.breaker_state(NOW)["daily_loss_limit_pct"]
+
+    assert loss["scope"] == "per_strategy"
+    assert loss["tripped"] is True, "전략 하나가 한도에 걸렸는데 '여유 있음'으로 보고됐다"
+    assert loss["day_pnl_pct"] == pytest.approx(-20.0), "대표값은 가장 나쁜 전략이어야 한다"
+    assert loss["per_strategy"]["a"]["tripped"] is True
+    assert loss["per_strategy"]["b"]["tripped"] is False
+
+    line = _breaker_line(risk.breaker_state(NOW))
+    assert "도달" in line and "여유 있음" not in line
+    assert "a" in line, "어느 전략이 막혔는지 운영자가 알 수 있어야 한다"
+
+
+def test_breaker_state_shared_mode_daily_loss_report_is_unchanged(fake_clock_cls, tmp_path):
+    """shared(기본) 모드의 보고 형태는 그대로다 — 계좌 전체 기준, per_strategy는 빈 dict."""
+    books = _books(tmp_path)
+    risk = _risk(books, capital_mode="shared", capital_fraction={"a": 1.0}, daily_loss_limit_pct=5)
+
+    risk.approve(_entry("a"), _ctx(fake_clock_cls, cash=1_000_000.0))
+    loss = risk.breaker_state(NOW)["daily_loss_limit_pct"]
+
+    assert loss["scope"] == "account"
+    assert loss["per_strategy"] == {}
+    assert loss["tripped"] is False

@@ -184,6 +184,13 @@
 10 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/session_pnl.sh US >> data/session_pnl.log 2>&1
 15 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.cli equity-snapshot --market US >> data/equity.log 2>&1
 
+# --- 수동 계좌 추천 (2026-09-03 소유자 결정: 자동매매는 단타·스캘핑만) ---
+# 오버나이트/장기 아이디어(외국인 적립·종가배팅·RSI(2) 눌림·오버나이트 드리프트)는
+# 자동매매 대신 텔레그램 추천으로만 나간다 — 소유자가 별도 계좌에서 직접 판단.
+# 각 시장 정규장 마감 직후(session_pnl과 같은 관례).
+40 15 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/manual_recs.sh KR >> data/manual_recs.log 2>&1
+30 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/manual_recs.sh US >> data/manual_recs.log 2>&1
+
 # 06:20 US — 공개 포트폴리오 사이트용 성과 JSON(data/public/performance.json).
 # 세션 손익(06:10) 뒤·일일 피드백(06:25) 전. 입력은 거래 원장 하나뿐(LLM/네트워크
 # 호출 없음) — quant/control/performance.py 계약. git push는 아직 안 한다(공개

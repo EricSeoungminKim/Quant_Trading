@@ -9,6 +9,13 @@
 LLM/네트워크 호출 금지"는 그대로 지킨다 — **LLM 호출은 이 파일에도, `quant/trade/`
 어디에도 없다.**
 
+**2026-09-03 소유자 결정 갱신**: 자동매매는 단타·스캘핑만 — 오버나이트/장기
+아이디어는 자동매매가 아니라 `quant/analyze/manual_recs.py`(텔레그램 추천) 레인으로
+간다. 이 전략도 예외가 아니라서 일중 전략으로 전환한다: 마감 전 강제청산을 추가하고
+`_OVERNIGHT_STRATEGIES`에서 뺐다(아래 "방어선" 절). LLM이 여전히 매수/매도 판단·
+종목 선정을 자율로 하는 실험이라는 본질은 그대로다 — 달라진 것은 "마감까지는 반드시
+청산한다"는 하드레일 하나뿐이다.
+
 ## 아키텍처 — LLM은 엔진 밖, 판단은 파일로만 들어온다
 
 별도 프로세스(다른 워커가 구축)가 LLM에게 판단을 묻고, 그 결과를 **주문 인박스**
@@ -90,20 +97,23 @@ horizon·세션·보유수·중복·비중)뿐이고, 그중 어떤 것도 종�
 매수 체결 시 `stop = 진입가 × (1 - stop_pct/100)`(기본 5%)을 `Signal.state_update`
 로 실어 보낸다 — `quant/trade/loop.py`의 `_execute_signal`이 **체결 확인 후에만**
 `Position.meta["lots"][id]`에 적용한다(이 저장소 공통 계약, `거부/미체결 시 상태
-오염 없음`). 이후 사이클마다 **하드 손절만** 자동으로 본다(현재가 ≤ stop → 즉시
-전량 청산, `in_continuous_session`일 때만 — `rsi2_dip._tradable`과 같은 게이트).
-**그 밖의 보유 관리는 하지 않는다**:
+오염 없음`). 이후 사이클마다 **하드 손절**과 **EoD 강제청산**을 자동으로 본다
+(현재가 ≤ stop → 즉시 전량 청산, `in_continuous_session`일 때만 — `rsi2_dip.
+_tradable`과 같은 게이트). **그 밖의 보유 관리는 하지 않는다**:
 
-- **세션 마감 강제청산이 없다.** 오버나이트를 허용한다 — "LLM이 청산도 스스로
-  판단하는 실험"이 설계 의도이기 때문(소유자 승인, 위 절). 마감 전 강제청산
-  판정 호출이 이 파일에 없으므로 `quant/trade/loop.py`의
-  `_OVERNIGHT_STRATEGIES`에 반드시 등재해야 한다 — `tests/
-  test_position_report_wording.py`가 소스에서 그 호출이 없는 모듈을 자동
-  대조하므로, 등재를 빼먹으면 그 테스트가 즉시 실패한다(회귀 가드).
-- 목표가·시간 청산이 없다. 청산은 인박스의 `sell` 행 또는 하드 손절, 둘뿐이다.
-- **매도는 LLM 자율이다**(2026-08-30 소유자 확인). 보유기간 상한도, 익절 목표도
-  엔진이 부과하지 않는다 — 엔진이 지키는 것은 `stop_pct` 하드 손절 하나뿐이고,
-  그 위의 모든 매도 판단(언제·왜 파는가)은 인박스의 `sell` 행이 유일한 경로다.
+- **세션 마감 강제청산이 있다(2026-09-03 소유자 결정 전환).** 이전에는 "LLM이
+  청산도 스스로 판단하는 실험"이라 오버나이트를 허용했지만, 소유자가 자동매매는
+  단타·스캘핑만으로 범위를 좁혔다 — 오버나이트/장기 아이디어는 이 레인이 아니라
+  `manual_recs`(텔레그램 추천)로 간다. 그래서 `ctx.clock.should_flatten`(orb_scan/
+  news_scalp와 동일 패턴)을 호출해 마감 전 무조건 청산하고, `quant/trade/loop.py`의
+  `_OVERNIGHT_STRATEGIES`에서도 뺐다 — `tests/test_position_report_wording.py`가
+  소스에서 `should_flatten` 호출 여부를 자동 대조하므로, 둘 중 하나만 바꾸면 그
+  테스트가 즉시 실패한다(회귀 가드).
+- 목표가·시간 청산이 없다. 청산은 인박스의 `sell` 행, 하드 손절, EoD 강제청산 셋뿐이다.
+- **장중 매도는 LLM 자율이다**(2026-08-30 소유자 확인, 2026-09-03 EoD 추가로 일부
+  수정). 보유기간 상한도, 익절 목표도 엔진이 부과하지 않는다 — 엔진이 지키는 것은
+  `stop_pct` 하드 손절과 마감 전 강제청산 둘뿐이고, 그 위의 모든 매도 판단(언제·왜
+  파는가)은 인박스의 `sell` 행이 유일한 경로다.
 
 ## 상태 — "당일" 필터가 실질적 재시작 방어선이다
 
@@ -167,6 +177,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_POSITIONS = 5
 DEFAULT_MAX_WEIGHT_PER_POSITION = 0.34
 DEFAULT_STOP_PCT = 5.0
+# 2026-09-03: 오버나이트 → 일중 전환(모듈 docstring 상단 참고). 다른 KR 단타
+# 전략들의 flatten_before_close_minutes 기본값(1~10)과 같은 자리 — 동시호가 직전
+# 청산 시도가 씹히지 않도록 여유를 둔다.
+DEFAULT_FLATTEN_BEFORE_CLOSE_MINUTES = 10
 
 _KR_MARKET = "KR"
 
@@ -222,6 +236,10 @@ class LlmTraderStrategy:
         self.max_weight_per_position: float = float(
             params.get("max_weight_per_position", DEFAULT_MAX_WEIGHT_PER_POSITION))
         self.stop_pct: float = float(params.get("stop_pct", DEFAULT_STOP_PCT))
+        # 2026-09-03: 일중 전환 — 마감 전 이 분수만큼 남으면 무조건 청산(아래
+        # on_cycle의 EoD 레일, 모듈 docstring "방어선" 절).
+        self.flatten_minutes: float = float(
+            params.get("flatten_before_close_minutes", DEFAULT_FLATTEN_BEFORE_CLOSE_MINUTES))
 
         if self.max_positions <= 0:
             raise ValueError("max_positions는 양수여야 합니다.")
@@ -250,14 +268,27 @@ class LlmTraderStrategy:
         positions = ctx.broker.positions()
         tradable = ctx.clock.is_market_open(_KR_MARKET) and in_continuous_session(_KR_MARKET, now)
 
-        # 1) 하드 손절 레일 — 내 랏이 있는 심볼만, 연속거래 구간에서만.
+        # 1) EoD 강제청산 — 내 랏이 있는 심볼만, 마감 전이면 연속거래 구간 여부와
+        #    무관하게 무조건 청산(2026-09-03 일중 전환, 모듈 docstring "방어선"
+        #    절). should_flatten 자체가 동시호가/장마감 이후는 걸러준다(clock.py).
+        flattened: set[str] = set()
+        for symbol, pos in positions.items():
+            signal = self._check_eod_flatten(symbol, pos, ctx)
+            if signal is not None:
+                signals.append(signal)
+                flattened.add(symbol)
+
+        # 2) 하드 손절 레일 — 내 랏이 있는 심볼만, 연속거래 구간에서만. 이번 사이클에
+        #    이미 EoD로 청산한 심볼은 중복 신호를 만들지 않는다.
         if tradable:
             for symbol, pos in positions.items():
+                if symbol in flattened:
+                    continue
                 signal = self._check_hard_stop(symbol, pos, ctx)
                 if signal is not None:
                     signals.append(signal)
 
-        # 2) 인박스 처리 — 오늘(거래일) 미소비 주문만.
+        # 3) 인박스 처리 — 오늘(거래일) 미소비 주문만.
         for order in self._read_inbox():
             signal = self._process_order(order, positions, tradable, ctx, today)
             if signal is not None:
@@ -273,6 +304,26 @@ class LlmTraderStrategy:
             return []
 
     # ------------------------------------------------------------------ 보유 관리
+
+    def _check_eod_flatten(self, symbol: str, pos: Position, ctx: Context) -> Signal | None:
+        """마감 전 무조건 청산(2026-09-03 일중 전환) — `orb_scan`/`news_scalp`와
+        같은 패턴. LLM의 `sell` 판단을 대신하지 않는다 — LLM이 이미 그 전에 팔았으면
+        내 랏이 없어 여기서 아무 것도 하지 않는다."""
+        if not pos.is_open:
+            return None
+        lot = pos.lot(self.id)
+        if lot is None or not float(lot.get("qty", 0.0)) > 0:
+            return None
+        if not ctx.clock.should_flatten(self.market, self.flatten_minutes):
+            return None
+        quote = ctx.data.quote(symbol)
+        price_note = f"{quote.price:.2f}" if quote is not None and quote.price else "조회 실패"
+        entry = lot.get("entry")
+        return Signal(
+            strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
+            target_weight=0.0, exit_fraction=1.0,
+            reason=f"EoD 강제청산(단타 전환): 진입={entry} 현재={price_note}",
+        )
 
     def _check_hard_stop(self, symbol: str, pos: Position, ctx: Context) -> Signal | None:
         if not pos.is_open:

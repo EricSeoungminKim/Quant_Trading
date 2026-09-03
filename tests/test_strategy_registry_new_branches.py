@@ -65,9 +65,19 @@ def test_enabled_in_real_config_now_that_tag_wiring_is_done():
     # 2026-08-25 전략 4종 체제(소유자 지시): ①news_momentum ②scalp_1m
     # ③close_bet(신규) ④frgn_accumulate. news_scalp 은 ①과 겹쳐 비활성으로
     # 내려갔다(코드·원장은 보존 — 측정 기준점).
-    assert strat_cfg["news_scalp"]["enabled"] is False
-    assert strat_cfg["frgn_accumulate"]["enabled"] is True
-    assert strat_cfg["close_bet"]["enabled"] is True
+    # **2026-09-03 재활성**: 촉매 A/B 의 "after" 갈래로 다시 켰다(KR 0.04) —
+    # EVENT_SCALP 태그가 붙은 종목만 개장 즉시 진입하는 전략이라, 그 자체가
+    # "촉매 있는 종목만 사면 더 버는가"에 대한 한 각도의 답이다.
+    assert strat_cfg["news_scalp"]["enabled"] is True
+    # 2026-09-03 소유자 결정: 자동매매는 단타·스캘핑만 — frgn_accumulate/close_bet/
+    # overnight_drift/rsi2_dip(전부 오버나이트·다일 보유가 전략 정의)는 비활성으로
+    # 내려갔다. 오버나이트/장기 아이디어는 이제 quant/analyze/manual_recs.py(텔레그램
+    # 추천) 레인으로 간다 — 코드·params·capital_fraction은 보존(측정 기준점 +
+    # 추후 복원, 자본 재분배 없음).
+    assert strat_cfg["frgn_accumulate"]["enabled"] is False
+    assert strat_cfg["close_bet"]["enabled"] is False
+    assert strat_cfg["overnight_drift"]["enabled"] is False
+    assert strat_cfg["rsi2_dip"]["enabled"] is False
     built = build_strategies(settings.raw)
     ids = {s.id for s in built}
     # 2026-08-28 **소유자 결정으로 6종 체제**(이 테스트가 요구하던 "늘리려면 소유자
@@ -95,9 +105,20 @@ def test_enabled_in_real_config_now_that_tag_wiring_is_done():
     # 판단 자체를 실험하는 레인이라 다중검정(--trials) 모집단에는 넣지 않는다 —
     # 같은 규칙을 반복 시행해 우연한 승자를 고르는 문제(스캘핑 8개 레인)와는
     # 성격이 다르다(quant/trade/strategy/llm_trader.py 모듈 docstring).
+    # 2026-09-03: **촉매 A/B 로 16종** — news_scalp 재활성 + `<id>_cat` 3개
+    # (scalp_1m / pullback_impulse / vol_breakout). `_cat` 은 새 전략이 아니라
+    # **같은 클래스의 다른 유니버스 갈래**다(params 를 YAML 앵커로 공유한다 —
+    # tests/e2e/test_assembly.py 가 대조). 그래도 원장에는 독립 레인으로 쌓이므로
+    # 시행 횟수는 재신고한다: 스캘핑/단기 레인 8 → **12**
+    # (`strategy-report --trials 12`). 판정이 나면 진 갈래를 지워 다시 줄인다.
+    # 2026-09-03(같은 날 저녁, 소유자 결정 갱신) — 자동매매는 단타·스캘핑만:
+    # close_bet/frgn_accumulate/overnight_drift/rsi2_dip 4종을 비활성화했다(전부
+    # 오버나이트·다일 보유가 전략 정의라 새 방침과 충돌 — 코드는 보존, 오버나이트
+    # 아이디어는 manual_recs 레인으로 이동). 활성 12종.
     assert ids == {
-        "news_momentum", "scalp_1m", "close_bet", "frgn_accumulate",
-        "pullback_impulse", "mr_vwap_quiet", "overnight_drift",
-        "vol_breakout", "intraday_momentum", "gap_fade", "rsi2_dip",
-        "llm_trader",
+        "news_momentum", "scalp_1m",
+        "pullback_impulse", "mr_vwap_quiet",
+        "vol_breakout", "intraday_momentum", "gap_fade",
+        "llm_trader", "news_scalp",
+        "scalp_1m_cat", "pullback_impulse_cat", "vol_breakout_cat",
     }, "활성 전략 목록이 바뀌었다 — 늘리려면 소유자 결정 + 시행 횟수 재신고"

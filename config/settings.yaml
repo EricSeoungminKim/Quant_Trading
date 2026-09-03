@@ -508,6 +508,11 @@ strategies:
     universe: watchlist # tags_of(EVENT)도 관심종목 파일에서 함께 읽는다 — assembly.rebuild_strategies 참고
     symbols: []
     params:
+      # 봉 간격 선언(2026-09-03 감사 C4). 이 전략의 실제 봉은 1m다(news_momentum.py
+      # `history(symbol, "1m", ...)`). 손절 쿨다운 봉 카운팅과 과거데이터 프로브가 읽는다 —
+      # 선언이 없으면 조용히 폴백 15m로 해석됐다. 실효 쿨다운 표는 risk 블록 주석 참고.
+      bar_interval_minutes: 1
+      cooldown_bars_after_stop: 15 # 1m x 15봉 = 15분
       entry_window_seconds: 120 # 개장 후 이 시간(초) 안에만 진입 시도 — 놓치면 그날은 진입 안 함
       # 개장 확인(2026-08-19): 첫 1분봉이 **양봉으로 마감**했을 때만 진입한다.
       # 근거 두 가지:
@@ -552,18 +557,28 @@ strategies:
     # 개장 단타(news_momentum) ②1분봉 스캘핑(scalp_1m) ③종가배팅(close_bet, 신규)
     # ④외국인 추세(frgn_accumulate). 이 4종과 겹치지 않는 전략은 오늘 미국장부터
     # **비활성** — 코드·원장은 남긴다(측정 기준점 + 추후 복원).
-    enabled: false
-    # 2026-08-18: KR 0.2 → 0.1 — scalp_1m KR에 0.1 이관(2026-08-18-scalp-1m-design
-    # 스펙 §배분: 같은 유니버스에서 개장 진입(news_scalp) vs 1분봉 조기 진입
-    # (scalp_1m)을 나란히 채점).
+    # **2026-09-03 재활성** — 위 2026-08-25 비활성(전략 4종 체제)을 A/B 실험을
+    # 위해 되돌린다. 이 전략은 그 자체로 "after" 갈래다: EVENT_SCALP 태그(뉴스
+    # 촉매)가 붙은 종목만, 개장 즉시 진입한다. scalp_1m/scalp_1m_cat 쌍이 "같은
+    # 진입 규칙 · 다른 유니버스"를 재는 것과 달리, 이 쌍(news_scalp vs scalp_1m)은
+    # "같은 유니버스 · 다른 진입 시점"을 잰다 — 둘 다 촉매 가설을 때리는 각도가
+    # 다르다. 유니버스 게이트는 설계 그대로 EVENT_SCALP(코드의 tags_of) 이므로
+    # universe_filter 를 걸지 않는다.
+    enabled: true
+    # KR 0.1 → 0.04 (2026-09-03): 표본을 쌓는 게 목적이라 최소 규모로 재가동한다.
+    # 프로토콜 바닥(0.03) 바로 위 — tests/test_validation_gate.py 가 강제한다.
     capital_fraction:
-      KR: 0.1
+      KR: 0.04
       US: 0.0
     validation:
       status: burn_in # 신규 전략 — 백테스트 미검증. intraday_verify n>=30 + 수수료 후 양(+) 이후 승격 판단
     universe: watchlist # tags_of(EVENT_SCALP)도 관심종목 파일에서 함께 읽는다
     symbols: []
     params:
+      # 봉 간격 선언(2026-09-03 감사 C4). 실제 봉은 1m(news_scalp.py
+      # `history(anchor, "1m", 400)`). 실효 쿨다운 표는 risk 블록 주석 참고.
+      bar_interval_minutes: 1
+      cooldown_bars_after_stop: 15 # 1m x 15봉 = 15분
       entry_window_seconds: 120 # 개장 후 이 시간(초) 안에만 진입 시도 — 놓치면 그날은 진입 안 함
       max_entries_per_session: 3
       # 3.0%: 백테스트 최적값이 아니라 과도 손실 꼬리를 자르는 보수적 기본값
@@ -588,7 +603,11 @@ strategies:
     # 1,000만으로 바뀌어 001450 매수가 의도(10만원)의 2배(20만원)로 튄 사고의
     # 근본 수정 — Signal.target_qty로 risk 레이어에 수량 자체를 전달하므로
     # 전략 자본 추정이 아예 필요 없다.
-    enabled: true
+    # 2026-09-03 소유자 결정: 자동매매는 단타·스캘핑만 — 오버나이트 아이디어는
+    # manual_recs 레인으로 텔레그램 추천. 이 전략은 판단 자체가 일 1회 적립매수 +
+    # 이탈 시 분할청산(오버나이트 보유가 전략 정의)이라 대상. 코드·params·
+    # capital_fraction은 그대로 둔다(자본 재분배 없음 — 현금 버퍼로 남긴다).
+    enabled: false
     capital_fraction:
       KR: 0.14
 
@@ -598,6 +617,11 @@ strategies:
     universe: watchlist # tags_of(FRGN/FRGN_EXIT)도 관심종목 파일에서 함께 읽는다
     symbols: []
     params:
+      # 봉 간격 선언(2026-09-03 감사 C4). 이 전략은 봉을 안 보고 시세(quote)만 보지만,
+      # 판단 자체가 **하루 1회**(모듈 docstring "판단 빈도: 일 1회")라 쿨다운의 자연 단위도
+      # 하루다. 쿨다운 봉 카운팅은 이 값으로 일봉("1d")을 조회한다.
+      bar_interval_minutes: 1440
+      cooldown_bars_after_stop: 1 # 1일 x 1봉 = 1거래일
       buy_qty: 1 # 평가마다 이 수량(주)만 산다 — 자본 규모와 무관, 하드레일은 그대로 적용
       eval_after_minutes_after_open: 60
       exit_fraction_first: 0.5
@@ -614,9 +638,17 @@ strategies:
     # 진입 금지는 유지(close_bet.py in_continuous_session 가드).
     # 손절 -1% < 익절 +2% (잃을 땐 적게, 벌 땐 많이) + 시초 30분 데드라인.
     # 규칙 근거(웹 리서치)는 quant/trade/strategy/close_bet.py docstring.
-    enabled: true
+    # 2026-09-03 소유자 결정: 자동매매는 단타·스캘핑만 — 오버나이트 아이디어는
+    # manual_recs 레인으로 텔레그램 추천. 이 전략은 정의 자체가 "오늘 사서 내일
+    # 아침 판다"(오버나이트 갭 실현)라 대상. 코드·params·capital_fraction은
+    # 그대로 둔다(자본 재분배 없음 — 현금 버퍼로 남긴다).
+    enabled: false
+    # 2026-09-03: KR 0.1→0.2 + target_weight 0.1→0.5. 실측(EC2 9/2 15:00) '배분 자금
+    # 부족(예산 95,888원)' — 종가배팅은 한 종목을 통째로 사는 전략인데 예산이
+    # 200,000원대 대형주 1주도 못 샀다(8/25 이후 체결 0건의 원인). declared 정책
+    # 기준 장부 ≈55만원, 1회 베팅 ≈27만원 → 27만원 이하 종목 1주 이상.
     capital_fraction:
-      KR: 0.1
+      KR: 0.2
 
       US: 0.0
     validation:
@@ -624,10 +656,13 @@ strategies:
     universe: watchlist
     symbols: []
     params:
+      # 봉 간격 선언(2026-09-03 감사 C4). 실제 봉은 1m(close_bet.py `history(symbol, "1m", 400)`).
+      bar_interval_minutes: 1
+      cooldown_bars_after_stop: 15 # 1m x 15봉 = 15분
       entry_start_hhmm: [15, 0]
       entry_end_hhmm: [15, 19]
       min_close_strength: 0.7
-      target_weight: 0.1
+      target_weight: 0.5 # 2026-09-03: 0.1→0.5 (위 capital_fraction 주석) — 하루 최대 2종목
       stop_pct: 1.0
       take_profit_pct: 2.0
       exit_deadline_minutes_after_open: 30
@@ -641,7 +676,11 @@ strategies:
   # 조건부가 아니다. 조건은 표본이 쌓인 뒤 experiments 가 판정한다).
   overnight_drift:
     class: overnight_drift
-    enabled: true
+    # 2026-09-03 소유자 결정: 자동매매는 단타·스캘핑만 — 오버나이트 아이디어는
+    # manual_recs 레인으로 텔레그램 추천. 이 전략은 정의 자체가 종가 매수 →
+    # 익일 개장 매도(오버나이트 보유)라 대상. 코드·params·capital_fraction은
+    # 그대로 둔다(자본 재분배 없음 — 현금 버퍼로 남긴다).
+    enabled: false
     symbols: [QQQ] # US ETF 전용 의도 — 레버리지(TQQQ)는 갭 리스크 3배라 제외
     capital_fraction:
       KR: 0.0
@@ -650,6 +689,9 @@ strategies:
     validation:
       status: burn_in # 백테스트 표본 0 — 문헌 인용이지 우리 측정이 아니다
     params:
+      # 봉 간격 선언(2026-09-03 감사 C4). 실제 봉은 5m(overnight_drift.py `_INTERVAL`).
+      # 쿨다운 봉 수는 전역값(risk.cooldown_bars_after_stop: 4) → 5m x 4 = 20분.
+      bar_interval_minutes: 5
       entry_before_close_minutes: 5
       exit_after_open_minutes: 5
       stop_pct: 3.0
@@ -680,11 +722,19 @@ strategies:
     symbols: []
     capital_fraction:
       KR: 0.0 # KR 개별주는 매도세 20bp 라 왕복 30bp — 스캘핑이 구조적으로 불리
-      US: 0.15
+      US: 0.075 # 0.15 → 0.075+0.075 (A/B 기준/촉매 반씩, 2026-09-03 — 합계 불변)
 
     validation:
       status: burn_in # 신규 — 백테스트 표본 0(Toss 1m 4거래일 롤링). paper 번인이 유일한 검증 경로
-    params:
+    universe_filter:
+      # A/B 기준 갈래(2026-09-03) — 촉매 태그가 붙은 종목은 pullback_impulse_cat 이
+      # 가져간다. 두 갈래의 종목 집합이 겹치면 원장으로 분리해 채점할 수 없다.
+      KR: {exclude_any: [FRGN]} # 단일 요인 — 아래 A/B 헤더 주석의 실측 근거 참고
+      US: {exclude_all: [EVENT, TREND]}
+    params: &pullback_impulse_params
+      # 봉 간격 선언(2026-09-03 감사 C4). 실제 봉은 5m(pullback_impulse.py `_INTERVAL`).
+      # 쿨다운 봉 수는 전역값 4 → 5m x 4 = 20분.
+      bar_interval_minutes: 5
       min_impulse_bp: 80
       pullback_min_pct: 0.38
       pullback_max_pct: 0.62
@@ -693,6 +743,22 @@ strategies:
       target_mult: 1.2
       timeout_minutes: 60
       target_weight: 0.5
+  pullback_impulse_cat:
+    # A/B 촉매 갈래 — 규칙은 위와 **완전히 동일**(params 앵커 공유), 종목만 다르다.
+    # 자세한 배경은 아래 scalp_1m_cat 블록 위의 주석에 한 번만 적었다.
+    class: pullback_impulse
+    enabled: true
+    universe: watchlist
+    symbols: []
+    capital_fraction:
+      KR: 0.0
+      US: 0.075 # 기준 갈래와 반씩(0.15 분할)
+    validation:
+      status: burn_in # 새 갈래 — 표본 0. 판정은 `run scoreboard --ab`(양쪽 n>=30 이전엔 판단 불가)
+    universe_filter:
+      KR: {require_any: [FRGN]} # 외국인 순매수 태그 하나만 — 검증 비용이 가장 싸다
+      US: {require_all: [EVENT, TREND]}
+    params: *pullback_impulse_params
   mr_vwap_quiet:
     class: mr_vwap_quiet
     # 근거: 고거래량 진입이 오히려 나쁘다는 실측(D+1 스피어만 -0.46, 장중 고RVOL
@@ -711,6 +777,9 @@ strategies:
     validation:
       status: burn_in
     params:
+      # 봉 간격 선언(2026-09-03 감사 C4). 실제 봉은 5m(mr_vwap_quiet.py `_INTERVAL`).
+      # 쿨다운 봉 수는 전역값 4 → 5m x 4 = 20분.
+      bar_interval_minutes: 5
       band_k: 2.0
       rvol_max: 1.2
       adx_max: 20
@@ -738,16 +807,44 @@ strategies:
     # 122630=2x"(2026-08-29 06:23)로 조회 성공을 실측 확인했다.
     symbols: ["069500", "122630", "TQQQ"] # KODEX200 / KODEX레버리지 / US 3x
     capital_fraction:
-      KR: 0.14 # ETF 전용 — 거래세 면제 + KODEX200 스프레드 0.5bp 실측(2026-08-28)
-      US: 0.1
+      KR: 0.07 # 0.14 → 0.07+0.07 (A/B 반씩, 2026-09-03). ETF 전용 — 거래세 면제 + KODEX200 스프레드 0.5bp 실측(2026-08-28)
+      US: 0.05 # 0.1 → 0.05+0.05
 
     validation:
       status: burn_in # 문헌 인용(원 공식) — 우리 원장 실측 0
-    params:
+    universe_filter:
+      # A/B 기준 갈래(2026-09-03). 이 전략은 관심종목이 아니라 **고정 ETF 바스켓**을
+      # 보므로 이 절은 지금 아무것도 버리지 않는다 — 그 ETF 에 촉매 태그가 붙는 날
+      # 두 갈래가 같은 종목을 잡는 것을 막는 안전핀이다.
+      KR: {exclude_any: [FRGN]} # 단일 요인 — 아래 A/B 헤더 주석의 실측 근거 참고
+      US: {exclude_all: [EVENT, TREND]}
+    params: &vol_breakout_params
+      # 봉 간격 선언(2026-09-03 감사 C4). 실제 봉은 5m(vol_breakout.py `_INTERVAL`,
+      # 일봉은 전일 고저 참조용 보조 입력이다). 쿨다운 전역값 4 → 5m x 4 = 20분.
+      bar_interval_minutes: 5
       k: 0.5
       min_stop_bp: 40
       eod_exit_min: 5
       target_weight: 0.5
+  vol_breakout_cat:
+    # A/B 촉매 갈래. **주의 — 이 쌍은 대칭이 아니다**: 기준 갈래는 고정 ETF
+    # 바스켓(069500/122630/TQQQ)을 보고, 이 갈래는 관심종목 중 촉매 태그가 붙은
+    # 종목을 본다. 즉 "ETF 바스켓 vs 촉매 개별주"의 비교라 유니버스 분할이 아니다.
+    # KR 개별주는 왕복 ~30bp 라 위 블록이 "ETF 만"이라고 적어 둔 비용 논리가 여기엔
+    # 적용되지 않는다 — 그 비용을 이기는지 자체가 이 갈래가 던지는 질문이다.
+    class: vol_breakout
+    enabled: true
+    universe: watchlist # 기준 갈래와 달리 관심종목을 받는다(촉매 태그가 그 안에만 있다)
+    symbols: []
+    capital_fraction:
+      KR: 0.07 # 기준 갈래와 반씩(0.14 분할)
+      US: 0.05 # 기준 갈래와 반씩(0.1 분할)
+    validation:
+      status: burn_in # 새 갈래 — 표본 0. 판정은 `run scoreboard --ab`
+    universe_filter:
+      KR: {require_any: [FRGN]} # 외국인 순매수 태그 하나만 — 검증 비용이 가장 싸다
+      US: {require_all: [EVENT, TREND]}
+    params: *vol_breakout_params
   intraday_momentum:
     class: intraday_momentum
     # SSRN 4824172(Zarattini·Aziz·Barbon 2024) — 시각대별 노이즈 밴드 이탈 방향
@@ -762,6 +859,9 @@ strategies:
     validation:
       status: burn_in
     params:
+      # 봉 간격 선언(2026-09-03 감사 C4). 실제 봉은 5m(intraday_momentum.py `_INTERVAL`).
+      # 쿨다운 봉 수는 전역값 4 → 5m x 4 = 20분.
+      bar_interval_minutes: 5
       signal_symbol: "QQQ"
       long_symbol: "TQQQ"
       short_symbol: "SQQQ"
@@ -794,6 +894,9 @@ strategies:
     validation:
       status: burn_in
     params:
+      # 봉 간격 선언(2026-09-03 감사 C4). 실제 봉은 5m(gap_fade.py `_INTERVAL`,
+      # 일봉은 전일 종가 참조용 보조 입력이다). 쿨다운 전역값 4 → 5m x 4 = 20분.
+      bar_interval_minutes: 5
       gap_min_bp: 100
       gap_max_bp: 400
       entry_window_min: 30
@@ -815,7 +918,11 @@ strategies:
     # (RSI2>60)에 판다. 문헌 승률 75~79%. **오버나이트 보유형**(loop.py
     # _OVERNIGHT_STRATEGIES 등재 — EoD 강제청산 제외). 원전은 손절이 없지만
     # 실계좌 레일로 하드 손절 5% 를 추가했다(모듈 docstring).
-    enabled: true
+    # 2026-09-03 소유자 결정: 자동매매는 단타·스캘핑만 — 오버나이트 아이디어는
+    # manual_recs 레인으로 텔레그램 추천. 이 전략은 마감 직전 매수 → 며칠 보유가
+    # 전략 정의라 대상. 코드·params·capital_fraction은 그대로 둔다(자본 재분배
+    # 없음 — 현금 버퍼로 남긴다).
+    enabled: false
     symbols: ["069500", "QQQ"] # KR ETF 4bp venue + US 지수 — 레버리지 제외(갭 리스크)
     capital_fraction:
       KR: 0.08
@@ -825,6 +932,10 @@ strategies:
     validation:
       status: burn_in
     params:
+      # 봉 간격 선언(2026-09-03 감사 C4). 이 전략은 **일봉 전용**이다(rsi2_dip.py
+      # `DataNeeds`가 `(s, "1d", n)`만 요구한다). 쿨다운도 일 단위로 센다.
+      bar_interval_minutes: 1440
+      cooldown_bars_after_stop: 1 # 1일 x 1봉 = 1거래일
       entry_rsi: 10
       exit_rsi: 60
       entry_before_close_minutes: 10
@@ -840,17 +951,28 @@ strategies:
     # scalp_1m.py 상단 docstring 참고. 태그 게이트 없음(watchlist 유니버스 전체가
     # 대상 — news_scalp/frgn_accumulate와 달리 EVENT_SCALP/FRGN 태그를 읽지 않는다).
     enabled: true
+    # (2026-09-02) 아래 값은 `risk.capital_mode: per_strategy`인 지금 **크기를
+    # 정하지 않는다** — KR/US 각각 "거래 허용(>0)" 여부만 뜻한다. 실제 1회 진입
+    # 규모는 params.target_weight × 전략자본(equal_split)이다. 근거는
+    # `risk.capital_mode` 옆 주석 블록 참고.
     capital_fraction:
-      KR: 0.15
-
-
-      US: 0.18
+      KR: 0.075 # 0.15 → 0.075+0.075 (A/B 기준/촉매 반씩, 2026-09-03 — 시장 합계 불변)
+      US: 0.09 # 0.18 → 0.09+0.09
 
     validation:
       status: burn_in # 신규 전략 — 백테스트 표본 없음(Toss 1m 4거래일 롤링). paper 번인이 유일한 검증 경로(스펙 "데이터" 절)
     universe: watchlist
     symbols: []
-    params:
+    universe_filter:
+      # A/B 기준 갈래(2026-09-03) — 촉매 태그가 붙은 종목은 scalp_1m_cat 이 가져간다.
+      KR: {exclude_any: [FRGN]} # 단일 요인 — 아래 A/B 헤더 주석의 실측 근거 참고
+      US: {exclude_all: [EVENT, TREND]}
+    params: &scalp_1m_params
+      # 봉 간격 선언(2026-09-03 감사 C4). 실제 봉은 1m(scalp_1m.py `_INTERVAL`; 일봉은
+      # 세션당 1회 참조하는 보조 입력이다). 선언 전에는 폴백 15m가 적용돼 손절 쿨다운이
+      # 60분이었다 — 1분봉 스캘핑에서 그건 하루 대부분을 꺼 두는 것과 같다.
+      bar_interval_minutes: 1
+      cooldown_bars_after_stop: 15 # 1m x 15봉 = 15분
       # 90 → 0 (2026-08-26 소유자 지시): "단타 스캘핑은 언제든 해도 좋아 — 언제든
       # 시그널을 계속 대기". 0 = 진입창 없음(전 세션 대기). 양수면 개장 후 N분.
       entry_window_minutes_after_open: 0
@@ -950,6 +1072,50 @@ strategies:
       trend_gate_mode: shadow
       adx_min: 25.0 # QuantConnect #407(Cross-Sectional Momentum with Trend Filter) 근거값 — 이 저장소 실데이터로 검증되지 않음
       max_atr_ratio: 0.10 # QuantConnect #478(Quantum Walk BQP) 변동성 억제기 근거값 — 이 저장소 실데이터로 검증되지 않음
+  # ── A/B: 촉매 갈래 (2026-09-03 소유자 지시) ─────────────────────────────
+  # 질문 하나에 원장으로 답하기 위한 배치다: **"뉴스·수급 촉매가 붙은 종목만
+  # 매매하면 실제로 더 버는가?"** 같은 전략 클래스를 두 갈래로 나란히 돌린다.
+  #   기준 `<id>`      = 촉매 태그가 붙은 종목을 **뺀** 나머지 (before)
+  #   촉매 `<id>_cat`  = 촉매 태그가 붙은 종목만            (after)
+  # 두 갈래의 종목 집합은 `universe_filter` 로 **겹치지 않게** 갈라 놓았다 — 그래서
+  # 원장의 strategy_id 만으로 비교가 성립한다(`run scoreboard --ab`, 양쪽 n>=30
+  # 전에는 "판단 불가"라고만 답한다).
+  # 촉매의 정의는 시장마다 다르다.
+  #   KR = **외국인 수급(FRGN) 단일 요인**. 실측(3,112 종목일): foreign_net>0 인
+  #        종목의 D+1 시가→종가가 foreign_net<0 대비 **+37bp/일**(t=1.86, 25일 중
+  #        14일 양수) — 우리가 가진 단일 요인 중 가장 유망하다. 복합 게이트
+  #        (EVENT+FRGN)는 종목이 줄어 판정에 140거래일 이상 걸리는데, 단일 요인은
+  #        **~56거래일**이면 된다. 그래서 **싼 것부터** 검증한다 — EVENT+FRGN
+  #        복합 갈래는 이 결과를 본 뒤의 다음 실험이다.
+  #        FRGN 태그를 붙이는 주체는 own_brief.sh 다(data/ledger/frgn_flow.jsonl →
+  #        foreign_trend.classify → watch-add --tags). 이 A/B 는 **그 태그를 있는
+  #        그대로** 잰다 — 분류 규칙이 바뀌면 재는 대상도 같이 바뀐다.
+  #   US = 뉴스(EVENT) + 추세(TREND). 외국인 수급 데이터 자체가 없다.
+  #
+  # **params 는 YAML 앵커로 공유한다**(`*scalp_1m_params`). 진입 규칙이 한 글자라도
+  # 다르면 이건 A/B 가 아니라 서로 다른 두 전략의 비교다 — 그 사고를 파일 수준에서
+  # 막는다. 주의: 거버너가 `strategies.scalp_1m.params.*` 를 튜닝하면 오버레이
+  # (auto_params.yaml)는 id 단위라 **기준 갈래에만** 얹힌다. 튜닝이 실반영되면 촉매
+  # 갈래에도 같은 값을 손으로 넣거나 실험을 접어야 한다 — 안 그러면 비교가 오염된다.
+  #
+  # ADR-0007("config 별칭 다중 인스턴스 금지")의 **의도적 예외**다. 그 금지는
+  # 파라미터만 다른 전략 동물원(donchian_apex_vm17...)을 막으려는 것이고, 여기는
+  # 파라미터가 동일하고 유니버스만 다른 **기한이 있는 실험**이다 — 판정이 나면
+  # 한쪽을 지운다(quant/trade/strategy/CLAUDE.md 의 같은 항목에도 적어 뒀다).
+  scalp_1m_cat:
+    class: scalp_1m
+    enabled: true
+    capital_fraction:
+      KR: 0.075 # 기준 갈래와 반씩(0.15 분할)
+      US: 0.09 # 기준 갈래와 반씩(0.18 분할)
+    validation:
+      status: burn_in # 새 갈래 — 표본 0. 판정은 `run scoreboard --ab`
+    universe: watchlist
+    symbols: []
+    universe_filter:
+      KR: {require_any: [FRGN]} # 외국인 순매수 태그 하나만 — 검증 비용이 가장 싸다
+      US: {require_all: [EVENT, TREND]}
+    params: *scalp_1m_params
   # ── LLM 트레이더 (2026-08-30 소유자 승인) ────────────────────────────────
   # "LLM 자체에게 전략과 판단을 맡기는 게 하나의 전략이 되는 것, 똑같이
   # 1,000만원 모의, 기존 시스템 위에, 한 달 테스트." 12번째 참가자 — 다른 11개는
@@ -968,9 +1134,105 @@ strategies:
     validation:
       status: burn_in # 신규 실험 레인 — 백테스트 표본 0(LLM 판단은 리플레이 불가). paper 번인이 유일한 검증 경로, 한 달 테스트(소유자 지시)
     params:
+      # 봉 간격 선언(2026-09-03 감사 C4). 이 전략은 봉을 안 보고 인박스 행 + 시세로만
+      # 판단하지만, 인박스는 분 단위로 들어온다 — 쿨다운의 자연 단위를 1분으로 둔다.
+      bar_interval_minutes: 1
+      cooldown_bars_after_stop: 15 # 1m x 15봉 = 15분
       max_positions: 5
       max_weight_per_position: 0.34
       stop_pct: 5.0
+  # ── 문헌 기반 일중 전략 3종 (2026-09-03) ─────────────────────────────────
+  # 셋 다 롱 온리·당일 청산(오버나잇 금지)·KR 우선. **전부 enabled: false 로
+  # 등록만 한다** — 오늘 밤 백테스트를 돌려 통과한 것만 사람이 켠다. 그래서
+  # 활성 전략 명단(tests/test_strategy_registry_new_branches.py)과 자본 레인
+  # 명단(tests/test_validation_gate.py)은 바뀌지 않는다.
+  # 근거 논문/실증은 각 모듈 docstring 상단에 출처와 **한계까지** 적어 뒀다:
+  # quant/trade/strategy/{orb_rvol,eod_reversal,open_reversal}.py
+  #
+  # ① 개장 레인지 돌파 + 개장 상대거래량(rvol) 선별
+  #    Zarattini, Barbon & Aziz (2024) "Stocks in Play". 논문 성과는 in-sample
+  #    이고 손절(0.10×ATR14)이 우리 왕복 비용(≈20bp)보다 얕을 수 있다 —
+  #    min_stop_bp 는 첫 측정을 훼손하지 않으려고 0(비활성)으로 둔다.
+  orb_rvol:
+    class: orb_rvol
+    enabled: false
+    capital_fraction:
+      KR: 0.05
+      US: 0.05 # 논문 자체가 미국 주식 실증이라 US 도 같이 잰다
+    validation:
+      status: burn_in # 표본 0 — 백테스트 후 사람이 켠다
+    universe: watchlist
+    symbols: []
+    params:
+      bar_interval_minutes: 1 # 쿨다운의 자연 단위(실제 판단봉은 5m — 개장 레인지 1봉)
+      cooldown_bars_after_stop: 15 # 1m x 15봉 = 15분
+      rvol_days: 14 # 직전 14세션의 같은 개장 5분봉 거래량 평균이 분모
+      rvol_min: 1.0
+      top_k: 5 # rvol 상위 5종목만 그날의 stocks in play (시장별)
+      entry_window_min: 60
+      stop_atr_frac: 0.10 # 손절 = 진입가 - 0.10 x ATR14(일봉)
+      atr_period: 14
+      avg_volume_days: 14
+      doji_body_frac: 0.10 # |종가-시가| < 10% x 레인지면 방향 없음으로 제외
+      min_rvol_sessions: 5 # 기준일이 이보다 적으면 그 종목은 그날 건너뛴다
+      min_stop_bp: 0 # 0=비활성. 왜 40 이 아닌지는 모듈 docstring "논문 숫자" 2번
+      min_price:
+        KR: 1000 # 논문의 US $5 필터와 그 KR 대응(우리 추정)
+        US: 5
+      min_avg_volume:
+        KR: 100000 # 주식 수 기준(논문은 달러 거래대금 — 모듈 docstring 한계 5번)
+        US: 1000000
+      eod_exit_min: 3
+      target_weight: 0.5
+  # ② 장 막판 일중 반전 — 그날 밀린 종목을 마감 45분 전에 사서 종가에 판다.
+  #    Baltussen/Da/Soebhag (2024) 계열 일중 수익률 분해 + KOSPI 일중 반전 실증.
+  #    KR 전용(거래대금 밴드가 원 단위다). 효과가 큰 구간이 곧 슬리피지가 큰
+  #    구간이라 유동성 밴드가 이 전략의 생사다 — 두 값은 문헌이 아니라 우리 추정.
+  eod_reversal:
+    class: eod_reversal
+    enabled: false
+    capital_fraction:
+      KR: 0.05
+      US: 0.0 # 거래대금 밴드가 KRW 라 US 는 의미가 없다(params.markets 도 KR 전용)
+    validation:
+      status: burn_in
+    universe: watchlist
+    symbols: []
+    params:
+      bar_interval_minutes: 1
+      cooldown_bars_after_stop: 15
+      eval_minutes_before_close: 45
+      bottom_pct: 20.0 # 세션 수익률 하위 20%
+      min_drop_pct: 1.5
+      min_turnover_krw: 100000000 # 1억원 — 체결이 되는가
+      max_turnover_krw: 100000000000 # 1,000억원 — 효과가 남아 있는가
+      stop_pct: 1.5
+      eod_exit_min: 2
+      target_weight: 0.5
+      markets: [KR]
+  # ③ 전일 패자 개장 매수 — 국내 단기 반전 문헌(KCI 2023 + KAIST 야간/일중 분해).
+  #    ②와 형제지만 노리는 효과가 다르다(하루를 건너뛴 일간 반전).
+  open_reversal:
+    class: open_reversal
+    enabled: false
+    capital_fraction:
+      KR: 0.05
+      US: 0.0 # 근거 문헌이 국내 실증 — US 는 재지 않는다
+    validation:
+      status: burn_in
+    universe: watchlist
+    symbols: []
+    params:
+      bar_interval_minutes: 1
+      cooldown_bars_after_stop: 15
+      entry_window_min: 15 # 개장 후 15분 안에서만
+      bottom_k: 3
+      min_prev_drop_pct: 2.0
+      max_gap_down_pct: 3.0 # 이보다 더 갭하락이면 떨어지는 칼 — 진입하지 않는다
+      stop_pct: 2.0
+      eod_exit_min: 3
+      target_weight: 0.5
+      daily_bars: 10
 
 risk:
   # 확장 세션 허용 목록 (2026-08-18, 사용자 결정: 프리마켓 직접 진입 찬성).
@@ -998,6 +1260,22 @@ risk:
   # (capital_fraction 블록은 지우지 않는다 — per_strategy 모드에서 참조하지
   # 않을 뿐, shared로 돌아가면 그 값들이 즉시 다시 쓰인다).
   capital_mode: per_strategy # shared | per_strategy — 코드 기본값은 shared
+  #
+  # 2026-09-03 — **`strategies.*.capital_fraction`은 더 이상 유령 노브가 아니다.**
+  # (아래 capital_policy: declared 로 전환하면서 해결. 이 주석은 그 이전 상태를
+  #  설명하던 2026-09-02 경고를 대체한다.)
+  #   1. 게이트 의미는 그대로다 — `capital_fraction[market] <= 0`이면 그 (전략,
+  #      시장) 신규 진입 차단(risk/manager.py `_capital_fraction_for`).
+  #   2. **크기 의미가 돌아왔다** — `capital_policy: declared`가 전략의 시작
+  #      명목자본을 `KRW풀 x fraction[KR] + USD풀(KRW환산) x fraction[US]`로
+  #      정한다(assembly.py `declared_initial_krw`). 즉 "scalp_1m US 0.18"은
+  #      이제 실제로 USD 풀의 18%다.
+  #   3. 진입 크기는 그 위에서 `strategy_equity x signal.target_weight x
+  #      risk_multiplier x 레버리지 헤어컷`이다. 크기를 더 잘게 조절하려면
+  #      `params.target_weight`를, 전략 간 배분을 바꾸려면 여기 fraction을 만진다.
+  # 한 시장의 fraction 합이 1.0을 넘으면 그 시장만 비례 축소되고 WARNING이 뜬다
+  # (초과 배분 = 존재하지 않는 현금 = 의도치 않은 레버리지). `capital_mode: shared`
+  # 로 되돌려도 값의 크기가 사이징에 쓰이는 것은 동일하다.
   # capital_policy(2026-08-19 Phase B, 실전 전환의 다리). capital_mode:
   # per_strategy에서만 의미가 있다.
   # - fixed(기본, 코드 기본값도 fixed) = 지금 동작 그대로: 전략마다
@@ -1008,13 +1286,25 @@ risk:
   #   게이트가 진짜 게이트가 된다. 새로 추가된 전략만 그 시점의 최신 분모를
   #   받고, 이미 굴러간 전략의 시작금은 재조정되지 않는다(장부 생성 시점에
   #   한 번만 못박힘 — quant/trade/risk/books.py `_ensure` 참고).
+  # - declared(2026-09-03) = equal_split과 **같은 총현금**을 쓰되 똑같이 나누지
+  #   않는다: 전략의 시작 명목자본 = `KRW풀 x capital_fraction[KR]
+  #   + USD풀(KRW환산) x capital_fraction[US]`. 시장별 풀로 나누는 이유는 실제
+  #   지출 한도가 통화별 지갑이기 때문이다 — 총현금 하나에 곱하면 KR 비중이
+  #   존재하지 않는 USD를 포함한 금액이 되어 명목은 크고 지갑은 비는 어긋남이
+  #   생긴다. 양 시장 모두 비중이 있는 전략(scalp_1m KR .15 / US .18,
+  #   rsi2_dip .08/.08)은 두 풀의 몫을 합산한다. 양 시장 모두 0인 전략은 장부
+  #   자체를 만들지 않는다(어차피 진입이 차단된다).
   # 2026-09-01: 실계좌 스냅샷 이식(seed-real) 이후 fixed(전략당 고정 1,000만원)는
   # 새 현실(실제 KRW 현금 ~300만원 + 005930 보유, USD 현금 ~$6.2k)과 충돌한다 —
   # 활성 전략이 여럿이면 명목 합계가 실제 자산의 몇 배가 되어 전략별 현금 게이트가
-  # 이름뿐인 상한이 된다. equal_split(위 주석대로 원래 "실전 전환의 다리"로
-  # 설계된 값)로 전환해 전략당 시작 명목자본을 **실제 총현금 ÷ 활성 전략 수**로
-  # 맞춘다 — 코드는 이미 이 값을 지원한다(assembly.py `equal_split_initial_krw`).
-  capital_policy: equal_split # fixed | equal_split — 코드 기본값은 fixed
+  # 이름뿐인 상한이 된다. 그래서 먼저 equal_split(원래 "실전 전환의 다리"로 설계된
+  # 값)으로 갔다.
+  # 2026-09-03: equal_split → declared. equal_split은 명목 합계는 맞췄지만
+  # **선언과 실행을 분리시켰다** — 12개 전략이 전부 1/12씩 받으면서
+  # capital_fraction의 크기 정보가 통째로 죽었고, 설정 파일이 사실과 다른 말을
+  # 하게 됐다(위 2026-09-02 경고가 그 상태를 기록한 것이다). declared는 그
+  # 선언을 그대로 집행한다 — "scalp_1m에 US 18%"라고 써 놓았으면 실제로 18%다.
+  capital_policy: declared # fixed | equal_split | declared — 코드 기본값은 fixed
   per_strategy_initial_krw: 10000000 # capital_policy: fixed 로 되돌릴 때만 쓰는 값(지금은 미사용)
   # 사이징 기준. capital_fraction(기본) = target_weight x 전략자본(=capital_fraction x 총자산).
   # cash_pct = target_weight x **그날 실제 가용 현금**(브로커 buying-power).
@@ -1045,8 +1335,24 @@ risk:
   # 주문이 체결돼 −7원 손실이 스코어보드에서 33,000원 손실과 같은 1표로 집계됐다.
   # 0 = 비활성.
   min_order_notional_krw: 30000
-  cooldown_bars_after_stop: 4 # 손절 청산 후 해당 종목 신규 진입 차단 봉 수(15분봉 기준 1시간)
-  cooldown_bar_interval_minutes: 15 # 쿨다운 봉 카운팅에 쓰는 봉 간격(분)
+  # 손절 청산 후 **그 (종목, 전략)의** 신규 진입을 N봉 차단한다. 2026-09-03(감사 C4)
+  # 이전에는 종목만이 키였다 — scalp_1m이 005930에서 손절하면 close_bet도 그날 그
+  # 종목에 못 들어갔다. 쿨다운의 근거는 "이 전략의 그 신호가 휩소였다"이지 "이 종목이
+  # 나쁘다"가 아니므로, 다른 논지로 보는 다른 전략까지 막을 이유가 없다.
+  #
+  # ## 실효 쿨다운(= 봉 간격 x 봉 수) — 2026-09-03
+  # 아래 4는 **15분봉을 전제로 고른 숫자**(=1시간)였는데, 그 전제가 이미 무너져 있었다:
+  # 활성 전략 중 봉 간격을 선언한 전략이 하나도 없어 전부 폴백 15분으로 해석됐고,
+  # 결과적으로 "모두 60분"이 됐다 — 그건 결정이 아니라 폴백의 사고였다. 이제 각 전략이
+  # `params.bar_interval_minutes`로 실제 봉을 선언하고, 필요하면 같은 자리에서
+  # `params.cooldown_bars_after_stop`으로 봉 수를 덮어쓴다.
+  #   1m 전략 (scalp_1m / news_momentum / close_bet / llm_trader):  1m x 15봉 =   15분
+  #   5m 전략 (pullback_impulse / intraday_momentum / mr_vwap_quiet /
+  #            vol_breakout / overnight_drift / gap_fade):          5m x  4봉 =   20분
+  #   일봉 전략 (rsi2_dip / frgn_accumulate):                       1d x  1봉 = 1거래일
+  cooldown_bars_after_stop: 4 # 전략별 선언이 없을 때의 전역 기본값(5분봉 전략들이 이 값을 쓴다)
+  # 전략을 못 찾았을 때만 쓰는 봉 간격 폴백(분). 전략이 선언한 값이 항상 우선한다.
+  cooldown_bar_interval_minutes: 15
   # 손절 후 **당일 전체** 재진입 차단(2026-08-28 소유자 지시 실측 반영, 전략 단위).
   # scalp_1m 원장: 손절 후 같은 심볼 재진입 승률 14%/평균 -40.9bp vs 이익 후
   # 재진입 승률 43%/-17.3bp — 이익보호 청산은 '손절' 마커가 없어 기록되지 않으므로
@@ -1080,6 +1386,32 @@ risk:
   # (순수 계산) + quant/trade/loop.py(주기 체크) + quant/apps/assembly.py(배선).
   cross_strategy_leverage_alert_pct: 100 # 합산 레버리지가중 노출이 실제 총자본의 이 비율을 넘으면 경고 대상
   # 경고(텔레그램) 재발송 쿨다운은 engine.exposure_alert_cooldown_minutes(위 참고).
+  #
+  # --- 인트라데이 하드레일(2026-09-03, 소유자 지시 6번) ---
+  # "장중 매매는 최대 손실 −5%, 최대 목표 +10%를 유지한다." 감사 결과 이
+  # 불변식을 실제로 지키는 전략이 없었다 — structure.py 하드캡(3%)은 구조 모드
+  # 손절에만(scalp_1m만 그 경로), pullback_impulse는 손절 캡 자체가 없었다.
+  # 두 곳에서 걸린다: risk/manager.py `RiskManagerImpl.approve()`(신규 진입 시
+  # stop/target 클램프) + loop.py `_intraday_hard_stop_check`(사이클마다 실제
+  # 시세로 재확인 — 전략의 on_cycle이 죽어도 지킨다).
+  intraday_hard_stop_pct: 5.0
+  intraday_max_target_pct: 10.0
+  # 기본 false — 소유자 원문("+10%가 최대 목표")은 "상한선"과 "도달하면 무조건
+  # 팔아라" 둘 다로 읽힌다. 강제 매도를 기본으로 켜지 않는다(더 보수적인 해석).
+  # true로 켜면 loop.py의 사이클별 백스톱이 +10% 도달 시에도 시장가 청산한다.
+  intraday_take_profit_cap_enabled: false
+  # 오버나이트(캐리 설계) 전략은 위 레일에서 제외한다. **quant/trade/loop.py의
+  # `_OVERNIGHT_STRATEGIES`를 그대로 옮긴 수동 미러다** — risk/manager.py가
+  # loop.py를 임포트할 수 없어(loop.py가 이미 manager.py를 가져온다, 순환)
+  # 자동 동기화가 불가능하다. loop.py의 그 집합을 바꾸면 이 목록도 같이
+  # 바꿀 것 — tests/test_risk_intraday_hardrail.py가 drift를 잡는다.
+  overnight_strategies:
+    - cross_momentum
+    - frgn_accumulate
+    - mean_reversion
+    - close_bet
+    - overnight_drift
+    - rsi2_dip
 
 execution:
   broker: toss # toss | kiwoom

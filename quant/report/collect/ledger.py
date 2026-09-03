@@ -259,6 +259,11 @@ def _record_watch_join_selections(
             for key in ("close", "change_pct"):
                 if q.get(key) is not None:
                     row[key] = q[key]
+            # close_date(D2, 2026-09-03): close 가 실제로 어느 거래일 종가인지.
+            # 없으면(휴장일 등) outcomes.base_session_date 가 옛 date 필드로
+            # 폴백한다 — quote 자체가 close 를 못 구했을 때만 생략한다.
+            if q.get("date") is not None:
+                row["close_date"] = q["date"]
             rows.append(row)
 
         path = root / "data" / "ledger" / "selections.jsonl"
@@ -337,6 +342,12 @@ def _record_intraday_selections(
                 # top-8 랭킹 통과분만 여기 온다 — 전부 그날의 픽이다.
                 "is_candidate": True,
                 "close": base.get("close"),
+                # close_date(D2, 2026-09-03): 이 행의 close 는 `payload["symbols"]`
+                # (quant/analyze/render.py 조립)에서 오는데, 그 항목이 시세의 실제
+                # 거래일을 "date"로 싣는다(`fetch_symbol_quotes`가 준 값을 그대로
+                # 전달) — 없으면(호출부 하위호환 등) outcomes.base_session_date 가
+                # 옛 date 필드로 폴백한다.
+                "close_date": base.get("date"),
                 "change_pct": base.get("change_pct"),
                 "outcome_filled": False,
             }
@@ -385,6 +396,9 @@ def _record_agent_interpret_selections(
                 "name": item.get("name"),
                 "is_candidate": True,
                 "close": base.get("close"),
+                # close_date(D2, 2026-09-03) — 위 _record_intraday_selections 와
+                # 같은 이유(render.py 가 payload["symbols"] 항목에 date 를 싣는다).
+                "close_date": base.get("date"),
                 "change_pct": base.get("change_pct"),
                 "outcome_filled": False,
                 "direction": item.get("direction"),
@@ -428,6 +442,9 @@ def _record_midterm_selections(
                 "name": item.get("name"),
                 "is_candidate": True,
                 "close": base.get("close"),
+                # close_date(D2, 2026-09-03) — 위 _record_intraday_selections 와
+                # 같은 이유(render.py 가 payload["symbols"] 항목에 date 를 싣는다).
+                "close_date": base.get("date"),
                 "change_pct": base.get("change_pct"),
                 "outcome_filled": False,
                 "grade": item.get("grade"),

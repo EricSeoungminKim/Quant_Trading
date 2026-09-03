@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 import re
 
+import pytest
+
 from quant.control.performance import (
     FX_KRW_PER_USD,
     PAPER_SEED_KRW,
@@ -186,7 +188,11 @@ def test_no_forbidden_fields_in_output():
         assert forbidden not in blob, f"금지 필드 유출: {forbidden!r}"
     # 구조적으로도 종목/수량 키가 전략 통계에 없어야 한다
     for strat in payload["strategies"]:
-        assert set(strat.keys()) == {"id", "name_ko", "total", "by_market"}
+        assert set(strat.keys()) == {
+            "id", "name_ko", "total", "by_market",
+            # 2026-09-02 추가 — 셋 다 종목/수량과 무관한 요약값이다.
+            "trades_per_day", "avg_hold_minutes", "enabled",
+        }
         assert set(strat["total"].keys()) == {
             "trips", "wins", "win_rate", "ci_low", "ci_high",
             "expectancy_bp", "verdict", "sample_warning", "markets",
@@ -226,7 +232,13 @@ def test_empty_ledger_returns_no_phases_or_equity():
     assert payload["equity_asia"]["rows"] == []
     assert payload["equity_us"]["rows"] == []
     assert payload["strategies"] == []
-    assert payload["period"] == {"start": None, "end": None, "sessions": 0, "total_fills": 0}
+    assert payload["period"] == {
+        "start": None, "end": None, "sessions": 0, "total_fills": 0,
+        # 스코프 명시(2026-09-02) — 이식 이벤트가 없으니 아직 paper 시대다.
+        "scope": "paper",
+        "note": "모의 운용 전체 구간(실계좌 이식 이전)",
+        "note_en": "Entire paper-trading period (before the real-account transplant)",
+    }
     assert payload["prior_paper"] == {}
 
 
@@ -497,3 +509,118 @@ def test_equity_chart_axis_is_render_ready():
     # equity_asia 는 이 fixture에서 빈 곡선이라 폴백 범위(-1..1)를 써야 한다
     empty_axis = payload["equity_asia"]["chart"]["y_axis"]
     assert empty_axis == {"min": -1.0, "max": 1.0, "ticks": [1.0, 0.5, 0.0, -0.5, -1.0], "zero": 0.0}
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-02: 한 JSON 안의 두 스코프 + 렌더 준비 지표 (F4).
+# ---------------------------------------------------------------------------
+
+_SEED_REASON = "실계좌 이식 정리 — 소유자 지시 2026-09-01"
+
+
+def _transplanted_ledger() -> list[dict]:
+    """모의 시대 왕복 1건 + 이식 정리 1건 + 이식 이후 왕복 2건."""
+    return [
+        _trade(ts="2026-08-20T00:10:00+00:00", strategy_id="gap_fade", symbol="TQQQ",
+               side="buy", qty=1, price=70.0, fee=0.07, market="US"),
+        _trade(ts="2026-08-20T01:10:00+00:00", strategy_id="gap_fade", symbol="TQQQ",
+               side="sell", qty=1, price=71.0, fee=0.07, realized_pnl=1.0, market="US"),
+        _trade(ts="2026-09-01T14:01:08+00:00", strategy_id="legacy", symbol="SOXL",
+               side="sell", qty=13, price=105.67, fee=1.4, realized_pnl=-706.42,
+               market="US", reason=_SEED_REASON, cash_after=2_979_569.0),
+        _trade(ts="2026-09-01T15:00:00+00:00", strategy_id="gap_fade", symbol="TQQQ",
+               side="buy", qty=1, price=69.2, fee=0.07, market="US"),
+        _trade(ts="2026-09-01T16:00:00+00:00", strategy_id="gap_fade", symbol="TQQQ",
+               side="sell", qty=1, price=70.5, fee=0.08, realized_pnl=1.3, market="US"),
+        _trade(ts="2026-09-02T15:00:00+00:00", strategy_id="gap_fade", symbol="TQQQ",
+               side="buy", qty=1, price=70.0, fee=0.07, market="US"),
+        _trade(ts="2026-09-02T16:00:00+00:00", strategy_id="gap_fade", symbol="TQQQ",
+               side="sell", qty=1, price=69.0, fee=0.07, realized_pnl=-1.0, market="US"),
+    ]
+
+
+def test_scope_fields_say_which_window_each_block_covers():
+    """히어로("세션 2 · 체결 53")와 257왕복 표가 나란히 찍혀 JSON이 스스로 모순돼
+    보였다 — 표를 줄이는 대신(표본이 0에 가까워진다) 스코프를 명시한다."""
+    payload = build_performance_payload(_transplanted_ledger(), EXECUTION_CFG)
+    assert payload["period"]["scope"] == "real_seeded"
+    assert payload["period"]["note"] == "실계좌 이식 이후"
+    assert payload["period"]["note_en"] == "Since real-account transplant"
+    assert payload["strategies_scope"] == "lifetime"
+    # enabled_count 는 settings 기준 — 왕복 기록이 없는 활성 전략도 센다
+    assert payload["enabled_count"] == 0
+    cfg = {"a": {"enabled": True}, "b": {"enabled": False}, "never_traded": {"enabled": True}}
+    with_cfg = build_performance_payload(_transplanted_ledger(), EXECUTION_CFG, strategies_cfg=cfg)
+    assert with_cfg["enabled_count"] == 2
+    trips = sum(s["total"]["trips"] for s in payload["strategies"])
+    assert str(trips) in payload["strategies_note"]
+    assert str(trips) in payload["strategies_note_en"]
+    # 전략 표는 모의 시대를 포함한 누적 — period(이식 후 2일)보다 넓다
+    assert trips == 3
+    assert payload["period"]["sessions"] == 2
+
+
+def test_strategy_stats_include_turnover_hold_and_enabled():
+    payload = build_performance_payload(
+        _transplanted_ledger(), EXECUTION_CFG,
+        strategies_cfg={"gap_fade": {"enabled": True}},
+    )
+    gap = next(s for s in payload["strategies"] if s["id"] == "gap_fade")
+    assert gap["enabled"] is True
+    assert gap["trades_per_day"] == 1.0          # 3왕복 / 3거래일
+    assert gap["avg_hold_minutes"] == 60.0
+
+
+def test_enabled_is_false_when_strategy_absent_from_settings():
+    """모르면 꺼진 것으로 본다 — 켜져 있다고 지어내지 않는다."""
+    payload = build_performance_payload(_transplanted_ledger(), EXECUTION_CFG)
+    assert all(s["enabled"] is False for s in payload["strategies"])
+
+
+def test_max_drawdown_is_computed_from_cum_pct():
+    payload = build_performance_payload(_transplanted_ledger(), EXECUTION_CFG)
+    rows = payload["equity_us"]["rows"]
+    assert len(rows) == 2 and rows[0]["cum_pct"] > rows[1]["cum_pct"]
+    peak = 1 + rows[0]["cum_pct"] / 100
+    trough = 1 + rows[1]["cum_pct"] / 100
+    assert payload["equity_us"]["max_drawdown_pct"] == pytest.approx(
+        round((peak - trough) / peak * 100, 4)
+    )
+    # 아시아 곡선은 이 원장에 점이 없다 — 낙폭은 두 점이 있어야 정의된다
+    assert payload["equity_asia"]["max_drawdown_pct"] is None
+
+
+def test_fee_drag_is_measured_on_post_boundary_rows_only():
+    payload = build_performance_payload(_transplanted_ledger(), EXECUTION_CFG)
+    # 이식 후 gross = 1.3 - 1.0 = 0.3, 수수료 = 0.07+0.08+0.07+0.07 = 0.29
+    assert payload["costs"]["fee_drag_pct_of_gross"] == pytest.approx(96.67, abs=0.02)
+
+
+def test_fee_drag_is_null_when_gross_is_zero():
+    """0으로 나눌 수 없으면 None — 0%로 위장하지 않는다."""
+    trades = [
+        _trade(ts="2026-08-10T00:00:00+00:00", strategy_id="s", symbol="TQQQ",
+               side="buy", qty=1, price=70.0, fee=0.07, market="US"),
+    ]
+    payload = build_performance_payload(trades, EXECUTION_CFG)
+    assert payload["costs"]["fee_drag_pct_of_gross"] is None
+
+
+def test_strategy_table_gains_the_trip_hidden_by_transplant_phantom_inventory():
+    """이식 시점에 열려 있던 lot 을 안 버리면 이식 이후 왕복이 통째로 사라진다
+    (실측: 2026-09-01 gap_fade TQQQ +$1.13)."""
+    trades = [
+        # 이식 시점에 열려 있던(상계 행 없이 사라진) 매수
+        _trade(ts="2026-09-01T13:50:00+00:00", strategy_id="gap_fade", symbol="TQQQ",
+               side="buy", qty=9, price=69.4, fee=0.62, market="US"),
+        _trade(ts="2026-09-01T14:01:08+00:00", strategy_id="legacy", symbol="SOXL",
+               side="sell", qty=13, price=105.67, fee=1.4, realized_pnl=-706.42,
+               market="US", reason=_SEED_REASON, cash_after=2_979_569.0),
+        _trade(ts="2026-09-01T14:06:20+00:00", strategy_id="gap_fade", symbol="TQQQ",
+               side="buy", qty=1, price=69.2, fee=0.07, market="US"),
+        _trade(ts="2026-09-01T15:47:26+00:00", strategy_id="gap_fade", symbol="TQQQ",
+               side="sell", qty=1, price=70.5, fee=0.08, realized_pnl=1.29, market="US"),
+    ]
+    payload = build_performance_payload(trades, EXECUTION_CFG)
+    gap = next(s for s in payload["strategies"] if s["id"] == "gap_fade")
+    assert gap["total"]["trips"] == 1

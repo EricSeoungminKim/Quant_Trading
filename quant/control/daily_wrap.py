@@ -41,7 +41,7 @@ from html import escape as _esc
 from quant.control import alpha as _alpha
 from quant.control import cost_model as _cost_model
 from quant.control import exposure as _exposure
-from quant.control.ledger import MIN_TRIPS_FOR_JUDGEMENT
+from quant.control.ledger import MIN_TRIPS_FOR_JUDGEMENT, ab_compare
 
 # 절 제목 — 소유자가 지정한 순서 그대로. 순서를 바꾸지 않는다. "지수 대비 성적"은
 # 2026-08-29에 추가됐다(`alpha.py` 모듈 docstring — "항상 지수 위에서 노는 것").
@@ -124,6 +124,28 @@ def _strategy_rows(trips: list[dict]) -> list[dict]:
     return rows
 
 
+def build_ab(all_trips: list[dict], bases: list[str], market: str) -> list[dict]:
+    """A/B 갈래(2026-09-03) 한 줄 재료 — 이 시장 것만, **누적** 트립 기준.
+
+    하루치로는 어느 갈래도 30건이 안 되므로 오늘 트립이 아니라 누적 원장을 받는다
+    (호출부가 넘긴다). 계산은 전부 `ledger.ab_compare` 가 하고 여기서는 표시할
+    칸만 고른다 — 임계도 문구도 새로 만들지 않는다("판단 불가(n<30)" 그대로)."""
+    rows = []
+    for r in ab_compare(all_trips, bases=bases):
+        if r["market"] not in (market, None):
+            continue
+        rows.append({
+            "base": r["base"],
+            "n_a": r["baseline"]["n"], "n_b": r["catalyst"]["n"],
+            "exp_a": r["baseline"]["expectancy_bp"],
+            "exp_b": r["catalyst"]["expectancy_bp"],
+            "delta": r["delta_expectancy_bp"],
+            "p_value": r["p_value"],
+            "reason": r["reason"],
+        })
+    return rows
+
+
 def build_performance(pnl: dict | None, trips: list[dict],
                       equity_points: list[dict], market: str) -> dict:
     """1절 — 실현손익·수수료·체결 수·전략별 왕복 성적 + 자본 곡선 전일 대비.
@@ -146,6 +168,13 @@ def build_performance(pnl: dict | None, trips: list[dict],
         "net_realized": float(pnl.get("net_realized", 0.0)) if pnl else 0.0,
         "fees": float(pnl.get("fees", 0.0)) if pnl else 0.0,
         "unknown_sells": int(pnl.get("unknown_sells", 0)) if pnl else 0,
+        # 이식 정리 제외분(2026-09-02) — `session_pnl_summary`가 빼고 준 것을
+        # 조용히 삼키지 않고 한 줄로 밝힌다. 없으면 (0, 0.0).
+        "excluded_seeding_n": int((pnl or {}).get("excluded_seeding", {}).get("n", 0)),
+        "excluded_seeding_net": (
+            float((pnl or {}).get("excluded_seeding", {}).get("gross", 0.0))
+            - float((pnl or {}).get("excluded_seeding", {}).get("fees", 0.0))
+        ),
         "strategies": _strategy_rows(trips),
         "equity_krw": equity_now,
         "equity_delta_krw": equity_delta,
@@ -313,7 +342,12 @@ def build_cost_section(trips: list[dict], spread_rows: list[dict], market: str,
     갈리므로 하나로 뭉개면 판정 자체가 무의미해진다) — `kr_etf`가 없으면
     (cmd_daily_wrap은 네트워크를 쓰지 않아 보통 캐시 파일에서 온다) 전부
     개별주로 본다("모르면 안전한 쪽", assembly.py의 kr_etf 판정과 동일 원칙).
-    그룹별로 스프레드 표본이 없으면 그 그룹은 `comparison=None`("표본 없음")."""
+    그룹별로 스프레드 표본이 없으면 그 그룹은 `comparison=None`("표본 없음").
+
+    2026-09-02: 기준값이 `execution` 설정에서 유도된 **수수료·세금만**으로
+    바뀌었다(비용 표 3개가 서로 달랐던 문제, cost_model 상단 주석). 실측은
+    수수료+스프레드라서 스프레드가 있는 한 판정이 "낙관" 쪽으로 나오는 게
+    정상이다 — 그 차이가 곧 우리가 무는 스프레드다."""
     kr_etf = kr_etf or set()
     groups: list[dict] = []
     if market == "KR":
@@ -346,7 +380,9 @@ def build_sections(*, market: str, on: date, pnl: dict | None, trips: list[dict]
                    alpha_series: list[tuple] | None = None,
                    leverage_of: dict[str, float] | None = None,
                    spread_rows: list[dict] | None = None,
-                   kr_etf: set[str] | None = None) -> dict:
+                   kr_etf: set[str] | None = None,
+                   all_trips: list[dict] | None = None,
+                   ab_bases: list[str] | None = None) -> dict:
     """6개 절을 소유자가 지정한 순서(실적→지분→이상→변경→지수 대비 성적→체결
     비용)로 조립한다.
 
@@ -359,6 +395,11 @@ def build_sections(*, market: str, on: date, pnl: dict | None, trips: list[dict]
     내장 배수로 보강된다. `spread_rows`/`kr_etf`는 6절(build_cost_section)
     재료 — 둘 다 없으면(`None`/빈 리스트) 6절이 그룹별로 "표본 없음"을 낸다."""
     performance = build_performance(pnl, trips, equity_points, market)
+    # A/B 갈래 줄(2026-09-03) — `trips`(오늘)가 아니라 `all_trips`(누적)로 잰다.
+    # 둘 중 하나라도 없으면 절을 만들지 않는다(빈 표는 "0건"처럼 읽혀 거짓말이 된다).
+    performance["ab"] = (
+        build_ab(all_trips, ab_bases, market) if all_trips is not None and ab_bases else []
+    )
     return {
         "market": market,
         "date": on.isoformat(),
@@ -432,8 +473,16 @@ def _table(headers: list[str], rows: list[list[str]]) -> str:
 
 def _render_performance(perf: dict) -> str:
     market = perf["market"]
+    seeding_n = int(perf.get("excluded_seeding_n", 0))
+    seeding_html = (
+        f'<p class="muted">이식 정리 {seeding_n}건 제외: '
+        f'{_money(perf.get("excluded_seeding_net", 0.0), market)} '
+        "(프로그램 매매 아님)</p>"
+    ) if seeding_n else ""
     if not perf["has_trades"]:
         out = ["<p>오늘 거래 없음</p>"]
+        if seeding_html:
+            out.append(seeding_html)
     else:
         unk = perf["unknown_sells"]
         out = [
@@ -443,6 +492,8 @@ def _render_performance(perf: dict) -> str:
             + "</p>",
             f'<p>수수료 {_esc(fmt_amount(perf["fees"], market, signed=False))}</p>',
         ]
+        if seeding_html:
+            out.append(seeding_html)
         rows = perf["strategies"]
         if rows:
             out.append(_table(
@@ -457,6 +508,16 @@ def _render_performance(perf: dict) -> str:
             ))
         else:
             out.append('<p class="muted">오늘 종결된 왕복 없음</p>')
+
+    for row in perf.get("ab", []):
+        head = (f'A/B {_esc(row["base"])}: 기준 n={row["n_a"]}'
+                f' vs 촉매 n={row["n_b"]}')
+        def _bp(v):
+            return "-" if v is None else f"{v:+,.1f}bp"
+        body = f'기대값 {_bp(row["exp_a"])} vs {_bp(row["exp_b"])}'
+        tail = (_esc(row["reason"]) if row["reason"]
+                else f'차이 {row["delta"]:+,.1f}bp · p={row["p_value"]:.3f}')
+        out.append(f'<p class="muted">{head} · {body} — {tail}</p>')
 
     delta = perf["equity_delta_krw"]
     if perf["equity_krw"] is None:

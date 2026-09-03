@@ -35,6 +35,7 @@ RSS 는 **"최신 N건" 스냅샷**이다. 상한을 300 으로 올려도 invest
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -42,11 +43,14 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from quant.collect.sources.feeds import (
+    FEED_LIMIT,
     NEWS_FEEDS,
     fetch_conditional,
     parse_published,
     resolve_outlet,
 )
+
+logger = logging.getLogger(__name__)
 
 # 보존 기간. 세션 창(전일 마감~개장) 밖 기사는 리포트가 안 쓰지만, 금요일→월요일
 # 3일 공백과 "며칠째 재보도" 판정을 위해 여유를 둔다.
@@ -119,6 +123,55 @@ def load_store(path: Path) -> dict[str, dict]:
     return out
 
 
+def load_window(
+    root: Path, market: str, since: datetime, until: datetime | None = None,
+) -> dict[str, list[dict]]:
+    """누적 저장소에서 `[since, until]` 발행 구간 기사를 피드별로 묶어 돌려준다.
+
+    반환 모양은 `feeds.fetch_news()`의 `"feeds"` 값과 동일하다
+    (`{feed_name: [{"title","link","published","outlet"}, ...]}`) —
+    `quant.collect.sources.build_sources`가 라이브 결과와 그대로 합칠 수
+    있게 하기 위해서다. 저장 파일은 KST 하루 단위(`store_path`)라 `since`~
+    `until`이 걸치는 날짜 전부를 읽는다.
+
+    발행시각을 못 읽은 행(`published` 없음)은 `feeds.filter_since`와 같은
+    원칙으로 버리지 않고 남긴다 — "모르는 것을 모른다고 두는" 쪽이 조용히
+    틀리는 것보다 낫다.
+    """
+    until = until or datetime.now(timezone.utc)
+    kst = timezone(timedelta(hours=9))
+    day = since.astimezone(kst).date()
+    end_day = until.astimezone(kst).date()
+
+    out: dict[str, list[dict]] = {}
+    seen: set[str] = set()
+    while day <= end_day:
+        for row in load_store(store_path(root, market, day)).values():
+            key = row.get("key")
+            if not key or key in seen:
+                continue
+            raw_pub = row.get("published")
+            if raw_pub:
+                try:
+                    dt = datetime.fromisoformat(raw_pub)
+                except ValueError:
+                    dt = None
+                if dt is not None:
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    if not (since <= dt <= until):
+                        continue
+            seen.add(key)
+            out.setdefault(row.get("feed") or "?", []).append({
+                "title": row.get("title", ""),
+                "link": row.get("link", ""),
+                "published": raw_pub,
+                "outlet": row.get("outlet", ""),
+            })
+        day += timedelta(days=1)
+    return out
+
+
 def feed_headers_cache_path(root: Path) -> Path:
     return root / "data" / "cache" / "feed_headers.json"
 
@@ -175,6 +228,10 @@ def collect_once(market: str, root: Path, now: datetime | None = None) -> dict:
         else:
             headers_cache.pop(url, None)  # 헤더 없는 서버는 캐시에 남기지 않는다
         per_feed[feed_name] = len(items)
+        if len(items) == FEED_LIMIT:
+            # 상한에 정확히 걸렸다 — 그 피드가 실제로 더 줬을 수 있다는 신호
+            # (FEED_LIMIT docstring 참고, 상한은 폭주 방지용이지 표본 크기가 아니다).
+            logger.warning("피드 %s 가 상한(%d건)에 걸림 — 잘렸을 수 있음", feed_name, FEED_LIMIT)
         for it in items:
             link = it.get("link") or ""
             title = (it.get("title") or "").strip()

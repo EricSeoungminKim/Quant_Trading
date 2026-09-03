@@ -14,6 +14,7 @@ from quant.analyze.watch_scorer import (
     _VALID_TAGS,
     _check_prerequisites,
     _event_score,
+    _market_cap_krw,
     _rebound_score,
     _trend_score,
     effective_threshold,
@@ -21,6 +22,7 @@ from quant.analyze.watch_scorer import (
     resolve_regime_label,
     run_watch_score,
     score_symbol,
+    sector_daily_adjustment,
 )
 
 _DEFAULT_THRESHOLD = 50
@@ -136,7 +138,14 @@ def _build_event(rvol_mult: float, gap_pct: float) -> pd.DataFrame:
 class _FakeClient:
     def __init__(self, daily: pd.DataFrame, stock_info: dict | None = None):
         self._daily = daily
-        self._stock_info = stock_info if stock_info is not None else {"securityType": "ETF"}
+        # sharesOutstanding(2026-09-03, 시총 게이트 A) — 기본 픽스처(_uptrend_kr_daily
+        # 등, 마지막 종가 ~35,880)에 10,000,000주를 곱하면 ~359억이 아니라
+        # ~3,598억원 > 3,000억 기준을 통과한다. 개별 테스트가 시총 게이트 자체를
+        # 검증할 땐 이 필드를 명시적으로 빼거나 작은 값으로 덮어써야 한다.
+        self._stock_info = (
+            stock_info if stock_info is not None
+            else {"securityType": "ETF", "sharesOutstanding": "10000000"}
+        )
 
     def candles(self, symbol: str, interval: str = "day", count: int = 90) -> pd.DataFrame:
         return self._daily
@@ -257,17 +266,23 @@ def test_kr_non_etf_fails_with_cost_reason():
 
 def test_kr_etf_passes_product_prereq():
     d = _uptrend_kr_daily()
-    client = _FakeClient(d, stock_info={"securityType": "ETF"})
+    client = _FakeClient(d, stock_info={"securityType": "ETF", "sharesOutstanding": "10000000"})
     r = score_symbol(d, "005930", ["TREND"], None, client, today=d.index[-1].date())
     assert r.prereq_ok is True
 
 
-def test_stock_info_failure_does_not_block_but_adds_reason():
+def test_stock_info_failure_does_not_block_product_check_but_market_cap_gate_now_fails():
+    """stock_info 조회 자체가 실패하면(예: rate limit) 상품유형 판정은 여전히
+    비차단(미확인 표기만)이지만, 시총도 같은 stock_info 응답에서 나오므로
+    (sharesOutstanding, 2026-09-03 시총 게이트 A) 시총도 미확인이 되어 이번엔
+    이 게이트가 막는다 — "모르는 시총을 조용히 통과시키지 않는다"는 정책이라
+    ETF 판정 실패의 관대함(상품유형 미확인은 비차단)과는 다르다."""
     d = _uptrend_kr_daily()
     client = _RaisingStockInfoClient(d)
     r = score_symbol(d, "005930", ["TREND"], None, client, today=d.index[-1].date())
-    assert r.prereq_ok is True
+    assert r.prereq_ok is False
     assert any("상품유형 미확인" in reason for reason in r.reasons)
+    assert any("시총 미확인" in reason for reason in r.reasons)
 
 
 # --------------------------------------------------------------- effective_threshold / regime
@@ -561,7 +576,9 @@ def test_discover_candidates_failure_returns_empty():
 # ---------------------------------------------------------------------------
 def test_allow_kr_stocks_converts_block_to_pass_with_note():
     d = _uptrend_kr_daily()
-    client = _FakeClient(d, stock_info={"securityType": "STOCK"})
+    client = _FakeClient(
+        d, stock_info={"securityType": "STOCK", "sharesOutstanding": "10000000"},
+    )
     blocked = run_watch_score(["005930:TREND"], client, threshold=0, regime_label="neutral")[0]
     assert blocked.prereq_ok is False, "기본값은 여전히 차단"
 
@@ -946,3 +963,135 @@ def test_run_watch_score_unknown_sector_symbol_not_penalized():
         sector_map={"096770": "석유와가스"}, sector_tilt=sector_tilt,
     )
     assert unmapped[0].score == plain[0].score
+
+
+# ---------------------------------------------------------------------------
+# 시가총액 게이트 (소유자 철학 지시 A, 2026-09-03) — KR 후보 시총 3,000억 미만/
+# 미확인은 자동등록 차단. US는 KRW 표시 기준 규칙이라 적용하지 않는다.
+# ---------------------------------------------------------------------------
+
+def test_market_cap_krw_computes_shares_times_close():
+    assert _market_cap_krw({"sharesOutstanding": "1000"}, 100.0) == 100_000
+
+
+def test_market_cap_krw_missing_shares_returns_none():
+    assert _market_cap_krw({"securityType": "STOCK"}, 100.0) is None
+    assert _market_cap_krw(None, 100.0) is None
+
+
+def test_market_cap_krw_unparseable_shares_returns_none():
+    assert _market_cap_krw({"sharesOutstanding": "abc"}, 100.0) is None
+
+
+def test_market_cap_above_threshold_passes_with_confirmation_reason():
+    d = _uptrend_kr_daily()  # 마지막 종가 ~35,974원
+    client = _FakeClient(d, stock_info={"securityType": "STOCK", "sharesOutstanding": "10000000"})
+    r = score_symbol(d, "005930", ["TREND"], None, client, today=d.index[-1].date())
+    assert not any(reason.startswith("시총 미확인") or reason.startswith("시총 <") for reason in r.reasons)
+    assert any(reason.startswith("시총 확인") for reason in r.reasons)
+
+
+def test_market_cap_below_threshold_fails_prereq():
+    d = _uptrend_kr_daily()
+    # 1,000주 × 마지막 종가(~35,974원) ≈ 3,600만원 << 3,000억 기준.
+    client = _FakeClient(d, stock_info={"securityType": "STOCK", "sharesOutstanding": "1000"})
+    r = score_symbol(d, "005930", ["TREND"], None, client, today=d.index[-1].date())
+    assert r.prereq_ok is False
+    assert any(reason.startswith("시총 <3,000억") for reason in r.reasons)
+
+
+def test_market_cap_unknown_fails_prereq_with_reason():
+    d = _uptrend_kr_daily()
+    client = _FakeClient(d, stock_info={"securityType": "STOCK"})  # sharesOutstanding 없음
+    r = score_symbol(d, "005930", ["TREND"], None, client, today=d.index[-1].date())
+    assert r.prereq_ok is False
+    assert any(reason.startswith("시총 미확인") for reason in r.reasons)
+
+
+def test_market_cap_gate_not_applied_to_us_symbols():
+    d = _uptrend_kr_daily()
+    client = _FakeClient(d, stock_info={"securityType": "STOCK"})  # sharesOutstanding 없음
+    failures, _info = _check_prerequisites(
+        d, "TQQQ", is_kr=False, client=client, today=d.index[-1].date(),
+    )
+    assert not any("시총" in f for f in failures)
+
+
+# ---------------------------------------------------------------------------
+# 주도 섹터 보너스 (sector_daily_adjustment) — 소유자 철학 지시 B, 2026-09-03
+# ---------------------------------------------------------------------------
+
+def test_sector_daily_adjustment_top3_positive_returns_plus8():
+    sector_map = {"096770": "석유와가스"}
+    ctx = {"top3_positive": {"석유와가스"}, "negative_streak3": set()}
+    result = sector_daily_adjustment("096770", sector_map, ctx)
+    assert result == (8, "주도섹터: 석유와가스 거래대금 top3 + 외국인 순매수 (+8)")
+
+
+def test_sector_daily_adjustment_negative_streak_returns_minus4():
+    sector_map = {"096770": "석유와가스"}
+    ctx = {"top3_positive": set(), "negative_streak3": {"석유와가스"}}
+    result = sector_daily_adjustment("096770", sector_map, ctx)
+    assert result == (-4, "주도섹터: 석유와가스 외국인 순매수 3일 연속 이탈 (-4)")
+
+
+def test_sector_daily_adjustment_unmapped_symbol_returns_none():
+    ctx = {"top3_positive": {"석유와가스"}, "negative_streak3": set()}
+    assert sector_daily_adjustment("005930", {"096770": "석유와가스"}, ctx) is None
+
+
+def test_sector_daily_adjustment_missing_inputs_returns_none():
+    assert sector_daily_adjustment("096770", None, {"top3_positive": {"석유와가스"}}) is None
+    assert sector_daily_adjustment("096770", {"096770": "석유와가스"}, None) is None
+
+
+def test_sector_daily_adjustment_neither_bucket_returns_none():
+    sector_map = {"096770": "석유와가스"}
+    ctx = {"top3_positive": {"반도체"}, "negative_streak3": {"화학"}}
+    assert sector_daily_adjustment("096770", sector_map, ctx) is None
+
+
+def test_score_symbol_applies_sector_daily_adj_to_score_and_breakdown():
+    d = _uptrend_kr_daily()
+    client = _FakeClient(d)
+    today = d.index[-1].date()
+    base = score_symbol(d, "096770", ["TREND"], None, client, today=today)
+    boosted = score_symbol(
+        d, "096770", ["TREND"], None, client, today=today,
+        sector_daily_adj=(8, "주도섹터: 석유와가스 거래대금 top3 + 외국인 순매수 (+8)"),
+    )
+    assert boosted.score == base.score + 8
+    assert "주도섹터: 석유와가스 거래대금 top3 + 외국인 순매수 (+8)" in boosted.reasons
+    assert (
+        "주도 섹터 보너스", 8, 8, "주도섹터: 석유와가스 거래대금 top3 + 외국인 순매수 (+8)",
+    ) in boosted.breakdown
+
+
+def test_run_watch_score_applies_sector_daily_bonus_for_kr_symbol():
+    d = _uptrend_kr_daily()
+    client = _FakeClient(d)
+    sector_map = {"096770": "석유와가스"}
+    ctx = {"top3_positive": {"석유와가스"}, "negative_streak3": set()}
+
+    plain = run_watch_score(["096770:TREND"], client, _DEFAULT_THRESHOLD, "neutral")
+    boosted = run_watch_score(
+        ["096770:TREND"], client, _DEFAULT_THRESHOLD, "neutral",
+        sector_map=sector_map, sector_daily_ctx=ctx,
+    )
+    assert boosted[0].score == plain[0].score + 8
+    assert any("주도섹터:" in r for r in boosted[0].reasons)
+
+
+def test_run_watch_score_us_symbol_unaffected_by_sector_daily_ctx():
+    d = _uptrend_kr_daily()
+    client = _FakeClient(d)
+    sector_map = {"TQQQ": "XLK(기술/성장주)"}
+    ctx = {"top3_positive": {"XLK(기술/성장주)"}, "negative_streak3": set()}
+
+    plain = run_watch_score(["TQQQ:TREND"], client, _DEFAULT_THRESHOLD, "neutral")
+    with_ctx = run_watch_score(
+        ["TQQQ:TREND"], client, _DEFAULT_THRESHOLD, "neutral",
+        sector_map=sector_map, sector_daily_ctx=ctx,
+    )
+    assert with_ctx[0].score == plain[0].score
+    assert not any("주도섹터:" in r for r in with_ctx[0].reasons)

@@ -14,9 +14,10 @@
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from quant.report.collect.quotes import fetch_kr_quotes
+from quant.report.collect.quotes import _ExpectedDelistFilter, fetch_kr_quotes
 
 
 def _patch(monkeypatch, market_map=None, quotes=None, raise_map=False):
@@ -88,6 +89,76 @@ def test_empty_input_makes_no_request(monkeypatch):
     seen = _patch(monkeypatch, raise_map=True)
     got, _ = fetch_kr_quotes([], Path("/tmp"))
     assert got == {} and "asked" not in seen
+
+
+# ── D3(2026-09-03): .KS/.KQ 이중 조회의 예상된 ERROR 를 DEBUG 로 낮춘다 ────────
+
+def _record(msg: str, level: int = logging.ERROR) -> logging.LogRecord:
+    return logging.LogRecord("yfinance", level, __file__, 0, msg, (), None)
+
+
+def test_expected_delist_filter_downgrades_probe_symbol_errors():
+    """이번 호출이 만든 추측 후보 심볼(.KS/.KQ 이중 조회) 얘기면 DEBUG 로 낮춘다
+    — KIND 가 죽어 다수 종목이 이 경로를 타면 한쪽은 항상 결측이 정상이라, 그걸
+    ERROR 로 두면 매 종목마다 도배돼 진짜 장애를 가린다."""
+    f = _ExpectedDelistFilter(frozenset({"091990.KS", "091990.KQ"}))
+    record = _record('$091990.KQ: possibly delisted; no price data found  (period=1y)')
+
+    assert f.filter(record) is True  # 레코드 자체는 버리지 않는다
+    assert record.levelno == logging.DEBUG
+    assert record.levelname == "DEBUG"
+
+
+def test_expected_delist_filter_leaves_unrelated_errors_alone():
+    """추측 후보 심볼 집합에 없는 심볼(예: KIND 로 이미 확정된 심볼)의 ERROR 는
+    진짜 장애일 수 있다 — 낮추지 않는다."""
+    f = _ExpectedDelistFilter(frozenset({"091990.KS", "091990.KQ"}))
+    record = _record('$005930.KS: possibly delisted; no price data found  (period=1y)')
+
+    f.filter(record)
+
+    assert record.levelno == logging.ERROR
+
+
+def test_expected_delist_filter_is_noop_with_no_probe_symbols():
+    """이중 조회 후보가 없으면(코드가 전부 KIND 매핑됨) 아무것도 낮추지 않는다."""
+    f = _ExpectedDelistFilter(frozenset())
+    record = _record('$091990.KS: possibly delisted; no price data found  (period=1y)')
+
+    f.filter(record)
+
+    assert record.levelno == logging.ERROR
+
+
+def test_fetch_kr_quotes_downgrades_expected_dual_probe_errors(monkeypatch, caplog):
+    """통합: KIND 가 죽어 .KS/.KQ 를 이중 조회할 때, `fetch_symbol_quotes` 내부(여기선
+    스텁)가 yfinance 로거에 남기는 것과 같은 모양의 ERROR 를 낮춘다. 실제
+    yfinance 호출은 없다 — 필터가 배선돼 있는지만 확인한다."""
+    import quant.report.collect.quotes as Q
+
+    def _map(_cache):
+        raise RuntimeError("KIND 403")
+
+    def _fetch(syms, **kw):
+        # 실제 yfinance 가 하듯, 이 호출 도중 "yfinance" 로거에 결측 후보의
+        # ERROR 를 남긴다.
+        logging.getLogger("yfinance").error(
+            "$247540.KS: possibly delisted; no price data found  (period=1y)")
+        return {"247540.KQ": {"close": 320000.0}}
+
+    monkeypatch.setattr(Q, "load_market_map", _map)
+    monkeypatch.setattr(Q, "fetch_symbol_quotes", _fetch)
+
+    with caplog.at_level(logging.DEBUG, logger="yfinance"):
+        got, _ = fetch_kr_quotes(["247540"], Path("/tmp"))
+
+    assert got == {"247540": {"close": 320000.0}}
+    matching = [r for r in caplog.records if "247540.KS" in r.getMessage()]
+    assert matching and matching[0].levelno == logging.DEBUG
+
+    # 필터가 이 호출 밖으로 새지 않는다 — 다음 호출은 다시 ERROR 로 보인다.
+    assert not any(isinstance(fl, Q._ExpectedDelistFilter)
+                   for fl in logging.getLogger("yfinance").filters)
 
 
 def test_fetch_failure_returns_empty_not_raise(monkeypatch):

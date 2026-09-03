@@ -69,7 +69,16 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
-from quant.control.ledger import MIN_TRIPS_FOR_JUDGEMENT, _verdict, _wilson_ci, round_trips
+from quant.control.cost_model import round_trip_bp_from_settings
+from quant.control.ledger import (
+    MIN_TRIPS_FOR_JUDGEMENT,
+    SEEDING_LIQUIDATION_MARKER,
+    _verdict,
+    _wilson_ci,
+    base_strategy_id,
+    is_seeding_liquidation,
+    round_trips,
+)
 from quant.core.models import trading_day
 
 __all__ = ["build_performance_payload"]
@@ -78,10 +87,10 @@ __all__ = ["build_performance_payload"]
 # 환전 금지"). equity 곡선의 KRW 환산 전용 고정값 — 그날그날의 실제 환율이 아니다.
 FX_KRW_PER_USD = 1376.7
 
-# `quant.apps.cli seed_real.cmd_seed_real`이 남기는 마커(REASON 상수와 동일 문자열).
-# 이 부분 문자열만 맞으면 되므로 상수를 그쪽과 공유하지 않아도(제어 평면이 apps를
-# 임포트하지 않는다는 원칙, `quant/control/CLAUDE.md` 없음이나 기존 관례 유지) 안전하다.
-SEEDING_LIQUIDATION_MARKER = "실계좌 이식 정리"
+# `SEEDING_LIQUIDATION_MARKER`/`_is_seeding_liquidation`은 2026-09-02에
+# `quant.control.ledger`로 옮겼다 — 세션 손익(`session_pnl_summary`)이 같은
+# 판별식을 쓰지 않아 텔레그램만 이식 정리를 성과로 세고 있었다(ledger.py 참고).
+# 여기서는 기존 임포트 경로를 깨지 않기 위해 이름만 다시 내건다.
 
 # paper 시대 참고 시드 — 위 모듈 docstring "알려진 한계" 참고.
 PAPER_SEED_KRW = 10_000_000
@@ -124,6 +133,19 @@ STRATEGY_NAME_KO: dict[str, str] = {
 }
 
 
+def _strategy_name_ko(sid: str) -> str:
+    """전략 id → 한글 표시명. A/B 촉매 갈래(`<id>_cat`, 2026-09-03)는 기준
+    전략의 이름을 **상속**하고 꼬리표만 붙인다 — 같은 클래스를 다른 유니버스로
+    돌리는 갈래이므로 이름을 따로 짓는 것이 오히려 거짓말이다. 공개 대시보드에
+    id 원문이 그대로 노출되는 것도 막는다."""
+    if sid in STRATEGY_NAME_KO:
+        return STRATEGY_NAME_KO[sid]
+    base = base_strategy_id(sid)
+    if base != sid and base in STRATEGY_NAME_KO:
+        return f"{STRATEGY_NAME_KO[base]}(촉매 갈래)"
+    return sid
+
+
 def _parse_ts(trade: dict) -> datetime:
     ts = datetime.fromisoformat(str(trade.get("ts")))
     if ts.tzinfo is None:
@@ -136,8 +158,7 @@ def _ts_iso(ts: datetime) -> str:
     return ts.astimezone(_KST).isoformat(timespec="seconds")
 
 
-def _is_seeding_liquidation(trade: dict) -> bool:
-    return SEEDING_LIQUIDATION_MARKER in str(trade.get("reason") or "")
+_is_seeding_liquidation = is_seeding_liquidation
 
 
 def _split_excluded(trades: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -416,16 +437,41 @@ def _round_trip_stats(known: list[dict]) -> dict:
     }
 
 
-def _strategy_stats(included: list[dict]) -> list[dict]:
+def _trip_hold_minutes(trip: dict) -> float | None:
+    """트립 보유 분. entry/exit ts 중 하나라도 못 읽으면 None."""
+    try:
+        entry = datetime.fromisoformat(str(trip.get("entry_ts")))
+        exit_ = datetime.fromisoformat(str(trip.get("exit_ts")))
+    except ValueError:
+        return None
+    if entry.tzinfo is None:
+        entry = entry.replace(tzinfo=timezone.utc)
+    if exit_.tzinfo is None:
+        exit_ = exit_.replace(tzinfo=timezone.utc)
+    return (exit_ - entry).total_seconds() / 60.0
+
+
+def _strategy_stats(trades: list[dict], strategies_cfg: dict | None = None) -> list[dict]:
     """전략별 승률/기대값 — `ledger.round_trips` + Wilson CI(`ledger._wilson_ci`)를
-    그대로 재사용한다. `legacy`(이식 정리 전용 strategy_id)는 애초에 매수 체결이
-    없어 라운드트립이 절대 종결되지 않으므로 `round_trips`가 자연히 걸러낸다.
+    그대로 재사용한다.
+
+    **입력은 원장 전체**(이식 정리 행 포함)다 — `round_trips`가 그 행들을 스스로
+    걸러내면서 동시에 **이식 시대 경계**로 쓰기 때문이다(2026-09-02, ledger.py
+    `round_trips` docstring). 정리 행을 미리 빼서 넘기면 경계를 못 찾아 이식 시점에
+    열려 있던 유령 재고가 남고, 이식 이후의 정상 왕복이 트립으로 안 세진다
+    (실측: 2026-09-01 gap_fade TQQQ +$1.13이 통째로 누락됐다).
 
     `total`은 기존 통화 무관 합산(KR+US bps 축 함께) 그대로 유지하고,
     `by_market`에 KR/US 각각 따로 `_round_trip_stats`를 태운 블록을 더한다
     (오너 지시 2026-09-02: 표본 임계도 시장별로 각각 적용). 그 시장 표본이
-    없으면 해당 키는 None(지어내지 않는다)."""
-    trips = round_trips(included)
+    없으면 해당 키는 None(지어내지 않는다).
+
+    `trades_per_day`/`avg_hold_minutes`/`enabled`는 "이 전략이 얼마나 자주,
+    얼마나 오래 들고, 지금 켜져 있나"에 답한다 — 승률만으로는 회전율이 높은
+    스캘프와 며칠 들고 가는 전략을 구분할 수 없다. `enabled`는 설정을 못 받으면
+    (`strategies_cfg=None`) False — 모르면 꺼진 것으로 본다."""
+    strategies_cfg = strategies_cfg or {}
+    trips = round_trips(trades)
     stats = []
     for sid in sorted({t["strategy"] for t in trips}):
         strip = [t for t in trips if t["strategy"] == sid]
@@ -436,10 +482,15 @@ def _strategy_stats(included: list[dict]) -> list[dict]:
         total["markets"] = sorted({t["market"] for t in known})
         known_kr = [t for t in known if t["market"] == "KR"]
         known_us = [t for t in known if t["market"] == "US"]
+        days = {trading_day(_parse_ts({"ts": t["entry_ts"]})) for t in known if t.get("entry_ts")}
+        holds = [m for m in (_trip_hold_minutes(t) for t in known) if m is not None]
         stats.append({
             "id": sid,
-            "name_ko": STRATEGY_NAME_KO.get(sid, sid),
+            "name_ko": _strategy_name_ko(sid),
             "total": total,
+            "trades_per_day": round(len(known) / len(days), 2) if days else None,
+            "avg_hold_minutes": round(sum(holds) / len(holds), 1) if holds else None,
+            "enabled": bool((strategies_cfg.get(sid) or {}).get("enabled", False)),
             "by_market": {
                 "asia": _round_trip_stats(known_kr) if known_kr else None,
                 "us": _round_trip_stats(known_us) if known_us else None,
@@ -477,24 +528,43 @@ def _excluded_summary(excluded: list[dict]) -> dict:
     }
 
 
-def _costs(execution_cfg: dict) -> dict:
-    """왕복(편도×2) 비용 참고표 — `config/settings.yaml`의 `execution` 블록에서
-    유도. 실측(`quant.control.cost_model`)이 아니라 **설정상 가정치**다."""
-    fee_bps = execution_cfg.get("fee_bps", 0.0)
-    if isinstance(fee_bps, dict):
-        kr_fee = float(fee_bps.get("KR", 0.0))
-        us_fee = float(fee_bps.get("US", 0.0))
-    else:
-        kr_fee = us_fee = float(fee_bps or 0.0)
-    kr_sell_tax = float(execution_cfg.get("kr_stock_sell_tax_bps", 0.0))
+def _fee_drag_pct_of_gross(rows: list[dict]) -> float | None:
+    """수수료·세금이 총 실현손익(수수료 전)의 몇 %를 먹었나 — `rows`(보통 이식
+    경계 이후 체결) 기준. gross가 0이면 나눌 수 없으니 None(지어내지 않는다).
 
-    kr_etf_roundtrip = round(kr_fee * 2, 2)
-    kr_stock_roundtrip = round(kr_fee * 2 + kr_sell_tax, 2)
-    us_roundtrip = round(us_fee * 2, 2)
+    **KRW/USD를 `FX_KRW_PER_USD`로 한 축(KRW)에 모아 계산한다** — 비율 하나로
+    답해야 하는 요약값이라 모듈 docstring 규칙 2의 예외("총액을 KRW로 뭉뚱그려
+    보여주는 곳")에 해당한다. 지분곡선은 여전히 통화별로 분리돼 있다."""
+    gross = 0.0
+    fees = 0.0
+    for t in rows:
+        rate = FX_KRW_PER_USD if str(t.get("market") or "US") == "US" else 1.0
+        fees += float(t.get("fee", 0) or 0) * rate
+        if str(t.get("side", "")).upper() != "BUY" and t.get("realized_pnl") is not None:
+            gross += float(t["realized_pnl"]) * rate
+    if gross == 0:
+        return None
+    return round(fees / abs(gross) * 100, 2)
+
+
+def _costs(execution_cfg: dict, fee_drag_pct: float | None = None) -> dict:
+    """왕복(편도×2) 비용 참고표 — `config/settings.yaml`의 `execution` 블록에서
+    유도. 실측(`quant.control.cost_model`)이 아니라 **설정상 가정치**다.
+
+    2026-09-02: 유도 산식은 `cost_model.round_trip_bp_from_settings`로 옮겼다 —
+    같은 표가 세 곳에 서로 다른 값으로 있었다(cost_model 상단 주석 참고)."""
+    table = round_trip_bp_from_settings(execution_cfg)
+    kr_sell_tax = float(execution_cfg.get("kr_stock_sell_tax_bps", 0.0))
+    kr_etf_roundtrip = table["KR_ETF"]
+    kr_stock_roundtrip = table["KR_STOCK"]
+    us_roundtrip = table["US"]
     return {
         "kr_stock_roundtrip_bp": kr_stock_roundtrip,
         "kr_etf_roundtrip_bp": kr_etf_roundtrip,
         "us_roundtrip_bp": us_roundtrip,
+        # 실측 비용 압박 — 이식 이후 실제로 낸 수수료·세금이 수수료 전 실현손익의
+        # 몇 %였나(2026-09-02 추가). 가정치(위 왕복 bp)와 달리 원장에서 나온 값이다.
+        "fee_drag_pct_of_gross": fee_drag_pct,
         # 세금 bp 를 별도 필드로도 낸다 — 프론트가 `costs.note` 문장에서 숫자를
         # 다시 파싱하거나 20bp 를 매직넘버로 하드코딩하지 않게(렌더 준비 완료
         # 원칙, 오너 지시 2026-09-02).
@@ -536,6 +606,23 @@ def _chart_axis(rows: list[dict]) -> dict:
     }
 
 
+def _max_drawdown_pct(rows: list[dict]) -> float | None:
+    """지분곡선 최대 낙폭(%, 양수) — `cum_pct`(시드 대비 누적 %)에서 직접 계산.
+
+    `1 + cum_pct/100`을 지분 배수로 보고 고점 대비 최대 하락률을 낸다. 유효한
+    점이 2개 미만이면 None — 낙폭은 두 점이 있어야 정의된다(지어내지 않는다)."""
+    values = [1 + r["cum_pct"] / 100 for r in rows if r.get("cum_pct") is not None]
+    if len(values) < 2:
+        return None
+    peak = values[0]
+    worst = 0.0
+    for v in values:
+        peak = max(peak, v)
+        if peak > 0:
+            worst = max(worst, (peak - v) / peak)
+    return round(worst * 100, 4)
+
+
 def _phase_boundaries(rows: list[dict], phases: list[dict]) -> list[dict]:
     """행 배열 안에서 phase 가 바뀌는 지점의 인덱스 — 프론트가 하던 스캔을
     그대로 서버로 옮김. `_equity_rows`가 항상 경계 이후(또는 경계가 아예
@@ -556,13 +643,22 @@ def _phase_boundaries(rows: list[dict], phases: list[dict]) -> list[dict]:
 
 def build_performance_payload(
     trades: list[dict], execution_cfg: dict, *, now: datetime | None = None,
-    real_account_snapshot: dict | None = None,
+    real_account_snapshot: dict | None = None, strategies_cfg: dict | None = None,
 ) -> dict:
     """`trades.jsonl` 원장(dict 리스트, `ledger.load_trades` 출력) → 공개 성과 JSON.
 
     순수 함수 — 파일 I/O는 호출부(CLI)가 한다. `real_account_snapshot`은 선택
     (`quant.apps.cli.cmd_seed_real`이 쓰는 것과 같은 형식의 dict) — 없으면 이월
-    보유 평가액 없이 현금만으로 계산한다(모듈 docstring "알려진 한계" 참고)."""
+    보유 평가액 없이 현금만으로 계산한다(모듈 docstring "알려진 한계" 참고).
+    `strategies_cfg`도 선택(`config/settings.yaml`의 `strategies:` 블록) — 없으면
+    `strategies[].enabled`가 전부 False 다(모르면 꺼진 것으로 본다).
+
+    **두 스코프가 한 JSON에 공존한다**(2026-09-02 결함 수정): `period`/지분곡선은
+    이식 경계 이후만, `strategies` 표는 모의 시대를 포함한 누적이다. 전략 표를
+    경계 이후로 자르면 표본이 거의 0이 되어 승률·CI가 무의미해지므로 자르지 않고,
+    대신 `strategies_scope`/`period.scope`로 어느 쪽이 어느 스코프인지 **명시**한다
+    — 그전에는 히어로의 "세션 2 · 체결 53" 옆에 257왕복 표가 나란히 찍혀 같은
+    JSON이 스스로 모순돼 보였다."""
     now = now or datetime.now(_KST)
     included, excluded = _split_excluded(trades)
     boundary_ts = _boundary_ts(excluded)
@@ -580,6 +676,7 @@ def build_performance_payload(
         us_rows = _equity_rows(real_included, us_seed, "real_seeded", "US")
         us_basis, us_basis_en = "현금만", "cash only"
         prior_paper = _prior_paper_summary(paper_included)
+        curve_rows = real_included
     else:
         # 이식 이벤트가 아직 없으면 대체할 real_seeded 구간이 없다 — 지금까지처럼
         # 전체 paper 기록을 그대로 보여준다(숨길 이유가 없다). paper 시대엔 KRW/USD
@@ -590,6 +687,7 @@ def build_performance_payload(
         asia_rows = _equity_rows(included, asia_seed, "paper", "KR")
         us_rows = _equity_rows(included, us_seed, "paper", "US")
         prior_paper = {}
+        curve_rows = included
 
     equity_asia = {
         "currency": "KRW",
@@ -597,6 +695,9 @@ def build_performance_payload(
         "seed_basis": asia_basis,
         "seed_basis_en": asia_basis_en,
         "rows": asia_rows,
+        # 최대 낙폭(%, 양수) — 곡선을 프론트가 다시 훑지 않게 서버가 낸다(렌더
+        # 준비 완료 원칙). 점 2개 미만이면 None.
+        "max_drawdown_pct": _max_drawdown_pct(asia_rows),
         "chart": {"y_axis": _chart_axis(asia_rows), "phase_boundaries": _phase_boundaries(asia_rows, phases)},
     }
     equity_us = {
@@ -605,10 +706,13 @@ def build_performance_payload(
         "seed_basis": us_basis,
         "seed_basis_en": us_basis_en,
         "rows": us_rows,
+        "max_drawdown_pct": _max_drawdown_pct(us_rows),
         "chart": {"y_axis": _chart_axis(us_rows), "phase_boundaries": _phase_boundaries(us_rows, phases)},
     }
 
-    strategies = _strategy_stats(included)
+    # 원장 **전체**를 넘긴다 — round_trips가 이식 정리 행을 시대 경계로 쓴다
+    # (_strategy_stats docstring 참고).
+    strategies = _strategy_stats(trades, strategies_cfg)
 
     # period 는 두 곡선(아시아/미국)을 합쳐 하나의 요약이어야 한다 — 시장이
     # 다른 날 각자 장이 서므로 union of dates. 2026-09-02 실측 결함(이식 후
@@ -621,6 +725,18 @@ def build_performance_payload(
         "sessions": len(all_dates),
         "total_fills": sum(r["fills"] for r in asia_rows) + sum(r["fills"] for r in us_rows),
     }
+    # 스코프 명시 — period/곡선과 strategies 표가 서로 다른 구간을 보고 있다는
+    # 사실을 JSON 자신이 말한다(위 함수 docstring 참고).
+    if boundary_ts is not None:
+        period["scope"] = "real_seeded"
+        period["note"] = "실계좌 이식 이후"
+        period["note_en"] = "Since real-account transplant"
+    else:
+        period["scope"] = "paper"
+        period["note"] = "모의 운용 전체 구간(실계좌 이식 이전)"
+        period["note_en"] = "Entire paper-trading period (before the real-account transplant)"
+
+    strategy_trips = sum(s["total"]["trips"] for s in strategies)
 
     return {
         "generated_at": now.isoformat(timespec="seconds"),
@@ -632,6 +748,18 @@ def build_performance_payload(
         "equity_us": equity_us,
         "prior_paper": prior_paper,
         "strategies": strategies,
+        "strategies_scope": "lifetime",
+        # 2026-09-02: 히어로의 "지금 가동 N개"는 settings 기준이어야 한다 —
+        # strategies[].enabled 만 세면 왕복 기록이 아직 없는 활성 전략이 빠진다.
+        "enabled_count": sum(
+            1 for v in (strategies_cfg or {}).values() if (v or {}).get("enabled")
+        ),
+        "strategies_note": (
+            f"전략 통계는 모의 시대 포함 누적 {strategy_trips}왕복"
+        ),
+        "strategies_note_en": (
+            f"Strategy stats are lifetime incl. paper era, {strategy_trips} round trips"
+        ),
         "excluded": _excluded_summary(excluded),
-        "costs": _costs(execution_cfg),
+        "costs": _costs(execution_cfg, _fee_drag_pct_of_gross(curve_rows)),
     }

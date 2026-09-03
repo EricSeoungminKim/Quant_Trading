@@ -40,9 +40,15 @@ from __future__ import annotations
 import statistics as st
 from typing import Callable
 
-# 왕복 비용(bp) 기본값 — 2026-08-21 원장 실측 평균(수수료 17.9~22.7bp).
-# 재생 결과에서 이 값을 빼 순bp로 비교한다. 호출부가 설정값으로 덮을 수 있다.
-DEFAULT_ROUND_TRIP_BP = 20.0
+from quant.control.cost_model import FALLBACK_ROUND_TRIP_BP
+
+# 왕복 비용(bp) 기본값. 재생 결과에서 이 값을 빼 순bp로 비교한다. 호출부가
+# 설정값으로 덮을 수 있다.
+#
+# 2026-09-02: 여기 20.0을 따로 적어 두는 대신 `cost_model`의 설정 유도값을
+# 그대로 쓴다 — 같은 원장을 읽는 세 리포트(부검·비용모델·공개 성과)가 서로 다른
+# 왕복 비용으로 "엣지가 남았나"를 판정하고 있었다(cost_model 상단 주석 참고).
+DEFAULT_ROUND_TRIP_BP = FALLBACK_ROUND_TRIP_BP
 
 
 def _pct_bp(now: float, base: float) -> float:

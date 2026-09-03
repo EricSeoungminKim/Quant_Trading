@@ -214,7 +214,23 @@ class HistoryDataFeed:
                     visible = visible.iloc[:-1]
                 return visible.tail(n)
             minutes = _interval_minutes(interval)
-            return resample_1m(visible, minutes).tail(n)
+            # **보이는 구간 전체를 리샘플하지 않는다.** 필요한 것은 마지막 n봉뿐이고,
+            # 그 n봉을 만드는 데 필요한 1분봉은 많아야 (n+2)x minutes 개다(+2 는
+            # 앞쪽 부분 버킷과 resample_1m 이 항상 버리는 마지막 미완성 버킷의 여유).
+            # 버킷 경계는 벽시계로 정해지므로 앞을 잘라도 남는 버킷의 내용은
+            # 동일하다 — 즉 이 슬라이스는 **결과를 바꾸지 않는다**.
+            #
+            # 왜 필요한가(2026-09-03 실측): 다년치 1분봉 레이크(심볼당 100만 행)에서
+            # 이 함수는 사이클마다 O(보이는 전체 행) 을 리샘플한다. 리플레이가
+            # 진행될수록 `visible` 이 100만 행까지 자라 사이클 하나가 수백 ms 가
+            # 되고, 40거래일 x 4심볼 창 하나가 몇 분씩 걸려 walk-forward 자체가
+            # 불가능해졌다. 잘라내면 상수 시간이 된다.
+            #
+            # 갭(야간·점심 휴장)이 있으면 같은 행 수가 **더 많은** 버킷에 걸리므로
+            # 항상 n 개 이상이 나온다 — 모자랄 위험은 없다.
+            need = (n + 2) * minutes
+            window = visible.iloc[-need:] if len(visible) > need else visible
+            return resample_1m(window, minutes).tail(n)
 
         # 1분봉이 없는 심볼 — native 저장소에서 요청한 interval과 정확히 일치하는
         # 것만 서빙한다. 다른 native interval을 리샘플/업샘플하지 않는다.

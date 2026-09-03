@@ -105,7 +105,11 @@ def test_run_walkforward_produces_one_fold_per_window(monkeypatch):
             self.benchmark = {}
             self.strategy_errors = {}
 
-    def _fake_run_backtest(strategy_id, days, interval, source, settings_path, end, symbols):
+    # **kwargs: run_backtest 에 인자가 늘어도(history_dir 등) 이 가짜가 배선
+    # 테스트를 깨뜨리지 않게 한다 — 여기서 보는 계약은 창(days/end) 계산이지
+    # 시그니처가 아니다.
+    def _fake_run_backtest(strategy_id, days, interval, source, settings_path, end,
+                           symbols, **kwargs):
         calls.append({"days": days, "end": end})
         return _FakeResult()
 
@@ -134,7 +138,8 @@ def test_run_walkforward_is_deterministic_given_fixed_anchor(monkeypatch):
             self.benchmark = {}
             self.strategy_errors = {}
 
-    def _fake_run_backtest(strategy_id, days, interval, source, settings_path, end, symbols):
+    def _fake_run_backtest(strategy_id, days, interval, source, settings_path, end,
+                           symbols, **kwargs):
         return _FakeResult()
 
     monkeypatch.setattr(wf_mod, "run_backtest", _fake_run_backtest)

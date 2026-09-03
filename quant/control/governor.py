@@ -154,7 +154,22 @@ ALLOWED_KILL_SWITCH: dict[str, int] = {
     "strategies.gap_fade.enabled": 5,
     "strategies.rsi2_dip.enabled": 5,
     "strategies.llm_trader.enabled": 5,
+    # A/B 갈래(2026-09-03, `<id>_cat`). 촉매 갈래도 죽으면 꺼야 한다 — 다만
+    # scalp_1m 계열은 아래처럼 통째로 뺀다(보호 상속).
+    "strategies.pullback_impulse_cat.enabled": 5,
+    "strategies.vol_breakout_cat.enabled": 5,
+    "strategies.news_scalp.enabled": 5,      # 2026-09-03 재활성 — 이제 끌 대상이 있다
+    # 문헌 기반 일중 3종(2026-09-03). 지금은 enabled: false 라 끌 것이 없지만,
+    # 번인으로 켜지는 순간 사망 판정 자동 비활성 경로가 함께 살아 있어야 한다 —
+    # 켤 때 이 표를 같이 고치는 것을 잊는 쪽이 훨씬 위험하다.
+    "strategies.orb_rvol.enabled": 5,
+    "strategies.eod_reversal.enabled": 5,
+    "strategies.open_reversal.enabled": 5,
     # strategies.scalp_1m.enabled — 의도적으로 뺐다(보호 목록, 위 설명).
+    # strategies.scalp_1m_cat.enabled — 같은 이유로 뺐다(2026-09-03): `_cat` 은
+    # 같은 클래스의 다른 유니버스 갈래라 보호를 **상속**한다. 한쪽만 자동으로
+    # 꺼지면 남은 갈래가 계속 돌아 A/B 비교 자체가 무의미해진다
+    # (`quant.apps.cli.cmd_governor_apply` 가 base_strategy_id 로 판정한다).
 }
 
 # 자동 반영이 절대 닿으면 안 되는 이름. ALLOWED 화이트리스트만으로도 막히지만,

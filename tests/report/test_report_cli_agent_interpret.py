@@ -384,6 +384,19 @@ def test_record_agent_interpret_selections_writes_direction_and_confidence(tmp_p
     assert row["close"] == 71_000.0
 
 
+def test_record_agent_interpret_selections_writes_close_date_from_payload(tmp_path):
+    """render.py 가 payload["symbols"] 항목에 실은 date(quote 의 실제 거래일,
+    D2 2026-09-03)가 close_date 로 그대로 옮겨진다."""
+    payload = _payload(symbols=[
+        {"symbol": "005930", "name": "삼성전자", "close": 71_000.0, "change_pct": 1.2,
+         "date": "2026-08-14"},
+    ])
+    report_cli._record_agent_interpret_selections([_view_item()], payload, tmp_path)
+
+    rows = selections.load(tmp_path / "data" / "ledger" / "selections.jsonl")
+    assert rows[0]["close_date"] == "2026-08-14"
+
+
 def test_record_agent_interpret_selections_records_even_when_direction_is_none(tmp_path):
     """JUDGMENT 파싱 실패(direction=None)여도 산문 생성 성공은 그대로 기록한다
     (사용자 결정 2026-08-17: "전부 기록하되 direction·confidence를 payload에 싣는다")."""

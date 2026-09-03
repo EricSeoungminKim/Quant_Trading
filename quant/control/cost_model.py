@@ -39,12 +39,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from quant.control.forensics import DEFAULT_ROUND_TRIP_BP
 from quant.control.ledger import DUST_NOTIONAL_KRW, DUST_NOTIONAL_USD
 
 __all__ = [
     "ASSUMED_ROUND_TRIP_BP",
+    "DEFAULT_EXECUTION_CFG",
     "FALLBACK_ROUND_TRIP_BP",
+    "round_trip_bp_from_settings",
     "MAX_SPREAD_SAMPLE_GAP_SECONDS",
     "MIN_LEGS_FOR_SLIPPAGE",
     "MIN_TRIPS_FOR_FEE",
@@ -57,9 +58,57 @@ __all__ = [
     "measure",
 ]
 
-# 실측이 없을 때 호출부가 쓸 값 — forensics의 상수를 그대로 재수출한다.
-# 20bp를 두 번 적는 순간 둘은 반드시 갈라진다.
-FALLBACK_ROUND_TRIP_BP = DEFAULT_ROUND_TRIP_BP
+# ── 왕복 비용 가정의 단일 출처 (2026-09-02) ────────────────────────────────
+#
+# 이 저장소엔 왕복 비용 표가 **세 개** 있었고 셋 다 달랐다:
+#   cost_model.ASSUMED_ROUND_TRIP_BP  US 26 / KR ETF 4 / KR 개별주 30
+#   forensics.DEFAULT_ROUND_TRIP_BP   20 (시장 무관 단일값)
+#   performance._costs                설정 유도 US 20 / KR ETF 3 / KR 개별주 23
+# 같은 원장을 읽는 세 리포트가 서로 다른 비용으로 "엣지가 남았나"를 판정하고
+# 있었다는 뜻이다. 이제 셋 다 아래 helper 하나에서 유도한다.
+#
+# **의미가 바뀐 점을 밝힌다**: 이전 ASSUMED 값(26/4/30)은 전략 docstring 들이
+# 인용해 온 "수수료 + 스프레드" 체감치였고, 여기 값은 `execution` 설정에서
+# 유도한 **수수료·세금만**이다(스프레드 미포함, 하한). daily_wrap 6절이
+# 실측(수수료+스프레드)과 대조하면 스프레드가 있는 한 "낙관" 쪽으로 나오는 게
+# 정상이다 — 그게 사실이다.
+
+
+def round_trip_bp_from_settings(execution_cfg: dict) -> dict[str, float]:
+    """`config/settings.yaml`의 `execution` 블록 → 왕복(편도×2) 비용 bp 표.
+
+    반환 키는 `{"US", "KR_ETF", "KR_STOCK"}`. `fee_bps`는 숫자 하나(전 시장
+    공통, 하위호환)이거나 `{US: .., KR: ..}` dict 다 — `PaperBroker`가 읽는
+    형식 그대로다. KR 개별주만 매도 거래세(`kr_stock_sell_tax_bps`)가 편도
+    1회 더 붙는다. 실측(`measure()`)이 아니라 **설정상 가정치**이며,
+    스프레드는 포함하지 않는다."""
+    fee_bps = execution_cfg.get("fee_bps", 0.0)
+    if isinstance(fee_bps, dict):
+        kr_fee = float(fee_bps.get("KR", 0.0))
+        us_fee = float(fee_bps.get("US", 0.0))
+    else:
+        kr_fee = us_fee = float(fee_bps or 0.0)
+    kr_sell_tax = float(execution_cfg.get("kr_stock_sell_tax_bps", 0.0))
+    return {
+        "US": round(us_fee * 2, 2),
+        "KR_ETF": round(kr_fee * 2, 2),
+        "KR_STOCK": round(kr_fee * 2 + kr_sell_tax, 2),
+    }
+
+
+# 설정을 못 읽는 호출부(순수 계산 모듈·오프라인 리포트)를 위한 기본값. 이 모듈은
+# 파일 I/O를 하지 않는다는 계약(모듈 docstring)을 지키기 위해 `config/settings.yaml`
+# 2026-09-02 실측값을 그대로 적어 두고 **같은 helper 로** 유도한다 — 설정이 바뀌면
+# 호출부가 `round_trip_bp_from_settings(settings.execution)`을 넘기면 된다.
+DEFAULT_EXECUTION_CFG: dict = {"fee_bps": {"US": 10.0, "KR": 1.5}, "kr_stock_sell_tax_bps": 20.0}
+
+# 전략 docstring·daily_wrap 6절이 대조 기준으로 쓰는 왕복 비용 가정(bp).
+ASSUMED_ROUND_TRIP_BP: dict[str, float] = round_trip_bp_from_settings(DEFAULT_EXECUTION_CFG)
+
+# 실측이 없을 때 호출부가 쓸 시장 무관 단일값 — US 왕복과 같은 값이다.
+# 20bp를 두 번 적는 순간 둘은 반드시 갈라진다(`forensics.DEFAULT_ROUND_TRIP_BP`가
+# 이 값을 임포트한다).
+FALLBACK_ROUND_TRIP_BP = ASSUMED_ROUND_TRIP_BP["US"]
 
 # 수수료는 거의 정률이다(2026-08-15 실측: US 명목 $201~$1,411 전 구간에서
 # 19.85~20.56bp). 분산이 작으므로 승률 판정선(30건)만큼 필요하지 않다 —
@@ -230,9 +279,9 @@ def effective_round_trip_bp(cost: RoundTripCost | None) -> tuple[float, str]:
 # 않는다(지어내지 않는다).
 MAX_SPREAD_SAMPLE_GAP_SECONDS = 900
 
-# 전략 docstring들이 실측으로 인용해 온 왕복 비용 가정(bp) — daily_wrap
-# "체결 비용" 절의 대조 기준값. 여기 한 곳에 모아 그 인용들과 어긋나지 않게 한다.
-ASSUMED_ROUND_TRIP_BP: dict[str, float] = {"US": 26.0, "KR_ETF": 4.0, "KR_STOCK": 30.0}
+# daily_wrap "체결 비용" 절의 대조 기준값은 이 파일 상단의 `ASSUMED_ROUND_TRIP_BP`
+# 하나뿐이다(2026-09-02 통합) — 설정에서 유도한 수수료·세금 기준이고 스프레드는
+# 포함하지 않는다.
 
 
 def _nearest_spread_bp(rows: list[dict], ts: object, max_gap_seconds: float) -> float | None:

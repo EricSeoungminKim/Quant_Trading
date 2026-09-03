@@ -573,6 +573,23 @@ def test_records_row_with_intraday_scorer_producer(tmp_path):
     assert row["close"] == 71_000.0  # payload["symbols"] 의 close 재사용
 
 
+def test_records_close_date_from_payload_symbols_date(tmp_path):
+    """render.py 가 payload["symbols"] 항목에 실은 date(quote 의 실제 거래일,
+    D2 2026-09-03)가 close_date 로 그대로 옮겨진다 — outcomes.base_session_date
+    가 이 값을 기준 세션으로 쓴다."""
+    payload = _payload(symbols=[
+        {"symbol": "005930", "name": "삼성전자", "news_articles_today": 5,
+         "trending_score100": 80, "close": 71_000.0, "change_pct": 1.2,
+         "date": "2026-08-14"},
+        {"symbol": "000660", "name": "SK하이닉스", "news_articles_today": 0,
+         "close": 200_000.0, "change_pct": -0.5},
+    ])
+    _record_intraday_selections([_view_item()], payload, tmp_path)
+
+    rows = selections.load(tmp_path / "data" / "ledger" / "selections.jsonl")
+    assert rows[0]["close_date"] == "2026-08-14"
+
+
 def test_records_flat_factor_points(tmp_path, monkeypatch):
     captured: list = []
 

@@ -1,0 +1,12 @@
+# 텔레그램 채널 30분마다 수집 — news-collect-{kr,us}.timer 와 같은 주기.
+[Unit]
+Description=Telegram channel collector timer
+
+[Timer]
+OnCalendar=*:00/30
+Persistent=false
+RandomizedDelaySec=120
+Unit=telegram-collect.service
+
+[Install]
+WantedBy=timers.target

@@ -88,6 +88,7 @@ def cmd_walkforward(args: argparse.Namespace) -> None:
     folds = run_walkforward(
         strategy_id=args.strategy, total_days=args.days, window_days=args.window,
         step_days=args.step, interval=args.interval, source=args.source, symbols=symbols,
+        history_dir=getattr(args, "history_dir", None),
     )
     out = {
         "strategy": args.strategy, "source": args.source, "interval": args.interval,
@@ -120,14 +121,16 @@ def cmd_strategy_report(args: argparse.Namespace) -> None:
     from quant.control.warehouse import read_jsonl
 
     symbols = args.symbols.split() if args.symbols else None
+    history_dir = getattr(args, "history_dir", None)
     result = run_backtest(
         strategy_id=args.strategy, days=args.days, interval=args.interval,
-        source=args.source, symbols=symbols,
+        source=args.source, symbols=symbols, history_dir=history_dir,
     )
     fit = evaluate(result)
     folds = run_walkforward(
         strategy_id=args.strategy, total_days=args.total_days, window_days=args.window,
         step_days=args.step, interval=args.interval, source=args.source, symbols=symbols,
+        history_dir=history_dir,
     )
 
     # 비용은 **원장 실측**이 우선이다. 이 전략의 트립이 모자라면 cost_model이
@@ -148,6 +151,163 @@ def cmd_strategy_report(args: argparse.Namespace) -> None:
         window_days=args.window, step_days=args.step, n_trials=args.trials,
         cost_bp=cost_bp, cost_label=cost_label,
     ))
+
+
+def _render_gate_analytics_text(analytics: dict) -> str:
+    """analyze_trades() 출력 → CLI용 텍스트. strategy_report.report_text의 §4
+    형식을 보완하는 자리라 그 톤(빈칸을 숫자로 채우지 않는다)을 그대로 따른다."""
+    lines = ["📐 트레이드 다차원 분석", ""]
+    if not analytics.get("judgeable"):
+        lines.append(analytics.get("note", "판단 불가"))
+        return "\n".join(lines)
+
+    ci_lo, ci_hi = analytics["win_rate_ci"]
+    lines.append(
+        f"승률 {analytics['win_rate']:.1%} (95% CI {ci_lo:.1%}~{ci_hi:.1%}) · "
+        f"payoff {analytics['payoff_ratio']} · profit factor {analytics['profit_factor']} · "
+        f"기대값 {analytics['expectancy_bp']:+.2f}bp"
+    )
+    st = analytics["streaks"]
+    ew = st["expected_max_win_streak"]
+    el = st["expected_max_loss_streak"]
+    lines.append(
+        f"연승/연패 최대 {st['max_consecutive_wins']}/{st['max_consecutive_losses']} "
+        f"(독립가정 기대치 {ew:.1f}/{el:.1f})"
+    )
+    cs = analytics["cost_sensitivity"]
+    lines.append(f"비용 민감도(bp): 1x {cs['1x']:+.2f} · 1.5x {cs['1.5x']:+.2f} · 2x {cs['2x']:+.2f}")
+    mc = analytics["monte_carlo_max_dd"]
+    lines.append(
+        f"몬테카를로 최대낙폭(순서 셔플, seed={mc['seed']}, n={mc['n_iters']}): "
+        f"평균 {mc['max_dd_bp_mean']:.1f}bp · p95 {mc['max_dd_bp_p95']:.1f}bp"
+    )
+    eq = analytics["equity_curve"]
+    lines.append(
+        f"트레이드 곡선 MDD {eq['mdd_bp']:.1f}bp · 회복 {eq['recovery_days']}일 · "
+        f"underwater {eq['time_under_water_pct']}%"
+    )
+    lines.append(f"({analytics['mfe_mae']['note']})")
+
+    def _fmt_bucket(title: str, bucket: dict) -> str:
+        parts = ", ".join(
+            f"{k}:{v['n']}건/{v['expectancy_bp']:+.1f}bp" for k, v in sorted(bucket.items())
+        )
+        return f"{title}: {parts}" if parts else f"{title}: (없음)"
+
+    lines.append(_fmt_bucket("시간대별(현지)", analytics["by_hour_of_day"]))
+    lines.append(_fmt_bucket("요일별", analytics["by_day_of_week"]))
+    lines.append(_fmt_bucket("종목별", analytics["by_symbol"]))
+    lines.append(_fmt_bucket("보유시간별", analytics["by_holding_bucket"]))
+    lines.append(_fmt_bucket("청산사유별", analytics["by_exit_reason"]))
+    return "\n".join(lines)
+
+
+def cmd_backtest_gate(args: argparse.Namespace) -> None:
+    """배포 게이트 — §4 리포트 + 트레이드 다차원 분석 + go/no-go/판단 불가 판정을
+    한 번에 낸다.
+
+    인샘플 백테스트(`--days`)는 트레이드 단위 분석(시간대·보유시간·청산사유 등)의
+    재료이고, walk-forward(`--total-days`/`--window`/`--step`)는 게이트의 OOS
+    판정 재료다 — 같은 `--strategy`/`--source`/`--symbols`로 둘 다 돌려야 판정이
+    의미가 있다.
+
+    `run_walkforward`은 다른 작업자가 동시에 수정 중이라 키워드 인자로만 호출하고,
+    `history_dir` 파라미터가 있는지 `inspect.signature`로 확인한 뒤에만 넘긴다 —
+    시그니처가 바뀌어도 위치인자 순서 어긋남으로 조용히 틀리지 않게 하기 위함.
+
+    실데이터가 없으면(`--source history`) `run_backtest`/`run_walkforward`이 던지는
+    `ValueError`를 사람이 읽는 메시지로 바꿔 비정상 종료한다(exit 1) — stub으로
+    조용히 대체하지 않는다.
+    """
+    import inspect
+    import json as _json
+    import sys as _sys
+    from datetime import datetime
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.backtest.analytics import analyze_trades
+    from quant.backtest.fitness import evaluate
+    from quant.backtest.gate import evaluate_gate, render_gate
+    from quant.backtest.strategy_report import report_text
+    from quant.backtest.walkforward import run_walkforward, stability_summary
+    from quant.control.cost_model import by_strategy, effective_round_trip_bp
+    from quant.control.ledger import load_trades, round_trips
+    from quant.control.tca import join_intents_fills, slippage_bps
+    from quant.control.warehouse import read_jsonl
+    from quant.core.models import market_of_symbol
+
+    symbols = args.symbols.split() if args.symbols else None
+    history_dir = getattr(args, "history_dir", None)
+
+    try:
+        result = run_backtest(
+            strategy_id=args.strategy, days=args.days, interval=args.interval,
+            source=args.source, symbols=symbols, history_dir=history_dir,
+        )
+    except ValueError as e:
+        print(f"오류: {e}", file=_sys.stderr)
+        raise SystemExit(1)
+
+    wf_kwargs = dict(
+        strategy_id=args.strategy, total_days=args.total_days, window_days=args.window,
+        step_days=args.step, interval=args.interval, source=args.source, symbols=symbols,
+    )
+    wf_params = inspect.signature(run_walkforward).parameters
+    if "history_dir" in wf_params and history_dir is not None:
+        wf_kwargs["history_dir"] = history_dir
+    try:
+        folds = run_walkforward(**wf_kwargs)
+    except ValueError as e:
+        print(f"오류: {e}", file=_sys.stderr)
+        raise SystemExit(1)
+    stability = stability_summary(folds)
+
+    fit = evaluate(result)
+
+    raw_trades = load_trades(ledger_state_path())
+    trips = round_trips(raw_trades)
+    intents = read_jsonl(REPO_ROOT / "data" / "state" / "order_intents.jsonl")
+    slips = slippage_bps(join_intents_fills(intents, raw_trades))
+    cost = by_strategy(trips, slips).get(args.strategy)
+    cost_bp, cost_label = effective_round_trip_bp(cost)
+
+    universe_symbols = symbols or (
+        sorted(result.trades["symbol"].unique().tolist()) if not result.trades.empty else []
+    )
+    inferred_markets = sorted({market_of_symbol(s) for s in universe_symbols}) or ["US"]
+    market = inferred_markets[0]
+    if len(inferred_markets) > 1:
+        print(f"※ 혼합 시장 유니버스({inferred_markets}) — 시간대 분석은 {market} 기준으로 계산")
+
+    analytics = analyze_trades(result.trades, market=market, cost_bp=cost_bp)
+    gate = evaluate_gate(folds, analytics, trials=args.trials, cost_bp=cost_bp, market=market)
+
+    print(report_text(
+        result, fit, folds, stability,
+        strategy=args.strategy, source=args.source, interval=args.interval,
+        window_days=args.window, step_days=args.step, n_trials=args.trials,
+        cost_bp=cost_bp, cost_label=cost_label,
+    ))
+    print()
+    print(_render_gate_analytics_text(analytics))
+    print()
+    print(render_gate(gate))
+
+    out_dir = Path("data") / "backtest"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"gate_{args.strategy}_{datetime.now().strftime('%Y%m%d')}.json"
+    out_path.write_text(_json.dumps({
+        "strategy": args.strategy, "source": args.source, "interval": args.interval,
+        "generated_at": datetime.now().isoformat(),
+        "backtest_metrics": result.metrics,
+        "fitness": fit.to_dict(),
+        "walkforward_folds": folds,
+        "stability": stability,
+        "analytics": analytics,
+        "gate": gate,
+    }, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    print(f"\n작성됨: {out_path}")
 
 
 def cmd_kelly(args: argparse.Namespace) -> None:
@@ -174,7 +334,7 @@ def cmd_backtest(args: argparse.Namespace) -> None:
     symbols = args.symbols.split() if args.symbols else None
     result = run_backtest(
         strategy_id=args.strategy, days=args.days, interval=args.interval, source=args.source,
-        symbols=symbols,
+        symbols=symbols, history_dir=getattr(args, "history_dir", None),
     )
     print(f"\n=== Backtest: {args.strategy} ({args.days}d, {args.interval}, {args.source}) ===")
     for key, value in result.metrics.items():
@@ -247,8 +407,14 @@ def cmd_paper(args: argparse.Namespace) -> None:
         MeanReversionStrategy가 매 세션 롤마다 leverage_of=None으로 재조립돼
         레버리지 금지 게이트가 첫 세션 이후로 조용히 꺼지는 회귀가 생긴다."""
         held = [sym for sym, pos in rt.ctx.broker.positions().items() if pos.is_open]
+        # `_held_symbols`(2026-09-03): `universe_filter`(A/B 분할)가 보유 종목을
+        # 버리지 않게 하는 경로. rebuild_strategies 는 held 를 심볼 목록에
+        # **합치기만** 하고 build_strategies 로 전달하지 않아, 필터 단계에서는
+        # 어느 것이 보유분인지 알 수 없다 — cfg 에 실어 보낸다(build_strategies
+        # docstring 참고, rebuild_strategies 가 `{**cfg, ...}`로 통과시킨다).
         strategies, _markets, _active = rebuild_strategies(
-            settings.raw, rt.universe, held_symbols=held, leverage_of=rt.leverage_of,
+            {**settings.raw, "_held_symbols": held}, rt.universe,
+            held_symbols=held, leverage_of=rt.leverage_of,
         )
         rt.risk.market_of.update(_markets)
         return strategies
@@ -270,11 +436,16 @@ def cmd_fetch(args: argparse.Namespace) -> None:
     data/history/{symbol}/{interval}/{YYYY}/{MM}.parquet(1분봉이 아닌 native interval)."""
     load_settings()  # .env/.env.local 로드
     from datetime import datetime
+    from pathlib import Path
 
     from quant.collect.quotes.backfill import DEFAULT_HISTORY_DIR, backfill
 
     start = datetime.fromisoformat(args.start)
     end = datetime.fromisoformat(args.end) if args.end else datetime.now()
+    # 파티션 루트. 기본값은 이 저장소의 data/history — 별도 데이터 레이크로 받으려면
+    # --history-dir 로 지정한다(레이아웃은 동일하므로 --source history 백테스트가
+    # 같은 --history-dir 로 그대로 읽는다).
+    history_dir = getattr(args, "history_dir", None) or DEFAULT_HISTORY_DIR
 
     if args.source == "toss":
         if args.interval not in ("1m", "1d"):
@@ -289,12 +460,16 @@ def cmd_fetch(args: argparse.Namespace) -> None:
             mode="paper",
         )
         source = TossCandleSource(client)
-        report = backfill(args.symbol, source, start, end, interval=args.interval)
+        report = backfill(
+            args.symbol, source, start, end, interval=args.interval, history_dir=history_dir,
+        )
     elif args.source == "yfinance":
         from quant.collect.quotes.yf_source import YFinanceCandleSource
 
         source = YFinanceCandleSource(args.interval)
-        report = backfill(args.symbol, source, start, end, interval=args.interval)
+        report = backfill(
+            args.symbol, source, start, end, interval=args.interval, history_dir=history_dir,
+        )
     elif args.source == "alpaca":
         from quant.collect.quotes.alpaca_source import AlpacaCandleSource
 
@@ -304,7 +479,9 @@ def cmd_fetch(args: argparse.Namespace) -> None:
         # 동작(regular_session_only=True) 그대로 유지한다.
         regular_session_only = args.interval != "1d"
         source = AlpacaCandleSource(args.interval, regular_session_only=regular_session_only)
-        report = backfill(args.symbol, source, start, end, interval=args.interval)
+        report = backfill(
+            args.symbol, source, start, end, interval=args.interval, history_dir=history_dir,
+        )
     else:
         raise ValueError(f"지원하지 않는 데이터 소스: {args.source}")
 
@@ -315,7 +492,7 @@ def cmd_fetch(args: argparse.Namespace) -> None:
     print(f"missing weekday sessions: {len(report.gaps)}")
     for g in report.gaps[:20]:
         print(f"  - {g}")
-    print(f"written to: {DEFAULT_HISTORY_DIR / args.symbol}/")
+    print(f"written to: {Path(history_dir) / args.symbol}/")
 
 
 def cmd_naver_fundamentals(args: argparse.Namespace) -> None:
@@ -580,10 +757,44 @@ def cmd_watch_score(args: argparse.Namespace) -> None:
         except Exception as e:  # noqa: BLE001 — 매크로 판정 실패가 채점을 막지 않는다
             logger.warning("watch-score: 자금 흐름 섹터 기울기 생략: %s", e)
 
+        # 주도 섹터(2026-09-03 소유자 철학 지시 B) — sector_daily.jsonl 최신일
+        # 순위+외국인 수급으로 KR 증거점수 보너스/페널티(watch_scorer.
+        # sector_daily_adjustment). 원장은 report_cli(08:00 아침 리포트 빌드)가
+        # 이미 적재해 둔다 — 여기서는 읽기만 한다. 원장이 아직 없으면(리포트가
+        # 한 번도 못 만들었거나 US만 도는 상황) 조용히 0 처리한다(§C).
+        sector_daily_ctx = None
+        sd_path = REPO_ROOT / "data" / "ledger" / "sector_daily.jsonl"
+        if sd_path.exists():
+            try:
+                sd_rows = []
+                for line in sd_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(row, dict) and row.get("date") and row.get("sector"):
+                        sd_rows.append(row)
+                if sd_rows:
+                    from quant.analyze.sector_daily import rank_with_trend, scoring_context
+                    sd_dates = sorted({r["date"] for r in sd_rows})
+                    sd_latest = sd_dates[-1]
+                    sd_today_rows = [r for r in sd_rows if r["date"] == sd_latest]
+                    sd_history_rows = [r for r in sd_rows if r["date"] in sd_dates[-6:-1]]
+                    sd_ranked = rank_with_trend(sd_today_rows, sd_history_rows)
+                    sector_daily_ctx = scoring_context(sd_ranked)
+            except Exception as e:  # noqa: BLE001 — 주도 섹터 컨텍스트 실패가 채점을 막지 않는다
+                logger.warning("watch-score: 주도 섹터 컨텍스트 생략: %s", e)
+        if sector_daily_ctx is None:
+            logger.info("watch-score: 주도 섹터 데이터 없음 — 보너스 0")
+
         results = run_watch_score(
             tokens, client, threshold, regime_label, enabled=True, kiwoom_client=kiwoom_client,
             allow_kr_stocks=auto_score_cfg.get("allow_kr_stocks", False),
             sector_map=sector_map, sector_tilt=sector_tilt,
+            sector_daily_ctx=sector_daily_ctx,
         )
 
     # 세분화 출력(2026-08-10 사용자 요청): 항목별 득점/만점 → 총점 → 임계값 구성.
@@ -614,6 +825,16 @@ def cmd_watch_score(args: argparse.Namespace) -> None:
             # "EVENT 프로필로 가장 높은 점수가 나왔다"를 뜻하지 않는다).
             token = r.symbol + (":" + "+".join(r.tags) if r.tags else "")
             passing.append(token)
+
+    # 시총 게이트 탈락 요약(2026-09-03 소유자 철학 지시 A) — 미확인("시총
+    # 미확인")과 미달("시총 <3,000억")을 한 줄로 합산해 own_brief.sh 로그에서
+    # 그날 몇 건이 시총 때문에 빠졌는지 바로 보이게 한다.
+    cap_rejected = sum(
+        1 for r in results
+        if any(reason.startswith("시총 미확인") or reason.startswith("시총 <") for reason in r.reasons)
+    )
+    if cap_rejected:
+        print(f"시총 <3,000억 탈락 {cap_rejected}건")
 
     print(f"PASS: {' '.join(passing) if passing else '없음'}")
 
@@ -656,6 +877,43 @@ def _news_scalp_verdict_line() -> str:
     return f"갈래 A(news_scalp) 승격 판정: {verdict['reason']}"
 
 
+def _ab_arm_line(label: str, arm_id: str, arm: dict, market: str | None) -> str:
+    """A/B 한 갈래 한 줄. 숫자가 없는 칸은 만들어 내지 않고 "-" 로 둔다."""
+    wr = "     -" if arm["win_rate"] is None else f"{arm['win_rate'] * 100:5.0f}%"
+    ci = ("" if arm["win_rate"] is None
+          else f" (CI {arm['win_ci'][0] * 100:.0f}~{arm['win_ci'][1] * 100:.0f}%)")
+    exp = ("        -" if arm["expectancy_bp"] is None
+           else f"{arm['expectancy_bp']:+7.1f}bp")
+    money = ("" if market is None
+             else " · 순손익 " + (f"{arm['net_pnl']:,.0f}원" if market == "KR"
+                                else f"${arm['net_pnl']:,.2f}"))
+    return (f"  {label} {arm_id:<20} n={arm['n']:>4} · 승률 {wr}{ci}"
+            f" · 기대값 {exp}{money}")
+
+
+def _ab_report_lines(rows: list[dict]) -> list[str]:
+    """`ledger.ab_compare` 결과 → 사람이 읽는 줄들. **계산은 하지 않는다**
+    (수치는 전부 ledger 가 만든 것 그대로 — 포맷만 여기 있다)."""
+    if not rows:
+        return ["🧪 A/B 갈래 비교: 설정에 `<id>`/`<id>_cat` 쌍이 없다"]
+    out = ["🧪 A/B 갈래 비교 — 촉매 태그(KR=외국인 수급 FRGN / US=뉴스 EVENT+추세 TREND)"
+           " 유무로 갈라 놓은 같은 전략. 양쪽 n>=30 전에는 판단하지 않는다"]
+    for r in rows:
+        market = r["market"]
+        out.append(f"[{r['base']} · {market or '표본 없음'}]")
+        out.append(_ab_arm_line("기준", r["base"], r["baseline"], market))
+        out.append(_ab_arm_line("촉매", r["catalyst_id"], r["catalyst"], market))
+        if not r["judgeable"]:
+            out.append(f"  → {r['reason']}")
+            continue
+        lo, hi = r["delta_ci"]
+        out.append(
+            f"  → 차이(촉매-기준) {r['delta_expectancy_bp']:+.1f}bp"
+            f" (95% CI {lo:+.1f}~{hi:+.1f}) · 순열검정 p={r['p_value']:.3f}"
+        )
+    return out
+
+
 def cmd_scoreboard(args: argparse.Namespace) -> None:
     """누적 거래 원장(data/state/trades.jsonl) → 전략별·종목별 스코어보드.
 
@@ -669,11 +927,11 @@ def cmd_scoreboard(args: argparse.Namespace) -> None:
     from pathlib import Path
 
     from quant.control.ledger import (
-        filter_recent, frgn_accumulate_promotion_verdict, load_trades, round_trips,
-        scoreboard_text,
+        ab_compare, ab_pairs_from_config, filter_recent,
+        frgn_accumulate_promotion_verdict, load_trades, round_trips, scoreboard_text,
     )
 
-    ledger_path = ledger_state_path()
+    ledger_path = Path(args.ledger) if getattr(args, "ledger", None) else ledger_state_path()
     trades = load_trades(ledger_path)
     trips = round_trips(trades)
     title = "누적 스코어보드"
@@ -681,6 +939,14 @@ def cmd_scoreboard(args: argparse.Namespace) -> None:
         trips = filter_recent(trips, args.days)
         title = f"최근 {args.days}일 스코어보드"
     print(scoreboard_text(trips, title=title))
+
+    # A/B 갈래 비교(2026-09-03) — 기본 출력에 섞지 않는다. 스코어보드는 "전략별
+    # 성적"이고 이건 "같은 전략의 두 유니버스 중 어느 쪽이 나은가"라는 다른 질문이라,
+    # 매주 텔레그램으로 나가는 본문을 두 배로 늘리지 않고 플래그로 연다.
+    if getattr(args, "ab", False):
+        rows = ab_compare(trips, bases=ab_pairs_from_config(load_settings().raw))
+        print()
+        print("\n".join(_ab_report_lines(rows)))
 
     print()
     frgn_verdict = frgn_accumulate_promotion_verdict(trades)
@@ -1043,9 +1309,11 @@ def cmd_equity_snapshot(args: argparse.Namespace) -> None:
     # 벤치마크는 포지션이 하나도 없는 날에도 조회한다 — 그날 지수 등락은 우리가
     # 쉬었다는 사실과 무관하게 기록돼야 알파 시계열에 구멍이 안 생긴다.
     quotes: dict[str, float] = {}
+    live_usd_krw: float | None = None
     from quant.apps.assembly import MissingCredentials, build_toss_client
     try:
-        rows = build_toss_client().prices(sorted({*positions, bench_symbol}))
+        client = build_toss_client()
+        rows = client.prices(sorted({*positions, bench_symbol}))
         for row in rows or []:
             if not isinstance(row, dict) or not row.get("symbol"):
                 continue
@@ -1055,12 +1323,29 @@ def cmd_equity_snapshot(args: argparse.Namespace) -> None:
                     quotes[row["symbol"]] = float(price)
             except (TypeError, ValueError):
                 continue
+        # 환율도 같은 클라이언트로 실조회한다(cmd_strategy_pnl 과 동일 경로).
+        # 별도 try — 환율 실패가 방금 받은 시세까지 "조회 실패"로 오인되게 하지 않는다.
+        try:
+            live_usd_krw = float(client.usd_krw())
+        except Exception as e:  # noqa: BLE001 — 환율 실패는 폴백 사유일 뿐
+            print(f"환율 조회 실패 — 고정 폴백: {type(e).__name__}: {e}", file=sys.stderr)
     except (MissingCredentials, Exception) as e:  # noqa: BLE001 — 시세 실패가 곡선 점을 잃게 하지 않는다(저하 기록)
         print(f"시세 조회 실패 — 전 종목 평균단가 저하: {type(e).__name__}: {e}", file=sys.stderr)
 
-    # 환율: 전략별 장부와 같은 소스(FxProvider). 실패 시 보수 고정값 — 장부 관례.
+    # 환율: 실조회 우선, 실패 시 보수 고정값 — 장부 관례. 2026-09-02 이전엔 주석만
+    # "실조회 우선"이라 적혀 있고 코드는 항상 고정 1,500원을 썼다. US 자산이 있는
+    # 날의 총자산이 조용히 몇 % 틀어지므로 폴백을 썼으면 그 사실을 남긴다.
     from quant.core.fx import FixedFxProvider
-    fx = FixedFxProvider()
+    if live_usd_krw is not None and live_usd_krw > 0:
+        fx = FixedFxProvider(live_usd_krw)
+        fx_source = "live"
+    else:
+        fx = FixedFxProvider()
+        fx_source = f"fallback:fixed:{fx.rate:g}"
+        logger.warning(
+            "USD/KRW 실조회 실패 — 고정 폴백 환율 %s 원 사용(자본 곡선 total_krw 가 "
+            "그만큼 틀어진다, fx_source=%s)", format(fx.rate, ",.0f"), fx_source,
+        )
     from quant.core.portfolio.portfolio import to_krw
 
     degraded = []
@@ -1110,6 +1395,10 @@ def cmd_equity_snapshot(args: argparse.Namespace) -> None:
         # 2026-08-28 추가(additive) — 알파 계산의 자립을 위한 동반 기록.
         "benchmark_symbol": bench_symbol,
         "benchmark_close": None if bench_close is None else round(bench_close, 4),
+        # 2026-09-02 추가(additive) — 이 점의 KRW 환산이 실환율인지 폴백인지.
+        # 없으면(구행) 그 시절 고정 1,500원이라고 읽어야 한다.
+        "fx_source": fx_source,
+        "usd_krw": round(fx.usd_krw(), 4),
         "recorded_at": _dt.now(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds"),
     }
     out = REPO_ROOT / "data" / "ledger" / "equity_curve.jsonl"
@@ -1135,8 +1424,14 @@ def cmd_equity_snapshot(args: argparse.Namespace) -> None:
 def cmd_performance(args: argparse.Namespace) -> None:
     """자본 곡선 → 성과 요약 (gs-quant 의 econometrics 상당, `core/timeseries`).
 
-    같은 (date, market) 중복은 마지막 기록만 쓴다. 점 5개 미만이면 곡선별로
-    "표본 부족"을 출력한다 — 이 숫자로 아무것도 판단하지 마라."""
+    **하루에 점 하나다**(2026-09-02 수정). 자본 곡선 원장은 KR·US 세션 마감마다
+    행을 남기므로 같은 날짜에 두 행이 있고, 예전엔 그 둘을 각각 한 점으로 세어
+    수익률 시계열의 길이가 실제 거래일의 2배가 됐다. 그 상태로 √252 연율화를
+    하면 변동성·샤프가 √2 만큼 과소평가된다 — 같은 날짜는 **마지막 기록**만
+    쓴다(원장 관례: 재실행은 append이고 읽는 쪽이 마지막만 쓴다).
+
+    점 5개 미만이면 곡선별로 "표본 부족"을 출력한다 — 이 숫자로 아무것도
+    판단하지 마라."""
     import json as _json
     from quant.adapters.env import REPO_ROOT
     from quant.core.timeseries import performance_summary
@@ -1146,7 +1441,8 @@ def cmd_performance(args: argparse.Namespace) -> None:
         print("자본 곡선 원장 없음 — `cli equity-snapshot` 이 아직 안 돌았다")
         return
 
-    latest: dict[tuple, dict] = {}
+    # 날짜 하나당 행 하나 — 원장에 쓰인 순서상 마지막 것이 이긴다(시장 구분 없이).
+    latest: dict[str, dict] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -1155,7 +1451,9 @@ def cmd_performance(args: argparse.Namespace) -> None:
             r = _json.loads(line)
         except ValueError:
             continue
-        latest[(r.get("date"), r.get("market"))] = r
+        if not r.get("date"):
+            continue
+        latest[str(r["date"])] = r
     rows = sorted(latest.values(), key=lambda r: r["date"])
 
     def _curve(getter, name):
@@ -1528,7 +1826,8 @@ def cmd_daily_wrap(args: argparse.Namespace) -> None:
     from quant.apps.assembly import _load_kr_etf, _load_symbol_names
     from quant.control import daily_wrap as DW
     from quant.control.ledger import (
-        load_trades, round_trips, session_pnl_summary, session_window, trades_in_session,
+        ab_pairs_from_config, load_trades, round_trips, session_pnl_summary,
+        session_window, trades_in_session,
     )
     from quant.core.models import market_of_symbol
 
@@ -1541,7 +1840,8 @@ def cmd_daily_wrap(args: argparse.Namespace) -> None:
     pnl = session_pnl_summary(trades, market, on)
     session_trades = trades_in_session(trades, market, on)
     start, end = session_window(market, on)
-    trips = DW.trips_closed_between(round_trips(trades), start, end)
+    all_trips = round_trips(trades)
+    trips = DW.trips_closed_between(all_trips, start, end)
 
     try:
         portfolio = _json.loads(
@@ -1569,6 +1869,9 @@ def cmd_daily_wrap(args: argparse.Namespace) -> None:
         deferred=deferred, alpha_series=_wrap_alpha_series(root, market, on),
         spread_rows=_wrap_spread_rows(root, on),
         kr_etf=_load_kr_etf(root / "data" / "state" / "kr_etf.json"),
+        # A/B 갈래(2026-09-03)는 **누적** 트립으로 잰다 — 하루치로는 양쪽 다
+        # 30건에 한참 못 미쳐 매일 "판단 불가"만 찍힌다.
+        all_trips=all_trips, ab_bases=ab_pairs_from_config(load_settings().raw),
     )
 
     out_path = (root / "out" / f"{on.year:04d}" / f"{on.month:02d}" / f"{on.day:02d}"
@@ -1877,6 +2180,53 @@ def cmd_session_pnl(args: argparse.Namespace) -> None:
     print(f"  평가손익 합계 {_fmt(total)}{suffix}")
 
 
+def cmd_manual_recs(args: argparse.Namespace) -> None:
+    """수동 계좌 추천 (2026-09-03 소유자 결정: 자동매매는 단타·스캘핑만).
+
+    오버나이트/장기 보유가 전략 정의인 네 전략(frgn_accumulate/close_bet/
+    overnight_drift/rsi2_dip)은 `config/settings.yaml`에서 비활성화됐다 — 그
+    판단 로직은 `quant/analyze/manual_recs.py`(순수 analyze 평면, `quant/trade/`
+    임포트 없음)로 옮겨져 여기서 텔레그램 추천으로만 나간다. 이 명령은 주문을
+    내지 않는다.
+
+    `--scorecard`면 원장 선정을 건너뛰고 producer `manual_rec_v1`의 D+5 적중률/
+    평균bp만 찍는다(n<30이면 "판단 불가").
+
+    출력은 stdout **하나**뿐이다 — `server/scripts/manual_recs.sh`가 그 전체를
+    텔레그램 메시지로 그대로 보낸다(session_pnl.sh와 같은 관례: 텍스트 생성은
+    여기서, 발송은 셸의 notify.sh에서). 그래서 진단 로그는 stderr로만 낸다."""
+    import sys
+    from datetime import date as _date
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.analyze import manual_recs
+    from quant.control import selections
+
+    if args.scorecard:
+        rows = selections.load(REPO_ROOT / "data" / "ledger" / "selections.jsonl")
+        print(manual_recs.scorecard_text(rows))
+        return
+
+    if not args.market:
+        print("--market {KR|US} 가 필요하다 (--scorecard 가 아니면)", file=sys.stderr)
+        raise SystemExit(2)
+
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Asia/Seoul") if args.market == "KR" else ZoneInfo("America/New_York")
+    on = _date.fromisoformat(args.date) if args.date else datetime.now(tz).date()
+
+    recs = manual_recs.build_recs(REPO_ROOT, args.market, on)
+    print(manual_recs.render_telegram_message(recs, args.market))
+
+    if args.dry_run:
+        print(f"(dry-run — 선정 원장 기록 생략, 후보 {len(recs)}건)", file=sys.stderr)
+        return
+
+    added = manual_recs.write_recs(recs, REPO_ROOT, on.isoformat())
+    print(f"선정 원장 {added}건 추가 (producer=manual_rec_v1, 후보 {len(recs)}건)", file=sys.stderr)
+
+
 def cmd_strategy_pnl(args: argparse.Namespace) -> None:
     """전략별 독립 명목계좌(각 1,000만원) 성과 요약 — 평가금액·수익률·실현/미실현손익·
     보유종목·거래수/승률을 전략별로 나눠 보여준다.
@@ -1995,6 +2345,9 @@ def cmd_publish_performance(args: argparse.Namespace) -> None:
 
     payload = build_performance_payload(
         trades, settings.execution, real_account_snapshot=real_account_snapshot,
+        # `strategies[].enabled`(지금 켜져 있나)를 JSON 에 싣기 위해 설정 블록을
+        # 넘긴다 — 파라미터·종목은 안 나간다(공개 안전 규칙, performance.py 참고).
+        strategies_cfg=settings.strategies,
     )
 
     out_path = Path(args.out)
@@ -2876,7 +3229,7 @@ def cmd_outcomes(args: argparse.Namespace) -> None:
     today = args.date or _date.today().isoformat()
 
     need = O.pending_symbols(rows, today)
-    quotes: dict[str, float] = {}
+    quotes: dict[str, tuple[float, str]] = {}
     quote_error = None
     if need and not args.dry_run:
         from quant.analyze.entities import load_market_map
@@ -2889,7 +3242,15 @@ def cmd_outcomes(args: argparse.Namespace) -> None:
         # D+1 채움이 그날 전부 밀렸다(유예 2거래일 안에 회복해야 하는 상태).
         try:
             if us:
-                quotes.update(O.closes_from_quotes(fetch_symbol_quotes(sorted(us))))
+                # D3(2026-09-03): 야후는 점(.) 이 든 종류주 심볼(BRK.B)을 못 받는다
+                # — 대시로 바꿔 조회하고, 결과는 원래 심볼(선정 행의 symbol)로
+                # 되돌려 매핑한다. 안 그러면 BRK.B 는 quotes 딕셔너리에서 "BRK-B"
+                # 로만 남아 아래 조회(quotes.get(row["symbol"]))가 영원히 빈다.
+                yahoo_map = {O.to_yahoo_us_symbol(s): s for s in us}
+                us_raw = fetch_symbol_quotes(sorted(yahoo_map))
+                us_renamed = {yahoo_map[sym]: q for sym, q in (us_raw or {}).items()
+                             if sym in yahoo_map}
+                quotes.update(O.closes_from_quotes(us_renamed))
         except Exception as e:  # noqa: BLE001 — 시세 실패가 판단 기록을 막지 않는다
             quote_error = f"US {type(e).__name__}: {e}"
             logger.warning("US 시세 조회 실패 — 이번 회차 US 채움 생략: %s", e)
@@ -2912,7 +3273,9 @@ def cmd_outcomes(args: argparse.Namespace) -> None:
     updated: list[dict] = []
     for row in rows:
         new = row
-        for h in O.due_horizons(str(row.get("date") or ""), today):
+        # D2(2026-09-03): 세션을 close_date(있으면)로 센다 — 선정 행의 date 는
+        # 리포트 빌드일일 뿐 실제 거래일이 아닐 수 있다(base_session_date 참고).
+        for h in O.due_horizons(O.base_session_date(row), today):
             if new.get(f"outcome_d{h}_bps") is not None:
                 continue
             before = new
@@ -2953,6 +3316,9 @@ def cmd_outcomes(args: argparse.Namespace) -> None:
         "quotes_missing": sorted(need - set(quotes))[:10] if need else [],
         "horizons_filled": filled, "judgments_appended": len(new_judgments),
         "horizons": list(HOLD_HORIZONS), "dry_run": bool(args.dry_run),
+        # D4(2026-09-03): filled/due(진행 중)/lost(grace 넘겨 영구 유실)를 지평별로
+        # 구분한다 — filled 만 보면 "표본이 아직 적다"와 "죽은 표본"을 못 가른다.
+        "horizon_status": O.horizon_status_counts(updated, today),
     }, ensure_ascii=False, indent=2))
 
 
@@ -3987,6 +4353,7 @@ def cmd_governor_apply(args: argparse.Namespace) -> None:
     from quant.adapters.env import REPO_ROOT
     from quant.control import governor
     from quant.control.experiments import DEFAULT_DEATH_WATCH_PATH, consecutive_dead_candidates
+    from quant.control.ledger import base_strategy_id
 
     root = Path(args.root) if args.root else REPO_ROOT
     today = _date.fromisoformat(args.date) if args.date else _date.today()
@@ -4013,7 +4380,10 @@ def cmd_governor_apply(args: argparse.Namespace) -> None:
     protected_notes: list[str] = []
     for c in consecutive_dead_candidates(death_watch_path):
         sid = c["strategy"]
-        if sid in protected:
+        # A/B 촉매 갈래(`<id>_cat`)는 기준 전략의 보호를 **상속**한다(2026-09-03).
+        # 두 갈래는 같은 클래스이고, 한쪽만 자동 비활성되면 남은 쪽이 계속 돌면서
+        # 비교 자체가 무의미해진다 — 실험을 끝내는 것은 사람의 판단이다.
+        if base_strategy_id(sid) in protected:
             protected_notes.append(
                 f"⚠️ [{sid}] 사망 경보 {c['streak_days']}거래일 연속 지속 "
                 f"(평균 {c['mean_bp']:+.1f}bp/건, p={c['p_value']:.3f}, n={c['n']}) "
@@ -4803,6 +5173,11 @@ def main() -> None:
     p_wf.add_argument("--interval", default="15m")
     p_wf.add_argument("--source", default="stub")
     p_wf.add_argument("--symbols", default=None)
+    p_wf.add_argument(
+        "--history-dir", default=None,
+        help="파티션 루트(기본: data/history). 별도 데이터 레이크를 같은 레이아웃으로 "
+             "두고 그쪽을 읽거나 쓰려면 지정한다 — --source history 에서만 의미가 있다.",
+    )
     p_wf.set_defaults(func=cmd_walkforward)
 
     p_sr = sub.add_parser(
@@ -4824,7 +5199,35 @@ def main() -> None:
              "샤프를 깎는다 — **축소해 신고하면 그만큼 관대한 판정이 나온다**. "
              "기본 1은 '한 번도 탐색하지 않았다'는 뜻이다.",
     )
+    p_sr.add_argument(
+        "--history-dir", default=None,
+        help="파티션 루트(기본: data/history). 별도 데이터 레이크를 같은 레이아웃으로 "
+             "두고 그쪽을 읽거나 쓰려면 지정한다 — --source history 에서만 의미가 있다.",
+    )
     p_sr.set_defaults(func=cmd_strategy_report)
+
+    p_bg = sub.add_parser(
+        "backtest-gate",
+        help="배포 게이트 — §4 리포트 + 트레이드 다차원 분석 + go/no-go/판단 불가 판정 "
+             "(walk-forward OOS + deflated Sharpe + 비용 2배 생존 + fold 안정성)",
+    )
+    p_bg.add_argument("--strategy", default="donchian")
+    p_bg.add_argument("--days", type=int, default=90, help="인샘플 백테스트 기간(거래일)")
+    p_bg.add_argument("--total-days", type=int, default=360, help="walk-forward 전체 관찰 기간(달력일)")
+    p_bg.add_argument("--window", type=int, default=90, help="walk-forward 창 크기(거래일)")
+    p_bg.add_argument("--step", type=int, default=90, help="walk-forward 창 간격(달력일)")
+    p_bg.add_argument("--interval", default="15m")
+    p_bg.add_argument("--source", default="stub")
+    p_bg.add_argument("--symbols", default=None)
+    p_bg.add_argument(
+        "--trials", type=int, default=1,
+        help="이 전략을 채택하기까지 시험한 변형의 수 — deflated Sharpe 기준에 반영된다.",
+    )
+    p_bg.add_argument(
+        "--history-dir", default=None,
+        help="파티션 루트(기본: data/history). --source history 에서만 의미가 있다.",
+    )
+    p_bg.set_defaults(func=cmd_backtest_gate)
 
     p_kelly = sub.add_parser(
         "kelly", help="원장 기반 부분 켈리 자문(표시만, 자동 반영 없음)",
@@ -4842,6 +5245,11 @@ def main() -> None:
              "덮어쓴다. 관심종목(watchlist) 전략(orb_scan/intraday_scan/cross_momentum/"
              "confluence)은 이게 없으면 명확한 에러로 멈춘다.",
     )
+    p_bt.add_argument(
+        "--history-dir", default=None,
+        help="파티션 루트(기본: data/history). 별도 데이터 레이크를 같은 레이아웃으로 "
+             "두고 그쪽을 읽거나 쓰려면 지정한다 — --source history 에서만 의미가 있다.",
+    )
     p_bt.set_defaults(func=cmd_backtest)
 
     p_paper = sub.add_parser("paper")
@@ -4856,6 +5264,10 @@ def main() -> None:
     p_fetch.add_argument("--end", default=None)
     p_fetch.add_argument("--source", default="toss", choices=["toss", "yfinance", "alpaca"])
     p_fetch.add_argument("--interval", default="1m")
+    p_fetch.add_argument(
+        "--history-dir", default=None,
+        help="파티션 저장 루트(기본: data/history). 별도 데이터 레이크로 받으려면 지정한다.",
+    )
     p_fetch.set_defaults(func=cmd_fetch)
 
     p_naver_fund = sub.add_parser(
@@ -4920,6 +5332,14 @@ def main() -> None:
 
     p_scoreboard = sub.add_parser("scoreboard", help="누적 거래 원장 기반 전략별·종목별 성적표 (승률/payoff/bps)")
     p_scoreboard.add_argument("--days", type=int, default=None, help="최근 N일만 (기본: 전체 누적)")
+    p_scoreboard.add_argument(
+        "--ab", action="store_true",
+        help="A/B 갈래 비교 추가 — `<id>`(촉매 제외) vs `<id>_cat`(촉매만) 기대값 차이",
+    )
+    p_scoreboard.add_argument(
+        "--ledger", default=None,
+        help="원장 경로 재지정 (기본: data/state/trades.jsonl) — 운영 원장 사본 점검용",
+    )
     p_scoreboard.set_defaults(func=cmd_scoreboard)
 
     p_orders = sub.add_parser("orders", help="주문 생애 원장(orders.jsonl) 조회 — 거부/미체결 포함")
@@ -4983,6 +5403,20 @@ def main() -> None:
     p_session_pnl.add_argument("--market", required=True, choices=["KR", "US"], help="KR 또는 US")
     p_session_pnl.add_argument("--date", default=None, help="YYYY-MM-DD (기본: 그 시장 기준 오늘)")
     p_session_pnl.set_defaults(func=cmd_session_pnl)
+
+    p_manual_recs = sub.add_parser(
+        "manual-recs",
+        help="수동 계좌 추천(자동매매 아님) — 외국인 적립/종가배팅/RSI(2) 눌림(KR)·"
+             "오버나이트 드리프트(US)를 선정 원장에 남기고 텔레그램용 메시지를 stdout에 낸다",
+    )
+    p_manual_recs.add_argument("--market", default=None, choices=["KR", "US"],
+                                help="KR 또는 US (--scorecard 가 아니면 필수)")
+    p_manual_recs.add_argument("--date", default=None, help="YYYY-MM-DD (기본: 그 시장 기준 오늘)")
+    p_manual_recs.add_argument("--dry-run", action="store_true",
+                                help="선정 원장에 쓰지 않고 메시지만 stdout에 출력")
+    p_manual_recs.add_argument("--scorecard", action="store_true",
+                                help="선정 대신 producer manual_rec_v1의 D+5 적중률/평균bp를 출력")
+    p_manual_recs.set_defaults(func=cmd_manual_recs)
 
     p_strategy_pnl = sub.add_parser(
         "strategy-pnl",

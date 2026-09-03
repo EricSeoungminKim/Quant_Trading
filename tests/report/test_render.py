@@ -61,6 +61,29 @@ def test_machine_payload_with_sym_quotes_fills_price_fields():
     assert sym["change_pct"] == 6.9
 
 
+def test_machine_payload_sym_quotes_date_flows_into_symbol_entry():
+    """close_date(D2, 2026-09-03) 파이프라인의 출발점 — sym_quotes 의 date(quote
+    가 가리키는 실제 거래일)가 payload["symbols"] 항목에도 실린다. 선정 원장
+    writer(`quant/report/collect/ledger.py`의 `_record_intraday_selections` 등)
+    가 이 값을 `close_date` 로 그대로 옮겨, outcomes.base_session_date 가 전방
+    수익률 지평을 셀 기준 세션으로 쓴다."""
+    payload = machine_payload(
+        _snap(), _cont(), {}, [],
+        sym_quotes={"005930": {"close": 256250.0, "change_pct": 6.9, "date": "2026-08-11"}},
+    )
+    assert payload["symbols"][0]["date"] == "2026-08-11"
+
+
+def test_machine_payload_sym_quotes_without_date_omits_symbol_date():
+    """quote 에 date 가 없으면(호출부 하위호환) symbols 항목에 date 키 자체를
+    생략한다 — None 으로 위장하지 않는다."""
+    payload = machine_payload(
+        _snap(), _cont(), {}, [],
+        sym_quotes={"005930": {"close": 256250.0, "change_pct": 6.9}},
+    )
+    assert "date" not in payload["symbols"][0]
+
+
 def test_machine_payload_sym_quotes_ignores_symbol_not_in_cont():
     """sym_quotes 에 있어도 cont(오늘 언급 종목)에 없는 코드는 payload 에 안 생긴다."""
     payload = machine_payload(
@@ -1596,6 +1619,46 @@ def test_news_flow_has_source_diversity_footnote():
     )
 
 
+# 뉴스 소스 유니언(저장소∪실시간, 2026-09-03) — 헤더 한 줄에 수집창과
+# 저장소/실시간 기여분을 보여준다. `d('news')`가 이미 스냅샷에서 조회하는
+# 값이라 render() 시그니처 변경 없이 snap.results["news"].data 만으로 그린다.
+
+def _snap_with_news_stats(feeds: dict, *, from_store: int, from_live: int,
+                           kept: int, window_start: str | None) -> Snapshot:
+    return Snapshot(SCHEMA_VERSION, "KR", date(2026, 8, 12), _AT, {
+        "news": SourceResult(
+            key="news", ok=True,
+            data={"feeds": feeds, "from_store": from_store, "from_live": from_live,
+                  "kept": kept, "window_start": window_start},
+            error=None, url="https://news.google.com", fetched_at=_AT, latency_ms=1,
+        ),
+    })
+
+
+def test_news_flow_header_shows_window_and_source_counts():
+    news_flow = [_flow_item("사건", "https://a", outlet="한국경제")]
+    snap = _snap_with_news_stats(
+        {"A": [{"title": "사건", "link": "https://a", "outlet": "한국경제"}]},
+        from_store=120, from_live=40, kept=150,
+        window_start="2026-08-11T07:39:12.345678+09:00",
+    )
+    html = render(snap, _cont(), news_flow=news_flow)
+    assert "수집창 08-11 07:39" in html
+    assert "08-12 08:00" in html  # snap.generated_at(_AT) 포맷
+    assert "기사 150건" in html
+    assert "누적 저장소 120" in html
+    assert "실시간 40" in html
+
+
+def test_news_flow_header_omitted_without_window_start():
+    """구조 이동 전 스냅샷(재렌더 등)엔 window_start 가 없을 수 있다 — 헤더
+    줄은 조용히 생략돼야 한다(크래시 금지)."""
+    news_flow = [_flow_item("사건", "https://a", outlet="한국경제")]
+    html = render(_snap_with_news({"A": [{"title": "사건", "link": "https://a", "outlet": "한국경제"}]}),
+                  _cont(), news_flow=news_flow)
+    assert "수집창" not in html
+
+
 def test_news_flow_section_omitted_when_empty():
     html = render(_snap(), _cont(), news_flow=[])
     assert "오늘의 뉴스 흐름" not in html
@@ -2620,3 +2683,40 @@ def test_quote_time_label_appears_in_appendix_quote_table():
     html = render(_snap_with_market_fetched_at("07:52"), _cont())
     zone = html[html.index("<h2>시세<span"):html.index("<h2>시세<span") + 300]
     assert "시세 기준 07:52 KST" in zone
+
+
+# --------------------------------------------------------------- 주도 섹터
+# (sector_daily, 2026-09-03 소유자 철학 지시 B) — 거래대금 상위 업종 + 외국인
+# 순매수 + 5일 추이. 순수 계산은 tests/test_sector_daily.py가 이미 커버하므로
+# 여기는 렌더 분기(표 vs 결측 vs 생략)만 확인한다.
+
+def _sector_daily_view():
+    return {
+        "date": "2026-09-02",
+        "sectors": [
+            {"rank": 1, "sector": "반도체와반도체장비", "trend": "↑", "foreign_net": 26000,
+             "top_members": [
+                 {"code": "005930", "name": "삼성전자"},
+                 {"code": "000660", "name": "SK하이닉스"},
+             ]},
+        ],
+    }
+
+
+def test_sector_daily_section_renders_table_when_present():
+    html = render(_snap(), _cont(), sector_daily=_sector_daily_view())
+    assert "주도 섹터" in html
+    assert "반도체와반도체장비" in html
+    assert "삼성전자" in html
+    assert "결측" not in html[html.index("주도 섹터"):html.index("주도 섹터") + 800]
+
+
+def test_sector_daily_section_omitted_when_none():
+    html = render(_snap(), _cont())
+    assert "주도 섹터" not in html
+
+
+def test_sector_daily_section_shows_missing_note_when_flagged():
+    html = render(_snap(), _cont(), sector_daily={"missing": True})
+    assert "주도 섹터" in html
+    assert "결측 — 섹터 데이터 없음" in html

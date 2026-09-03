@@ -22,7 +22,9 @@ capital_fraction은 전략별로 스칼라(양 시장 동일, 기존 동작) 또
 회로차단기(코드 버그와 무관하게 걸리는 독립 레일 — 브로커가 포지션 메타를 잃어 10초마다
 절반씩 매도하던 상태 폭주 사고 이후 추가됨. quant-expert SKILL.md §5 참고):
 - max_orders_per_day: 하루 승인 주문 수 상한(전 전략/종목 합산).
-- cooldown_bars_after_stop: 손절 청산 후 해당 종목 신규 진입을 N봉 차단(휩소 재진입 방지).
+- cooldown_bars_after_stop: 손절 청산 후 **그 (종목, 전략)의** 신규 진입을 N봉 차단
+  (휩소 재진입 방지). 봉 간격도 봉 수도 전략별로 다르다 — 실효 시간은
+  `_strategy_bar_minutes[sid] x _cooldown_bars_for(sid)` 분이다.
 - max_order_notional_pct: 최종 계산된 단일 주문 금액이 자산 대비 이 비율을 넘으면 거부
   (max_position_pct/max_symbol_pct_total의 "산식 자체가 잘못됐을 때"를 잡는 독립 재검증).
 - NaN/inf/음수/0 수량 가드: 가격/자산이 NaN이어도 주문이 만들어지지 않게 한다.
@@ -59,6 +61,7 @@ from quant.core.models import (
     trading_day,
 )
 from quant.core.portfolio.portfolio import from_krw, to_krw
+from quant.core.session import in_continuous_session
 from quant.trade.risk.books import StrategyBooks
 
 # 확장 세션 창 판정용 — 기본 폴백은 KST(crontab·clock 과 동일).
@@ -93,6 +96,64 @@ MARKET_CLOSED_MARKER = "장 마감"
 _QTY_EPSILON = 1e-6
 
 logger = logging.getLogger(__name__)
+
+
+def _interval_str(minutes: int) -> str:
+    """봉 간격(분) → `DataFeed.history()` 가 아는 interval 문자열.
+
+    1440분은 `"1440m"` 이 아니라 `"1d"` 다 — `quant/adapters/data/service.py`의
+    `_interval_minutes()` 의 역함수이고, 그쪽이 인정하는 표기가 이것뿐이다.
+    일봉 전략(rsi2_dip / frgn_accumulate)이 봉 간격을 선언하면서 필요해졌다.
+    """
+    return "1d" if minutes >= 24 * 60 else f"{minutes}m"
+
+
+# A/B 갈래 접미사 — `scalp_1m` 과 `scalp_1m_cat` 은 **같은 클래스**를 다른
+# 유니버스로 돌리는 두 갈래다(config/settings.yaml `universe_filter`). 그래서
+# **클래스 단위 정책**(확장 세션 허용, 봉 간격, 쿨다운 봉 수, EOD 쿨다운 대상)은
+# 갈래가 상속해야 한다 — 상속하지 않으면 갈래마다 리스크 규칙이 달라져 A/B 가
+# 오염된다(2026-09-03: scalp_1m_cat 이 scalp_1m 의 프리마켓 허가를 잃어 개장 전
+# 진입 기회가 한쪽에만 있었다). 반면 **갈래 고유 값**(capital_fraction, 전략별
+# 장부, 손절 쿨다운 상태)은 절대 상속하지 않는다 — 그게 A/B 의 측정 대상이다.
+#
+# `quant.trade.loop._base_strategy_id` / `quant.control.ledger.base_strategy_id`
+# 와 같은 규칙이지만 **임포트하지 않는다**: `quant/trade/` 는 `quant/control/` 을
+# 모르고(평면 규칙), `loop.py` 는 이 파일을 임포트하므로 반대 방향은 순환이다.
+_CATALYST_ARM_SUFFIX = "_cat"
+_PURE_ARM_SUFFIX = "_pure"
+
+
+def _base_strategy_id(strategy_id: str) -> str:
+    """`_cat`(A/B 촉매 갈래)·`_pure`(순수 계약 껍질) 접미사를 벗긴 기준 id.
+    접미사가 없으면 그대로 돌려준다."""
+    sid = str(strategy_id or "")
+    return sid.removesuffix(_CATALYST_ARM_SUFFIX).removesuffix(_PURE_ARM_SUFFIX)
+
+
+def _by_strategy(table: dict, strategy_id: str, default):
+    """전략 id로 설정값을 찾되, 없으면 **기준 전략(접미사 제거)** 값을 상속한다.
+
+    클래스 단위 정책 전용이다 — 갈래가 자기 값을 선언했으면(예: params 를
+    YAML 앵커로 공유하지 않고 따로 쓴 경우) 그게 이긴다."""
+    if strategy_id in table:
+        return table[strategy_id]
+    return table.get(_base_strategy_id(strategy_id), default)
+
+
+def _cooldown_key_to_str(key: tuple[str, str]) -> str:
+    """`(심볼, 전략ID)` → JSON 키. `_eod_stopped` 와 같은 `"전략ID|심볼"` 표기."""
+    symbol, strategy_id = key
+    return f"{strategy_id}|{symbol}"
+
+
+def _cooldown_key_from_str(raw: str) -> tuple[str, str]:
+    """JSON 키 → `(심볼, 전략ID)`. `|` 가 없으면 구버전(심볼 전용) 항목이므로
+    전략 미상 폴백 `("SYM", "")` 으로 읽는다 — 그 항목은 모든 전략을 계속 막는다."""
+    text = str(raw)
+    if "|" not in text:
+        return (text, "")
+    strategy_id, _, symbol = text.partition("|")
+    return (symbol, strategy_id)
 
 
 class RiskManagerImpl:
@@ -136,6 +197,24 @@ class RiskManagerImpl:
         # 4봉(15분봉 기준 1시간): 손절 직후 같은 신호가 곧바로 재발동하는 휩소 재진입을
         # 막되, 세션(약 26봉)의 상당 부분을 잃지 않을 정도로 짧게 잡는다.
         self.cooldown_bars_after_stop = risk_cfg.get("cooldown_bars_after_stop", 4)
+        # 전략별 override (2026-09-03 감사 C4). 위 전역값 4는 **15분봉을 전제로 고른
+        # 숫자**(=1시간)인데, 그 전제가 이미 무너져 있었다 — 활성 전략의 실제 봉은
+        # 1m/5m/1d 로 갈라졌고 아무도 봉 간격을 선언하지 않아 전부 폴백 15분으로
+        # 해석됐다. 즉 "모두 60분 쿨다운"은 결정이 아니라 폴백의 사고였다.
+        # `strategies.<id>.params.cooldown_bars_after_stop` 이 있으면 그 전략만
+        # 그 값을 쓴다(없으면 전역값 그대로 = 기존 동작 보존).
+        self._strategy_cooldown_bars: dict[str, int] = {}
+        for sid, strat_cfg in (settings.get("strategies", {}) or {}).items():
+            params = (strat_cfg or {}).get("params") or {} if isinstance(strat_cfg, dict) else {}
+            if "cooldown_bars_after_stop" not in params:
+                continue
+            try:
+                self._strategy_cooldown_bars[str(sid)] = int(params["cooldown_bars_after_stop"])
+            except (TypeError, ValueError):
+                logger.warning(
+                    "전략 %s의 cooldown_bars_after_stop=%r 는 정수가 아니다 — 전역값(%s) 사용",
+                    sid, params["cooldown_bars_after_stop"], self.cooldown_bars_after_stop,
+                )
         # 손절 후 **당일 전체** 재진입 차단 대상 전략(2026-08-28 소유자 지시
         # "이겼던 패턴 파악" 실측): scalp_1m 원장 75트립 — 같은 (심볼,날)에서
         # 직전 왕복이 손실이었던 재진입은 n=7 승률 14% 평균 -40.9bp, 직전이
@@ -173,15 +252,22 @@ class RiskManagerImpl:
                 if parsed:
                     self._extended_sessions.setdefault(str(sid), {})[str(mkt).upper()] = parsed
         # 전략마다 파라미터 이름이 다르다(donchian=interval_minutes, orb=bar_interval_minutes).
+        # **선언한 전략만** 담는다. 선언하지 않은 전략까지 폴백값으로 채워 넣으면
+        # A/B 갈래(`scalp_1m_cat`)가 "이미 값이 있다"로 판정돼 기준 전략의 봉을
+        # 상속하지 못한다(`_bar_minutes_for` / `_by_strategy` 참고).
         self._strategy_bar_minutes: dict[str, int] = {}
-        for sid, strat_cfg in settings.get("strategies", {}).items():
-            params = strat_cfg.get("params", {})
-            self._strategy_bar_minutes[sid] = int(
-                params.get(
-                    "interval_minutes",
-                    params.get("bar_interval_minutes", self.cooldown_bar_interval_minutes),
+        for sid, strat_cfg in (settings.get("strategies", {}) or {}).items():
+            params = (strat_cfg or {}).get("params") or {} if isinstance(strat_cfg, dict) else {}
+            declared = params.get("interval_minutes", params.get("bar_interval_minutes"))
+            if declared is None:
+                continue
+            try:
+                self._strategy_bar_minutes[str(sid)] = int(declared)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "전략 %s의 봉 간격 선언 %r 은 정수가 아니다 — 폴백(%s분) 사용",
+                    sid, declared, self.cooldown_bar_interval_minutes,
                 )
-            )
         # 60%: max_position_pct(50%)/max_symbol_pct_total(60%)로 정상 산식이 만들 수
         # 있는 최대 주문보다 같거나 크게 잡아, "정상 캡을 한 번 더 좁히는 룰"이 아니라
         # "그 산식 자체가 고장났을 때만 걸리는 독립 재검증"으로 동작하게 한다.
@@ -197,6 +283,36 @@ class RiskManagerImpl:
         # 9배 단일 팩터 노출이다. leverage_of가 주입됐을 때만(아래 참고) 걸리는
         # 별도 레일. 0이면 비활성. 신규 진입만 차단, 청산은 항상 허용(기존 레일 원칙).
         self.max_leveraged_exposure_pct = risk_cfg.get("max_leveraged_exposure_pct", 50) / 100
+        # 인트라데이 하드레일(2026-09-03, 소유자 지시: "장중 매매는 최대 손실 −5%,
+        # 최대 목표 +10%를 유지한다"). 감사 결과 이 불변식을 실제로 지키는 곳이
+        # 없었다 — structure.py의 hard_cap_pct(3%)는 구조 모드 손절에만 적용되고
+        # (scalp_1m만 그 경로를 쓴다), pullback_impulse는 손절 캡 자체가 없다
+        # (그 모듈 docstring "아직 못 하는 것" 3번). 전략마다 심는 대신 리스크
+        # 평면에 한 번 둔다(quant-expert SKILL.md §5 — 전략별 방어가 아니라
+        # 회로차단기). 여기(approve)는 **진입 시점** 클램프이고, 짝을 이루는
+        # 사이클별 백스톱은 quant/trade/loop.py `_intraday_hard_stop_check`다 —
+        # 전략의 on_cycle 자체가 멎어도(ColdFetchBudgetExceeded, quote=None) 지켜야
+        # 하므로 진입 클램프만으로는 부족하다.
+        self.intraday_hard_stop_pct = float(risk_cfg.get("intraday_hard_stop_pct", 5.0)) / 100
+        self.intraday_max_target_pct = float(risk_cfg.get("intraday_max_target_pct", 10.0)) / 100
+        # 사이클별 백스톱(loop.py)의 +10% 강제 청산 스위치 — 기본 false. 소유자
+        # 원문 "+10%가 최대 목표"는 "그 이상은 위험한 상한선"과 "도달하면 무조건
+        # 팔아라" 둘 다로 읽힌다. 강제 매도를 기본으로 켜면 후자로 단정하는 것이라,
+        # 더 보수적인(사용자 개입 여지를 덜 침범하는) 전자를 기본으로 두고 강제는
+        # 옵트인으로 연다. 이 진입 클램프(target 상한)에는 영향 없음 — target
+        # 자체를 +10% 밖으로 걸지 못하게 하는 것과, 도달 시 강제로 파는 것은
+        # 다른 결정이다.
+        self.intraday_take_profit_cap_enabled = bool(
+            risk_cfg.get("intraday_take_profit_cap_enabled", False)
+        )
+        # 오버나이트(캐리 설계) 전략은 이 레일에서 제외한다 — 목록은
+        # quant/trade/loop.py `_OVERNIGHT_STRATEGIES`의 수동 미러다. loop.py가
+        # 이미 이 모듈(manager.py)을 임포트하므로 반대 방향은 순환이 된다
+        # (quant/core/CLAUDE.md 평면 규칙) — 그래서 콜백 주입 대신 설정으로
+        # 미러한다. tests/test_risk_intraday_hardrail.py가 두 목록의 drift를 잡는다.
+        self._intraday_rail_overnight: set[str] = set(
+            risk_cfg.get("overnight_strategies", []) or []
+        )
         # 기본값은 기존 동작(capital_fraction) — 설정에 없으면 결과가 바뀌지 않는다.
         self.sizing_mode = str(risk_cfg.get("sizing_mode", "capital_fraction"))
         # 전략별 독립 명목계정(2026-08-19). 기본값 "shared" — 설정에 명시하지 않으면
@@ -259,8 +375,15 @@ class RiskManagerImpl:
         self._recent_entries: dict[tuple[str, str], list] = {}
         self._day_entry_count: dict[str, int] = {}   # 진입 예산 — 이것만 상한을 건다
         self._day_order_count: dict[str, int] = {}   # 총 승인 주문 — 가시성 전용
-        self._stop_bar_ts: dict[str, object] = {}  # symbol -> 마지막 손절 청산 시점 봉 ts
-        self._stop_day: dict[str, str] = {}  # symbol -> 그 손절이 난 거래일(세션 롤 시 쿨다운 해제)
+        # (심볼, 전략ID) -> 마지막 손절 청산 시점 봉 ts / 그 손절이 난 거래일
+        # (세션 롤 시 쿨다운 해제). **2026-09-03 감사 C4까지는 심볼만이 키였다** —
+        # 그래서 scalp_1m 이 005930 에서 손절하면 close_bet·frgn_accumulate 도 그
+        # 종목에 못 들어갔다. 쿨다운은 "이 전략의 그 신호가 휩소였다"는 근거에서
+        # 나온 레일인데 다른 전략의 다른 논지까지 함께 막는 건 근거가 없다.
+        # 전략ID를 알 수 없는 경우(구버전 상태 파일 복원)만 `("SYM", "")` 폴백 키를
+        # 쓰고, 그 항목은 모든 전략에 대해 계속 막는다(예전 동작 = 보수적인 쪽).
+        self._stop_bar_ts: dict[tuple[str, str], object] = {}
+        self._stop_day: dict[tuple[str, str], str] = {}
         # (전략ID, 심볼) -> 손절 난 거래일. cooldown_eod_strategies 대상 전략의
         # 당일 재진입 차단용 — 날이 다르면 판정 시점에 게으르게 정리한다.
         self._eod_stopped: dict[tuple[str, str], str] = {}
@@ -307,14 +430,20 @@ class RiskManagerImpl:
         # 막히므로 해당 심볼만 제외하고 경고를 남긴다.
         import pandas as pd
 
-        restored: dict[str, object] = {}
-        for sym, raw in (d.get("stop_bar_ts") or {}).items():
+        #
+        # 키 형식은 `"전략ID|심볼"`(2026-09-03~). `|` 가 없는 구버전 키는 심볼만
+        # 기록된 것이므로 전략 미상 폴백 `("SYM", "")` 으로 복원한다 — 재시작이
+        # 쿨다운을 조용히 푸는 것보다 한 세션 더 보수적인 편이 낫다.
+        restored: dict[tuple[str, str], object] = {}
+        for raw_key, raw in (d.get("stop_bar_ts") or {}).items():
             try:
-                restored[sym] = pd.Timestamp(raw)
+                restored[_cooldown_key_from_str(raw_key)] = pd.Timestamp(raw)
             except (ValueError, TypeError):
-                logger.warning("손절 쿨다운 복원 실패 — %s 쿨다운이 해제됨: %r", sym, raw)
+                logger.warning("손절 쿨다운 복원 실패 — %s 쿨다운이 해제됨: %r", raw_key, raw)
         self._stop_bar_ts = restored
-        self._stop_day = dict(d.get("stop_day") or {})
+        self._stop_day = {
+            _cooldown_key_from_str(k): str(v) for k, v in (d.get("stop_day") or {}).items()
+        }
         # "전략|심볼" 문자열 키로 저장했다(JSON 은 튜플 키 불가). 재시작이 당일
         # 차단을 풀면 안 되므로 복원 실패는 항목 단위로만 버린다.
         self._eod_stopped = {}
@@ -334,7 +463,7 @@ class RiskManagerImpl:
         self._day_entry_count_per_strategy = {str(k): int(v) for k, v in raw_entry_count_ps.items()} \
             if isinstance(raw_entry_count_ps, dict) else {}
         logger.info(
-            "일일 리스크 상태 복원: 거래일=%s 주문 %d건 시작자산=%s 쿨다운 %d종목",
+            "일일 리스크 상태 복원: 거래일=%s 주문 %d건 시작자산=%s 쿨다운 %d건(전략x종목)",
             self._day, sum(self._day_order_count.values()), self._day_start_equity,
             len(self._stop_bar_ts),
         )
@@ -353,8 +482,12 @@ class RiskManagerImpl:
                 "day_entry_count": self._day_entry_count,
                 # 봉 ts는 JSON 직렬화가 안 되는 타입일 수 있어 문자열로 남긴다.
                 # 쿨다운 판정은 "같은 봉인가"만 보므로 문자열 비교로 충분하다.
-                "stop_bar_ts": {k: str(v) for k, v in self._stop_bar_ts.items()},
-                "stop_day": self._stop_day,
+                "stop_bar_ts": {
+                    _cooldown_key_to_str(k): str(v) for k, v in self._stop_bar_ts.items()
+                },
+                "stop_day": {
+                    _cooldown_key_to_str(k): v for k, v in self._stop_day.items()
+                },
                 "eod_stopped": {f"{sid}|{sym}": day for (sid, sym), day in self._eod_stopped.items()},
                 "day_per_strategy": self._day_per_strategy,
                 "day_start_equity_per_strategy": self._day_start_equity_per_strategy,
@@ -369,6 +502,36 @@ class RiskManagerImpl:
     def _block(self, why: str) -> None:
         self.last_block = why
 
+    @staticmethod
+    def _fractional_sell_allowed(market: str, ctx) -> bool:
+        """지금 이 시장에서 **소수점 주 매도 주문**을 낼 수 있는가.
+
+        2026-09-02: 브로커가 받는 조건은 딱 하나다 — US `MARKET`+`SELL`,
+        **정규장 중에만**(`docs/api/toss/QUICKREF.md` "quantity must be a positive
+        integer EXCEPT US MARKET+SELL ... only during regular hours",
+        그 밖은 422 `fractional-quantity-outside-regular-hours`). KR 은 언제나
+        정수만 받는다 — 기존 `market == "KR"` 조건이 이 규칙의 부분집합이었다.
+
+        이걸 몰라서 난 사고: scalp_1m 이 US 프리마켓(`extended_sessions`)에서
+        1주 포지션의 절반(`partial_fraction: 0.5`)을 익절하려 하면 qty=0.5 가
+        나오고, `TossBroker.place_order` 가 이를 0 주로 내림해 **아무 말 없이
+        None 을 반환**한다. `state_update={"partial_taken": True}` 는 체결 시에만
+        적용되므로 같은 SCALE_OUT 이 5초마다 영원히 재발화하고 익절은 끝내
+        일어나지 않는다. 여기서 막으면 최소한 orders 로그에 사유가 남는다.
+
+        시계 조회 실패는 False(=정수 강제) — `_in_extended_session` 과 같은
+        방향으로 "모르면 막는" 쪽이 안전측이다(낼 수 없는 주문을 내지 않는다).
+        """
+        if market != "US":
+            return False
+        now_fn = getattr(ctx.clock, "now", None)
+        if not callable(now_fn):
+            return False
+        try:
+            return in_continuous_session("US", now_fn())
+        except Exception:  # noqa: BLE001 — 시계 이상은 정수 강제 쪽으로
+            return False
+
     def _in_extended_session(self, strategy_id: str, market: str, ctx) -> bool:
         """정규장 밖이지만 허용 목록의 (전략, 시장, 시각 창) 안인가.
 
@@ -380,7 +543,10 @@ class RiskManagerImpl:
         하나 늘 뿐이다). 창 형식 오류·시계 부재는 전부 False — 모르면 막는 쪽이
         안전측이다.
         """
-        windows = self._extended_sessions.get(strategy_id, {}).get(market)
+        # 갈래(`_cat`/`_pure`)는 기준 전략의 허가를 상속한다 — 확장 세션은 "이
+        # 전략이 그 시간에 체결되는 시장을 보는가"라는 **클래스 속성**이고, A/B
+        # 의 측정 대상이 아니다(`_base_strategy_id` 주석 참고).
+        windows = _by_strategy(self._extended_sessions, strategy_id, {}).get(market)
         if not windows:
             return False
         now_fn = getattr(ctx.clock, "now", None)
@@ -411,6 +577,25 @@ class RiskManagerImpl:
             trading_day(now).isoformat() != self._day
         entry_count = {} if rolled else self._day_entry_count
         order_count = {} if rolled else self._day_order_count
+        # per_strategy 모드는 approve()가 _last_day_pnl_pct(계좌 전체)를 절대
+        # 채우지 않는다 — 전략별 dict 만 채운다. 그대로 두면 전략 하나가 -20%로
+        # 진입 차단당해도 하트비트/세션요약은 영원히 "아직 여유 있음"이라 운영자가
+        # 차단 사실을 알 수 없었다(2026-09-02 감사 C2). 대표값은 **가장 나쁜
+        # 전략**으로 올리고(가장 먼저 알아야 할 숫자), 내역은 per_strategy 하위
+        # dict로 함께 준다. scope로 이 값이 계좌 전체가 아님을 명시한다 —
+        # 라벨 없이 쓰면 "오늘 손익"이 계좌 손익으로 오독된다.
+        per_strategy = self.capital_mode == "per_strategy" and self.books is not None
+        pnl_by_strategy = self._last_day_pnl_pct_per_strategy if per_strategy else {}
+        if per_strategy:
+            worst = min(pnl_by_strategy.values(), default=None)
+            day_pnl_pct = None if worst is None else worst * 100
+            day_tripped = any(v <= -self.daily_loss_limit_pct for v in pnl_by_strategy.values())
+        else:
+            day_pnl_pct = None if self._last_day_pnl_pct is None else self._last_day_pnl_pct * 100
+            day_tripped = (
+                self._last_day_pnl_pct is not None
+                and self._last_day_pnl_pct <= -self.daily_loss_limit_pct
+            )
         return {
             "day": trading_day(now).isoformat() if rolled else self._day,
             "max_orders_per_day": {
@@ -437,15 +622,23 @@ class RiskManagerImpl:
                 "limit_pct": self.daily_loss_limit_pct * 100,
                 # 금일 손익 금액 계산용(KRW) — 리포트가 최신 MTM 자산과 대조한다
                 "day_start_equity": self._day_start_equity,
-                "day_pnl_pct": None if self._last_day_pnl_pct is None else self._last_day_pnl_pct * 100,
-                "tripped": (
-                    self._last_day_pnl_pct is not None
-                    and self._last_day_pnl_pct <= -self.daily_loss_limit_pct
-                ),
+                "day_pnl_pct": day_pnl_pct,
+                "tripped": day_tripped,
+                # "account" = 계좌 전체 기준, "per_strategy" = 가장 나쁜 전략 기준.
+                "scope": "per_strategy" if per_strategy else "account",
+                "per_strategy": {
+                    sid: {
+                        "day_pnl_pct": v * 100,
+                        "tripped": v <= -self.daily_loss_limit_pct,
+                    }
+                    for sid, v in sorted(pnl_by_strategy.items())
+                },
             },
             "cooldown_bars_after_stop": {
                 "limit_bars": self.cooldown_bars_after_stop,
-                "symbols_in_cooldown": sorted(self._stop_bar_ts.keys()),
+                # 키는 (심볼, 전략ID) 지만 이 필드의 계약은 "쿨다운 중인 종목"이다
+                # (하트비트/리포트가 그대로 읽는다) — 심볼만 유일하게 추린다.
+                "symbols_in_cooldown": sorted({sym for sym, _sid in self._stop_bar_ts}),
             },
             "portfolio_caps": {
                 "max_concurrent_positions": self.max_concurrent_positions,
@@ -502,8 +695,29 @@ class RiskManagerImpl:
     def _bar_ts(self, symbol: str, ctx: Context, n: int = 1, strategy_id: str = ""):
         """symbol의 최근 완성봉 n개를 **그 전략이 쓰는 봉 간격**으로 조회.
         DataFeed.history()가 완성봉만 반환한다는 계약(interfaces.py)에 그대로 얹는다."""
-        minutes = self._strategy_bar_minutes.get(strategy_id, self.cooldown_bar_interval_minutes)
-        return ctx.data.history(symbol, f"{minutes}m", n)
+        return ctx.data.history(symbol, _interval_str(self._bar_minutes_for(strategy_id)), n)
+
+    def _bar_minutes_for(self, strategy_id: str) -> int:
+        """그 전략이 쓰는 봉 간격(분). 선언이 없으면 기준 전략(A/B 갈래) → 전역 폴백."""
+        return int(_by_strategy(
+            self._strategy_bar_minutes, strategy_id, self.cooldown_bar_interval_minutes))
+
+    def _cooldown_bars_for(self, strategy_id: str) -> int:
+        """그 전략에 적용할 손절 쿨다운 봉 수. 전략별 선언이 없으면 전역값.
+
+        실효 쿨다운 = `_strategy_bar_minutes[sid] x _cooldown_bars_for(sid)` 분이다
+        (config/settings.yaml `risk.cooldown_bars_after_stop` 주석에 표가 있다)."""
+        return int(_by_strategy(
+            self._strategy_cooldown_bars, strategy_id, self.cooldown_bars_after_stop))
+
+    def _intraday_rail_applies(self, strategy_id: str) -> bool:
+        """장중 하드레일(-5%/+10% 진입 클램프) 대상인가 — 오버나이트(캐리 설계)
+        전략은 제외(`_intraday_rail_overnight`, 생성자 주석). `_cooldown_eod_strategies`
+        와 같은 판정 패턴(원 id 우선, 없으면 접미사 제거한 기준 전략)을 쓴다."""
+        return not (
+            strategy_id in self._intraday_rail_overnight
+            or _base_strategy_id(strategy_id) in self._intraday_rail_overnight
+        )
 
     def _approve_entry_per_strategy(
         self,
@@ -850,31 +1064,38 @@ class RiskManagerImpl:
             if eod_day is not None:
                 self._eod_stopped.pop((signal.strategy_id, signal.symbol), None)
 
-        if signal.action in _ENTRY_ACTIONS and self.cooldown_bars_after_stop > 0:
-            stop_ts = self._stop_bar_ts.get(signal.symbol)
+        cooldown_bars = self._cooldown_bars_for(signal.strategy_id)
+        if signal.action in _ENTRY_ACTIONS and cooldown_bars > 0:
+            # 이 전략이 낸 손절만 이 전략을 막는다. `("SYM", "")` 은 구버전 상태
+            # 파일에서 복원된 전략 미상 항목 — 그것만 모든 전략을 계속 막는다.
+            key = (signal.symbol, signal.strategy_id)
+            stop_ts = self._stop_bar_ts.get(key)
+            if stop_ts is None:
+                key = (signal.symbol, "")
+                stop_ts = self._stop_bar_ts.get(key)
             # 쿨다운은 **세션 안에서만** 유효하다. 이 레일이 막으려는 것은 손절 직후
             # 같은 신호가 곧바로 재발동하는 휩소 재진입이고, 그건 장중 현상이다.
             # 세션을 넘겨 유지하면 장 마감 직전 손절이 다음 날 진입을 통째로
             # 막아버린다 — 야간에는 봉이 생기지 않아 "N봉 경과"가 영영 안 채워지기
             # 때문이다(5분봉 실측: 15:50 손절 → 다음 날 09:35 진입이 "3/4봉 경과"로
             # 차단). 하루 1회 진입 전략에서는 그 자체로 전략을 반쯤 꺼버린다.
-            if stop_ts is not None and self._stop_day.get(signal.symbol) != today:
-                del self._stop_bar_ts[signal.symbol]
-                self._stop_day.pop(signal.symbol, None)
+            if stop_ts is not None and self._stop_day.get(key) != today:
+                del self._stop_bar_ts[key]
+                self._stop_day.pop(key, None)
                 stop_ts = None
             if stop_ts is not None:
                 bars = self._bar_ts(
-                    signal.symbol, ctx, self.cooldown_bars_after_stop + 5, signal.strategy_id,
+                    signal.symbol, ctx, cooldown_bars + 5, signal.strategy_id,
                 )
                 elapsed = sum(1 for ts in bars.index if ts > stop_ts)
-                if elapsed < self.cooldown_bars_after_stop:
+                if elapsed < cooldown_bars:
                     self._block(
-                        f"손절 쿨다운: {signal.symbol} 손절 후 {elapsed}/{self.cooldown_bars_after_stop}"
-                        f"봉 경과 — 신규 진입 차단"
+                        f"손절 쿨다운: {signal.symbol} 손절 후 {elapsed}/{cooldown_bars}"
+                        f"봉 경과 — 신규 진입 차단 [{signal.strategy_id}]"
                     )
                     return None
-                del self._stop_bar_ts[signal.symbol]  # 쿨다운 종료 — 상태 정리
-                self._stop_day.pop(signal.symbol, None)
+                del self._stop_bar_ts[key]  # 쿨다운 종료 — 상태 정리
+                self._stop_day.pop(key, None)
 
         if signal.action in _ENTRY_ACTIONS and self._pending_entry_qty is not None:
             # 미체결 중복 진입 가드(2026-09-01). `held_lot`/`my_lot`(strategy/kernel.py)이
@@ -938,10 +1159,13 @@ class RiskManagerImpl:
             if lot_qty > 0:
                 existing_qty = min(existing_qty, lot_qty)
             qty = existing_qty * signal.exit_fraction
-            if market == "KR" and signal.exit_fraction < 1:
+            if signal.exit_fraction < 1 and not self._fractional_sell_allowed(market, ctx):
                 qty = math.floor(qty)
                 if qty < 1:
-                    self._block(f"부분매도 수량 <1주 (보유 {existing_qty:g} x {signal.exit_fraction:g})")
+                    self._block(
+                        f"{market} 소수점 매도 불가 구간 — 분할 수량 <1주 "
+                        f"(보유 {existing_qty:g} x {signal.exit_fraction:g}) — 전량 청산 대기"
+                    )
                     return None
             side = Side.SELL
             is_stop_loss_exit = signal.action is SignalAction.EXIT_LONG and _STOP_LOSS_MARKER in signal.reason
@@ -1196,6 +1420,47 @@ class RiskManagerImpl:
             )
             return None
 
+        # 인트라데이 하드레일 진입 클램프(2026-09-03) — BUY(신규 진입)에만, 오버나이트
+        # 전략은 제외. Order.stop/target 뿐 아니라 전략이 직접 관리하는 lot 상태
+        # (Signal.state_update)도 같은 값을 보게 한다 — 안 그러면 pullback_impulse/
+        # llm_trader처럼 lot["stop"]으로 스스로 청산을 판단하는 전략(quant/trade/
+        # loop.py의 `lot["stop"]` 읽기 지점 참고)은 클램프 이전 값을 계속 본다.
+        # state_update는 frozen Signal의 필드지만 그 값(dict) 자체는 가변이라 여기서
+        # 갱신해도 안전하다 — loop._execute_signal이 Fill 확인 후 이 dict를 그대로
+        # lot에 반영한다.
+        order_stop = signal.stop if side is Side.BUY else None
+        order_target = signal.target if side is Side.BUY else None
+        if side is Side.BUY and self._intraday_rail_applies(signal.strategy_id):
+            hard_floor = price * (1 - self.intraday_hard_stop_pct)
+            if order_stop is None:
+                logger.info(
+                    "장중 하드레일: %s/%s 손절 미지정 — -%.1f%% 부착(%.4f, 진입가 %.4f)",
+                    signal.strategy_id, signal.symbol, self.intraday_hard_stop_pct * 100,
+                    hard_floor, price,
+                )
+                order_stop = hard_floor
+            elif order_stop < hard_floor:
+                logger.info(
+                    "장중 하드레일: %s/%s 손절 클램프 %.4f → %.4f (진입가 %.4f, 상한 -%.1f%%)",
+                    signal.strategy_id, signal.symbol, order_stop, hard_floor, price,
+                    self.intraday_hard_stop_pct * 100,
+                )
+                order_stop = hard_floor
+            hard_ceiling = price * (1 + self.intraday_max_target_pct)
+            if order_target is not None and order_target > hard_ceiling:
+                logger.info(
+                    "장중 하드레일: %s/%s 목표 클램프 %.4f → %.4f (진입가 %.4f, 상한 +%.1f%%)",
+                    signal.strategy_id, signal.symbol, order_target, hard_ceiling, price,
+                    self.intraday_max_target_pct * 100,
+                )
+                order_target = hard_ceiling
+            state_update = signal.state_update
+            if isinstance(state_update, dict):
+                if "stop" in state_update:
+                    state_update["stop"] = order_stop
+                if "target" in state_update and order_target is not None:
+                    state_update["target"] = order_target
+
         if is_stop_loss_exit:
             # 이 조회(쿨다운 재진입 판정용 마지막 손절 봉 시각 기록)는 **매도 자체에
             # 필요한 데이터가 아니다** — 순전히 부기다. 매도 Order는 이미 위에서 qty
@@ -1219,9 +1484,13 @@ class RiskManagerImpl:
                     "(매도 승인은 계속)", signal.symbol, type(e).__name__, e,
                 )
             if bars is not None and len(bars) > 0:
-                self._stop_bar_ts[signal.symbol] = bars.index[-1]
-                self._stop_day[signal.symbol] = today
-            if signal.strategy_id in self.cooldown_eod_strategies:
+                # 손절을 낸 (심볼, 전략)만 잠근다 — 같은 종목을 다른 논지로 보는
+                # 다른 전략은 영향받지 않는다(2026-09-03 감사 C4).
+                stop_key = (signal.symbol, signal.strategy_id)
+                self._stop_bar_ts[stop_key] = bars.index[-1]
+                self._stop_day[stop_key] = today
+            if (signal.strategy_id in self.cooldown_eod_strategies
+                    or _base_strategy_id(signal.strategy_id) in self.cooldown_eod_strategies):
                 # 봉 조회 실패와 무관하게 기록한다 — 이 레일은 봉 카운트가 아니라
                 # 거래일 비교로 판정하므로 조용한 no-op 이 될 이유가 없다.
                 self._eod_stopped[(signal.strategy_id, signal.symbol)] = today
@@ -1248,9 +1517,11 @@ class RiskManagerImpl:
             strategy_id=signal.strategy_id,
             reason=signal.reason,
             # 브로커 어댑터가 서버측 조건주문(손절/OCO)을 거는 데 쓴다. 진입에만
-            # 의미가 있으므로 청산 주문에는 싣지 않는다.
-            stop=signal.stop if side is Side.BUY else None,
-            target=signal.target if side is Side.BUY else None,
+            # 의미가 있으므로 청산 주문에는 싣지 않는다. 위 인트라데이 하드레일이
+            # 이미 클램프한 값이다(오버나이트 전략/SELL은 order_stop/order_target이
+            # 원래 signal.stop/target·None 그대로다).
+            stop=order_stop,
+            target=order_target,
             # 결정 시점 시세 — 브로커 의도 저널 → TCA(슬리피지 측정)의 기준가.
             ref_price=price,
         )

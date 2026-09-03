@@ -86,6 +86,44 @@ def _market_of(symbol: str) -> str:
     return "KR" if (symbol.isdigit() and len(symbol) == 6) else "US"
 
 
+# `quant.apps.cli.cmd_seed_real`이 이식 정리 매도에 남기는 마커. **원장을 읽는
+# 모든 집계의 단일 출처**다 (2026-09-02): 이 판별식이 performance.py 에만 있었던
+# 탓에 공개 JSON 은 이식 정리를 뺐는데 `session_pnl_summary`(텔레그램·daily-wrap·
+# pnl-attribution 이 전부 이걸 쓴다)는 안 빼서, 2026-09-01 US 세션이 프로그램
+# 매매 -$102.90 인데 -$1,214.65 로 발송됐다. 새 집계는 여기서 가져다 쓴다.
+SEEDING_LIQUIDATION_MARKER = "실계좌 이식 정리"
+
+
+def is_seeding_liquidation(trade: dict) -> bool:
+    """이 체결이 실계좌 이식 시 물려받은 레거시 포지션의 정리 매도인가.
+
+    프로그램의 매매 판단이 아니므로 성과·세션 손익에서 빼야 한다. `strategy_id`
+    (`legacy`)가 아니라 `reason` 마커로 판별한다 — strategy_id 는 다른 목적으로도
+    쓰일 수 있지만 이 문구는 `cmd_seed_real` 한 곳에서만 나온다."""
+    return SEEDING_LIQUIDATION_MARKER in str(trade.get("reason") or "")
+
+
+def seeding_boundary_ts(trades: list[dict]) -> datetime | None:
+    """paper→real_seeded 경계 시각 = 이식 정리 매도 행들의 **최대 ts**.
+
+    이식 이벤트가 없으면 None. `quant.control.performance._boundary_ts`와 같은
+    정의를 쓴다 — 두 곳이 서로 다른 경계를 쓰면 공개 JSON 과 스코어보드가
+    갈라진다."""
+    best: datetime | None = None
+    for t in trades:
+        if not is_seeding_liquidation(t):
+            continue
+        try:
+            ts = datetime.fromisoformat(str(t.get("ts")))
+        except ValueError:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if best is None or ts > best:
+            best = ts
+    return best
+
+
 class TradeLedgerSink:
     """EventSink 래퍼 — 체결을 JSONL 원장에 추가 기록한다."""
 
@@ -123,6 +161,11 @@ class TradeLedgerSink:
                 # 체결 직후 현금 스냅샷 — 원장↔현금 갭의 발생 지점을 기록으로 특정
                 # (2026-08-11 160,974원 미설명 갭의 교훈). 구버전 Fill엔 없다.
                 "cash_after": getattr(fill, "cash_after", None),
+                # 체결 직후 USD 현금 풀 스냅샷(2026-09-02 추가, additive). `cash_after`는
+                # 시장 무관 항상 KRW 풀이라 US 체결의 현금 변화를 전혀 담지 못했고,
+                # 그래서 세션 리포트가 "US … 계좌 현금 변화 +0원"이라는 거짓을 찍었다.
+                # dual_currency=False(백테스트 등)나 구버전 행에는 없다 — None.
+                "cash_after_usd": getattr(fill, "cash_after_usd", None),
                 # 트레이더의 시그널 기록(2026-08-26 소유자 조직도 역할 4·5) —
                 # "진입 당시 시그널이 어디서 나온건지 트레이더가 기록해줘야,
                 # 장 종료 후 5번 직원이 그걸 보고 피드백을 준다." 패턴A/B·구조
@@ -229,18 +272,64 @@ def round_trips(trades: list[dict]) -> list[dict]:
     트립 pnl = 매도 체결들의 realized_pnl 합(수수료 차감 전) - 트립 전체 수수료.
     realized_pnl이 None(브로커가 원가를 모름)인 체결이 낀 트립은 pnl_known=False로
     표시하고 승패 집계에서 제외한다 — 모르는 것을 0으로 위장하지 않는다.
+
+    ## 실계좌 이식은 **시대 경계**다 (2026-09-02)
+
+    `cmd_seed_real`은 Portfolio 를 실계좌 스냅샷으로 갈아끼우면서 원장에는
+    상계 행을 남기지 않는다. 그래서 이 함수가 원장을 재생하면 이식 시점에
+    열려 있던 lot 이 영원히 남아, 19개 (전략,종목) 쌍에 유령 재고가 생겼다
+    (실측: llm_trader 024110 원장 106주 / 실제 0주). 결과는 두 가지다 —
+    ①이식 후의 정상 왕복이 유령 재고에 가려 트립으로 안 세지고(2026-09-01
+    gap_fade TQQQ +$1.13), ②이식으로 물려받은 주식을 나중에 팔면 모의 시대
+    매수와 짝지어져 **없던 트립이 만들어진다**.
+
+    그래서 `seeding_boundary_ts()` 시점에 열린 lot 을 전부 버린다(그건 트립이
+    아니다). 경계 이후 재고 없는 매도는 아무것도 열지도 닫지도 않고 건너뛴다
+    — 경계를 가로질러 짝지우지 않는다. 이식 정리 매도 행 자체도 집계에서 뺀다.
+
+    **이월 보유(2026-09-01 이식의 005930 6주)는 원장에 이관 행이 없다** —
+    `cmd_seed_real`이 남긴 7행은 전부 정리 *매도*고 이월분에 대한 행은 없다.
+    따라서 이 함수는 그 보유에 대해 라운드트립을 만들 수 없다(원가를 모른다).
+    그 손익은 세션 손익(`session_pnl_summary`)에만 나타난다.
     """
+    boundary_ts = seeding_boundary_ts(trades)
+
+    def _ts(row: dict) -> datetime | None:
+        try:
+            d = datetime.fromisoformat(str(row.get("ts")))
+        except ValueError:
+            return None
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
     by_key: dict[tuple[str, str], list[dict]] = {}
     for t in sorted(trades, key=lambda x: str(x.get("ts", ""))):
+        if is_seeding_liquidation(t):
+            continue  # 프로그램의 매매 판단이 아니다 — 트립 재료가 아니다
         by_key.setdefault((str(t.get("strategy_id", "?")), str(t["symbol"])), []).append(t)
 
     trips: list[dict] = []
     for (strategy, symbol), fills in by_key.items():
         qty = 0.0
         cur: list[dict] = []
+        crossed = False
         for f in fills:
             side = str(f.get("side", "")).upper()
             f_qty = float(f.get("qty", 0) or 0)
+            if boundary_ts is not None and not crossed:
+                ts = _ts(f)
+                if ts is not None and ts > boundary_ts:
+                    crossed = True
+                    if cur:
+                        logger.debug(
+                            "이식 경계에서 미종결 lot 폐기: %s/%s %d체결",
+                            strategy, symbol, len(cur),
+                        )
+                    qty, cur = 0.0, []
+            if crossed and not cur and side != "BUY":
+                # 이식으로 물려받은 주식의 매도 — 짝지을 진입이 이 시대에 없다.
+                # 모의 시대 매수와 엮으면 없던 트립을 지어내는 셈이다.
+                logger.debug("이식 경계 이후 재고 없는 매도 건너뜀: %s/%s", strategy, symbol)
+                continue
             qty += f_qty if side == "BUY" else -f_qty
             cur.append(f)
             if cur and abs(qty) < 1e-9:
@@ -338,6 +427,151 @@ def scoreboard_text(trips: list[dict], title: str = "누적 스코어보드") ->
     return "\n".join(lines)[:3500]
 
 
+# --- A/B 갈래 비교 (2026-09-03) -----------------------------------------------
+# 질문 하나만 답하는 계산이다: **"촉매(뉴스·수급) 있는 종목만 골라 매매하면
+# 실제로 더 버는가?"** 같은 전략 클래스를 두 갈래로 나란히 돌리고(설정의
+# `universe_filter` — `quant/trade/strategy/__init__.py`), 두 갈래가 **서로 겹치지
+# 않는 종목 집합**을 보게 만들었으므로 원장의 `strategy_id` 만으로 비교가 성립한다.
+#
+# 규율은 스코어보드와 같다: 표본이 얇으면 숫자를 내지 않고 "판단 불가"라고 쓴다.
+# 여기서는 **양쪽 갈래 모두** MIN_TRIPS_FOR_JUDGEMENT 를 넘어야 판정한다 — 한쪽만
+# 30건이어도 차이의 신뢰구간은 얇은 쪽 분산이 지배해 아무 말도 못 한다.
+
+CATALYST_ARM_SUFFIX = "_cat"
+
+
+def base_strategy_id(strategy_id: str) -> str:
+    """A/B 촉매 갈래 id(`scalp_1m_cat`) → 기준 전략 id(`scalp_1m`).
+
+    갈래 id 는 settings.yaml 의 **블록 키**이고 두 갈래는 같은 `class:`를 쓴다 —
+    즉 접미사를 벗기면 클래스 단위 처리(오버나이트 판정·보호 목록·표시명)가
+    그대로 상속된다. 접미사가 없으면 그대로 돌려준다."""
+    sid = str(strategy_id or "")
+    return sid[: -len(CATALYST_ARM_SUFFIX)] if sid.endswith(CATALYST_ARM_SUFFIX) else sid
+
+
+def ab_pairs_from_config(cfg: dict) -> list[str]:
+    """설정에서 A/B 쌍을 찾는다 → 기준 전략 id 목록(정렬).
+
+    쌍의 정의는 "`<id>` 와 `<id>_cat` 이 **둘 다** `strategies:` 에 있다"이다.
+    비활성(enabled: false) 갈래도 포함한다 — 한쪽을 끈 뒤에도 지금까지 쌓인
+    표본을 계속 비교해야 "왜 껐는지"가 숫자로 남는다."""
+    ids = set((cfg or {}).get("strategies", {}) or {})
+    return sorted(
+        base_strategy_id(sid) for sid in ids
+        if sid.endswith(CATALYST_ARM_SUFFIX) and base_strategy_id(sid) in ids
+    )
+
+
+def _arm_stats(trips: list[dict]) -> dict:
+    """한 갈래의 요약. `bps`는 이미 수수료 차감 후다(`round_trips`: pnl = 실현손익 - 수수료)."""
+    known = [t for t in trips if t.get("pnl_known")]
+    n = len(known)
+    wins = sum(1 for t in known if float(t.get("pnl", 0.0)) > 0)
+    bps = [float(t.get("bps", 0.0)) for t in known]
+    lower, upper = _wilson_ci(wins, n)
+    return {
+        "n": n,
+        "n_unknown": len(trips) - n,
+        "wins": wins,
+        "win_rate": (wins / n) if n else None,
+        "win_ci": (lower, upper),
+        "expectancy_bp": (sum(bps) / n) if n else None,
+        "net_pnl": sum(float(t.get("pnl", 0.0)) for t in known),
+        "fees": sum(float(t.get("fees", 0.0)) for t in known),
+        "_bps": bps,
+    }
+
+
+def _mean(xs: list[float]) -> float:
+    return sum(xs) / len(xs) if xs else 0.0
+
+
+def _var(xs: list[float]) -> float:
+    """표본분산(자유도 n-1). n<2 면 0."""
+    if len(xs) < 2:
+        return 0.0
+    m = _mean(xs)
+    return sum((x - m) ** 2 for x in xs) / (len(xs) - 1)
+
+
+def _permutation_p(a: list[float], b: list[float], iters: int = 2000, seed: int = 42) -> float | None:
+    """평균 차이(a-b)의 양측 순열검정 p값. 표본이 얇으면 None.
+
+    정규성 가정이 필요 없다 — 트립 bp 분포는 꼬리가 두껍고(손절 클러스터 + 드문
+    큰 승리) t검정 가정을 만족하지 않는다. **시드를 고정**해 같은 원장에서 같은
+    p값이 나오게 한다(리포트가 실행마다 흔들리면 판단 근거로 못 쓴다)."""
+    if len(a) < 2 or len(b) < 2:
+        return None
+    import random
+
+    observed = abs(_mean(a) - _mean(b))
+    pool = a + b
+    n_a = len(a)
+    rng = random.Random(seed)
+    hits = 0
+    for _ in range(iters):
+        rng.shuffle(pool)
+        if abs(_mean(pool[:n_a]) - _mean(pool[n_a:])) >= observed - 1e-12:
+            hits += 1
+    # (hits+1)/(iters+1) — 관측 자체를 순열 하나로 세는 관례. p=0 을 만들지 않는다.
+    return (hits + 1) / (iters + 1)
+
+
+def ab_compare(
+    trips: list[dict], bases: list[str] | None = None,
+    min_trips: int = MIN_TRIPS_FOR_JUDGEMENT, permutations: int = 2000,
+) -> list[dict]:
+    """A/B 갈래 비교표 — (기준 전략, 시장)마다 한 행. **순수 계산, 출력 없음**.
+
+    `bases`는 설정에서 온 기준 id 목록(`ab_pairs_from_config`). 원장에 `_cat`
+    트립이 이미 있으면 그것도 자동으로 합친다 — 설정에서 갈래를 지운 뒤에도
+    과거 표본은 계속 보인다.
+
+    행 하나:
+      base/market/baseline/catalyst/delta_expectancy_bp/delta_ci/p_value/
+      judgeable/reason
+
+    `judgeable=False`면 `delta_*`·`p_value`가 전부 None 이고 `reason`이
+    "판단 불가(n<30)"다 — 호출부는 그 문구를 그대로 쓴다(임계를 새로 만들지
+    않는다: 이 저장소의 표본선은 `MIN_TRIPS_FOR_JUDGEMENT` 하나뿐이다)."""
+    by_arm: dict[tuple[str, str], list[dict]] = {}
+    for t in trips:
+        sid = str(t.get("strategy", "?"))
+        by_arm.setdefault((sid, str(t.get("market") or "US")), []).append(t)
+
+    seen_bases = {base_strategy_id(sid) for sid, _ in by_arm if sid.endswith(CATALYST_ARM_SUFFIX)}
+    all_bases = sorted(set(bases or []) | seen_bases)
+
+    rows: list[dict] = []
+    for base in all_bases:
+        cat = base + CATALYST_ARM_SUFFIX
+        markets = sorted({m for (sid, m) in by_arm if sid in (base, cat)})
+        for market in markets or [None]:
+            b_trips = by_arm.get((base, market), []) if market else []
+            c_trips = by_arm.get((cat, market), []) if market else []
+            baseline, catalyst = _arm_stats(b_trips), _arm_stats(c_trips)
+            judgeable = baseline["n"] >= min_trips and catalyst["n"] >= min_trips
+            row = {
+                "base": base, "catalyst_id": cat, "market": market,
+                "baseline": baseline, "catalyst": catalyst,
+                "delta_expectancy_bp": None, "delta_ci": None, "p_value": None,
+                "judgeable": judgeable,
+                "reason": "" if judgeable else f"판단 불가(n<{min_trips})",
+            }
+            if judgeable:
+                a, b = catalyst["_bps"], baseline["_bps"]
+                delta = _mean(a) - _mean(b)
+                # Welch(등분산 가정 없음) 정규근사 — 두 갈래의 표본 수도 분산도
+                # 다를 수밖에 없다(촉매 갈래는 종목이 적다).
+                se = math.sqrt(_var(a) / len(a) + _var(b) / len(b))
+                row["delta_expectancy_bp"] = delta
+                row["delta_ci"] = (delta - _Z_95 * se, delta + _Z_95 * se)
+                row["p_value"] = _permutation_p(a, b, iters=permutations)
+            rows.append(row)
+    return rows
+
+
 # --- 세션(장 마감 후) 손익 리포트 ---------------------------------------------
 # 누적 스코어보드(bps/승률)와 달리 여기는 "이번 세션에 실제 얼마를 벌었나"를
 # 실화폐 단위로 보여준다(2026-08-13 사용자 요청). 세션 경계는 시장별 **현지
@@ -408,16 +642,59 @@ def session_cash_delta_krw(all_trades: list[dict], session_trades: list[dict]) -
     return (total if known > 0 else None), unknown
 
 
+def session_cash_delta_usd(all_trades: list[dict], session_trades: list[dict]) -> tuple[float | None, int]:
+    """세션 체결들이 **USD 현금 풀**에 미친 변화 합계와, 계산 불가 건수.
+
+    `session_cash_delta_krw`와 같은 알고리즘을 `cash_after_usd`(2026-09-02 추가)에
+    적용한 것뿐이다. KR 체결도 이 필드를 남기지만 USD 풀을 건드리지 않으므로
+    연속 두 값의 차가 0이라 합계에 기여하지 않는다 — 시장으로 거르지 않아도
+    맞는다(오히려 걸러내면 KR 체결을 사이에 낀 US 체결의 델타를 잃는다).
+
+    `cash_after_usd`가 하나도 없으면(구 형식 원장, dual_currency=False) None —
+    0으로 위장하지 않는다."""
+    ordered = sorted(all_trades, key=lambda x: str(x.get("ts", "")))
+    delta_of: dict[int, float] = {}
+    prev_cash: float | None = None
+    for t in ordered:
+        cash_after = t.get("cash_after_usd")
+        if cash_after is not None:
+            if prev_cash is not None:
+                delta_of[id(t)] = float(cash_after) - prev_cash
+            prev_cash = float(cash_after)
+    total = 0.0
+    unknown = 0
+    for t in session_trades:
+        d = delta_of.get(id(t))
+        if d is None:
+            unknown += 1
+        else:
+            total += d
+    known = len(session_trades) - unknown
+    return (total if known > 0 else None), unknown
+
+
 def session_pnl_summary(all_trades: list[dict], market: str, on: date) -> dict:
     """market·on 세션의 실현손익/수수료/현금변화 요약(구조화 dict, 통화 무관 축 없음).
 
     `all_trades`는 원장 **전체**(시장 무관)를 받는다 — session_cash_delta_krw가
-    세션 밖 체결까지 봐야 정확한 델타를 계산할 수 있어서다."""
-    session = trades_in_session(all_trades, market, on)
+    세션 밖 체결까지 봐야 정확한 델타를 계산할 수 있어서다.
+
+    **실계좌 이식 정리 매도는 빼고 센다**(2026-09-02, `is_seeding_liquidation`).
+    프로그램의 매매 판단이 아닌 일회성 정리라서다 — 안 빼면 2026-09-01 US 세션이
+    프로그램 매매 -$102.90 인데 -$1,214.65 로 발송된다(실측). 다만 조용히
+    버리지는 않는다: 건수와 총액을 `excluded_seeding`에 담아 텍스트가 한 줄로
+    밝힌다."""
+    in_window = trades_in_session(all_trades, market, on)
+    session = [t for t in in_window if not is_seeding_liquidation(t)]
+    seeding = [t for t in in_window if is_seeding_liquidation(t)]
     sells = [t for t in session if str(t.get("side", "")).upper() != "BUY"]
     buys = [t for t in session if str(t.get("side", "")).upper() == "BUY"]
 
     def _bucket(rows: list[dict], key) -> dict[str, dict]:
+        # 알려진 한계(F8, 2026-09-02): 진입 수수료는 **매수한 세션**에 잡히고
+        # 실현손익은 청산한 세션에 잡힌다 — 세션을 걸쳐 보유한 왕복은 두 세션의
+        # 전략별 순손익이 각각 그만큼 어긋난다(누적 스코어보드 `round_trips`는
+        # 트립 단위라 이 문제가 없다).
         out: dict[str, dict] = {}
         for t in rows:
             k = str(key(t))
@@ -436,6 +713,7 @@ def session_pnl_summary(all_trades: list[dict], market: str, on: date) -> dict:
     gross = sum(float(t["realized_pnl"]) for t in known_sells)
     fees = sum(float(t.get("fee", 0) or 0) for t in session)
     cash_delta, cash_unknown = session_cash_delta_krw(all_trades, session)
+    cash_delta_usd, cash_usd_unknown = session_cash_delta_usd(all_trades, session)
 
     return {
         "market": market,
@@ -450,6 +728,16 @@ def session_pnl_summary(all_trades: list[dict], market: str, on: date) -> dict:
         "unknown_sells": unknown_sells,
         "cash_delta_krw": cash_delta,
         "cash_delta_unknown": cash_unknown,
+        "cash_delta_usd": cash_delta_usd,
+        "cash_delta_usd_unknown": cash_usd_unknown,
+        # 이식 정리 매도 — 성과에서 뺐다는 사실 자체를 숨기지 않기 위한 버킷.
+        "excluded_seeding": {
+            "n": len(seeding),
+            "gross": sum(
+                float(t["realized_pnl"]) for t in seeding if t.get("realized_pnl") is not None
+            ),
+            "fees": sum(float(t.get("fee", 0) or 0) for t in seeding),
+        },
         "by_strategy": _bucket(session, lambda t: t.get("strategy_id", "?")),
         "by_symbol": _bucket(session, lambda t: t["symbol"]),
     }
@@ -464,8 +752,21 @@ def session_pnl_text(summary: dict) -> str:
         f"({start.strftime('%Y-%m-%d %H:%M %Z')} ~ {end.strftime('%H:%M %Z')})",
         "",
     ]
+    # 이식 정리 제외 사실은 거래가 있든 없든 항상 밝힌다 — 조용히 빼면 원장 총액과
+    # 리포트가 안 맞는 이유를 아무도 모른다(2026-09-02).
+    seeding = summary.get("excluded_seeding") or {}
+    seeding_line = None
+    if seeding.get("n"):
+        net_seed = float(seeding["gross"]) - float(seeding["fees"])
+        seeding_line = (
+            f"이식 정리 {seeding['n']}건 제외: {_fmt_amount(net_seed, market)}"
+            " (프로그램 매매 아님 — 실계좌 이식 시 물려받은 레거시 청산)"
+        )
+
     if not summary["has_trades"]:
         lines.append("이 세션에 체결된 거래 없음")
+        if seeding_line:
+            lines.append(seeding_line)
         return "\n".join(lines)
 
     lines.append(f"체결 {summary['n_fills']}건 (매수 {summary['n_buys']} · 매도 {summary['n_sells']})")
@@ -476,17 +777,34 @@ def session_pnl_text(summary: dict) -> str:
     )
     lines.append(f"수수료 합계 {_fmt_amount(summary['fees'], market)}")
     lines.append(f"실현손익(순, 수수료 차감) {_fmt_amount(summary['net_realized'], market)}")
+    if seeding_line:
+        lines.append(seeding_line)
     lines.append("")
 
-    cash_delta = summary["cash_delta_krw"]
-    cu = summary["cash_delta_unknown"]
-    if cash_delta is not None:
-        lines.append(
-            f"계좌 현금 변화(KRW, paper 브로커 체결시점 환산 반영) {cash_delta:+,.0f}원"
-            + (f" (계산불가 {cu}건 제외)" if cu else "")
-        )
+    if market == "US":
+        # US 체결은 KRW 풀을 건드리지 않는다(dual_currency 지갑 분리) — KRW 델타를
+        # 찍으면 "+0원"이라는 거짓이 나간다(2026-09-02 실측). USD 풀로 답한다.
+        cash_delta = summary.get("cash_delta_usd")
+        cu = summary.get("cash_delta_usd_unknown", 0)
+        if cash_delta is not None:
+            lines.append(
+                f"계좌 USD 현금 변화 ${cash_delta:+,.2f}"
+                + (f" (계산불가 {cu}건 제외)" if cu else "")
+            )
+        else:
+            lines.append(
+                "계좌 USD 현금 변화: 집계 불가(구 형식 — cash_after_usd 없는 원장 행)"
+            )
     else:
-        lines.append("계좌 현금 변화: 계산 불가 (cash_after 없음 — 라이브 체결이거나 원장에 없음)")
+        cash_delta = summary["cash_delta_krw"]
+        cu = summary["cash_delta_unknown"]
+        if cash_delta is not None:
+            lines.append(
+                f"계좌 현금 변화(KRW, paper 브로커 체결시점 환산 반영) {cash_delta:+,.0f}원"
+                + (f" (계산불가 {cu}건 제외)" if cu else "")
+            )
+        else:
+            lines.append("계좌 현금 변화: 계산 불가 (cash_after 없음 — 라이브 체결이거나 원장에 없음)")
     lines.append("")
 
     lines.append("전략별:")

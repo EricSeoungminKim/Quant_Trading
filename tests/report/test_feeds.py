@@ -601,3 +601,36 @@ def test_fetch_conditional_backward_compat_empty_cache_behaves_like_full_fetch(m
     assert len(items) == 2
     assert entry == {}
     assert status == "ok"
+
+
+# ── 상한 절단 신호(FEED_LIMIT, 2026-09-03) ──────────────────────────────
+#
+# FEED_LIMIT(300)은 폭주 방지용 안전선이지 표본 크기가 아니다(모듈 상단 주석
+# 참고) — 피드가 정확히 상한만큼 돌려주면 "그 피드가 실제로 더 줬을 수 있다"
+# 는 신호라 WARNING 을 남겨야 한다.
+
+def test_fetch_news_warns_when_feed_hits_the_cap(monkeypatch, caplog):
+    import quant.collect.sources.feeds as feeds_mod
+
+    capped = [{"title": f"t{i}", "link": f"https://x/{i}", "published": None, "outlet": ""}
+              for i in range(feeds_mod.FEED_LIMIT)]
+    monkeypatch.setattr(feeds_mod, "NEWS_FEEDS", {"KR": {"꽉찬매체": "https://ok.example/feed"}})
+    monkeypatch.setattr(feeds_mod, "_fetch_one", lambda url: capped)
+
+    with caplog.at_level("WARNING", logger="quant.collect.sources.feeds"):
+        feeds_mod.fetch_news("KR")
+
+    assert any("꽉찬매체" in r.message for r in caplog.records)
+
+
+def test_fetch_news_does_not_warn_when_below_the_cap(monkeypatch, caplog):
+    import quant.collect.sources.feeds as feeds_mod
+
+    below = [{"title": "t", "link": "https://x/1", "published": None, "outlet": ""}]
+    monkeypatch.setattr(feeds_mod, "NEWS_FEEDS", {"KR": {"정상매체": "https://ok.example/feed"}})
+    monkeypatch.setattr(feeds_mod, "_fetch_one", lambda url: below)
+
+    with caplog.at_level("WARNING", logger="quant.collect.sources.feeds"):
+        feeds_mod.fetch_news("KR")
+
+    assert not any("정상매체" in r.message for r in caplog.records)

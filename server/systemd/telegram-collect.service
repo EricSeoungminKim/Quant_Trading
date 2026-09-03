@@ -1,0 +1,46 @@
+# 텔레그램 채널 누적 수집 (2026-09-03) — news-collect@ 와 같은 이유로 리포트
+# 빌드에서 분리한다: `telegram_channels.fetch_all()`이 채널당 딱 최신 20개만
+# 주는 "최신 N건" 스냅샷이라, 30분마다 도는 이 유닛 없이 리포트 빌드 시점에만
+# 긁으면 그 사이 밀려난 메시지가 영구히 사라진다(뉴스 RSS 와 같은 문제,
+# `quant/collect/collector.py` 모듈 docstring 참고).
+#
+# news-collect@ 와 달리 시장(%i) 템플릿이 없다 — `telegram_channels.CHANNELS`
+# 자체가 이미 시장을 나누므로(market: "KR"/"US"/"BOTH") 채널 하나만 있으면
+# 된다. `report_cli collect --market KR --telegram`의 `--market` 값은 이
+# 경로에서 쓰이지 않는다(quant/apps/report_cli.py argparse 주석 참고) — KR을
+# 고정으로 넘길 뿐이다.
+[Unit]
+Description=Telegram channel collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/quant_trading_kiwoom
+Environment=TZ=Asia/Seoul
+# 2026-08-13 news-collect@ 와 같은 이유 — REDIS_URL 없으면 opstate 기록이
+# 조용히 사라진다. `-` 접두는 파일이 없어도 유닛이 뜨게 한다.
+EnvironmentFile=-/home/ubuntu/quant_trading_kiwoom/.env.local
+ExecStart=/home/ubuntu/quant_trading_kiwoom/.venv/bin/python -m quant.apps.report_cli collect --market KR --telegram
+
+# 채널 12개 순차 수집(0.5s 간격, telegram_channels.fetch_all) — news-collect@
+# 보다 훨씬 가볍다(RSS 36피드 병렬이 아니라 텔레그램 프리뷰 12개 순차).
+MemoryMax=200M
+CPUQuota=20%
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=300
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/quant_trading_kiwoom/data
+
+# 1.8GB 박스 — 거래 엔진(OOMScoreAdjust=-500)이 마지막까지 살아남아야 한다
+# (news-collect@ 와 같은 관례).
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

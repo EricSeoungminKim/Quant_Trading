@@ -78,13 +78,16 @@ url('https://cdn5.telesco.pe/file/...')">`로 얹는다 — `_BG_IMAGE_RE`가 �
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import lxml.html as LH
 
 from quant.adapters.http import client
+from quant.collect.sources.feeds import parse_published
 
 # 여기만 바꾸면 된다 — handle, 분류, market(KR|US|BOTH), tier(sector|macro|news).
 CHANNELS: list[dict] = [
@@ -290,3 +293,58 @@ def append_ledger(rows: list[dict], path: Path) -> int:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     return len(to_write)
+
+
+def load_window(path: Path, since: datetime, until: datetime | None = None) -> list[dict]:
+    """원장(`telegram_msgs.jsonl`)에서 `[since, until]` 발행 구간 메시지만,
+    최신순으로 돌려준다.
+
+    `load_ledger`는 원장 전체를 읽는다 — 이 함수는 그중 리포트 창에 해당하는
+    메시지만 골라 `fetch_all()`이 돌려주는 채널별 순서(최신순)와 같은 정렬로
+    맞춘다. `append_ledger`가 이미 (handle, msg_id) 중복을 막지만, 방어적으로
+    한 번 더 제거한다. 발행시각을 못 읽은 행은 버리지 않는다(`collector.
+    load_window`와 같은 원칙).
+    """
+    until = until or datetime.now(timezone.utc)
+    seen: set[tuple[str, str]] = set()
+    rows: list[dict] = []
+    for row in load_ledger(path):
+        dt = parse_published(row.get("published"))
+        if dt is not None and not (since <= dt <= until):
+            continue
+        key = (row.get("handle"), row.get("msg_id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(row)
+    rows.sort(
+        key=lambda r: parse_published(r.get("published")) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return rows
+
+
+def prune(path: Path, today: date, keep_days: int = 14) -> int:
+    """`telegram_msgs.jsonl`을 `keep_days`(기본 14일) 이내로 축소한다.
+
+    `collector.prune`(뉴스, 날짜별 파일 삭제)과 달리 이 원장은 파일 하나뿐이라
+    행 단위로 걸러 다시 쓴다. 발행시각을 못 읽은 행은 지우지 않는다(collector와
+    같은 원칙 — 모르는 것을 지우지 않는다). 지운 행 수를 반환한다."""
+    if not path.exists():
+        return 0
+    cutoff = today - timedelta(days=keep_days)
+    kept: list[dict] = []
+    removed = 0
+    for row in load_ledger(path):
+        dt = parse_published(row.get("published"))
+        if dt is not None and dt.date() < cutoff:
+            removed += 1
+            continue
+        kept.append(row)
+    if removed:
+        tmp = path.with_name(path.name + ".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            for row in kept:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        os.replace(tmp, path)
+    return removed

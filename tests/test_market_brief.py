@@ -406,6 +406,25 @@ def test_foreign_flow_candidate_symbols_unions_auto_watch_and_intraday_view():
     assert foreign_flow_candidate_symbols(p, "KR") == {"005930", "000660", "058820"}
 
 
+def test_foreign_flow_candidate_symbols_includes_already_tagged_symbols():
+    """2026-09-03 P1 수정 — 이미 FRGN/FRGN_EXIT 태그가 붙은 심볼은 그날 리포트
+    랭킹(AUTO_WATCH/intraday_view)에서 빠져도 계속 재평가 대상이어야 한다.
+    그렇지 않으면 적립 중인 종목이 리포트 순위에서만 빠져도 라벨이 다시는
+    계산되지 않아 이탈(FRGN_EXIT) 판정 자체가 영영 나지 않는다(실측: 원장
+    34매수/1매도, 2026-08-17~09-02)."""
+    p = {"auto_watch": "AUTO_WATCH: 005930:NEWS"}
+    assert foreign_flow_candidate_symbols(p, "KR", already_tagged={"001450", "066570"}) == {
+        "005930", "001450", "066570",
+    }
+
+
+def test_foreign_flow_candidate_symbols_already_tagged_is_kr_only():
+    """already_tagged도 US 리포트에서는 무시된다 — 외국인 수급 원장 자체가 KR
+    전용이라 US 심볼을 조회해봐야 라벨이 나오지 않는다."""
+    p = {"auto_watch": "AUTO_WATCH: NVDA:NEWS"}
+    assert foreign_flow_candidate_symbols(p, "US", already_tagged={"NVDA"}) == set()
+
+
 def test_close_brief_text_shows_intraday_candidates_not_auto_watch_none():
     """close payload에는 auto_watch가 없다 — brief_text()를 그대로 쓰면 후보가 있어도
     '없음'이 찍힌다. close_brief_text()는 실제 스키마(intraday_view)를 읽어야 한다."""

@@ -34,6 +34,15 @@ class DataNeeds:
     bars: tuple[tuple[str, str, int], ...] = ()   # (symbol, interval, count)
     quotes: tuple[str, ...] = ()
     needs_positions: bool = False
+    # 2026-09-02: 껍질(`PureStrategyShell._snapshot`)은 기본적으로 **닫힌 시장의
+    # 심볼은 조회하지 않는다** — 전략 대부분이 `snap.market_open` 이 False 면
+    # 아무것도 하지 않으므로 그 조회는 낭비이고, 그 낭비가
+    # `cold_fetch_budget_per_cycle` 을 먼저 소진해 열려 있는 시장의 손절 판정을
+    # 굶겼다. 프리마켓/시간외를 **의도적으로** 거래하는 전략(scalp_1m —
+    # `risk.extended_sessions`)만 이 값을 True 로 선언해 그 게이트를 끈다.
+    # 기본 False 가 안전측인 이유: 게이트가 걸려도 그 전략은 어차피 닫힌 시장에서
+    # 판단하지 않고, 반대로 열어두면 낭비가 손절을 굶긴다.
+    fetch_when_closed: bool = False
 
 
 @dataclass(frozen=True)

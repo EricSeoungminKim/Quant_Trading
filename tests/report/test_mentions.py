@@ -1,6 +1,55 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
-from quant.analyze.mentions import continuity
+from quant.analyze.mentions import collect_mentions, continuity
+from quant.collect.contracts import SourceResult, Snapshot
+
+UTC = timezone.utc
+
+
+# ── 뉴스 소스 유니언(2026-09-03) 소비 — collect_mentions 는 build_sources 의
+# "news" 소스가 만든 feeds dict 를 그대로 읽는다. 그게 저장소∪실시간 유니언
+# 결과든 실시간 단독이든 collect_mentions 입장에선 구분할 이유가 없다 — 이
+# 소비 지점이 실제로 그 계약을 지키는지, 그리고 그 자체로 네트워크를
+# 새로 타지 않는지(collect 평면 → trade 평면 경계와 별개로, collect_mentions
+# 은 순수 함수여야 한다)를 확인한다.
+
+def _snap_with_news(feeds: dict, market="KR") -> Snapshot:
+    news = SourceResult(
+        key="news", ok=True, data={"feeds": feeds}, error=None,
+        url="https://news.google.com", fetched_at=datetime(2026, 9, 2, tzinfo=UTC),
+        latency_ms=1,
+    )
+    return Snapshot(
+        schema_version=1, market=market, session_date=date(2026, 9, 2),
+        generated_at=datetime(2026, 9, 2, 7, 0, tzinfo=UTC), results={"news": news},
+    )
+
+
+def test_collect_mentions_reads_whatever_feeds_the_news_source_produced():
+    """`feeds` 가 저장소 유니언 결과든 실시간 단독이든 collect_mentions 은
+    구분 없이 그대로 읽는다 — merge 로직을 몰라도 된다는 게 계약이다."""
+    table = [("삼성전자", "005930")]
+    feeds = {
+        "저장소출처": [{"title": "삼성전자 신고가", "link": "https://x.com/1", "outlet": ""}],
+        "실시간출처": [{"title": "삼성전자 추가 상승", "link": "https://x.com/2", "outlet": ""}],
+    }
+    snap = _snap_with_news(feeds)
+
+    rows = collect_mentions(snap, table, market="KR")
+
+    assert {r["feed"] for r in rows} == {"저장소출처", "실시간출처"}
+    assert {r["link"] for r in rows} == {"https://x.com/1", "https://x.com/2"}
+    assert all(r["symbol"] == "005930" for r in rows)
+
+
+def test_collect_mentions_is_a_pure_function_of_the_snapshot():
+    """네트워크를 새로 타지 않는다 — snap.results["news"] 밖의 어떤 소스도
+    건드리지 않아야 한다(입력이 snap 하나뿐이라는 시그니처 자체가 이미 그
+    계약을 강제하지만, 명시적으로 문서화해 둔다)."""
+    import inspect
+
+    sig = inspect.signature(collect_mentions)
+    assert list(sig.parameters) == ["snap", "table", "market"]
 
 
 

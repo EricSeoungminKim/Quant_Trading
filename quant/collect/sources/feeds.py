@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import re
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
@@ -23,6 +24,8 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 from quant.adapters.http import client
+
+logger = logging.getLogger(__name__)
 
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
 
@@ -460,6 +463,10 @@ def fetch_news(market: str, since: datetime | None = None) -> dict:
     feeds: dict[str, list[dict]] = {}
     stats = {"fetched": 0, "kept": 0, "undated": 0, "empty_feeds": []}
     for name, items in raw.items():
+        if len(items) == FEED_LIMIT:
+            # 상한에 정확히 걸렸다 — 그 피드가 실제로 더 줬을 수 있다는 신호
+            # (FEED_LIMIT 상단 주석 참고, 상한은 폭주 방지용이지 표본 크기가 아니다).
+            logger.warning("피드 %s 가 상한(%d건)에 걸림 — 잘렸을 수 있음", name, FEED_LIMIT)
         kept, undated = filter_since(items, since)
         feeds[name] = kept
         stats["fetched"] += len(items)

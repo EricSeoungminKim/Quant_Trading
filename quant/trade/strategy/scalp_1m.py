@@ -1224,7 +1224,17 @@ class Scalp1mPureStrategy:
         bars = tuple((s, _INTERVAL, self._lookback_bars) for s in self.symbols)
         if self.trend_gate_mode != "off":
             bars += tuple((s, "1d", 40) for s in self.symbols)
-        return DataNeeds(bars=bars, quotes=tuple(self.symbols), needs_positions=True)
+        # `fetch_when_closed=True` (2026-09-02): 이 전략은 정규장 밖(프리마켓)에서
+        # 실제로 판단하고 진입한다 — `risk.extended_sessions.scalp_1m` 에 KR/US
+        # 창이 등록돼 있고 그 구간의 1분봉/현재가가 진입 근거다. 껍질의 기본
+        # 게이트("닫힌 시장은 조회하지 않는다")를 그대로 두면 프리마켓 진입이
+        # 데이터 없이 죽는다. 다른 순수 전략은 이 값을 켜지 않는다.
+        return DataNeeds(
+            bars=bars,
+            quotes=tuple(self.symbols),
+            needs_positions=True,
+            fetch_when_closed=True,
+        )
 
     def decide(self, snap: StrategySnapshot, state: Mapping[str, Any]) -> Decision:
         session_date: dict[str, dtdate] = dict(state.get("session_date", {}))

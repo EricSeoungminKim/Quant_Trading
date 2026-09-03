@@ -23,6 +23,16 @@
 `{MARKET}_close_engine.json` 전용 분기. 스키마가 아침판과 달라(auto_watch/symbols
 없음, 대신 intraday_view) 브리핑 본문도 `market_brief.close_brief_text()`로 따로
 포맷한다 — 아침용 `brief_text()`를 그대로 쓰면 "자동 편입 후보: 없음"이 항상 찍힌다.
+
+**FRGN/FRGN_EXIT 재평가 대상 확장 (2026-09-03 P1 수정)**: 외국인 수급 라벨
+후보(`foreign_flow_candidate_symbols`)에 그날 리포트 후보뿐 아니라 **현재
+관심종목 파일에 이미 FRGN/FRGN_EXIT 태그가 붙어 있는 심볼**도 합친다. 실측
+(원장 2026-08-17~09-02: frgn_accumulate 34매수/1매도) — 리포트 랭킹에서만
+후보를 뽑으면, 이미 적립 중인 종목이 그날 AUTO_WATCH/intraday_view에서 빠지는
+순간부터 라벨이 다시는 계산되지 않아 이탈 판정 자체가 나지 않는다(태그가 오래
+전 값으로 멈춘 채 `frgn_accumulate`가 계속 사들인다). 관심종목 읽기가 실패해도
+(파일 없음/파싱 오류) 리포트 후보만으로 계속 진행한다 — 이 확장은 부가 기능이지
+브리핑 발행의 필수 경로가 아니다.
 """
 from __future__ import annotations
 
@@ -48,6 +58,7 @@ from quant.analyze.market_brief import (  # noqa: E402
     is_fresh,
 )
 from quant.control import frgn_flow as frgn_flow_ledger  # noqa: E402
+from quant.trade.universe import FileWatchlistUniverse  # noqa: E402
 
 KST = ZoneInfo("Asia/Seoul")
 # 2026-08-13 저장소 흡수 후 리포트는 이 저장소의 out/ 에 쌓인다 — 기본값이 옛
@@ -73,6 +84,20 @@ def _foreign_flow_labels(report_dir: Path, symbols: set[str], days: int = 20) ->
     return out
 
 
+def _already_frgn_tagged(watchlist_path: str) -> set[str]:
+    """관심종목 파일에서 현재 FRGN/FRGN_EXIT 태그가 붙은 심볼 — 후보 확장용
+    (모듈 docstring "FRGN/FRGN_EXIT 재평가 대상 확장" 절). 읽기 실패는 조용히
+    빈 집합으로 폴백한다 — 이 확장이 브리핑 발행 자체를 막으면 안 된다."""
+    try:
+        tags_map = FileWatchlistUniverse(watchlist_path).tags()
+    except Exception:  # noqa: BLE001 — 폴백: 확장 없이 리포트 후보만 사용
+        return set()
+    return {
+        sym for sym, tags in tags_map.items()
+        if "FRGN" in tags or "FRGN_EXIT" in tags
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--market", required=True, choices=["KR", "US"])
@@ -82,6 +107,8 @@ def main() -> int:
     ap.add_argument("--url-base", default="", help="예: https://ip-172-31-63-20.tailfee6e9.ts.net")
     ap.add_argument("--session", default="live", choices=["live", "close"],
                     help="live(기본, 개장 전 08:12/21:50) | close(13:55 마감 포지션 리포트)")
+    ap.add_argument("--watchlist-path", default="data/watchlist.yaml",
+                    help="현재 관심종목 파일 (FRGN/FRGN_EXIT 재평가 대상 확장용, 기본: data/watchlist.yaml)")
     a = ap.parse_args()
 
     today = a.date or datetime.now(KST).date().isoformat()
@@ -127,7 +154,8 @@ def main() -> int:
     tokens += close_bet_tokens(payload)
 
     frgn_exit_symbols: list[str] = []
-    candidate_syms = foreign_flow_candidate_symbols(payload, a.market)
+    already_tagged = _already_frgn_tagged(a.watchlist_path) if a.market == "KR" else set()
+    candidate_syms = foreign_flow_candidate_symbols(payload, a.market, already_tagged=already_tagged)
     if candidate_syms:
         labels = _foreign_flow_labels(Path(a.report_dir), candidate_syms)
         frgn_tokens, frgn_exit_symbols = foreign_flow_tokens(labels)

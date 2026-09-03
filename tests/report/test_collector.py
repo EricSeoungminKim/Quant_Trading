@@ -439,3 +439,108 @@ def test_outcomes_already_filled_are_preserved_on_upgrade(tmp_path):
     rows = selections.load(path)
     assert rows[0]["close"] == 71000.0
     assert rows[0]["outcome_d1_bps"] == 120.0
+
+
+# --- 저장소 창 읽기 (`load_window`, 2026-09-03) ---
+#
+# 리포트 빌드가 실시간 RSS 만 읽으면 30분마다 쌓인 누적분의 극히 일부만 본다
+# (2026-09-02 EC2 실측: KR 21%, US 26%). `load_window`는 build_sources의 "news"
+# 소스가 실시간 결과와 유니언할 수 있게, 저장소에서 발행창에 맞는 기사를 피드별로
+# 묶어 돌려준다(`fetch_news`의 `feeds` 값과 같은 모양).
+
+from quant.collect.collector import load_window
+
+
+def test_load_window_returns_feeds_shape_grouped_by_feed(tmp_path, monkeypatch):
+    _fake_feed(monkeypatch, {
+        "A": [_item("기사1", "https://x.com/1", "Wed, 13 Aug 2026 09:00:00 +0900")],
+        "B": [_item("기사2", "https://x.com/2", "Wed, 13 Aug 2026 09:00:00 +0900")],
+    })
+    collect_once("KR", tmp_path, now=datetime(2026, 8, 13, 0, 0, tzinfo=UTC))
+
+    out = load_window(tmp_path, "KR", since=datetime(2026, 8, 12, tzinfo=UTC))
+
+    assert set(out.keys()) == {"A", "B"}
+    assert out["A"][0]["title"] == "기사1"
+    assert out["A"][0]["link"] == "https://x.com/1"
+    assert "outlet" in out["A"][0]
+
+
+def test_load_window_filters_out_of_range_articles(tmp_path, monkeypatch):
+    _fake_feed(monkeypatch, {"A": [
+        _item("이전 기사", "https://x.com/1", "Tue, 12 Aug 2026 09:00:00 +0900"),
+        _item("창 안 기사", "https://x.com/2", "Wed, 13 Aug 2026 09:00:00 +0900"),
+    ]})
+    collect_once("KR", tmp_path, now=datetime(2026, 8, 13, 1, 0, tzinfo=UTC))
+
+    out = load_window(
+        tmp_path, "KR",
+        since=datetime(2026, 8, 13, 0, 0, tzinfo=UTC),
+        until=datetime(2026, 8, 13, 2, 0, tzinfo=UTC),
+    )
+    titles = {it["title"] for items in out.values() for it in items}
+    assert titles == {"창 안 기사"}
+
+
+def test_load_window_keeps_undated_articles(tmp_path, monkeypatch):
+    """발행시각을 못 읽은 기사는 (수집일 기준으로 읽히는 파일 안에서는) 발행시각
+    필터로 걸러지지 않는다(`feeds.filter_since`와 같은 원칙) — 저장 파일 자체가
+    수집일(KST) 단위라 `since`/`until` 을 벗어난 날짜의 파일은 애초에 열리지
+    않는다는 전제 위에서다."""
+    _fake_feed(monkeypatch, {"A": [_item("날짜없음", "https://x.com/1", published=None)]})
+    collect_once("KR", tmp_path, now=datetime(2026, 8, 13, 1, 0, tzinfo=UTC))  # KST day 8/13
+
+    out = load_window(
+        tmp_path, "KR",
+        since=datetime(2026, 8, 13, 0, 0, tzinfo=UTC),
+        until=datetime(2026, 8, 13, 2, 0, tzinfo=UTC),
+    )
+    titles = {it["title"] for items in out.values() for it in items}
+    assert titles == {"날짜없음"}
+
+
+def test_load_window_spans_multiple_kst_day_files(tmp_path, monkeypatch):
+    """저장 파일은 **수집이 돈 날**(KST) 단위다(`collect_once`의 `day` 계산) —
+    창이 그 경계를 걸치면 두 파일 다 읽어야 한다."""
+    _fake_feed(monkeypatch, {"A": [_item("첫날", "https://x.com/1", "Wed, 12 Aug 2026 19:00:00 +0900")]})
+    collect_once("KR", tmp_path, now=datetime(2026, 8, 12, 10, 0, tzinfo=UTC))  # KST 8/12 19:00 → day 8/12
+    _fake_feed(monkeypatch, {"A": [_item("둘째날", "https://x.com/2", "Thu, 13 Aug 2026 05:00:00 +0900")]})
+    collect_once("KR", tmp_path, now=datetime(2026, 8, 12, 20, 0, tzinfo=UTC))  # KST 8/13 05:00 → day 8/13
+
+    assert store_path(tmp_path, "KR", date(2026, 8, 12)).exists()
+    assert store_path(tmp_path, "KR", date(2026, 8, 13)).exists()
+
+    out = load_window(
+        tmp_path, "KR",
+        since=datetime(2026, 8, 12, 9, 0, tzinfo=UTC),
+        until=datetime(2026, 8, 12, 21, 0, tzinfo=UTC),
+    )
+    titles = {it["title"] for items in out.values() for it in items}
+    assert titles == {"첫날", "둘째날"}
+
+
+def test_load_window_missing_store_returns_empty(tmp_path):
+    assert load_window(tmp_path, "KR", since=datetime(2026, 8, 13, tzinfo=UTC)) == {}
+
+
+# --- 상한 절단 신호(FEED_LIMIT, 2026-09-03) — collect_once 경로 ---
+
+def test_collect_once_warns_when_feed_hits_the_cap(tmp_path, monkeypatch, caplog):
+    from quant.collect.sources.feeds import FEED_LIMIT
+
+    capped = [_item(f"t{i}", f"https://x.com/{i}") for i in range(FEED_LIMIT)]
+    _fake_feed(monkeypatch, {"꽉찬매체": capped})
+
+    with caplog.at_level("WARNING", logger="quant.collect.collector"):
+        collect_once("KR", tmp_path, now=datetime(2026, 8, 13, tzinfo=UTC))
+
+    assert any("꽉찬매체" in r.message for r in caplog.records)
+
+
+def test_collect_once_does_not_warn_below_the_cap(tmp_path, monkeypatch, caplog):
+    _fake_feed(monkeypatch, {"정상매체": [_item("a", "https://x.com/1")]})
+
+    with caplog.at_level("WARNING", logger="quant.collect.collector"):
+        collect_once("KR", tmp_path, now=datetime(2026, 8, 13, tzinfo=UTC))
+
+    assert not any("정상매체" in r.message for r in caplog.records)

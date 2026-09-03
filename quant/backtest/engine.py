@@ -184,6 +184,7 @@ def run_backtest(
     end: datetime | pd.Timestamp | None = None,
     param_overrides: dict | None = None,
     symbols: list[str] | None = None,
+    history_dir: str | Path | None = None,
 ) -> BacktestResult:
     """`end`/`param_overrides`는 quant/research/(walk-forward·파라미터 탐색)가
     임의의 과거 구간·파라미터 조합으로 이 함수를 반복 호출하기 위해 추가된 것 —
@@ -244,7 +245,14 @@ def run_backtest(
         # 실데이터: data/history/의 파티션 전체를 로드 — 리플레이 구간 앞의 워밍업은
         # 디스크에 이미 있는 과거 데이터가 자연히 커버한다(StubDataFeed의 합성
         # _WARMUP_DAYS 개념이 필요 없다).
-        data = HistoryDataFeed(symbols)
+        # history_dir: 파티션 루트를 호출자가 지정할 수 있게 한다(기본값은 이 저장소의
+        # data/history). 별도 데이터 레이크(quant-backtest 저장소의 data/bars 등)를
+        # 같은 레이아웃으로 두고 그쪽을 리플레이하기 위한 것 — **경로만 바뀌고
+        # 나머지 동작은 100% 동일하다**(None이면 HistoryDataFeed의 기존 기본값).
+        data = (
+            HistoryDataFeed(symbols, history_dir) if history_dir is not None
+            else HistoryDataFeed(symbols)
+        )
         # 1분봉이 있으면 리샘플, 없으면(예: yfinance native 15m 전용 백필) native
         # interval 저장소를 그대로 쓴다 — HistoryDataFeed.bar_closes가 그 선택을
         # 캡슐화한다(quant/adapters/data/history.py 참고).
@@ -274,6 +282,19 @@ def run_backtest(
             s: resample_1m(data.bars_1m[s], minutes).index + pd.Timedelta(minutes=minutes)
             for s in symbols
         }
+
+    empty = [s for s in symbols if len(symbol_bar_closes[s]) == 0]
+    if empty:
+        avail = {}
+        for s in empty:
+            d = (data.root / s) if hasattr(data, "root") else Path("data/history") / s
+            avail[s] = sorted(p.name for p in d.iterdir() if p.is_dir()) if d.exists() else []
+        raise ValueError(
+            f"{interval} 봉이 없는 심볼: "
+            + ", ".join(f"{s}(보유: {', '.join(avail[s]) or '없음'})" for s in empty)
+            + " — 없는 간격을 리샘플로 지어내지 않는다(docs/data-availability.md). "
+              "--interval 을 맞추거나 먼저 fetch 한다."
+        )
 
     bar_closes = _union_bar_closes(list(symbol_bar_closes.values()))
 
@@ -309,19 +330,6 @@ def run_backtest(
     # 없다"인데 메시지는 타임존을 가리켜 진단이 엉뚱한 데로 샌다.
     # 2026-08-13 실측: QQQ 는 1d·5m 만 있는데 기본값 15m 로 돌려 이 함정에 빠졌고,
     # 그걸 데이터 손상으로 오진할 뻔했다.
-    empty = [s for s in symbols if len(symbol_bar_closes[s]) == 0]
-    if empty:
-        avail = {}
-        for s in empty:
-            d = (data.root / s) if hasattr(data, "root") else Path("data/history") / s
-            avail[s] = sorted(p.name for p in d.iterdir() if p.is_dir()) if d.exists() else []
-        raise ValueError(
-            f"{interval} 봉이 없는 심볼: "
-            + ", ".join(f"{s}(보유: {', '.join(avail[s]) or '없음'})" for s in empty)
-            + " — 없는 간격을 리샘플로 지어내지 않는다(docs/data-availability.md). "
-              "--interval 을 맞추거나 먼저 fetch 한다."
-        )
-
     present_markets = sorted({markets[s] for s in symbols})
     calendars: dict[str, BarSessionCalendar] = {}
     for m in present_markets:

@@ -24,7 +24,7 @@ import pytest
 
 from quant.core.fx import FixedFxProvider
 from quant.core.ports import ColdFetchBudgetExceeded, Context
-from quant.core.models import Position, Quote, Side, Signal, SignalAction
+from quant.core.models import Position, Quote, Side, Signal, SignalAction, trading_day
 from quant.core.portfolio.portfolio import to_krw
 from quant.trade.risk.manager import RiskManagerImpl
 
@@ -1136,3 +1136,195 @@ def test_repeat_rail_never_blocks_exits(fake_clock_cls):
 
     for _ in range(20):
         assert risk.approve(_exit(exit_fraction=0.01), ctx) is not None
+
+
+# ===================================== 쿨다운 전략 스코핑 + 전략별 봉/봉수 (2026-09-03)
+
+def _sig(strategy_id: str, action: SignalAction, *, symbol: str = _SYMBOL,
+         target_weight: float = 0.02, reason: str = "") -> Signal:
+    return Signal(
+        strategy_id=strategy_id, symbol=symbol, action=action,
+        target_weight=target_weight, exit_fraction=1.0, reason=reason,
+    )
+
+
+def _settings_with_strategies(risk_overrides: dict, strategies: dict) -> dict:
+    cfg = _risk_cfg(**risk_overrides)
+    cfg["strategies"] = strategies
+    return cfg
+
+
+def test_cooldown_is_isolated_between_strategies_on_the_same_symbol(fake_clock_cls):
+    """A 전략이 005930에서 손절해도 B 전략은 같은 종목에 들어갈 수 있어야 한다.
+
+    2026-09-03 감사 C4 이전에는 `_stop_bar_ts`가 심볼만을 키로 썼다 — scalp_1m의
+    손절 하나가 close_bet/frgn_accumulate까지 그 종목에서 잠갔다. 쿨다운의 근거는
+    "이 전략의 그 신호가 휩소였다"이지 "이 종목이 나쁘다"가 아니다.
+    """
+    risk = RiskManagerImpl(
+        _risk_cfg(cooldown_bars_after_stop=3, cooldown_bar_interval_minutes=15),
+        capital_fraction={"a": 1.0, "b": 1.0}, market_of=_MARKET_OF,
+    )
+    positions = {_SYMBOL: Position(symbol=_SYMBOL, qty=50.0, avg_cost=100.0)}
+    stop_data = _FakeData(price=97.5, now=_DEFAULT_NOW)
+    stop_data.bars[_SYMBOL] = _bars(1, _DEFAULT_NOW)
+    stop_ctx = Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=stop_data,
+                       broker=_FakeBroker(10_000_000.0, positions))
+    stopped = risk.approve(
+        _sig("a", SignalAction.EXIT_LONG, target_weight=0.0, reason="손절: 현재=97.50"), stop_ctx)
+    assert stopped is not None and stopped.side is Side.SELL
+
+    def _entry_ctx(n_bars: int) -> Context:
+        d = _FakeData(price=100.0, now=_DEFAULT_NOW)
+        d.bars[_SYMBOL] = _bars(n_bars, _DEFAULT_NOW)
+        return Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=d,
+                       broker=_FakeBroker(10_000_000.0, {}))
+
+    # 손절을 낸 a는 차단된다(elapsed=0 < 3).
+    assert risk.approve(_sig("a", SignalAction.ENTER_LONG), _entry_ctx(1)) is None
+    assert "쿨다운" in risk.last_block
+    # b는 같은 종목·같은 순간에도 통과한다 — 손절 이력이 b에는 없다.
+    assert risk.approve(_sig("b", SignalAction.ENTER_LONG), _entry_ctx(1)) is not None
+    # 종목 단위 가시성(하트비트가 읽는 필드)은 그대로 심볼 목록이다.
+    assert risk.breaker_state()["cooldown_bars_after_stop"]["symbols_in_cooldown"] == [_SYMBOL]
+
+
+def test_bar_minutes_and_cooldown_bars_resolve_per_strategy_from_settings():
+    """전략별 봉 간격·봉 수 선언이 settings에서 그대로 해석된다. 선언이 없으면 전역값."""
+    settings = _settings_with_strategies(
+        {"cooldown_bars_after_stop": 4, "cooldown_bar_interval_minutes": 15},
+        {
+            "scalp_1m": {"params": {"bar_interval_minutes": 1, "cooldown_bars_after_stop": 15}},
+            "gap_fade": {"params": {"bar_interval_minutes": 5}},
+            "rsi2_dip": {"params": {"bar_interval_minutes": 1440, "cooldown_bars_after_stop": 1}},
+            "donchian": {"params": {"interval_minutes": 15}},
+            "no_params": {},
+        },
+    )
+    risk = RiskManagerImpl(settings, capital_fraction={}, market_of=_MARKET_OF)
+
+    # 실효 쿨다운(분) = 봉 간격 x 봉 수
+    assert risk._bar_minutes_for("scalp_1m") == 1
+    assert risk._cooldown_bars_for("scalp_1m") == 15          # 1m x 15 = 15분
+    assert risk._bar_minutes_for("gap_fade") == 5
+    assert risk._cooldown_bars_for("gap_fade") == 4           # 5m x 4 = 20분 (전역값)
+    assert risk._bar_minutes_for("rsi2_dip") == 1440
+    assert risk._cooldown_bars_for("rsi2_dip") == 1           # 1d x 1 = 1거래일
+    assert risk._bar_minutes_for("donchian") == 15            # interval_minutes 별칭
+    assert risk._bar_minutes_for("no_params") == 15           # 폴백
+    assert risk._cooldown_bars_for("모르는전략") == 4          # 폴백
+    # A/B 갈래는 기준 전략의 봉을 상속한다(params 를 따로 안 썼을 때).
+    assert risk._bar_minutes_for("scalp_1m_cat") == 1
+    assert risk._cooldown_bars_for("scalp_1m_cat") == 15
+
+
+def test_daily_strategy_cooldown_queries_1d_bars_not_1440m(fake_clock_cls):
+    """일봉 전략(bar_interval_minutes: 1440)의 쿨다운은 `"1d"`를 조회해야 한다 —
+    `"1440m"`은 DataFeed가 모르는 표기라 빈 프레임이 돌아오고 쿨다운이 조용한
+    no-op이 된다(이 레일이 과거에 실제로 죽어 있던 방식)."""
+    settings = _settings_with_strategies(
+        {"cooldown_bars_after_stop": 4},
+        {"rsi2_dip": {"params": {"bar_interval_minutes": 1440, "cooldown_bars_after_stop": 1}}},
+    )
+    risk = RiskManagerImpl(settings, capital_fraction={"rsi2_dip": 1.0}, market_of=_MARKET_OF)
+
+    seen: list[str] = []
+
+    class _RecordingData(_FakeData):
+        def history(self, symbol: str, interval: str, n: int):
+            seen.append(interval)
+            return super().history(symbol, interval, n)
+
+    positions = {_SYMBOL: Position(symbol=_SYMBOL, qty=50.0, avg_cost=100.0)}
+    d = _RecordingData(price=97.5, now=_DEFAULT_NOW)
+    d.bars[_SYMBOL] = _bars(1, _DEFAULT_NOW, interval_minutes=1440)
+    ctx = Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=d,
+                  broker=_FakeBroker(10_000_000.0, positions))
+    assert risk.approve(
+        _sig("rsi2_dip", SignalAction.EXIT_LONG, target_weight=0.0, reason="손절: 현재=97.50"),
+        ctx,
+    ) is not None
+    assert seen == ["1d"]
+
+
+def test_per_strategy_cooldown_bars_change_the_effective_duration(fake_clock_cls):
+    """같은 손절이라도 전략마다 요구 봉 수가 다르다 — scalp_1m 15봉 vs 전역 4봉."""
+    settings = _settings_with_strategies(
+        {"cooldown_bars_after_stop": 4, "cooldown_bar_interval_minutes": 1},
+        {"scalp_1m": {"params": {"bar_interval_minutes": 1, "cooldown_bars_after_stop": 15}}},
+    )
+    risk = RiskManagerImpl(settings, capital_fraction={"scalp_1m": 1.0}, market_of=_MARKET_OF)
+    positions = {_SYMBOL: Position(symbol=_SYMBOL, qty=50.0, avg_cost=100.0)}
+    stop_data = _FakeData(price=97.5, now=_DEFAULT_NOW)
+    stop_data.bars[_SYMBOL] = _bars(1, _DEFAULT_NOW, interval_minutes=1)
+    stop_ctx = Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=stop_data,
+                       broker=_FakeBroker(10_000_000.0, positions))
+    assert risk.approve(
+        _sig("scalp_1m", SignalAction.EXIT_LONG, target_weight=0.0, reason="손절: 현재=97.50"),
+        stop_ctx,
+    ) is not None
+
+    def _entry_ctx(n_bars: int) -> Context:
+        d = _FakeData(price=100.0, now=_DEFAULT_NOW)
+        d.bars[_SYMBOL] = _bars(n_bars, _DEFAULT_NOW, interval_minutes=1)
+        return Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=d,
+                       broker=_FakeBroker(10_000_000.0, {}))
+
+    # 전역값 4봉이었다면 여기서 풀렸을 것이다(elapsed=5) — 전략 선언 15봉이므로 여전히 차단.
+    assert risk.approve(_sig("scalp_1m", SignalAction.ENTER_LONG), _entry_ctx(6)) is None
+    assert "5/15봉" in risk.last_block
+    # 15봉 경과 → 승인.
+    assert risk.approve(_sig("scalp_1m", SignalAction.ENTER_LONG), _entry_ctx(16)) is not None
+
+
+def test_cooldown_state_survives_restart_and_stays_strategy_scoped(fake_clock_cls, tmp_path):
+    """(심볼, 전략) 키가 영속화/복원을 통과한다 — 재시작이 쿨다운을 풀지 않고,
+    풀린 뒤에도 다른 전략을 잘못 막지 않는다."""
+    state = tmp_path / "risk_day.json"
+    kwargs = dict(capital_fraction={"a": 1.0, "b": 1.0}, market_of=_MARKET_OF, state_path=state)
+    risk = RiskManagerImpl(
+        _risk_cfg(cooldown_bars_after_stop=3, cooldown_bar_interval_minutes=15), **kwargs)
+    positions = {_SYMBOL: Position(symbol=_SYMBOL, qty=50.0, avg_cost=100.0)}
+    stop_data = _FakeData(price=97.5, now=_DEFAULT_NOW)
+    stop_data.bars[_SYMBOL] = _bars(1, _DEFAULT_NOW)
+    stop_ctx = Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=stop_data,
+                       broker=_FakeBroker(10_000_000.0, positions))
+    assert risk.approve(
+        _sig("a", SignalAction.EXIT_LONG, target_weight=0.0, reason="손절: 현재=97.50"),
+        stop_ctx) is not None
+
+    revived = RiskManagerImpl(
+        _risk_cfg(cooldown_bars_after_stop=3, cooldown_bar_interval_minutes=15), **kwargs)
+
+    def _entry_ctx(n_bars: int) -> Context:
+        d = _FakeData(price=100.0, now=_DEFAULT_NOW)
+        d.bars[_SYMBOL] = _bars(n_bars, _DEFAULT_NOW)
+        return Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=d,
+                       broker=_FakeBroker(10_000_000.0, {}))
+
+    assert revived.approve(_sig("a", SignalAction.ENTER_LONG), _entry_ctx(1)) is None
+    assert revived.approve(_sig("b", SignalAction.ENTER_LONG), _entry_ctx(1)) is not None
+
+
+def test_legacy_symbol_only_cooldown_state_still_blocks_every_strategy(fake_clock_cls, tmp_path):
+    """구버전 상태 파일(심볼만 기록)은 전략 미상 항목으로 복원돼 **모든** 전략을 계속
+    막는다 — 재시작이 쿨다운을 조용히 푸는 것보다 한 세션 보수적인 편이 낫다."""
+    import json
+
+    state = tmp_path / "risk_day.json"
+    state.write_text(json.dumps({
+        "day": trading_day(_DEFAULT_NOW).isoformat(),
+        "stop_bar_ts": {_SYMBOL: str(_DEFAULT_NOW)},   # `|` 없음 = 구버전 키
+        "stop_day": {_SYMBOL: trading_day(_DEFAULT_NOW).isoformat()},
+    }), encoding="utf-8")
+
+    risk = RiskManagerImpl(
+        _risk_cfg(cooldown_bars_after_stop=3, cooldown_bar_interval_minutes=15),
+        capital_fraction={"a": 1.0, "b": 1.0}, market_of=_MARKET_OF, state_path=state,
+    )
+    d = _FakeData(price=100.0, now=_DEFAULT_NOW)
+    d.bars[_SYMBOL] = _bars(1, _DEFAULT_NOW)
+    ctx = Context(clock=fake_clock_cls(now=_DEFAULT_NOW), data=d,
+                  broker=_FakeBroker(10_000_000.0, {}))
+    assert risk.approve(_sig("a", SignalAction.ENTER_LONG), ctx) is None
+    assert risk.approve(_sig("b", SignalAction.ENTER_LONG), ctx) is None

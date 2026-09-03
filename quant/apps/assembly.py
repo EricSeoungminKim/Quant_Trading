@@ -229,6 +229,24 @@ class PaperRuntime:
     exposure_check: "Callable[[dict, dict, float | None], dict] | None" = None
 
 
+def require_books_capable_broker(broker: object) -> None:
+    """`risk.capital_mode: per_strategy` 기동의 부팅 게이트 (2026-09-02, 감사 C1).
+
+    루프의 전략별 장부 갱신은 `ctx.broker.fx`를 duck-typing으로 읽는다. 브로커에
+    그게 없으면 `books.apply_fill`이 매 체결마다 조용히 스킵되고, 그때부터
+    전략별 현금·동시보유·총노출 레일이 전부 눈이 먼 채로 거래가 계속된다 —
+    사이클마다 WARNING 한 줄이 남을 뿐이라 실제로 3주 가까이 묻혔다.
+
+    배선 누락은 사이클마다 경고할 게 아니라 **부팅에서 죽어야** 한다."""
+    if getattr(broker, "fx", None) is None:
+        raise RuntimeError(
+            "조립 배선 오류 — risk.capital_mode: per_strategy 인데 브로커"
+            f"({type(broker).__name__})에 fx 가 없다. 이대로 기동하면 전략별 장부가"
+            " 갱신되지 않아 현금·노출 레일이 전부 무력화된다."
+            " assembly.build_paper_runtime 의 브로커 조립 분기를 확인할 것."
+        )
+
+
 def build_toss_client(mode: str | None = None):
     """환경변수에서 TossClient를 만든다. 자격증명이 없으면 실패한다."""
     from quant.adapters.brokers.toss.client import TossClient
@@ -315,7 +333,14 @@ def build_market_data(client, clock, *, interval: str, symbols: list[str],
                     source=_ClockBound(history, clock),
                     capabilities=frozenset({Capability.BARS}),
                     symbols=frozenset(loaded),
-                    intervals=frozenset({interval}),
+                    # intervals=None = 모든 간격 서빙 가능(service._candidates).
+                    # 2026-09-02 (C3): 여기에 프로브 간격 하나만(=15m) 박아 두면,
+                    # 실제 전략들이 요구하는 1m/5m/1d 에서는 이 라우트가 후보에도
+                    # 오르지 못해 **한 번도 선택되지 않는 죽은 폴백**이 된다.
+                    # HistoryDataFeed 는 1분봉을 즉석 리샘플하므로 간격을 가릴
+                    # 이유가 없고, 서빙 못 하는 간격은 빈 프레임으로 정직하게
+                    # 답한다(업샘플로 지어내지 않는다).
+                    intervals=None,
                 )
             )
             logger.info("과거 데이터 폴백 사용 가능: %s", ", ".join(sorted(loaded)))
@@ -864,16 +889,116 @@ def equal_split_initial_krw(
     # KRW만으로 계산한다(기존 동작 그대로). 환율 조회 실패는 FxProvider 가 자체
     # fallback을 갖고 있어 여기까지 예외가 오지 않는 게 정상이지만, 명목 예산
     # 계산이 기동을 죽이면 안 되므로 한 번 더 감싼다.
-    if fx is not None:
-        try:
-            cash_usd_fn = getattr(broker, "cash_usd", None)
-            usd = cash_usd_fn() if callable(cash_usd_fn) else None
-            if usd is not None and usd > 0:
-                total_cash += usd * fx.usd_krw()
-        except Exception as e:  # noqa: BLE001 — 명목 예산 계산 실패로 기동을 막지 않는다
-            logger.warning("equal_split: USD 풀 환산 실패 — KRW만으로 계산: %s: %s",
-                           type(e).__name__, e)
+    total_cash += _usd_pool_krw(broker, fx, policy="equal_split")
     return total_cash / len(active_strategy_ids) if active_strategy_ids else 0.0
+
+
+def _usd_pool_krw(broker, fx: FxProvider | None, policy: str) -> float:
+    """USD 현금 풀의 KRW 환산. `cash_usd()`가 없거나(단일 통화 브로커) None
+    (비활성/조회 실패)이면 0 — 그때는 KRW 풀만으로 계산한다(기존 동작 그대로).
+
+    환율 조회 실패는 FxProvider가 자체 fallback을 갖고 있어 여기까지 예외가 오지
+    않는 게 정상이지만, 명목 예산 계산이 기동을 죽이면 안 되므로 한 번 더 감싼다.
+    """
+    if fx is None:
+        return 0.0
+    try:
+        cash_usd_fn = getattr(broker, "cash_usd", None)
+        usd = cash_usd_fn() if callable(cash_usd_fn) else None
+        if usd is not None and usd > 0:
+            return float(usd) * fx.usd_krw()
+    except Exception as e:  # noqa: BLE001 — 명목 예산 계산 실패로 기동을 막지 않는다
+        logger.warning("%s: USD 풀 환산 실패 — KRW만으로 계산: %s: %s",
+                       policy, type(e).__name__, e)
+    return 0.0
+
+
+def declared_initial_krw(
+    broker,
+    capital_fraction: dict[str, dict[str, float]],
+    active_strategy_ids: list[str],
+    fx: FxProvider | None = None,
+) -> dict[str, float] | None:
+    """`capital_policy: declared`의 **전략별** 시작 명목자본.
+
+    `strategy_equity[sid] = KRW풀 x capital_fraction[sid]["KR"]
+                          + USD풀(KRW환산) x capital_fraction[sid]["US"]`
+
+    ## 왜 이 정책이 필요한가 (2026-09-03)
+
+    `equal_split`은 총현금을 활성 전략 수로 **똑같이** 나눈다. 그래서
+    `strategies.*.capital_fraction`은 per_strategy 모드에서 크기 정보를 전부 잃고
+    `<= 0` on/off 게이트로만 남았다(risk 블록의 2026-09-02 주석). 즉 "scalp_1m에
+    US 18%, mr_vwap_quiet에 6%"라고 선언해 놓고 실제로는 둘 다 1/12씩 받았다 —
+    설정 파일이 사실과 다른 말을 하는 상태였고, 그건 이 저장소가 가장 싫어하는
+    실패 모드다(선언과 실행의 조용한 불일치). `declared`는 그 선언을 그대로
+    집행한다.
+
+    ## 왜 총현금이 아니라 **시장별 풀**로 나누나
+
+    KR 전략은 KRW로만, US 전략은 USD로만 산다 — 실제 지출 한도는 통화별 지갑이다
+    (`quant/trade/risk/manager.py`의 현금 게이트). 총현금 하나에 비중을 곱하면
+    KR 비중 14%가 실제로는 존재하지 않는 USD를 포함한 금액이 되어, 명목은 크고
+    지갑은 비는 어긋남이 생긴다. 시장별 풀로 나누면 각 시장의 명목 합계가 그
+    시장의 실제 현금을 넘지 않는다. 두 시장 모두 비중이 있는 전략(scalp_1m
+    KR .15 / US .18 등)은 **두 풀의 몫을 합산**한다 — 그 전략은 실제로 양쪽
+    지갑에서 쓰기 때문이다.
+
+    비중 합이 한 시장에서 1.0을 넘으면 그 시장만 비례 축소하고 WARNING을 남긴다.
+    (`validated_capital_fractions`가 이미 같은 축소를 하므로 정상 경로에서는
+    no-op이지만, 이 함수는 그 정규화를 신뢰하지 않고 스스로 검산한다 — 초과
+    배분은 곧 의도치 않은 레버리지다.)
+
+    **`None`은 "0원"이 아니라 "모른다"다** — `equal_split_initial_krw`와 같은
+    계약이다. 총현금 조회가 실패하면 신규 전략 시딩을 보류해야지, 0원으로
+    시딩해 그 전략을 영원히 못 사는 상태로 굳히면 안 된다.
+
+    비중이 양 시장 모두 0인 전략은 **반환 dict에서 빠진다** — 그 전략은 어느
+    시장에서도 진입이 차단돼 있으므로(`_capital_fraction_for`) 명목자본을 줄
+    이유가 없다.
+    """
+    try:
+        krw_pool = broker.cash()
+    except Exception as e:  # noqa: BLE001 — 실패를 0원처럼 위장하지 않는다
+        logger.warning(
+            "전략별 자본 정책 declared: 총현금 조회 실패(%s: %s) — 이번 기동은 신규 전략"
+            " 시딩을 보류한다(기존 장부는 그대로 유지, 계속 거래)",
+            type(e).__name__, e,
+        )
+        return None
+    if krw_pool is None or krw_pool <= 0:
+        logger.warning(
+            "전략별 자본 정책 declared: 총현금 조회 결과 %r(0 이하 또는 없음) — 이번 기동은"
+            " 신규 전략 시딩을 보류한다(기존 장부는 그대로 유지, 계속 거래)",
+            krw_pool,
+        )
+        return None
+    pools = {"KR": float(krw_pool), "US": _usd_pool_krw(broker, fx, policy="declared")}
+
+    fractions = {
+        sid: {m: float((capital_fraction.get(sid) or {}).get(m, 0.0)) for m in _MARKETS}
+        for sid in active_strategy_ids
+    }
+    for m in _MARKETS:
+        total = sum(f[m] for f in fractions.values())
+        if total > 1.0 + 1e-9:
+            scale = 1.0 / total
+            logger.warning(
+                "capital_policy declared: 활성 전략의 %s 시장 capital_fraction 합이 %.3f로 "
+                "100%%를 초과 — 비례 축소(x%.4f). 초과분 %.3f는 존재하지 않는 현금이다. "
+                "config/settings.yaml의 합계를 1.0 이하로 맞출 것: %s",
+                m, total, scale, total - 1.0,
+                {sid: round(f[m], 3) for sid, f in fractions.items() if f[m] > 0},
+            )
+            for f in fractions.values():
+                f[m] *= scale
+
+    out: dict[str, float] = {}
+    for sid, f in fractions.items():
+        amount = sum(pools[m] * f[m] for m in _MARKETS)
+        if amount > 0:
+            out[sid] = amount
+    return out
 
 
 def build_paper_runtime(settings: Settings) -> PaperRuntime:
@@ -967,6 +1092,16 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
         from quant.adapters.brokers.toss.broker import TossBroker
 
         broker = TossBroker(client)
+        # 2026-09-02 (C1): live 브로커에도 fx/market_of 를 붙인다. 루프의 전략별
+        # 장부 갱신(`loop._execute_signal`)은 `ctx.broker.fx`/`.market_of` 를
+        # duck-typing 으로 읽는데(PaperBroker 는 생성자로 받는다) live 에는 없어서
+        # 매 체결마다 `books.apply_fill` 이 통째로 스킵됐다 — available_cash_krw /
+        # 노출 게이트가 실계좌에서만 눈이 먼다. 아래 books= 주석의 2026-08-19 P0
+        # 와 같은 부류("만든 것 ≠ 배선된 것")의 live 판 재발이다.
+        # market_of 는 risk 와 **같은 dict 객체**를 공유해야 한다 — cli._rebuild 가
+        # 유니버스 롤마다 이 dict 를 in-place update 해서 양쪽을 함께 갱신한다.
+        broker.fx = fx
+        broker.market_of = markets
         logger.warning(
             "실주문 브로커 활성 — TossBroker (MODE=live). 이 프로세스는 실제 계좌에 "
             "주문을 낸다. 엔진 소유 원장 밖의 보유(사용자 수동 매매)는 건드리지 않는다."
@@ -1005,9 +1140,14 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
     # 전용 — **실제 총현금 ÷ 활성 전략 수**로 매 전략의 시작 명목자본을 정해
     # 명목 합계가 실계좌와 정확히 일치하게 한다(설계:
     # docs/superpowers/specs/2026-08-19-engine-separation-design.md Phase B).
+    # declared(2026-09-03) — equal_split과 같은 총현금을 쓰되 **똑같이 나누지 않고**
+    # 각 전략이 선언한 capital_fraction을 시장별 현금 풀에 곱한다
+    # (`declared_initial_krw` docstring). equal_split이 capital_fraction을 사이징에서
+    # 무의미하게 만들어 설정 파일이 사실과 다른 말을 하던 것을 끝낸다.
     capital_policy = str(risk_cfg.get("capital_policy", "fixed"))
     books: StrategyBooks | None = None
     if capital_mode == "per_strategy":
+        require_books_capable_broker(broker)
         active_strategy_ids = [
             sid for sid, s in (cfg.get("strategies", {}) or {}).items()
             if isinstance(s, dict) and s.get("enabled")
@@ -1036,6 +1176,36 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
                 # `books.py` `_ensure`가 생성 시점에만 initial_krw를 못박으므로 이
                 # 갱신에 영향받지 않는다(설계 질문 1: 최초 1회 확정, 재조정 없음).
                 books.initial_krw = per_strategy_initial_krw
+        elif capital_policy == "declared":
+            # 전략마다 금액이 다르므로 스칼라 하나로 표현할 수 없다 —
+            # `books.initial_by_strategy`(2026-09-03)에 전략별 시작금을 싣고,
+            # `_ensure`가 신규 장부를 만들 때 그 값을 쓴다. 이미 존재하는 장부는
+            # equal_split과 똑같이 재조정되지 않는다(생성 시점 확정).
+            declared = declared_initial_krw(
+                broker, capital_fraction, active_strategy_ids, fx=fx,
+            )
+            if declared is None:
+                # 총현금 미상 — 0원 시딩으로 전략을 영구 무거래 상태로 굳히지 않는다
+                # (equal_split 분기와 같은 계약).
+                books = StrategyBooks.load(books_path, initial_krw=0.0)
+                seed_new_strategies = False
+            else:
+                books = StrategyBooks.load(books_path, initial_krw=0.0)
+                books.initial_by_strategy = declared
+                # 비중이 양 시장 모두 0인 전략은 declared에 없다 — 명목자본을 줄
+                # 이유가 없으므로 시딩 대상에서도 뺀다(0원 장부를 만들면 그게 곧
+                # "영원히 못 사는 장부"다).
+                skipped = [sid for sid in active_strategy_ids if sid not in declared]
+                if skipped:
+                    logger.info(
+                        "capital_policy declared: capital_fraction이 양 시장 모두 0인 전략은"
+                        " 장부를 만들지 않는다(어차피 진입이 차단된다): %s",
+                        ", ".join(sorted(skipped)),
+                    )
+                active_strategy_ids = [s for s in active_strategy_ids if s in declared]
+                per_strategy_initial_krw = (
+                    sum(declared.values()) / len(declared) if declared else 0.0
+                )
         else:
             per_strategy_initial_krw = float(risk_cfg.get("per_strategy_initial_krw", 10_000_000))
             books = StrategyBooks.load(books_path, initial_krw=per_strategy_initial_krw)
@@ -1046,7 +1216,16 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
         seeded = books.seed(active_strategy_ids) if seed_new_strategies else 0
         if seeded:
             books.save()
-        if seed_new_strategies:
+        if seed_new_strategies and capital_policy == "declared":
+            # declared는 전략마다 금액이 달라 "전략당 N원"이 성립하지 않는다 —
+            # 배분표를 그대로 남긴다(기동 로그가 그날의 자본 배분 증거가 된다).
+            logger.info(
+                "전략별 독립 명목계정 활성(declared) — 기존 장부 %d개 로드 + %d개 신규,"
+                " 선언 배분: %s (data/state/strategy_books.json)",
+                len(books.books) - seeded, seeded,
+                {sid: round(v) for sid, v in sorted(books.initial_by_strategy.items())},
+            )
+        elif seed_new_strategies:
             logger.info(
                 "전략별 독립 명목계정 활성(%s) — 전략당 %.0f원, 기존 장부 %d개 로드 + %d개 신규"
                 " (data/state/strategy_books.json)",
@@ -1265,4 +1444,19 @@ def _primary_interval_minutes(cfg: dict) -> int:
         if s.get("enabled")
         for params in [s.get("params", {})]
     ]
+    # 2026-09-02 (C3): 아무 전략도 간격을 선언하지 않으면 위 식은 조용히 15분으로
+    # 떨어진다 — 실제로 활성 전략 전부가 1m/5m/1d 만 쓰는데 조립은 "15m"으로
+    # 기동해 과거데이터 프로브가 엉뚱한 간격을 봤다. 침묵 대신 경고를 남긴다.
+    declared = [
+        s for s in cfg.get("strategies", {}).values()
+        if s.get("enabled")
+        and ("interval_minutes" in (s.get("params") or {})
+             or "bar_interval_minutes" in (s.get("params") or {}))
+    ]
+    if minutes and not declared:
+        logger.warning(
+            "활성 전략 중 봉 간격(interval_minutes/bar_interval_minutes)을 선언한 것이 "
+            "하나도 없다 — 기본값 15분으로 기동한다. 과거 데이터 프로브가 전략이 실제로 "
+            "쓰는 간격과 다른 간격을 볼 수 있다."
+        )
     return min(minutes) if minutes else 15

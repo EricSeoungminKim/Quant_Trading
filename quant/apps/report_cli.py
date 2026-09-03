@@ -77,7 +77,8 @@ from quant.report.collect.news import (
     _research_badges, _source_data,
 )
 from quant.report.collect.sector import (
-    _build_foreign_view, _build_sector_view, _build_top_movers, _load_sector_data,
+    _build_foreign_view, _build_sector_daily_view, _build_sector_view, _build_top_movers,
+    _load_sector_data,
 )
 from quant.report.collect.snapshot import (
     CLOSE_NEWS_FALLBACK_WINDOW, _close_snapshot_path, _collect_snapshot,
@@ -308,12 +309,18 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         )
         # 전일 마감 종합(wrap)은 위(_derive 전)에서 이미 로드했다 — 후보 합류와
         # 카드 표시가 같은 객체를 쓴다.
+        # 주도 섹터(sector_daily, 2026-09-03 소유자 철학 지시 B) — 데이터가
+        # 없으면(원장 초기 배포 등) {"missing": True}로 감싸 "결측" 카드를
+        # 그리게 한다(§C, us_kr_bridge처럼 조용히 None으로 섹션을 지우면
+        # "US 리포트라 해당 없음"과 "KR인데 오늘 데이터가 없음"이 구분 안 된다).
+        sector_daily = _build_sector_daily_view(root, snap.market) or {"missing": True}
     else:
         sector_view, top_movers = [], {}
         foreign_view = None
         themes = None
         sector_map, sector_quotes = {}, []
         us_kr_bridge = None
+        sector_daily = None
     flow_rows = _load_flow_rows(root)
     youtube = _fetch_youtube_briefs()
     blog = _fetch_blog_briefs()
@@ -498,6 +505,7 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         holiday_synthesis=payload.get("holiday_synthesis"),
         money_flow=money_flow_view,
         name_map=research_code_to_name,
+        sector_daily=sector_daily,
     )
     hp, jp, cp = write_open_report(model, snap, out_root)
     print(f"HTML   {hp}\n엔진   {jp}\n후보   {cp}")
@@ -578,6 +586,14 @@ def main(argv: list[str] | None = None) -> int:
         # 시각 계산이 open 세션 고정이라 무관).
         if name in ("build", "summary"):
             s.add_argument("--session", choices=["open", "close"], default="open")
+        if name == "collect":
+            # 텔레그램 채널 누적 수집(telegram-collect@, 2026-09-03) — 뉴스
+            # collect 와 같은 서브커맨드를 공유하되 플래그로 분기한다. 채널
+            # 목록(telegram_channels.CHANNELS)은 시장 무관이라 --market 값
+            # 자체는 이 경로에서 쓰이지 않지만, 서브커맨드 계약(필수 인자)은
+            # 그대로 따른다 — 별도 서브커맨드를 새로 만들면 systemd 유닛만
+            # 하나 더 늘고 얻는 게 없다.
+            s.add_argument("--telegram", action="store_true")
     # uswrap(2026-08-25) — US 전용이라 다른 서브커맨드와 달리 --market 이 없다.
     su = sub.add_parser("uswrap")
     su.add_argument("--date", default=date.today().isoformat())
@@ -617,6 +633,31 @@ def main(argv: list[str] | None = None) -> int:
             print(f"공시 {added}건 추가 (조회 {len(rows)}건, {bgn_de}~{end_de})")
         except Exception as e:  # noqa: BLE001 — 이 배치는 절대 리포트 파이프라인을 막지 않는다
             print(f"DART 공시 수집 실패: {type(e).__name__}: {e}", file=sys.stderr)
+        return 0
+
+    if a.cmd == "collect" and getattr(a, "telegram", False):
+        # 텔레그램 채널 누적 수집(telegram-collect@, 2026-09-03) — news-collect
+        # 와 같은 30분 주기 패턴이되 대상이 채널 원장(`telegram_msgs.jsonl`)
+        # 하나뿐이다(`--market` 무관, 위 argparse 주석 참고).
+        from quant.collect.sources import telegram_channels
+
+        root = Path(a.root)
+        path = root / "data" / "ledger" / "telegram_msgs.jsonl"
+        result = telegram_channels.fetch_all()
+        rows = [
+            {"handle": handle, **msg}
+            for handle, entry in result.items()
+            for msg in entry.get("messages") or []
+        ]
+        added = telegram_channels.append_ledger(rows, path)
+        removed = telegram_channels.prune(path, session)
+        errors = {h: e["error"] for h, e in result.items() if e.get("error")}
+        print(f"텔레그램 수집 · 신규 {added}건 · 채널 {len(result)}개"
+              + (f" · 보존기간 지난 {removed}건 삭제" if removed else ""))
+        if errors:
+            # 채널 하나의 실패를 조용히 넘기지 않는다 — news-collect 의
+            # dead_feeds 경고와 같은 관례.
+            print(f"  ⚠ 오류 채널 {len(errors)}개: {', '.join(errors)}", file=sys.stderr)
         return 0
 
     if a.cmd == "collect":

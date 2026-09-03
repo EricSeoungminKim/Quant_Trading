@@ -6,12 +6,25 @@
 
 ## 이 시스템은 무엇인가
 
-KR+US 정규장에서 3개 전략을 동시 운용하는 개인 자동매매 엔진이다 (2026-08-10
-기준 EC2에서 paper 가동 중):
+KR+US 정규장에서 12개 전략을 동시 운용하는 개인 자동매매 엔진이다 (2026-08-10
+기준 EC2에서 paper 가동 중). 가동 목록의 진실은 config/settings.yaml `strategies:`
+의 `enabled` 이다 — 이 문단은 그 요약일 뿐이다:
 
-- **donchian** — TQQQ/SQQQ 15분봉 채널 돌파 (전작에서 라이브 검증된 파라미터 계승)
-- **orb_scan** — 관심종목 개장 5분 돌파 스캐너 (롱 온리, KR/US 혼합)
-- **intraday_scan** — 관심종목 장중 세션 신고가 돌파 (개장+30분~마감-60분)
+- **news_momentum** — 뉴스 EVENT 태그 종목 개장매수 후 사다리 청산, 롱 온리 (KR 0.1 / US 0.0)
+- **frgn_accumulate** — 외국인 수급 추세 적립매수, 오버나이트 보유 (KR 0.14 / US 0.0)
+- **close_bet** — 마감 무렵 강세 종목 종가매수 → 익일 시초 갭 매도 (KR 0.1 / US 0.0)
+- **overnight_drift** — 마감 직전 매수 → 익일 개장 직후 매도, US ETF 전용 (KR 0.0 / US 0.15)
+- **pullback_impulse** — 5분봉 눌림목 임펄스 스캘프 (KR 0.0 / US 0.15)
+- **mr_vwap_quiet** — 저거래량 종목 VWAP 평균회귀 스캘핑 (KR 0.0 / US 0.06)
+- **vol_breakout** — 전일 레인지 기반 변동성 돌파(Larry Williams), 마감 직전 청산 (KR 0.14 / US 0.1)
+- **intraday_momentum** — 5분봉 일중 모멘텀 (KR 0.0 / US 0.09)
+- **gap_fade** — 갭하락 되돌림 매수, 롱 온리 (KR 0.0 / US 0.06)
+- **rsi2_dip** — 추세 위 RSI(2) 눌림매수 (KR 0.08 / US 0.08)
+- **scalp_1m** — 1분봉 조기 진입 스캘프 (KR 0.15 / US 0.18)
+- **llm_trader** — LLM이 직접 판단하는 실험 레인 (KR 0.08 / US 0.0)
+
+donchian/orb/intraday_scan/orb_scan을 포함한 나머지는 현재 `enabled: false`(코드·
+원장은 남아 있다 — 측정 기준점 + 추후 복원용).
 
 유니버스는 텔레그램 `/watch` + **자체 리포트**(2026-08-13 이 저장소로 흡수, 같은
 EC2에서 KR 08:00 / US 20:00 발행)의 자동 후보로 채워진다 — `own_brief.sh {KR|US}`

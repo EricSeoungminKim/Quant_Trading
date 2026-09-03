@@ -116,10 +116,20 @@ def test_production_settings_yaml_passes_the_gate_as_intended():
     cfg = yaml.safe_load(open("config/settings.yaml", encoding="utf-8"))
     fractions = validated_capital_fractions(cfg)
 
-    kr_lanes = ("news_momentum", "close_bet", "frgn_accumulate",
-                "scalp_1m", "vol_breakout", "rsi2_dip", "llm_trader")
-    us_lanes = ("scalp_1m", "pullback_impulse", "mr_vwap_quiet", "overnight_drift",
-                "vol_breakout", "intraday_momentum", "gap_fade", "rsi2_dip")
+    # 2026-09-03 A/B 분할: `<id>`/`<id>_cat` 은 기준 배분을 반씩 나눠 가진다
+    # (시장 합계 불변). news_scalp 는 같은 날 "after" 갈래로 재활성됐다.
+    # 2026-09-03(같은 날 저녁, 소유자 결정 갱신) — 자동매매는 단타·스캘핑만:
+    # close_bet/frgn_accumulate(KR)·overnight_drift/rsi2_dip(US)·rsi2_dip(KR)를
+    # 비활성화했다(전부 오버나이트·다일 보유가 전략 정의). capital_fraction 값은
+    # 손대지 않았으므로(코드·params·배분 보존 방침) 레인 목록에서만 뺀다 —
+    # 비활성 전략은 validated_capital_fractions의 active 판정에서 제외되고
+    # 이 테스트의 nonzero 대조는 active 기준이라 자동으로 맞는다.
+    kr_lanes = ("news_momentum", "news_scalp",
+                "scalp_1m", "scalp_1m_cat", "vol_breakout", "vol_breakout_cat",
+                "llm_trader")
+    us_lanes = ("scalp_1m", "scalp_1m_cat", "pullback_impulse", "pullback_impulse_cat",
+                "mr_vwap_quiet", "vol_breakout", "vol_breakout_cat",
+                "intraday_momentum", "gap_fade")
 
     active = [sid for sid, c in cfg["strategies"].items() if c.get("enabled", True)]
     for market, lanes in (("KR", kr_lanes), ("US", us_lanes)):

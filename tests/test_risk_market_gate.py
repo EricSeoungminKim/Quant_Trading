@@ -255,3 +255,65 @@ def test_extended_session_kr_unaffected_by_market_tz_table(fake_clock_cls):
 
     order = risk.approve(_premarket_signal(), ctx)
     assert order is not None, risk.last_block
+
+
+# ── A/B 갈래는 기준 전략의 확장 세션 허가를 상속한다 (2026-09-03) ────────────
+
+def test_extended_session_is_inherited_by_the_catalyst_arm(fake_clock_cls):
+    """`scalp_1m_cat`(A/B 촉매 갈래)은 `scalp_1m`의 프리마켓 창을 그대로 받는다.
+
+    두 갈래는 **같은 클래스**를 다른 유니버스로 돌리며, 재려는 것은 유니버스
+    효과 하나다. 확장 세션 허가가 한쪽에만 있으면 갈래마다 진입 가능 시간대가
+    달라져 A/B 가 오염된다 — `risk.extended_sessions`는 갈래마다 다시 선언하는
+    값이 아니라 클래스 속성이다(manager.py `_base_strategy_id` 주석).
+    """
+    risk = _risk_with_extended()   # extended_sessions 에는 scalp_1m 만 있다
+    risk.capital_fraction["scalp_1m_cat"] = 1.0
+    data = _FakeData(price=100.0)
+    broker = _FakeBroker(10_000_000.0, None)
+    clock = fake_clock_cls(now=_kst(8, 30), market_open=False)
+    ctx = Context(clock=clock, data=data, broker=broker)
+
+    base = risk.approve(_premarket_signal("scalp_1m"), ctx)
+    arm = risk.approve(_premarket_signal("scalp_1m_cat"), ctx)
+
+    assert base is not None, risk.last_block
+    assert arm is not None, f"촉매 갈래가 기준 전략의 프리마켓 허가를 잃었다: {risk.last_block}"
+
+
+def test_pure_arm_also_inherits_but_unrelated_strategies_still_blocked(fake_clock_cls):
+    """`_pure` 갈래도 같은 규칙. 반대로 접미사가 없는 남의 전략은 여전히 차단 —
+    상속은 접미사를 벗겼을 때 **정확히** 기준 id 인 경우에만 일어난다."""
+    risk = _risk_with_extended()
+    risk.capital_fraction.update({"scalp_1m_pure": 1.0, "scalp_1m_other": 1.0})
+    data = _FakeData(price=100.0)
+    broker = _FakeBroker(10_000_000.0, None)
+    clock = fake_clock_cls(now=_kst(8, 30), market_open=False)
+    ctx = Context(clock=clock, data=data, broker=broker)
+
+    assert risk.approve(_premarket_signal("scalp_1m_pure"), ctx) is not None, risk.last_block
+    assert risk.approve(_premarket_signal("scalp_1m_other"), ctx) is None
+    assert MARKET_CLOSED_MARKER in risk.last_block
+
+
+def test_arm_inherits_bar_interval_and_cooldown_bars_from_the_base_strategy():
+    """봉 간격·쿨다운 봉 수도 클래스 속성이다 — 갈래가 자기 params 를 따로 쓰지
+    않았으면(YAML 앵커 미사용) 기준 전략 값을 물려받는다. 반대로 갈래가 스스로
+    선언했으면 그 값이 이긴다."""
+    settings = _risk_cfg()
+    settings["risk"].update(cooldown_bars_after_stop=4, cooldown_bar_interval_minutes=15)
+    settings["strategies"] = {
+        "scalp_1m": {"params": {"bar_interval_minutes": 1, "cooldown_bars_after_stop": 15}},
+        # 갈래는 params 를 아예 안 썼다 → 기준 전략 상속
+        "scalp_1m_cat": {},
+        # 갈래가 스스로 선언 → 자기 값이 이긴다
+        "gap_fade": {"params": {"bar_interval_minutes": 5}},
+        "gap_fade_cat": {"params": {"bar_interval_minutes": 5, "cooldown_bars_after_stop": 2}},
+    }
+    risk = RiskManagerImpl(settings, capital_fraction={}, market_of=_MARKET_OF)
+
+    assert risk._bar_minutes_for("scalp_1m_cat") == 1         # 상속
+    assert risk._cooldown_bars_for("scalp_1m_cat") == 15      # 상속
+    assert risk._bar_minutes_for("gap_fade_cat") == 5
+    assert risk._cooldown_bars_for("gap_fade_cat") == 2       # 자기 선언 우선
+    assert risk._cooldown_bars_for("gap_fade") == 4           # 전역값

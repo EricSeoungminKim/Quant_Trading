@@ -311,6 +311,12 @@ class Fill:
     # 160,974원 미설명 갭에서 시점별 현금 기록이 없어 원인 특정에 실패한 교훈.
     # None = 브로커가 현금을 모른다(예: 실브로커 지연 정산) — 0.0으로 위장하지 않는다.
     cash_after: float | None = None
+    # 체결 직후 **USD 현금 풀** (2026-09-02 추가, additive). `cash_after`는 시장
+    # 무관 항상 KRW 풀이라 dual_currency 모드의 US 체결은 현금 변화를 전혀 남기지
+    # 못했고, 세션 리포트가 "US … 계좌 현금 변화 +0원"이라는 거짓을 찍었다.
+    # None = USD 풀이 없다(dual_currency=False) 또는 브로커가 모른다 — 0.0으로
+    # 위장하지 않는다(`cash_after`와 같은 계약).
+    cash_after_usd: float | None = None
 
 
 class OrderStatus(str, Enum):

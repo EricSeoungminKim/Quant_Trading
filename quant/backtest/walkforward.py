@@ -60,6 +60,7 @@ def run_walkforward(
     symbols: list[str] | None = None,
     settings_path: str = "config/settings.yaml",
     anchor: datetime | pd.Timestamp | None = None,
+    history_dir: str | None = None,
 ) -> list[dict]:
     """`rolling_windows`가 뽑은 창마다 `run_backtest` → `fitness.evaluate`를 돌려
     fold별 결과 목록을 낸다. 파라미터는 전부 settings.yaml 그대로(param_overrides
@@ -75,6 +76,7 @@ def run_walkforward(
         result = run_backtest(
             strategy_id=strategy_id, days=window_days, interval=interval, source=source,
             settings_path=settings_path, end=end_ts, symbols=symbols,
+            history_dir=history_dir,
         )
         fit = evaluate(result)
         folds.append({

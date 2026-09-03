@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import re
+from typing import Iterable
 
 from quant.analyze import foreign_trend
 
@@ -257,10 +258,28 @@ def close_bet_tokens(payload: dict) -> list[str]:
     return out
 
 
-def foreign_flow_candidate_symbols(payload: dict, market: str) -> set[str]:
+def foreign_flow_candidate_symbols(
+    payload: dict, market: str, already_tagged: Iterable[str] = (),
+) -> set[str]:
     """외국인 수급 라벨을 조회할 심볼 후보 — KR 전용, 이 리포트가 이미 근거 있다고
-    본 종목만(AUTO_WATCH 후보 + 단타 후보) 본다. 시장 전체를 훑지 않는다 — 근거 없는
-    종목까지 수급 라벨 대상으로 삼으면 candidates_line의 근거 원칙과 어긋난다."""
+    본 종목(AUTO_WATCH 후보 + 단타 후보) + `already_tagged`(이미 관심종목 파일에
+    FRGN/FRGN_EXIT 태그가 붙어 있는 심볼)를 본다. 시장 전체를 훑지는 않는다 —
+    근거 없는 종목까지 수급 라벨 대상으로 삼으면 candidates_line의 근거 원칙과
+    어긋난다.
+
+    `already_tagged`(2026-09-03 P1 수정): 실측(원장 34매수/1매도, 2026-08-17~
+    09-02) — 이미 적립 중인(FRGN) 종목이 그날 AUTO_WATCH/intraday_view 랭킹에서
+    빠지는 순간부터 다시는 라벨이 재계산되지 않았다. `foreign_flow_tokens`가
+    라벨 없는 심볼은 아예 건드리지 않으므로, 재계산이 멈추면 이탈(FRGN_EXIT)
+    판정 자체가 다시는 나지 않고, 관심종목 파일의 오래된 FRGN 태그만 남아
+    `frgn_accumulate`가 그 근거로 매일 계속 매수한다(watch-add가 태그를
+    합집합으로만 병합하고 지우지 않는 것과 맞물려 더 굳어진다,
+    `server/scripts/tg_bridge.py` `_handle_watch_unlocked`). 이미 태그된 심볼을
+    후보에 강제로 포함시키면 보유/적립 중인 한 매일 재평가되고, `foreign_flow_tokens`
+    의 if/elif 구조가 그 심볼을 FRGN 또는 FRGN_EXIT **둘 중 하나로만** 분류해
+    최신 판정을 매번 다시 내보낸다 — `frgn_accumulate.py`의 `_evaluate`가 이미
+    FRGN_EXIT를 FRGN보다 우선하므로(둘 다 태그에 남아 있어도), 최신 이탈 판정이
+    태그 저장소에 계속 재발행되기만 하면 실제 청산은 정상 작동한다."""
     if market != "KR":
         return set()
     syms = {t.split(":", 1)[0] for t in auto_watch_tokens(payload, market)}
@@ -268,6 +287,7 @@ def foreign_flow_candidate_symbols(payload: dict, market: str) -> set[str]:
         item.get("symbol") for item in (payload.get("intraday_view") or [])
         if isinstance(item, dict) and item.get("symbol")
     }
+    syms |= set(already_tagged)
     return syms
 
 

@@ -10,6 +10,8 @@ import re
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from quant.apps.cli import _wrap_consume_queue, _wrap_deferred
 from quant.control.daily_wrap import (
     MIN_TRIPS_FOR_JUDGEMENT,
@@ -479,10 +481,12 @@ def test_cost_section_us_group_compares_observed_to_assumed():
     cmp = groups[0]["comparison"]
     assert cmp is not None
     assert cmp["observed_bp"] == 30.0  # fee 20 + spread 10
-    assert cmp["assumed_bp"] == 26.0
+    # 가정은 설정 유도 수수료(왕복 20bp) — 실측은 거기에 스프레드가 더해지므로
+    # 스프레드가 있는 한 "낙관"이 정상이다(2026-09-02 비용 표 통합).
+    assert cmp["assumed_bp"] == 20.0
     assert cmp["verdict"] == "낙관"
     html = render_html(sec)
-    assert "US: 실측 30.0bp vs 가정 26.0bp (1/1건) — 가정이 낙관적" in html
+    assert "US: 실측 30.0bp vs 가정 20.0bp (1/1건) — 가정이 낙관적" in html
 
 
 def test_cost_section_kr_splits_etf_and_stock():
@@ -503,8 +507,8 @@ def test_cost_section_kr_splits_etf_and_stock():
     )
     groups = {g["label"]: g["comparison"] for g in sec["cost"]["groups"]}
     assert set(groups) == {"KR ETF", "KR 개별주"}
-    assert groups["KR ETF"]["assumed_bp"] == 4.0
-    assert groups["KR 개별주"]["assumed_bp"] == 30.0
+    assert groups["KR ETF"]["assumed_bp"] == 3.0        # 수수료 1.5bp x 2
+    assert groups["KR 개별주"]["assumed_bp"] == 23.0     # + 매도 거래세 20bp
 
 
 def test_cost_section_without_kr_etf_treats_all_kr_as_stock():
@@ -521,3 +525,81 @@ def test_cost_section_without_kr_etf_treats_all_kr_as_stock():
     groups = {g["label"]: g["comparison"] for g in sec["cost"]["groups"]}
     assert groups["KR ETF"] is None  # 069500이 개별주 그룹으로 갔으므로 ETF 그룹은 표본 없음
     assert groups["KR 개별주"] is not None
+
+
+# ⑦ 이식 정리 제외 (2026-09-02) ------------------------------------------------
+
+def test_wrap_shows_the_seeding_liquidation_exclusion_line():
+    """`session_pnl_summary`가 이식 정리를 빼고 준다 — 마감 리포트도 그 사실을
+    한 줄로 밝힌다(조용히 빼면 원장 총액과 왜 안 맞는지 아무도 모른다)."""
+    from datetime import date as _date
+
+    from quant.control.ledger import session_pnl_summary
+
+    reason = "실계좌 이식 정리 — 소유자 지시 2026-09-01"
+    trades = [
+        {"ts": "2026-09-01T14:30:00+00:00", "strategy_id": "gap_fade", "symbol": "TQQQ",
+         "side": "buy", "qty": 1, "price": 69.2, "fee": 0.07, "market": "US"},
+        {"ts": "2026-09-01T15:30:00+00:00", "strategy_id": "gap_fade", "symbol": "TQQQ",
+         "side": "sell", "qty": 1, "price": 70.5, "fee": 0.08, "realized_pnl": 1.3,
+         "market": "US"},
+        {"ts": "2026-09-01T14:01:08+00:00", "strategy_id": "legacy", "symbol": "SOXL",
+         "side": "sell", "qty": 13, "price": 105.67, "fee": 1.4,
+         "realized_pnl": -706.42, "market": "US", "reason": reason},
+    ]
+    pnl = session_pnl_summary(trades, "US", _date(2026, 9, 1))
+    sec = build_sections(
+        market="US", on=_date(2026, 9, 1), pnl=pnl, trips=[], equity_points=[],
+        positions={}, session_trades=[], names={}, issues=[], commits=[],
+    )
+    assert sec["performance"]["excluded_seeding_n"] == 1
+    html = render_html(sec)
+    assert "이식 정리 1건 제외" in html
+    # 실현손익은 프로그램 매매분(1.3 - 0.15)만
+    assert sec["performance"]["net_realized"] == pytest.approx(1.15)
+
+
+# ⑦ A/B 갈래 한 줄 (2026-09-03) ----------------------------------------------
+# 중심 주장: 마감 리포트도 **누적** 표본으로만 A/B 를 말하고, 미달이면 "판단 불가".
+
+def _ab_trip(sid: str, bps: float, market: str = "KR") -> dict:
+    return {"strategy": sid, "symbol": "005930", "market": market, "pnl": bps,
+            "fees": 0.0, "bps": bps, "pnl_known": True,
+            "exit_ts": "2026-08-28T14:00:00+09:00"}
+
+
+def test_ab_line_is_absent_when_no_pairs_are_configured():
+    sec = _sections(all_trips=[_ab_trip("scalp_1m", 3.0)], ab_bases=[])
+    assert sec["performance"]["ab"] == []
+    assert "A/B" not in render_html(sec)
+
+
+def test_ab_line_shows_both_sample_sizes_and_says_judgement_impossible():
+    all_trips = [_ab_trip("scalp_1m", -10.0) for _ in range(MIN_TRIPS_FOR_JUDGEMENT)]
+    all_trips += [_ab_trip("scalp_1m_cat", 40.0) for _ in range(3)]
+    sec = _sections(all_trips=all_trips, ab_bases=["scalp_1m"])
+    (row,) = sec["performance"]["ab"]
+    assert (row["n_a"], row["n_b"]) == (MIN_TRIPS_FOR_JUDGEMENT, 3)
+    assert row["reason"] == f"판단 불가(n<{MIN_TRIPS_FOR_JUDGEMENT})"
+    html = render_html(sec)
+    assert "A/B scalp_1m" in html
+    assert f"기준 n={MIN_TRIPS_FOR_JUDGEMENT} vs 촉매 n=3" in html
+    assert "판단 불가" in html
+
+
+def test_ab_line_only_counts_this_markets_trips():
+    """KR 리포트에 US 갈래 성적이 섞이면 통화도 세션도 뒤엉킨다."""
+    all_trips = [_ab_trip("scalp_1m", 5.0, "US"), _ab_trip("scalp_1m_cat", 5.0, "US")]
+    sec = _sections(market="KR", all_trips=all_trips, ab_bases=["scalp_1m"])
+    assert sec["performance"]["ab"] == []
+
+
+def test_ab_line_reports_the_difference_once_both_arms_are_thick_enough():
+    n = MIN_TRIPS_FOR_JUDGEMENT + 5
+    all_trips = [_ab_trip("scalp_1m", -20.0 + (i % 4)) for i in range(n)]
+    all_trips += [_ab_trip("scalp_1m_cat", 30.0 + (i % 4)) for i in range(n)]
+    sec = _sections(all_trips=all_trips, ab_bases=["scalp_1m"])
+    (row,) = sec["performance"]["ab"]
+    assert row["reason"] == ""
+    assert row["delta"] == pytest.approx(50.0, abs=0.5)
+    assert "차이 +50.0bp" in render_html(sec)
