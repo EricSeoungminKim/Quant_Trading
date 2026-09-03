@@ -2333,6 +2333,100 @@ def cmd_manual_recs(args: argparse.Namespace) -> None:
     print(f"선정 원장 {added}건 추가 (producer=manual_rec_v1, 후보 {len(recs)}건)", file=sys.stderr)
 
 
+def cmd_market_pulse(args: argparse.Namespace) -> None:
+    """시장 펄스 다이제스트 (2026-09-03 소유자 요청) — 자동매매와 무관, 지수·금리·
+    달러·유가 과매수/과매도를 참고용 텔레그램 메시지로 stdout에 낸다. 판단 로직은
+    `quant/analyze/market_pulse.py`(순수 analyze 평면) — 이 명령은 주문을 내지
+    않고 선정 원장에도 쓰지 않는다. `data/state/market_pulse_{market}.json`에
+    라벨 스냅샷만 남긴다(`--changes-only` 비교용, `--dry-run`이면 갱신 안 함).
+
+    `--changes-only`면 지난 스냅샷과 라벨이 전부 같을 때 stdout을 비운다
+    (ai_trader.sh 등과 같은 "무출력=무발송" 관례) — 기본은 꺼짐(소유자가 주기적
+    다이제스트를 원했으므로 매 크론마다 보낸다).
+
+    출력은 stdout **하나**뿐이다 — `server/scripts/market_pulse.sh`가 그대로
+    텔레그램에 보낸다(manual_recs.sh와 같은 관례). 진단 로그는 stderr로만."""
+    import json as _json
+    import sys
+    from zoneinfo import ZoneInfo
+
+    import pandas as pd
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.analyze import market_pulse
+    from quant.apps.assembly import MissingCredentials, build_toss_client
+
+    # session_pnl과 같은 이유(그 커맨드 주석 참고) — 크론(cron)은 systemd
+    # EnvironmentFile을 안 거치므로, 여기서 명시적으로 .env.local을 읽어
+    # os.environ에 채워야 build_toss_client()가 TOSS_CLIENT_ID를 찾는다.
+    load_settings()
+
+    tz = ZoneInfo("Asia/Seoul") if args.market == "KR" else ZoneInfo("America/New_York")
+    as_of = datetime.now(tz).date()
+
+    roster = market_pulse.US_ROSTER if args.market == "US" else market_pulse.KR_ROSTER
+
+    client = None
+    try:
+        client = build_toss_client()
+    except MissingCredentials as e:
+        print(f"market-pulse: Toss 자격증명 없음 — 시세 없이 결측 렌더 ({e})", file=sys.stderr)
+
+    def _fetch(sym: str) -> pd.DataFrame:
+        if client is None:
+            return pd.DataFrame()
+        try:
+            return client.candles(sym, interval="day", count=300)
+        except Exception as e:  # noqa: BLE001 — 종목 하나 실패로 다이제스트 전체를 죽이지 않는다
+            print(f"market-pulse: {sym} 시세 조회 실패 — 결측 ({type(e).__name__}: {e})", file=sys.stderr)
+            return pd.DataFrame()
+
+    bars_by_key: dict[str, pd.DataFrame] = {}
+    for sym in roster:
+        df = _fetch(sym)
+        if sym == "SOXX" and (df is None or df.empty):
+            print(f"market-pulse: SOXX 결측 — {market_pulse.SOXX_FALLBACK}로 대체 조회", file=sys.stderr)
+            df = _fetch(market_pulse.SOXX_FALLBACK)
+        bars_by_key[sym] = df
+
+    macro = market_pulse.load_macro_series(
+        REPO_ROOT / "data" / "ledger" / "macro_rates.jsonl",
+        ("us_10y", "us_2y", "vix", *market_pulse.MACRO_INSTRUMENT_SERIES),
+    )
+
+    kr_reasons = None
+    if args.market == "KR":
+        kr_reasons = market_pulse.load_kr_regime_reasons(REPO_ROOT / "data" / "state" / "regime.json") or []
+
+    report = market_pulse.compute_pulse(bars_by_key, macro, as_of=as_of, kr_reasons=kr_reasons)
+    msg = market_pulse.render_telegram(report, args.market)
+    labels = market_pulse.label_snapshot(report)
+    state_path = REPO_ROOT / "data" / "state" / f"market_pulse_{args.market}.json"
+
+    if args.changes_only:
+        prev = {}
+        if state_path.exists():
+            try:
+                prev = _json.loads(state_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                prev = {}
+        if prev == labels:
+            if not args.dry_run:
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                state_path.write_text(_json.dumps(labels, ensure_ascii=False, indent=2), encoding="utf-8")
+            print("(변경 없음 — --changes-only, 무출력)", file=sys.stderr)
+            return
+
+    print(msg)
+
+    if args.dry_run:
+        print("(dry-run — 상태 파일 갱신 생략)", file=sys.stderr)
+        return
+
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(_json.dumps(labels, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def cmd_strategy_pnl(args: argparse.Namespace) -> None:
     """전략별 독립 명목계좌(각 1,000만원) 성과 요약 — 평가금액·수익률·실현/미실현손익·
     보유종목·거래수/승률을 전략별로 나눠 보여준다.
@@ -5632,6 +5726,17 @@ def main() -> None:
     p_manual_recs.add_argument("--scorecard", action="store_true",
                                 help="선정 대신 producer manual_rec_v1의 D+5 적중률/평균bp를 출력")
     p_manual_recs.set_defaults(func=cmd_manual_recs)
+
+    p_market_pulse = sub.add_parser(
+        "market-pulse",
+        help="시장 펄스 다이제스트(자동매매 아님) — 지수/금리/달러/유가 과매수·과매도를 참고용 텔레그램 메시지로 stdout에 낸다",
+    )
+    p_market_pulse.add_argument("--market", required=True, choices=["KR", "US"], help="KR 또는 US")
+    p_market_pulse.add_argument("--dry-run", action="store_true",
+                                 help="상태 스냅샷 파일 갱신 없이 메시지만 stdout에 출력")
+    p_market_pulse.add_argument("--changes-only", action="store_true",
+                                 help="지난 실행과 라벨이 전부 같으면 무출력(기본: 매번 발송)")
+    p_market_pulse.set_defaults(func=cmd_market_pulse)
 
     p_strategy_pnl = sub.add_parser(
         "strategy-pnl",

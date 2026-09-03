@@ -205,6 +205,20 @@
 50 15 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/manual_recs.sh KR >> data/manual_recs.log 2>&1
 30 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/manual_recs.sh US >> data/manual_recs.log 2>&1
 
+# --- 시장 펄스 다이제스트 (2026-09-03 소유자 요청: "매매 안 할 때도 참고할
+# 시그널을 주기적으로") --- 지수/금리/달러/유가 과매수·과매도를 참고용으로
+# 텔레그램에 낸다(자동매매와 무관, 기존 'KODEX 과매도' 알림 스타일 일반화).
+# KR 정규장(09:00~15:30) 중 09:40(동시호가 직후)/12:00(점심)/14:30(마감 앞) —
+# 30분/60분 등 촘촘한 장중 크론(flow_scan 등)과 겹치지 않는 시각으로 벌렸다.
+# US 정규장 22:30(EDT)/23:30(EST) 개장 ~ 05:00/06:00 마감 구간을 23:00(개장
+# 직후, 월~금)·01:00/03:00/05:00(세션 중, 화~토 — 한국 달력 익일 걸침, 다른
+# US 새벽 크론과 같은 요일 패턴)으로 덮는다.
+40 9 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/market_pulse.sh KR >> data/market_pulse.log 2>&1
+0 12 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/market_pulse.sh KR >> data/market_pulse.log 2>&1
+30 14 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/market_pulse.sh KR >> data/market_pulse.log 2>&1
+0 23 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/market_pulse.sh US >> data/market_pulse.log 2>&1
+0 1,3,5 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/market_pulse.sh US >> data/market_pulse.log 2>&1
+
 # 06:20 US — 공개 포트폴리오 사이트용 성과 JSON(data/public/performance.json).
 # 세션 손익(06:10) 뒤·일일 피드백(06:25) 전. 입력은 거래 원장 하나뿐(LLM/네트워크
 # 호출 없음) — quant/control/performance.py 계약. git push는 아직 안 한다(공개
