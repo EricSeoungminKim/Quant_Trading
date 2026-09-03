@@ -30,13 +30,13 @@ fi
 LOG="data/market_pulse.log"
 mkdir -p data
 
-# notify_auto (server/scripts/lib/notify.sh) — 참고 지표는 알아야 하지만 급하지
-# 않다. 장중이면 마감 HTML 리포트로 미뤄지고, 장외면 즉시 발송된다.
+# notify_now (server/scripts/lib/notify.sh) — 주기 다이제스트는 정해진 시각에 바로
+# 도착해야 의미가 있다. notify_auto 는 장중이면 큐에 넣어 마감 wrap 때 보내므로 쓰지 않는다(2026-09-03 실측).
 . "$(dirname "$0")/lib/notify.sh"
 
 # TZ 가드 — 크론 시각(위 주석)은 호스트가 KST라는 전제다.
 if [ "$(date +%z)" != "+0900" ]; then
-  notify_auto "market_pulse" "⚠️ market_pulse(${MARKET}): 호스트 TZ가 KST가 아님($(date +%z))"
+  notify_now "⚠️ market_pulse(${MARKET}): 호스트 TZ가 KST가 아님($(date +%z))"
 fi
 
 DRY_RUN_FLAG=""
@@ -51,9 +51,9 @@ fi
 
 OUT="$(timeout 120 .venv/bin/python -m quant.apps.cli market-pulse --market "$MARKET" $DRY_RUN_FLAG $CHANGES_FLAG 2>>"$LOG")"
 if [ -n "$OUT" ]; then
-  notify_auto "market_pulse" "${OUT:0:3900}"
+  notify_now "${OUT:0:3900}"  # 2026-09-03: 주기 다이제스트는 큐에 넣지 않고 즉시 보낸다(장중 큐잉이면 마감 wrap 때야 도착)
 elif [ -z "$CHANGES_FLAG" ]; then
   # --changes-only 가 꺼져 있는데도 무출력이면 실패다(켜져 있으면 "변경 없음"이
   # 정상적인 무출력이라 여기서 경보하지 않는다).
-  notify_auto "market_pulse" "market-pulse(${MARKET}) 생성 실패 — ${LOG} 확인"
+  notify_now "market-pulse(${MARKET}) 생성 실패 — ${LOG} 확인"
 fi
