@@ -715,7 +715,13 @@ def validated_capital_fractions(cfg: dict) -> dict[str, dict[str, float]]:
             )
         capped = {m: min(declared[m], cap) for m in _MARKETS}
         if any(capped[m] < declared[m] for m in _MARKETS):
-            logger.warning(
+            # F7(2026-09-03) — enabled: false인 전략은 build_paper_runtime이
+            # 애초에 조립하지 않는다(자본을 실제로 받지 않는다). 그런데도
+            # 이 경고가 매번 찍혀 "미검증(burn_in) 캡핑"이 마치 지금 운영 중인
+            # 문제처럼 보였다(감사 #7) — 캡 계산 자체는 그대로 두고(활성 전략과
+            # 동일한 out[sid] 값), 로그 레벨만 비활성 전략에 한해 debug로 낮춘다.
+            log = logger.warning if c.get("enabled", True) else logger.debug
+            log(
                 "검증 게이트: %s는 미검증(burn_in) — capital_fraction %s → %s 캡핑"
                 " (승격 조건: 스코어보드 종결 30건 + 승률 유의)",
                 sid, declared, capped,

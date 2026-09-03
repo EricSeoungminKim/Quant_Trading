@@ -24,15 +24,22 @@
     Samsung_Global_AI_SW     200, 19건
     rafikiresearch              200, 20건
 
-12개 중 11개가 실측으로 프리뷰를 서빙한다. `report_figure_by_offset`만 예외이며
-등록은 유지한다 — `fetch_channel`/`fetch_all`이 그 경우도 예외 없이 빈 리스트 +
-사유 문자열로 정직하게 드러낸다(아래 `fetch_all` 참고).
+12개 중 11개가 실측으로 프리뷰를 서빙한다. `report_figure_by_offset`만 예외이었다
+— **2026-09-03(F8, 감사 #8) 재확인 후 `CHANNELS`에서 제거**: `curl -sL
+https://t.me/s/report_figure_by_offset`가 등록 시점과 똑같이 302 →
+`https://t.me/report_figure_by_offset`(og:title "리포트 갤러리" — 채널 자체는
+살아 있다, `tgme_channel_history` 섹션만 없음)로 3주 넘게 변함이 없었다. 일시적
+장애가 아니라 채널 소유자가 웹 프리뷰 자체를 꺼둔 영구 상태라 재시도로 회복될
+여지가 없고, `telegram-collect`(30분 주기 크론, `report_cli.py` "⚠ 오류 채널"
+경고)가 이 채널 하나 때문에 매 사이클 100% 확률로 경고를 냈다 — 등록을 유지해서
+얻는 정보가 없으므로 뺀다.
 
 파싱 픽스처(`tests/report/fixtures/telegram_tazastock.html`)는 위 실측 중
 tazastock 응답에서 실제 메시지 5건(75633~75637, 링크 없는 것/있는 것 섞음)을
 그대로 잘라 저장한 것이다 — 추측이 아니라 실제 HTML.
-`telegram_preview_disabled.html`은 `report_figure_by_offset` 리다이렉트 목적지를
-그대로 저장한 것(프리뷰 꺼짐 케이스 검증용).
+`telegram_preview_disabled.html`은 (제거된) `report_figure_by_offset` 리다이렉트
+목적지를 그대로 저장한 것 — 채널 등록과 무관하게 "프리뷰 꺼짐" HTML 모양 자체를
+검증하는 데 계속 쓴다(`_parse_messages_with_reason`의 "no preview" 분기).
 
 ## 시간당 US 뉴스 채널 실측(2026-08-17T13:30:24Z, 서브프로젝트 W part 1)
 
@@ -101,7 +108,11 @@ CHANNELS: list[dict] = [
     {"handle": "pharmbiohana", "분류": "바이오·미용 섹터", "market": "KR", "tier": "sector"},
     {"handle": "aetherjapanresearch", "분류": "해외 리포트·시황 인사이트", "market": "BOTH", "tier": "macro"},
     {"handle": "yieldnspread", "분류": "채권·경제", "market": "BOTH", "tier": "macro"},
-    {"handle": "report_figure_by_offset", "분류": "증권사 리포트 요약", "market": "KR", "tier": "news"},
+    # report_figure_by_offset — 2026-09-03(F8) 제거. 등록 시점(2026-08-17)부터
+    # 계속 프리뷰가 꺼져 있었고(302, tgme_channel_history 없음) 3주 뒤 재확인해도
+    # 그대로였다 — 채널은 살아 있지만 웹 프리뷰 스크레이핑으로는 영구히 0건이라,
+    # telegram-collect 크론(30분 주기)이 이 채널 하나 때문에 매번 "⚠ 오류 채널"을
+    # 냈다. 모듈 docstring "실측 확인" 절 참고.
     {"handle": "gaoshoukorea", "분류": "국내외 기업 실적·뉴스", "market": "BOTH", "tier": "news"},
     {"handle": "tazastock", "분류": "장중 시황·국내 시황", "market": "KR", "tier": "news"},
     {"handle": "mootda", "분류": "국내 시황", "market": "KR", "tier": "news"},

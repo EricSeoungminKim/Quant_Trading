@@ -16,6 +16,11 @@
 - `ports.py` — 코어(전략/리스크/루프)와 어댑터 사이의 Protocol 경계
   (`Clock`, `DataFeed`, `Broker`, `RiskManager`, `Notifier`, `Narrator`,
   `EventSink`, `OrderSink`, `KeyValue`, `Strategy`) + `Context`.
+- `strategy_ids.py`(2026-09-03) — 전략 id 접미사(`_cat`/`_pure`) 규약의 단일 정의
+  (`base_strategy_id`/`is_catalyst_arm`). **왜 core 인가**: `quant/trade/loop.py`·
+  `quant/trade/risk/manager.py`·`quant/control/ledger.py` 세 곳이 같은 규칙을
+  각자 베껴 쓰다 갈라졌다(평면 규칙상 서로 임포트할 수 없어서) — 의존 방향의
+  바닥에 두면 셋 다 임포트할 수 있다.
 
 ## 절대 여기 임포트하지 말 것
 

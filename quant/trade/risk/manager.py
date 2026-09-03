@@ -51,6 +51,7 @@ from zoneinfo import ZoneInfo
 
 from quant.core.fx import FixedFxProvider, FxProvider
 from quant.core.ports import Context
+from quant.core import strategy_ids
 from quant.core.models import (
     Order,
     Position,
@@ -116,18 +117,11 @@ def _interval_str(minutes: int) -> str:
 # 진입 기회가 한쪽에만 있었다). 반면 **갈래 고유 값**(capital_fraction, 전략별
 # 장부, 손절 쿨다운 상태)은 절대 상속하지 않는다 — 그게 A/B 의 측정 대상이다.
 #
-# `quant.trade.loop._base_strategy_id` / `quant.control.ledger.base_strategy_id`
-# 와 같은 규칙이지만 **임포트하지 않는다**: `quant/trade/` 는 `quant/control/` 을
-# 모르고(평면 규칙), `loop.py` 는 이 파일을 임포트하므로 반대 방향은 순환이다.
-_CATALYST_ARM_SUFFIX = "_cat"
-_PURE_ARM_SUFFIX = "_pure"
-
-
-def _base_strategy_id(strategy_id: str) -> str:
-    """`_cat`(A/B 촉매 갈래)·`_pure`(순수 계약 껍질) 접미사를 벗긴 기준 id.
-    접미사가 없으면 그대로 돌려준다."""
-    sid = str(strategy_id or "")
-    return sid.removesuffix(_CATALYST_ARM_SUFFIX).removesuffix(_PURE_ARM_SUFFIX)
+# 벗기는 규칙 자체는 `quant.core.strategy_ids`(의존 방향의 바닥) 단일 정의를
+# 쓴다 — `quant.trade.loop._base_strategy_id` / `quant.control.ledger.
+# base_strategy_id` 와 이제 같은 함수다(2026-09-03, 세 곳이 각자 베껴 쓰다
+# `ledger`쪽이 `_pure`를 벗기지 않는 채로 갈라졌던 버그 상환).
+_base_strategy_id = strategy_ids.base_strategy_id
 
 
 def _by_strategy(table: dict, strategy_id: str, default):

@@ -42,6 +42,7 @@ from datetime import datetime
 import pandas as pd
 
 from quant.apps.config import load_settings
+from quant.backtest import roundtrips
 from quant.core.models import Signal, SignalAction, market_of
 # `_execute_signal`은 비공개지만 **의도적으로** 재사용한다. 봉내(intrabar) 청산이
 # 승인(risk.approve) → 주문 → 체결 → 싱크 → 랏 정리를 거치는 경로가 전략이 낸
@@ -808,34 +809,20 @@ def _reconcile(
     return result
 
 
-def _round_trip_pnl(trades: pd.DataFrame) -> pd.Series:
-    """왕복 순손익(KRW) 시계열. 매도 1건 = 1 트레이드.
-
-    `trades["pnl"]`(= 실현손익 − **매도** 수수료)를 그대로 쓰면 안 된다. 매수
-    수수료가 어디에도 반영되지 않아 왕복 비용의 절반이 사라지고, 승률·profit
-    factor·기대값이 전부 낙관 쪽으로 치우친다 — 실측: 총수익 −51%인 백테스트에서
-    profit factor가 1.014로 나왔다(1을 넘으면 "이기는 전략"으로 읽힌다).
-
-    매수 수수료는 그 매수를 청산한 매도에 수량 비율대로 배분한다. 자산곡선 기반
-    지표(total_return/CAGR/MDD)는 원래부터 모든 수수료를 반영하므로 영향 없다.
-    """
-    if trades.empty:
-        return pd.Series(dtype=float)
-    pending_fee: dict[str, float] = {}
-    pending_qty: dict[str, float] = {}
-    out: list[float] = []
-    for row in trades.sort_values("ts").itertuples():
-        if row.side == "buy":
-            pending_fee[row.symbol] = pending_fee.get(row.symbol, 0.0) + row.fee_krw
-            pending_qty[row.symbol] = pending_qty.get(row.symbol, 0.0) + row.qty
-            continue
-        held = pending_qty.get(row.symbol, 0.0)
-        frac = min(row.qty / held, 1.0) if held > 0 else 1.0
-        allocated = pending_fee.get(row.symbol, 0.0) * frac
-        pending_fee[row.symbol] = pending_fee.get(row.symbol, 0.0) - allocated
-        pending_qty[row.symbol] = max(held - row.qty, 0.0)
-        out.append(row.realized_pnl_krw - row.fee_krw - allocated)
-    return pd.Series(out, dtype=float)
+# 왕복 순손익(KRW) 시계열. 매도 1건 = 1 트레이드.
+#
+# `trades["pnl"]`(= 실현손익 − **매도** 수수료)를 그대로 쓰면 안 된다. 매수
+# 수수료가 어디에도 반영되지 않아 왕복 비용의 절반이 사라지고, 승률·profit
+# factor·기대값이 전부 낙관 쪽으로 치우친다 — 실측: 총수익 −51%인 백테스트에서
+# profit factor가 1.014로 나왔다(1을 넘으면 "이기는 전략"으로 읽힌다).
+#
+# 매수 수수료는 그 매수를 청산한 매도에 수량 비율대로 배분한다. 자산곡선 기반
+# 지표(total_return/CAGR/MDD)는 원래부터 모든 수수료를 반영하므로 영향 없다.
+#
+# FIFO 배분 자체는 `quant.backtest.roundtrips`(단일 정의, 2026-09-03 부채
+# 상환) — `analytics._round_trip_detail`이 진입시각·명목가까지 곁들여 같은
+# 루프를 따로 구현하고 있었다.
+_round_trip_pnl = roundtrips.round_trip_pnl
 
 
 def _compute_metrics(equity: pd.Series, trades: pd.DataFrame) -> dict:

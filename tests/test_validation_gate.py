@@ -274,3 +274,38 @@ def test_real_config_allocation_sums_to_at_most_one_per_market():
     for m in _MARKETS:
         total = sum(v[m] for v in active.values())
         assert total <= 1.0 + 1e-9, f"{m} 시장 활성 전략 배분 합 초과: {total} ({active})"
+
+
+def test_disabled_burn_in_strategy_logs_at_debug_not_warning(caplog):
+    """F7(2026-09-03, 감사 #7) — enabled: false 전략은 조립되지 않으므로 매
+    기동마다 "미검증(burn_in) 캡핑" 경고를 찍을 이유가 없다. 캡 계산 자체는
+    켜진 전략과 동일하게 유지하고(math 불변), 로그 레벨만 낮춘다."""
+    import logging
+
+    cfg = _cfg({
+        "off": {"enabled": False, "capital_fraction": 0.9, "validation": {"status": "burn_in"}},
+    }, cap=0.2)
+
+    with caplog.at_level(logging.DEBUG):
+        fr = validated_capital_fractions(cfg)
+
+    assert fr == {"off": _both(0.2)}, "캡 계산은 활성 여부와 무관하게 그대로"
+    capping_records = [r for r in caplog.records if "캡핑" in r.message]
+    assert capping_records, "캡핑 로그 자체는 여전히 남아야 한다(디버깅 가능성 유지)"
+    assert all(r.levelno == logging.DEBUG for r in capping_records)
+    assert not any(r.levelno == logging.WARNING for r in capping_records)
+
+
+def test_enabled_burn_in_strategy_still_logs_at_warning(caplog):
+    """F7 회귀 가드 — 활성 전략의 캡핑 경고는 그대로 warning이어야 한다."""
+    import logging
+
+    cfg = _cfg({
+        "on": {"enabled": True, "capital_fraction": 0.9, "validation": {"status": "burn_in"}},
+    }, cap=0.2)
+
+    with caplog.at_level(logging.DEBUG):
+        validated_capital_fractions(cfg)
+
+    capping_records = [r for r in caplog.records if "캡핑" in r.message]
+    assert capping_records and all(r.levelno == logging.WARNING for r in capping_records)

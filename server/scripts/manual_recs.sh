@@ -44,7 +44,15 @@ if [ "$(date +%z)" != "+0900" ]; then
   notify_auto "manual_recs" "⚠️ manual_recs(${MARKET}): 호스트 TZ가 KST가 아님($(date +%z)) — 크론이 마감 직후가 아닐 수 있음"
 fi
 
-OUT="$(timeout 120 .venv/bin/python -m quant.apps.cli manual-recs --market "$MARKET" 2>>"$LOG")"
+# F4(2026-09-03) — DRY_RUN=1 이면 CLI에도 --dry-run을 넘겨 선정 원장 기록을
+# 건너뛴다(이전엔 notify.sh만 DRY_RUN을 봐서 텔레그램은 안 나가도 선정 원장에는
+# 그대로 쌓였다). notify.sh의 DRY_RUN 동작(발송 대신 찍기)은 그대로 유지.
+DRY_RUN_FLAG=""
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  DRY_RUN_FLAG="--dry-run"
+fi
+
+OUT="$(timeout 120 .venv/bin/python -m quant.apps.cli manual-recs --market "$MARKET" $DRY_RUN_FLAG 2>>"$LOG")"
 if [ -n "$OUT" ]; then
   notify_auto "manual_recs" "${OUT:0:3900}"
 else

@@ -1028,7 +1028,16 @@ html{overflow-x:hidden}
   <summary>오늘의 뉴스 흐름<span class="sub">전 매체 · 사건 단위 · 다매체 보도량 순</span>{% if tldr.news_flow %}<span class="mod-tldr">{{ tldr.news_flow }}</span>{% endif %}</summary>
   {% set nd = d('news') %}
   {% if nd and nd.window_start %}
+  {# F5(2026-09-03) — from_store/from_live는 2026-09-02에 추가된 필드라 그
+     이전 스냅샷(nd.get(...)가 None)엔 없다. `nd.from_store`(점 표기)는 Jinja가
+     없는 키를 Undefined로 돌려줘 `is none`이 False가 되고 그대로 빈 문자열로
+     보간돼 "(누적 저장소  / 실시간 )"처럼 빈칸만 남았다 — `nd.get(...)`(dict
+     메서드 호출)이라야 없는 키도 None으로 잡혀 이 가드가 실제로 걸린다. #}
+  {% if nd.get('from_store') is none %}
+  <p class="foot">수집창 {{ nd.window_start[5:7] }}-{{ nd.window_start[8:10] }} {{ nd.window_start[11:16] }} → {{ snap.generated_at.strftime('%m-%d %H:%M') }} · 기사 {{ nd.kept }}건 (집계 정보 없음 — 구 스냅샷)</p>
+  {% else %}
   <p class="foot">수집창 {{ nd.window_start[5:7] }}-{{ nd.window_start[8:10] }} {{ nd.window_start[11:16] }} → {{ snap.generated_at.strftime('%m-%d %H:%M') }} · 기사 {{ nd.kept }}건 (누적 저장소 {{ nd.from_store }} / 실시간 {{ nd.from_live }})</p>
+  {% endif %}
   {% endif %}
   <ul class="news-list">
     {% for item in news_flow[:12] %}

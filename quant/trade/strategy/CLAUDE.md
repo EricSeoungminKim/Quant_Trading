@@ -5,10 +5,16 @@
 전략 구현체. 각 전략은 `quant.core.ports.Strategy` Protocol을 만족하는 클래스 —
 `id: str`, `symbols: list[str]`, `on_cycle(ctx: Context) -> list[Signal]`.
 
-현재 활성: `donchian.py`(TQQQ/SQQQ 15분 돌파), `orb_scan.py`(관심종목 개장 5분
-돌파, 롱 온리), `intraday_scan.py`(관심종목 장중 세션 신고가 돌파). 비활성이지만
-유지: `orb.py` — orb_scan의 규격 출처(Zarattini & Aziz 논문판)이자 in-sample 측정
-기록의 기준점.
+**활성 목록의 진실은 `config/settings.yaml`의 `strategies:` 블록 `enabled`
+필드다** — 아래는 2026-09-03 기준 요약일 뿐이고 낡을 수 있다. 현재 활성(12개,
+루트 `CLAUDE.md` "이 시스템은 무엇인가" 참고): `news_momentum.py`/`news_scalp.py`,
+`pullback_impulse.py`(+`_cat` 갈래), `mr_vwap_quiet.py`, `vol_breakout.py`
+(+`_cat` 갈래), `intraday_momentum.py`, `gap_fade.py`, `scalp_1m.py`(+`_cat`
+갈래), `llm_trader.py`. `<id>_cat`은 별도 파일이 아니라 같은 클래스를 다른
+유니버스로 돌리는 A/B 갈래다(아래 "로컬 불변식" 참고). `donchian.py`/
+`orb_scan.py`/`intraday_scan.py`를 포함해 나머지는 현재 `enabled: false`(코드는
+남아 있다 — 측정 기준점 + 추후 복원용). 비활성이지만 유지: `orb.py` — orb_scan의
+규격 출처(Zarattini & Aziz 논문판)이자 in-sample 측정 기록의 기준점.
 
 공통 시맨틱(2026-08-10): 유효한 진입 신호를 '이미 보유/이미 진입'으로 막지 않는다.
 같은 완성봉 1회 가드(`_last_entry_bar`)와 리스크 레일이 폭주를 막고, 사이징은

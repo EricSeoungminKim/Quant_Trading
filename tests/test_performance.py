@@ -192,6 +192,8 @@ def test_no_forbidden_fields_in_output():
             "id", "name_ko", "total", "by_market",
             # 2026-09-02 추가 — 셋 다 종목/수량과 무관한 요약값이다.
             "trades_per_day", "avg_hold_minutes", "enabled",
+            # 2026-09-03(F6) — 공개 사이트 EN 로케일용 영문 표시명.
+            "name_en",
         }
         assert set(strat["total"].keys()) == {
             "trips", "wins", "win_rate", "ci_low", "ci_high",
@@ -624,3 +626,26 @@ def test_strategy_table_gains_the_trip_hidden_by_transplant_phantom_inventory():
     payload = build_performance_payload(trades, EXECUTION_CFG)
     gap = next(s for s in payload["strategies"] if s["id"] == "gap_fade")
     assert gap["total"]["trips"] == 1
+
+
+def test_every_enabled_strategy_has_non_id_name_in_both_languages():
+    """F6(2026-09-03) — 공개 대시보드에 켜진 전략의 원문 id가 그대로 새면
+    안 된다(감사 #6, orb_rvol의 KO 이름이 없어 id가 그대로 노출됐었다).
+    KO/EN 둘 다 사람이 붙인 표시명이어야 한다."""
+    import yaml
+
+    from quant.control.performance import _strategy_name_en, _strategy_name_ko
+
+    with open("config/settings.yaml", encoding="utf-8") as f:
+        strategies_cfg = yaml.safe_load(f)["strategies"]
+
+    checked = 0
+    for sid, params in strategies_cfg.items():
+        if not isinstance(params, dict) or not params.get("enabled"):
+            continue
+        checked += 1
+        ko = _strategy_name_ko(sid)
+        en = _strategy_name_en(sid)
+        assert ko and ko != sid, f"{sid}: KO 표시명 없음(원문 id 노출)"
+        assert en and en != sid, f"{sid}: EN 표시명 없음(원문 id 노출)"
+    assert checked > 0, "config/settings.yaml에 활성 전략이 하나도 없다 — 가드가 공회전 중"

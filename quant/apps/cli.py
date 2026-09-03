@@ -2254,7 +2254,58 @@ def cmd_manual_recs(args: argparse.Namespace) -> None:
     tz = ZoneInfo("Asia/Seoul") if args.market == "KR" else ZoneInfo("America/New_York")
     on = _date.fromisoformat(args.date) if args.date else datetime.now(tz).date()
 
-    recs = manual_recs.build_recs(REPO_ROOT, args.market, on)
+    # F1(2026-09-03, 감사 B8) — frgn_accumulate/close_bet 후보 중 로컬 일봉
+    # (data/history)이 없는 종목이 실측 12/26(46%)이었다. 기준가 없는 추천은
+    # outcomes가 채점할 수 없어 애초에 보낼 이유가 없다(manual_recs.py
+    # foreign_accumulate_recs/close_bet_recs가 이제 드롭한다) — 드롭되기 전에
+    # 한 번 더 구제한다: 1차로 로컬 일봉만 조회해 빠진 심볼을 모으고, 그
+    # 심볼만 Toss 배치 시세로 채운 뒤 2차로 다시 조립한다(session_pnl.sh/
+    # equity_snapshot과 같은 client.prices() 배치 관례 — 심볼 하나씩 조회하지
+    # 않는다). analyze 평면(manual_recs.py)은 여전히 네트워크를 모른다 — 이
+    # price_of 콜러블 자체가 apps 계층(여기)에서 조립돼 주입된다.
+    price_of = None
+    if args.market == "KR":
+        history_root = REPO_ROOT / "data" / "history"
+        missing: set[str] = set()
+
+        def _history_only(sym: str, _missing=missing, _root=history_root):
+            ref = manual_recs.latest_close(_root, sym)
+            if ref is None:
+                _missing.add(sym)
+                return None
+            return ref[0], ref[1], "history"
+
+        manual_recs.build_recs(REPO_ROOT, args.market, on, price_of=_history_only)
+
+        toss_prices: dict[str, float] = {}
+        if missing:
+            from quant.apps.assembly import MissingCredentials, build_toss_client
+            try:
+                client = build_toss_client()
+                rows = client.prices(sorted(missing))
+                for row in rows or []:
+                    if not isinstance(row, dict) or not row.get("symbol"):
+                        continue
+                    price = row.get("price") or row.get("lastPrice") or row.get("close")
+                    try:
+                        if price is not None and float(price) > 0:
+                            toss_prices[row["symbol"]] = float(price)
+                    except (TypeError, ValueError):
+                        continue
+            except MissingCredentials as e:
+                print(f"manual-recs: Toss 기준가 폴백 생략 — 자격증명 없음 ({e})", file=sys.stderr)
+            except Exception as e:  # noqa: BLE001 — 시세 실패는 해당 심볼 드롭으로 이어질 뿐, CLI를 죽이면 안 된다
+                print(f"manual-recs: Toss 기준가 폴백 실패 ({type(e).__name__}: {e})", file=sys.stderr)
+
+        def price_of(sym: str, _root=history_root, _toss=toss_prices):
+            ref = manual_recs.latest_close(_root, sym)
+            if ref is not None:
+                return ref[0], ref[1], "history"
+            if sym in _toss:
+                return _toss[sym], on.isoformat(), "toss"
+            return None
+
+    recs = manual_recs.build_recs(REPO_ROOT, args.market, on, price_of=price_of)
     print(manual_recs.render_telegram_message(recs, args.market))
 
     if args.dry_run:

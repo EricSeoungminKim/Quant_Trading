@@ -60,6 +60,7 @@ def test_foreign_accumulate_recs_only_includes_inflow_label(tmp_path):
         {"date": "2026-08-26", "foreign_net": -50},
         {"date": "2026-08-27", "foreign_net": -60},
     ])
+    _write_daily_closes(tmp_path / "data" / "history" / "000001" / "1d", [70000.0])
 
     recs = manual_recs.foreign_accumulate_recs(tmp_path)
 
@@ -69,8 +70,47 @@ def test_foreign_accumulate_recs_only_includes_inflow_label(tmp_path):
     assert rec["market"] == "KR"
     assert rec["horizon"] == "D+20"
     assert "FRGN_EXIT" in rec["invalidation"]
-    assert "50" in rec["reason"]  # 누적 순매수 -100-50+200=+50 이 그대로 찍힌다
-    assert rec["ref_price"] is None  # 로컬 일봉 없음
+    # F3(2026-09-03) — 누적(residual)만이 아니라 classify()가 실제로 쓴 최근
+    # run(재유입 200주, run 길이 1일)의 숫자가 문구에 그대로 나와야 한다.
+    assert "최근 1일 순매수 +200주" in rec["reason"]
+    assert "3일 누계 +50주" in rec["reason"]  # -100-50+200=+50
+    assert rec["ref_price"] == pytest.approx(70000.0)  # 로컬 일봉에서 조회
+    assert rec["price_source"] == "history"
+
+
+def test_foreign_accumulate_recs_drops_symbol_without_any_price(tmp_path):
+    """F1(2026-09-03, 감사 B8) — INFLOW 라벨이어도 기준가를 못 구하면(로컬
+    일봉도 없고 price_of도 못 찾으면) 추천 자체를 드롭한다. 채점 불가능한
+    추천을 텔레그램으로 보내지 않는다는 원칙."""
+    flow_path = tmp_path / "data" / "ledger" / "frgn_flow.jsonl"
+    _write_flow(flow_path, "000001", [
+        {"date": "2026-08-25", "foreign_net": -100},
+        {"date": "2026-08-26", "foreign_net": 200},
+    ])
+
+    recs = manual_recs.foreign_accumulate_recs(tmp_path)
+
+    assert recs == []
+
+
+def test_foreign_accumulate_recs_falls_back_to_injected_price_of(tmp_path):
+    """F1 — 로컬 일봉이 없어도 주입된 `price_of`(cli.py가 Toss 배치 시세로
+    조립하는 것의 대역)가 가격을 주면 드롭되지 않고 price_source가 그 출처를
+    그대로 반영한다."""
+    flow_path = tmp_path / "data" / "ledger" / "frgn_flow.jsonl"
+    _write_flow(flow_path, "000001", [
+        {"date": "2026-08-25", "foreign_net": -100},
+        {"date": "2026-08-26", "foreign_net": 200},
+    ])
+
+    def _toss_only(sym: str):
+        return (12345.0, "2026-09-03", "toss") if sym == "000001" else None
+
+    recs = manual_recs.foreign_accumulate_recs(tmp_path, price_of=_toss_only)
+
+    assert len(recs) == 1
+    assert recs[0]["ref_price"] == pytest.approx(12345.0)
+    assert recs[0]["price_source"] == "toss"
 
 
 def test_foreign_accumulate_recs_respects_explicit_symbol_list(tmp_path):
@@ -83,6 +123,8 @@ def test_foreign_accumulate_recs_respects_explicit_symbol_list(tmp_path):
         {"date": "2026-08-25", "foreign_net": -100},
         {"date": "2026-08-26", "foreign_net": 200},
     ])
+    _write_daily_closes(tmp_path / "data" / "history" / "000001" / "1d", [70000.0])
+    _write_daily_closes(tmp_path / "data" / "history" / "000003" / "1d", [1000.0])
 
     recs = manual_recs.foreign_accumulate_recs(tmp_path, symbols=["000001"])
 
@@ -102,6 +144,7 @@ def test_close_bet_recs_filters_by_tag_and_falls_back_without_report(tmp_path):
         {"symbol": "066570", "name": "LG전자", "tags": ["CLOSE_BET", "EVENT"]},
         {"symbol": "000660", "name": "SK하이닉스", "tags": ["EVENT"]},  # 태그 없음 — 제외
     ])
+    _write_daily_closes(tmp_path / "data" / "history" / "066570" / "1d", [95000.0])
 
     recs = manual_recs.close_bet_recs(tmp_path, date(2026, 9, 2))
 
@@ -111,12 +154,24 @@ def test_close_bet_recs_filters_by_tag_and_falls_back_without_report(tmp_path):
     assert rec["horizon"] == "D+5"
     assert "리포트 근거 조회 불가" in rec["reason"]
     assert "-1%" in rec["invalidation"]
+    assert rec["price_source"] == "history"
+
+
+def test_close_bet_recs_drops_symbol_without_any_price(tmp_path):
+    """F1(2026-09-03) — close_bet도 frgn_accumulate와 같은 결함(감사 B8)을
+    공유한다: CLOSE_BET 태그가 있어도 로컬 일봉이 없으면 드롭한다."""
+    _write_watchlist(tmp_path / "data" / "watchlist.yaml", [
+        {"symbol": "066570", "name": "LG전자", "tags": ["CLOSE_BET"]},
+    ])
+
+    assert manual_recs.close_bet_recs(tmp_path, date(2026, 9, 2)) == []
 
 
 def test_close_bet_recs_uses_report_reasons_when_available(tmp_path):
     _write_watchlist(tmp_path / "data" / "watchlist.yaml", [
         {"symbol": "066570", "name": "LG전자", "tags": ["CLOSE_BET"]},
     ])
+    _write_daily_closes(tmp_path / "data" / "history" / "066570" / "1d", [95000.0])
     out_dir = tmp_path / "out" / "2026" / "09" / "02"
     out_dir.mkdir(parents=True, exist_ok=True)
     import json
@@ -304,6 +359,36 @@ def test_render_telegram_message_caps_at_eight_and_notes_the_rest():
 
     assert msg.count("[frgn_accumulate]") == 8
     assert "외 2건 생략" in msg
+
+
+def test_render_telegram_message_no_price_text_is_not_duplicated():
+    """F2(2026-09-03) — "기준가 {price}"의 {price} 자리에 "기준가 없음..."을
+    또 넣어 "기준가 기준가 없음(...)"으로 중복 렌더링되던 결함."""
+    recs = [manual_recs._rec_row(
+        symbol="000001", name=None, market="KR", kind="frgn_accumulate",
+        reason="근거", ref_price=None, ref_date=None,
+        invalidation="FRGN_EXIT", horizon="D+20",
+    )]
+
+    msg = manual_recs.render_telegram_message(recs, "KR")
+
+    assert "기준가 기준가" not in msg
+    assert "기준가 없음(기준가 조회 실패)" in msg
+
+
+def test_render_telegram_message_labels_toss_sourced_price_as_live():
+    """F1 — price_source가 "toss"면 "종가"가 아니라 "실시간"으로 표시해
+    로컬 일봉 종가와 혼동되지 않게 한다."""
+    recs = [manual_recs._rec_row(
+        symbol="000001", name=None, market="KR", kind="frgn_accumulate",
+        reason="근거", ref_price=12345.0, ref_date="2026-09-03",
+        invalidation="FRGN_EXIT", horizon="D+20", price_source="toss",
+    )]
+
+    msg = manual_recs.render_telegram_message(recs, "KR")
+
+    assert "12,345(2026-09-03 실시간)" in msg
+    assert "종가" not in msg
 
 
 # --------------------------------------------------------------------------- 성적표

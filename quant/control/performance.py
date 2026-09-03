@@ -130,6 +130,40 @@ STRATEGY_NAME_KO: dict[str, str] = {
     "intraday_momentum": "장중 모멘텀",
     "gap_fade": "갭 페이드",
     "rsi2_dip": "RSI2 눌림목",
+    # 2026-09-03(F6) — 문헌 기반 신규 3종. orb_rvol은 이 항목이 없어 공개
+    # 대시보드에 원문 id가 그대로 노출되고 있었다(감사 #6).
+    "orb_rvol": "개장 상대거래량 돌파",
+    "eod_reversal": "장마감 반전",
+    "open_reversal": "전일 패자 개장 반전",
+}
+
+# 전략 id → 영문 표시명. STRATEGY_NAME_KO와 1:1 대응 — 항목을 추가하면 여기도
+# 같이 늘려야 한다(2026-09-03, 공개 사이트 다국어 F6). `_strategy_name_en`이
+# `_strategy_name_ko`와 같은 `_cat` 상속 규칙을 쓴다.
+STRATEGY_NAME_EN: dict[str, str] = {
+    "donchian": "Donchian Channel Trend Following",
+    "orb_scan": "Opening Range Breakout Scanner",
+    "intraday_scan": "Intraday New-High Scanner",
+    "scalp_1m": "1-Minute Scalping",
+    "frgn_accumulate": "Foreign Flow Accumulation",
+    "news_momentum": "News Momentum",
+    "news_scalp": "News Scalp",
+    "confluence": "Signal Confluence",
+    "cross_momentum": "Cross-Asset Momentum",
+    "mean_reversion": "Mean Reversion",
+    "overnight_drift": "Overnight Drift",
+    "pullback_impulse": "Pullback Impulse",
+    "llm_trader": "AI Trader",
+    "close_bet": "Closing Bet",
+    "orb": "Opening Range Breakout",
+    "vol_breakout": "Volatility Breakout",
+    "mr_vwap_quiet": "VWAP Mean Reversion (Quiet)",
+    "intraday_momentum": "Intraday Momentum",
+    "gap_fade": "Gap Fade",
+    "rsi2_dip": "RSI(2) Dip",
+    "orb_rvol": "Opening Range RVOL Breakout",
+    "eod_reversal": "End-of-Day Reversal",
+    "open_reversal": "Prior-Day Loser Open Reversal",
 }
 
 
@@ -143,6 +177,17 @@ def _strategy_name_ko(sid: str) -> str:
     base = base_strategy_id(sid)
     if base != sid and base in STRATEGY_NAME_KO:
         return f"{STRATEGY_NAME_KO[base]}(촉매 갈래)"
+    return sid
+
+
+def _strategy_name_en(sid: str) -> str:
+    """전략 id → 영문 표시명. `_strategy_name_ko`와 같은 상속 규칙 — `_cat`
+    갈래는 기준 전략 영문명에 "(catalyst arm)" 접미사만 붙인다(2026-09-03, F6)."""
+    if sid in STRATEGY_NAME_EN:
+        return STRATEGY_NAME_EN[sid]
+    base = base_strategy_id(sid)
+    if base != sid and base in STRATEGY_NAME_EN:
+        return f"{STRATEGY_NAME_EN[base]} (catalyst arm)"
     return sid
 
 
@@ -487,6 +532,7 @@ def _strategy_stats(trades: list[dict], strategies_cfg: dict | None = None) -> l
         stats.append({
             "id": sid,
             "name_ko": _strategy_name_ko(sid),
+            "name_en": _strategy_name_en(sid),
             "total": total,
             "trades_per_day": round(len(known) / len(days), 2) if days else None,
             "avg_hold_minutes": round(sum(holds) / len(holds), 1) if holds else None,

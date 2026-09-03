@@ -12,11 +12,13 @@ quant-expert §4 형식의 한 장짜리 요약만 낸다. 둘 다 "왜 이런 �
 
 ## 라운드트립 재구성
 
-엔진의 `trades` 는 체결(fill) 단위 로그이고 라운드트립이 아니다. `engine._round_trip_pnl`
-과 같은 규약(**매도 1건 = 1 트레이드**, 매수 수수료는 수량 비율로 배분)을 그대로
-따르되, 이 모듈은 그 위에 진입 시각·보유시간·청산 사유까지 함께 들고 다녀야 해서
-자체 페어링 함수(`_round_trip_detail`)를 둔다 — `engine._round_trip_pnl`은 pnl 값
-하나만 내므로 재사용할 수 없다(중복이 아니라 반환 형태가 다르다).
+엔진의 `trades` 는 체결(fill) 단위 로그이고 라운드트립이 아니다. `_round_trip_detail`
+(**매도 1건 = 1 트레이드**, 매수 수수료는 수량 비율로 배분)은 `quant.backtest.
+roundtrips.round_trip_detail`을 그대로 가리킨다(2026-09-03) — `engine._round_trip_pnl`
+도 같은 함수 위에서 pnl 열 하나만 뽑아 쓴다. 예전엔 두 모듈이 이 FIFO 배분
+루프를 각자 구현해 "반환 형태가 다르니 중복이 아니다"로 여겨졌지만, 핵심
+계산(net_pnl_krw)은 완전히 같았다 — 한쪽만 고치는 버그가 갈라질 위험을
+`roundtrips.py` 단일 정의로 없앴다.
 
 ## 표본 부족을 점수로 위장하지 않는다
 
@@ -34,6 +36,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from quant.backtest import roundtrips
 from quant.backtest.fitness import MIN_ROUND_TRIPS
 from quant.backtest.statistics import EULER_MASCHERONI
 from quant.backtest.strategy_report import trade_sharpe as _trade_sharpe
@@ -86,63 +89,9 @@ def _to_market_tz(ts: pd.Timestamp, market: str) -> pd.Timestamp:
     return ts.tz_localize(tz) if ts.tzinfo is None else ts.tz_convert(tz)
 
 
-def _round_trip_detail(trades: pd.DataFrame) -> pd.DataFrame:
-    """체결 로그 → 라운드트립 상세 테이블.
-
-    한 행 = 매도 체결 1건(engine._round_trip_pnl과 같은 규약). 열:
-    symbol, entry_ts(그 포지션의 첫 매수 시각), exit_ts, holding_minutes,
-    net_pnl_krw(실현손익-배분수수료), notional_krw(매도에 대응하는 매수 명목),
-    net_bp, reason, mfe/mae(현재 체결 로그엔 없어 항상 NaN — analyze_trades가
-    그 사실을 note로 밝힌다).
-    """
-    cols = ["symbol", "entry_ts", "exit_ts", "holding_minutes",
-            "net_pnl_krw", "notional_krw", "net_bp", "reason"]
-    if trades is None or trades.empty:
-        return pd.DataFrame(columns=cols)
-
-    pending_fee: dict[str, float] = {}
-    pending_qty: dict[str, float] = {}
-    pending_notional: dict[str, float] = {}
-    pending_entry_ts: dict[str, pd.Timestamp] = {}
-    rows: list[dict] = []
-    for row in trades.sort_values("ts").itertuples():
-        symbol = row.symbol
-        if row.side == "buy":
-            pending_fee[symbol] = pending_fee.get(symbol, 0.0) + row.fee_krw
-            pending_qty[symbol] = pending_qty.get(symbol, 0.0) + row.qty
-            pending_notional[symbol] = pending_notional.get(symbol, 0.0) + row.notional_krw
-            if symbol not in pending_entry_ts:
-                pending_entry_ts[symbol] = row.ts
-            continue
-
-        held = pending_qty.get(symbol, 0.0)
-        frac = min(row.qty / held, 1.0) if held > 0 else 1.0
-        allocated_fee = pending_fee.get(symbol, 0.0) * frac
-        allocated_notional = pending_notional.get(symbol, 0.0) * frac
-        entry_ts = pending_entry_ts.get(symbol, row.ts)
-
-        pending_fee[symbol] = pending_fee.get(symbol, 0.0) - allocated_fee
-        pending_notional[symbol] = pending_notional.get(symbol, 0.0) - allocated_notional
-        pending_qty[symbol] = max(held - row.qty, 0.0)
-
-        net_pnl = row.realized_pnl_krw - row.fee_krw - allocated_fee
-        notional = allocated_notional if allocated_notional > 0 else row.notional_krw
-        holding_minutes = max((row.ts - entry_ts).total_seconds() / 60.0, 0.0)
-        rows.append({
-            "symbol": symbol, "entry_ts": entry_ts, "exit_ts": row.ts,
-            "holding_minutes": holding_minutes, "net_pnl_krw": net_pnl,
-            "notional_krw": notional,
-            "net_bp": (net_pnl / notional * 1e4) if notional > 0 else 0.0,
-            "reason": row.reason,
-        })
-
-        if pending_qty[symbol] <= 1e-9:
-            pending_qty.pop(symbol, None)
-            pending_fee.pop(symbol, None)
-            pending_notional.pop(symbol, None)
-            pending_entry_ts.pop(symbol, None)
-
-    return pd.DataFrame(rows, columns=cols)
+# 라운드트립 FIFO 페어링은 `quant.backtest.roundtrips`(단일 정의, 2026-09-03
+# 부채 상환) — `engine._round_trip_pnl`이 pnl 값만 뽑아 쓰는 같은 계산이었다.
+_round_trip_detail = roundtrips.round_trip_detail
 
 
 def _bucket_stats(rt: pd.DataFrame, key: pd.Series) -> dict:

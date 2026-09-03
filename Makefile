@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install test backtest paper report fetch lint deploy ml
+.PHONY: help install test test-fast backtest paper report fetch lint deploy ml
 
 help: ## 사용 가능한 타겟 목록
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -10,6 +10,9 @@ install: ## 의존성 설치 (uv sync)
 
 test: ## 전체 테스트 실행
 	uv run pytest
+
+test-fast: ## 전체 테스트 실행 (pytest-xdist 병렬, 로컬 개발용 — CLAUDE.md 검증 커맨드는 여전히 `make test`)
+	uv run pytest -q -n auto
 
 backtest: ## Donchian 전략 stub 백테스트 (90일)
 	uv run python -m quant.apps.cli backtest --strategy donchian --days 90

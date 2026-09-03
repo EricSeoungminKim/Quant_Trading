@@ -11,6 +11,9 @@
 
 - `engine.py` — 라이브와 동일한 `run_cycle`을 공유하는 리플레이 백테스트 엔진
   (ADR-4, 37KB). 전략/리스크 로직을 백테스트 전용으로 따로 구현하지 않는다.
+- `roundtrips.py`(2026-09-03) — 체결 로그 → 라운드트립 FIFO 매수-수수료 배분의
+  단일 정의. `engine._round_trip_pnl`과 `analytics._round_trip_detail`이 각자
+  구현하던 같은 루프를 여기로 합쳤다.
 - `walkforward.py` — 롤링 OOS(walk-forward) 안정성 하네스 — 전략 교체 시대의
   상시 검증 도구.
 - `purged_cv.py` — Purged & embargoed 시계열 교차검증 — 라벨 누수를 막는 분할

@@ -2,7 +2,7 @@
 
 **An autonomous, self-auditing quantitative trading system for Korean (KRX) and US equities** — running live in paper mode on AWS EC2, 24/7, across both market sessions.
 
-Built solo as a long-running engineering project: 11 strategies, a dual-market research-report pipeline, and an operations layer that detects its own defects, measures its own edge, and reports over Telegram — designed so the system keeps improving from its own trade ledger even when nobody is watching.
+Built solo as a long-running engineering project: 12 strategies live as of 2026-09-03 (`config/settings.yaml` `strategies:` `enabled` is the source of truth — more are coded but currently off, kept as measurement baselines), a dual-market research-report pipeline, and an operations layer that detects its own defects, measures its own edge, and reports over Telegram — designed so the system keeps improving from its own trade ledger even when nobody is watching.
 
 > ⚠️ **Disclaimer** — This is a personal research/portfolio project. It trades a paper account. Nothing here is investment advice, and past simulated performance implies nothing about future results.
 
@@ -16,7 +16,7 @@ The answers shaped the architecture:
 |---|---|
 | A scraping bug should never place an order | 4-plane architecture where the *import graph itself* is tested — news code physically cannot reach order code |
 | Backtests lie | Costs modeled to the venue's actual fee schedule (KR transaction tax 20bp, SEC fee, FINRA TAF); walk-forward OOS only; sample sizes and multiple-testing counts reported with every number |
-| "It works" isn't evidence | 3,600+ tests, plus a forensics layer that replays every closed trade against 1-minute bars to measure *why* it won or lost (MFE/MAE, exit efficiency, entry-position control groups) |
+| "It works" isn't evidence | 5,600+ tests (as of 2026-09-03), plus a forensics layer that replays every closed trade against 1-minute bars to measure *why* it won or lost (MFE/MAE, exit efficiency, entry-position control groups) |
 | Parameter changes go unevaluated | An experiments loop fingerprints strategy configs daily, waits for sample size, then judges each change with **difference-in-differences** against unchanged strategies as market controls — and messages the verdict |
 | Silent failure is the default failure mode | Heartbeats on every job, a rules-based watchdog for staleness/drift, an LLM ops judge that cross-checks data sources for contradictions, and alert dedup so real alerts never drown |
 
@@ -73,7 +73,7 @@ A second pipeline (same repo, separate processes) publishes research reports bef
 
 ## Stack
 
-Python 3.12 · pandas · httpx · websockets · Jinja2 · DuckDB/Parquet · MySQL · Redis · systemd + cron on EC2 · pytest (3,600+ tests) · uv
+Python 3.12 · pandas · httpx · websockets · Jinja2 · DuckDB/Parquet · MySQL · Redis · systemd + cron on EC2 · pytest (5,600+ tests as of 2026-09-03) · uv
 
 ## Running
 
@@ -81,6 +81,7 @@ Python 3.12 · pandas · httpx · websockets · Jinja2 · DuckDB/Parquet · MySQ
 uv sync
 cp .env.example .env.local        # fill in your own keys — nothing runs without them
 uv run pytest                     # full suite
+make test-fast                    # same suite, parallel via pytest-xdist (local dev only)
 uv run python -m quant.apps.cli backtest --strategy donchian --days 90
 uv run python -m quant.apps.cli paper          # live paper loop (needs broker keys)
 uv run python -m quant.apps.report_cli build --market KR

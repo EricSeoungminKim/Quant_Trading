@@ -2720,3 +2720,48 @@ def test_sector_daily_section_shows_missing_note_when_flagged():
     html = render(_snap(), _cont(), sector_daily={"missing": True})
     assert "주도 섹터" in html
     assert "결측 — 섹터 데이터 없음" in html
+
+
+# --------------------------------------------------------------------------- 뉴스 흐름 수집창 헤더 (F5, 2026-09-03)
+
+
+def _news_result_with(data: dict) -> SourceResult:
+    return SourceResult(
+        key="news", ok=True, error=None, url="https://news.google.com",
+        fetched_at=_AT, latency_ms=1, data=data,
+    )
+
+
+def _news_flow_item():
+    return [{"title": "테스트 사건", "link": "http://x", "outlet": "연합뉴스",
+              "published_hhmm": "09:00"}]
+
+
+def test_news_window_header_shows_counts_when_present():
+    snap = Snapshot(SCHEMA_VERSION, "KR", date(2026, 8, 12), _AT, {
+        "news": _news_result_with({
+            "window_start": "2026-08-12T07:39:00", "kept": 981,
+            "from_store": 812, "from_live": 169,
+        }),
+    })
+    html = render(snap, news_flow=_news_flow_item())
+    m = re.search(r'<p class="foot">수집창[^<]*</p>', html)
+    assert m is not None
+    assert "누적 저장소 812" in m.group(0)
+    assert "실시간 169" in m.group(0)
+    assert "구 스냅샷" not in m.group(0)
+
+
+def test_news_window_header_shows_placeholder_on_old_snapshot_without_counts():
+    """from_store/from_live는 2026-09-02에 추가된 필드라 그 이전 스냅샷엔
+    없다 — 빈 괄호("(누적 저장소  / 실시간 )")로 새지 않고 정직한 문구를
+    보여줘야 한다(F5)."""
+    snap = Snapshot(SCHEMA_VERSION, "KR", date(2026, 8, 12), _AT, {
+        "news": _news_result_with({"window_start": "2026-08-12T07:39:00", "kept": 981}),
+    })
+    html = render(snap, news_flow=_news_flow_item())
+    m = re.search(r'<p class="foot">수집창[^<]*</p>', html)
+    assert m is not None
+    assert "집계 정보 없음 — 구 스냅샷" in m.group(0)
+    assert "None" not in m.group(0)
+    assert "누적 저장소" not in m.group(0)

@@ -655,11 +655,16 @@ def _ab_trip(strategy: str, bps: float, market: str = "US", pnl: float | None = 
     }
 
 
-def test_base_strategy_id_strips_only_the_catalyst_suffix():
+def test_base_strategy_id_strips_catalyst_and_pure_suffixes():
+    """2026-09-03 부채 상환: 이 함수는 이제 `quant.core.strategy_ids`를 그대로
+    가리킨다 — 예전엔 `_cat`만 벗기고 `_pure`는 벗기지 않아 `quant.trade.loop`/
+    `quant.trade.risk.manager`의 같은 이름 함수와 갈라져 있었다
+    (`tests/test_strategy_ids.py`가 세 곳의 일치를 직접 대조한다)."""
     from quant.control.ledger import base_strategy_id
 
     assert base_strategy_id("scalp_1m_cat") == "scalp_1m"
     assert base_strategy_id("scalp_1m") == "scalp_1m"
+    assert base_strategy_id("donchian_pure") == "donchian"
     assert base_strategy_id("") == ""
 
 

@@ -25,6 +25,7 @@ import pandas as pd
 
 from quant.trade.approval import STATUS_REJECTED, ApprovalGate, ApprovalRequest
 from quant.core import oms
+from quant.core import strategy_ids
 from quant.trade.control import TradingControl
 from quant.core.ports import (
     ColdFetchBudgetExceeded, Context, EventSink, Notifier, OrderSink, RiskManager,
@@ -115,14 +116,11 @@ _STRATEGY_LABELS = {
 # A/B 촉매 갈래 접미사(2026-09-03) — `<id>_cat` 은 `<id>` 와 **같은 클래스**를
 # 다른 유니버스로 돌리는 갈래다(config/settings.yaml `universe_filter`).
 # 그래서 표시명·오버나이트 판정 같은 클래스 단위 처리는 전부 상속돼야 한다.
-# `quant.control.ledger.CATALYST_ARM_SUFFIX` 와 같은 값이지만 임포트하지
-# 않는다 — `quant/trade/` 는 `quant/control/` 을 모른다(평면 규칙).
-_CATALYST_ARM_SUFFIX = "_cat"
-
-
-def _base_strategy_id(sid: str) -> str:
-    """`_pure`(순수 계약 껍질)·`_cat`(A/B 촉매 갈래) 접미사를 벗긴 기준 id."""
-    return sid.removesuffix(_CATALYST_ARM_SUFFIX).removesuffix("_pure")
+# 벗기는 규칙 자체는 `quant.core.strategy_ids`(의존 방향의 바닥) 단일 정의를
+# 쓴다 — `quant/trade/`·`quant/control/`이 각자 베껴 쓰다 `ledger`쪽이 `_pure`를
+# 벗기지 않는 채로 갈라졌던 버그(2026-09-03)가 재발하지 않게.
+_CATALYST_ARM_SUFFIX = strategy_ids.CATALYST_ARM_SUFFIX
+_base_strategy_id = strategy_ids.base_strategy_id
 
 
 def _strategy_label(strategy_id: str | None) -> str:

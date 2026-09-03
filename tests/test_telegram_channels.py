@@ -1,6 +1,8 @@
 """텔레그램 공개 채널 프리뷰 파서. 픽스처는 2026-08-17 실측(`curl https://t.me/s/tazastock`)
 저장분이다 — 추측이 아니라 실제 HTML(`telegram_tazastock.html`: 메시지 5건,
-`telegram_preview_disabled.html`: `report_figure_by_offset` 리다이렉트 목적지).
+`telegram_preview_disabled.html`: 2026-09-03 F8로 제거된 report_figure_by_offset
+채널의 리다이렉트 목적지 — 채널 등록과 무관하게 "프리뷰 꺼짐" HTML 모양 자체를
+검증하는 데 계속 쓴다, 아래 `test_fetch_all_records_reason_for_disabled_preview`).
 """
 import json
 from datetime import date, datetime, timezone
@@ -21,8 +23,10 @@ _TAZASTOCK_FIXTURE = Path(__file__).parent / "report" / "fixtures" / "telegram_t
 _DISABLED_FIXTURE = Path(__file__).parent / "report" / "fixtures" / "telegram_preview_disabled.html"
 
 
-def test_channels_has_14_entries():
-    assert len(CHANNELS) == 14
+def test_channels_has_13_entries():
+    """2026-09-03(F8) — report_figure_by_offset 제거로 14 → 13(모듈 docstring
+    "실측 확인" 절 참고: 등록 후 3주 넘게 프리뷰가 영구히 꺼져 있었다)."""
+    assert len(CHANNELS) == 13
 
 
 def test_channels_entries_have_required_fields():
@@ -91,16 +95,20 @@ def test_fetch_all_isolates_per_channel_failure():
 
 
 def test_fetch_all_records_reason_for_disabled_preview():
+    """이 메커니즘 자체의 회귀 가드 — 2026-09-03(F8)에 등록이 제거된
+    report_figure_by_offset이 실측으로 걸렸던 바로 그 "프리뷰 꺼짐" HTML 모양
+    (`telegram_preview_disabled.html`)을, 지금 등록된 아무 채널(pikachu_aje)에
+    물려도 fetch_all이 똑같이 사유를 남기는지 확인한다."""
     html = _TAZASTOCK_FIXTURE.read_text(encoding="utf-8")
     disabled = _DISABLED_FIXTURE.read_text(encoding="utf-8")
 
     def getter(url):
-        return disabled if "report_figure_by_offset" in url else html
+        return disabled if "pikachu_aje" in url else html
 
     result = fetch_all(getter=getter, sleep=lambda s: None)
-    assert result["report_figure_by_offset"]["messages"] == []
-    assert result["report_figure_by_offset"]["error"] is not None
-    assert "프리뷰" in result["report_figure_by_offset"]["error"]
+    assert result["pikachu_aje"]["messages"] == []
+    assert result["pikachu_aje"]["error"] is not None
+    assert "프리뷰" in result["pikachu_aje"]["error"]
 
 
 def test_fetch_all_sleeps_between_every_channel():

@@ -53,9 +53,10 @@ __init__.py`의 `rsi()`와 동일해야 한다(시드는 첫 `period`개의 단�
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date as _date
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 import pandas as pd
 import yaml
@@ -65,7 +66,15 @@ from quant.control import frgn_flow as frgn_flow_ledger
 from quant.control import selections
 from quant.core.models import market_of_symbol
 
+logger = logging.getLogger(__name__)
+
 PRODUCER = "manual_rec_v1"
+
+# 기준가 조회 훅(2026-09-03, F1) — (가격, 날짜, 출처"history"|"toss") 또는 심볼을
+# 못 찾으면 None. analyze 평면은 네트워크를 모르므로(모듈 docstring "이 파일이
+# 하지 않는 것"), 이 콜러블은 항상 호출부(quant.apps.cli)가 주입한다 — 기본값은
+# `_history_price_of`(로컬 일봉만, 네트워크 없음)라 이 모듈은 그대로 순수하다.
+PriceLookup = Callable[[str], "tuple[float, str, str] | None"]
 
 # ------------------------------------------------------------------------
 # 재사용 파라미터 — 원래 이 값들을 정한 전략은 2026-09-03 비활성화됐지만(자동매매
@@ -165,6 +174,20 @@ def latest_close(history_root: Path, symbol: str) -> tuple[float, str] | None:
     return float(closes.iloc[-1]), str(d)
 
 
+def _history_price_of(history_root: Path) -> PriceLookup:
+    """`price_of` 기본 구현(2026-09-03, F1) — 로컬 일봉만 본다(네트워크 없음).
+
+    호출부(`quant.apps.cli.cmd_manual_recs`)가 Toss 실시세 폴백을 얹은 콜러블을
+    따로 주입하지 않으면(테스트 등) 이 구현으로 떨어진다 — `price_source`는
+    항상 "history"."""
+    def _fn(symbol: str) -> tuple[float, str, str] | None:
+        ref = latest_close(history_root, symbol)
+        if ref is None:
+            return None
+        return ref[0], ref[1], "history"
+    return _fn
+
+
 # ========================================================================
 # watchlist.yaml — FileWatchlistUniverse(quant/trade/universe.py)와 같은 두 형식을
 # 받는다(손 편집 `symbols: [A, B]` / 브리지가 쓰는 `symbols: [{symbol:..., tags:...}]`).
@@ -217,11 +240,12 @@ def _distinct_symbols(flow_path: Path) -> set[str]:
 def _rec_row(
     *, symbol: str, name: str | None, market: str, kind: str, reason: str,
     ref_price: float | None, ref_date: str | None, invalidation: str, horizon: str,
+    price_source: str | None = None,
 ) -> dict:
     return {
         "symbol": symbol, "name": name, "market": market, "kind": kind,
         "reason": reason, "ref_price": ref_price, "ref_date": ref_date,
-        "invalidation": invalidation, "horizon": horizon,
+        "invalidation": invalidation, "horizon": horizon, "price_source": price_source,
     }
 
 
@@ -231,13 +255,22 @@ def _rec_row(
 
 def foreign_accumulate_recs(
     root: Path, symbols: Iterable[str] | None = None, days: int = 20,
+    price_of: PriceLookup | None = None,
 ) -> list[dict]:
     """외국인 수급 라벨이 `foreign_trend.LABEL_INFLOW`(매수 시그널/재유입)인 KR
     종목 추천. `symbols`를 안 주면 `frgn_flow.jsonl`에 기록이 있는 전 종목을 본다
     (own_brief처럼 그날 리포트 랭킹에 갇히지 않는다 — 이 레인은 매일 새로 뽑는
-    자동 편입이 아니라, 이미 쌓인 수급 이력에서 사람이 볼 후보를 고르는 것이다)."""
+    자동 편입이 아니라, 이미 쌓인 수급 이력에서 사람이 볼 후보를 고르는 것이다).
+
+    2026-09-03(F1) — `frgn_flow.jsonl`은 전 종목을 쌓지만 로컬 일봉
+    (`data/history`)은 그중 일부뿐이라, 기준가 없는 후보가 실측 12/26(46%)에
+    달했다(감사 B8) — 기준가 없는 행은 `outcomes`가 채점할 수 없으므로 텔레그램에
+    보내봤자 판단 불가능한 추천이다. `price_of`(기본: 로컬 일봉만)가 그래도
+    가격을 못 주면 **추천 자체를 드롭한다** — 채점 불가능한 추천은 보내지
+    않는다는 원칙(모듈 docstring)을 라벨 필터만이 아니라 가격 유무에도 적용."""
     flow_path = root / "data" / "ledger" / "frgn_flow.jsonl"
     history_root = root / "data" / "history"
+    get_price = price_of or _history_price_of(history_root)
     candidates = sorted(symbols) if symbols is not None else sorted(_distinct_symbols(flow_path))
 
     out: list[dict] = []
@@ -248,14 +281,29 @@ def foreign_accumulate_recs(
         info = foreign_trend.classify(series)
         if info["label"] != foreign_trend.LABEL_INFLOW:
             continue
-        ref = latest_close(history_root, sym)
+        ref = get_price(sym)
+        if ref is None:
+            logger.warning(
+                "frgn_accumulate: %s 기준가 조회 실패(history+toss 모두) — 추천 드롭"
+                "(채점 불가능한 추천은 보내지 않는다)", sym,
+            )
+            continue
+        price, ref_date, source = ref
+        # F3(2026-09-03) — 분류가 실제로 쓴 "최근 run" 숫자를 보여준다. 20일
+        # 누계(`residual`)만 찍으면 최근 run이 재유입이어도 누계가 여전히 음수인
+        # 종목에서 "매수 시그널(재유입)"과 부호가 반대인 문장이 나갔다(감사 #3,
+        # 004990 실측 20일 누계 -112,519주인데도 재유입 라벨). `foreign_trend.classify`는
+        # 자르지 않는다(F3 지시) — 여기서 같은 run 계산을 재사용해 문구만 고친다.
+        runs = foreign_trend._runs(series)
+        _, last_len, last_sum = runs[-1]
         reason = (
-            f"외국인 {info['label']}(최근 {info['days']}일 누적 순매수 "
-            f"{info['residual']:+,.0f}주" + (" · 기관 동반매수" if info["inst_follows"] else "") + ")"
+            f"외국인 {info['label']} — 최근 {last_len}일 순매수 {last_sum:+,.0f}주 "
+            f"({info['days']}일 누계 {info['residual']:+,.0f}주)"
+            + (" · 기관 동반매수" if info["inst_follows"] else "")
         )
         out.append(_rec_row(
             symbol=sym, name=None, market="KR", kind="frgn_accumulate", reason=reason,
-            ref_price=ref[0] if ref else None, ref_date=ref[1] if ref else None,
+            ref_price=price, ref_date=ref_date, price_source=source,
             invalidation="FRGN_EXIT(이탈 추세 전환) 확인 시 청산 고려",
             horizon="D+20",
         ))
@@ -286,18 +334,29 @@ def _close_bet_reasons(root: Path, on: _date) -> dict[str, list[str]]:
     return out
 
 
-def close_bet_recs(root: Path, on: _date) -> list[dict]:
+def close_bet_recs(root: Path, on: _date, price_of: PriceLookup | None = None) -> list[dict]:
+    """2026-09-03(F1) — watchlist CLOSE_BET 태그 종목도 로컬 일봉이 없을 수
+    있다(frgn_accumulate와 같은 이유, `foreign_accumulate_recs` docstring
+    참고). `price_of`가 가격을 못 주면 그 종목은 드롭한다."""
     entries = _load_watchlist_entries(root / "data" / "watchlist.yaml")
     candidates = [e for e in entries if "CLOSE_BET" in (e.get("tags") or [])]
     if not candidates:
         return []
     reasons_by_symbol = _close_bet_reasons(root, on)
     history_root = root / "data" / "history"
+    get_price = price_of or _history_price_of(history_root)
 
     out: list[dict] = []
     for e in candidates:
         sym = str(e["symbol"])
-        ref = latest_close(history_root, sym)
+        ref = get_price(sym)
+        if ref is None:
+            logger.warning(
+                "close_bet: %s 기준가 조회 실패(history+toss 모두) — 추천 드롭"
+                "(채점 불가능한 추천은 보내지 않는다)", sym,
+            )
+            continue
+        price, ref_date, source = ref
         detail = reasons_by_symbol.get(sym)
         reason = (
             "종가배팅(CLOSE_BET) 태그 — " + " · ".join(detail) if detail
@@ -305,7 +364,7 @@ def close_bet_recs(root: Path, on: _date) -> list[dict]:
         )
         out.append(_rec_row(
             symbol=sym, name=e.get("name"), market="KR", kind="close_bet", reason=reason,
-            ref_price=ref[0] if ref else None, ref_date=ref[1] if ref else None,
+            ref_price=price, ref_date=ref_date, price_source=source,
             invalidation=f"기준가 대비 -{_CLOSE_BET_STOP_PCT:g}%",
             horizon="D+5",
         ))
@@ -384,15 +443,20 @@ def overnight_drift_recs(root: Path) -> list[dict]:
 # 시장별 조립
 # ========================================================================
 
-def build_recs(root: Path, market: str, on: _date) -> list[dict]:
+def build_recs(root: Path, market: str, on: _date, price_of: PriceLookup | None = None) -> list[dict]:
     """시장별 추천 목록. KR = 외국인 적립 + 종가배팅 + RSI(2) 눌림. US = 오버나이트
-    드리프트. `on`은 close_bet의 리포트 조회 + 향후 결정론 확장을 위해 받는다."""
+    드리프트. `on`은 close_bet의 리포트 조회 + 향후 결정론 확장을 위해 받는다.
+
+    `price_of`(2026-09-03, F1)는 frgn_accumulate/close_bet에만 넘어간다 —
+    rsi2_dip은 RSI 계산에 쓴 바로 그 일봉 종가를 기준가로 쓰므로(항상 존재)
+    별도 조회가 필요 없고, overnight_drift는 US 고정 지수 ETF(QQQ) 하나뿐이라
+    로컬 일봉 결측이 실측된 적 없다(감사 B8은 KR 12/26에 한정된 문제)."""
     if market == "KR":
         wl_path = root / "data" / "watchlist.yaml"
         rsi2_symbols = _kr_symbols_from_watchlist(wl_path) | set(_RSI2_ALWAYS_KR_SYMBOLS)
         return (
-            foreign_accumulate_recs(root)
-            + close_bet_recs(root, on)
+            foreign_accumulate_recs(root, price_of=price_of)
+            + close_bet_recs(root, on, price_of=price_of)
             + rsi2_dip_recs(root, rsi2_symbols)
         )
     if market == "US":
@@ -432,6 +496,10 @@ def to_selection_rows(recs: list[dict], today: str) -> list[dict]:
             row["close"] = r["ref_price"]
         if r.get("ref_date") is not None:
             row["close_date"] = r["ref_date"]
+        # price_source(2026-09-03, F1) — "history"(로컬 일봉) | "toss"(실시세
+        # 폴백). 기준가가 없으면(드롭되지 않고 여기까지 온 예외적 호출부) 같이 없다.
+        if r.get("price_source") is not None:
+            row["price_source"] = r["price_source"]
         rows.append(row)
     return rows
 
@@ -459,9 +527,16 @@ def render_telegram_message(recs: list[dict], market: str, max_n: int = 8) -> st
     for r in recs[:max_n]:
         name = r.get("name") or r["symbol"]
         if r.get("ref_price") is not None:
-            price = f"{r['ref_price']:,.0f}" + (f"({r['ref_date']} 종가)" if r.get("ref_date") else "")
+            # price_source(F1) — "toss"면 로컬 일봉이 없어 실시세로 대체한
+            # 기준가라는 걸 라벨로 구분한다("종가"라고 하면 거짓말이 된다).
+            date_label = "실시간" if r.get("price_source") == "toss" else "종가"
+            price = f"{r['ref_price']:,.0f}" + (f"({r['ref_date']} {date_label})" if r.get("ref_date") else "")
         else:
-            price = "기준가 없음(로컬 일봉 없음)"
+            # F2(2026-09-03) — 이전엔 "기준가 {price}"의 {price} 자리에 "기준가
+            # 없음..."을 또 넣어 "기준가 기준가 없음(...)"으로 중복 렌더링됐다.
+            # F1 이후 가격 없는 추천은 애초에 드롭돼 이 분기에 도달하지 않지만,
+            # (테스트 등) 직접 호출 경로를 위해 문구 자체는 정확하게 고쳐둔다.
+            price = "없음(기준가 조회 실패)"
         lines.append(
             f"\n[{r['kind']}] {name}({r['symbol']}) · 기준가 {price} · 지평 {r['horizon']}\n"
             f"  근거: {r['reason']}\n"

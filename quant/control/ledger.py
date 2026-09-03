@@ -25,6 +25,7 @@ import pandas as pd
 
 from quant.core.ports import EventSink
 from quant.core.models import Fill, OrderStatus, Signal
+from quant.core import strategy_ids
 
 logger = logging.getLogger(__name__)
 
@@ -437,17 +438,17 @@ def scoreboard_text(trips: list[dict], title: str = "누적 스코어보드") ->
 # 여기서는 **양쪽 갈래 모두** MIN_TRIPS_FOR_JUDGEMENT 를 넘어야 판정한다 — 한쪽만
 # 30건이어도 차이의 신뢰구간은 얇은 쪽 분산이 지배해 아무 말도 못 한다.
 
-CATALYST_ARM_SUFFIX = "_cat"
+CATALYST_ARM_SUFFIX = strategy_ids.CATALYST_ARM_SUFFIX
 
-
-def base_strategy_id(strategy_id: str) -> str:
-    """A/B 촉매 갈래 id(`scalp_1m_cat`) → 기준 전략 id(`scalp_1m`).
-
-    갈래 id 는 settings.yaml 의 **블록 키**이고 두 갈래는 같은 `class:`를 쓴다 —
-    즉 접미사를 벗기면 클래스 단위 처리(오버나이트 판정·보호 목록·표시명)가
-    그대로 상속된다. 접미사가 없으면 그대로 돌려준다."""
-    sid = str(strategy_id or "")
-    return sid[: -len(CATALYST_ARM_SUFFIX)] if sid.endswith(CATALYST_ARM_SUFFIX) else sid
+# 벗기는 규칙은 `quant.core.strategy_ids`(의존 방향의 바닥) 단일 정의를 쓴다.
+# **2026-09-03 부채 상환**: 이 별칭이 가리키던 이전 구현은 `_cat`만 벗기고
+# `_pure`(순수 계약 껍질)는 벗기지 않아 `quant.trade.loop._base_strategy_id`/
+# `quant.trade.risk.manager._base_strategy_id`와 갈라져 있었다 —
+# `donchian_pure`처럼 `_pure` 전략에 `_cat` 갈래가 생기면 이 원장의 A/B 비교가
+# 잘못 묶일 뻔했다(세 곳이 각자 베껴 쓰다 생긴 드리프트, 실사용 사고는 아직
+# 없음). `base_strategy_id`라는 이름과 시그니처는 유지한다 — 이 원장 API를
+# 참조하는 테스트(`tests/test_ledger.py`, `tests/test_governor_wiring.py`)가 있다.
+base_strategy_id = strategy_ids.base_strategy_id
 
 
 def ab_pairs_from_config(cfg: dict) -> list[str]:
