@@ -58,6 +58,7 @@ from typing import Iterable
 import pandas as pd
 
 from quant.analyze import manual_recs
+from quant.core import tgfmt
 
 # ========================================================================
 # 로스터 — CLI가 이 순서 그대로 Toss 일봉을 조회해 bars_by_key 에 담는다.
@@ -334,88 +335,88 @@ def compute_pulse(
 # ========================================================================
 
 _MARKET_LABEL = {"KR": "한국", "US": "미국"}
-_MAX_CHARS = 4096
 
 
 def _fmt_pct(x: float | None) -> str:
     return f"{x:+.1f}%" if x is not None else "n/a"
 
 
-def _render_instrument_line(inst: InstrumentPulse) -> tuple[str, bool]:
-    if inst.missing:
-        return f"{inst.label} 결측", False
-    rsi_s = f"{inst.rsi14:.0f}" if inst.rsi14 is not None else "n/a"
-    pctb_s = f"{inst.pct_b:.2f}" if inst.pct_b is not None else "n/a"
-    extreme_suffix = " ⚠극단" if inst.extreme else ""
-    line = (
-        f"{inst.label} {inst.last:,.2f} (1d {_fmt_pct(inst.chg_1d_pct)} · "
-        f"5d {_fmt_pct(inst.chg_5d_pct)} · 20d {_fmt_pct(inst.chg_20d_pct)}) "
-        f"RSI {rsi_s} %b {pctb_s} → {inst.state}{extreme_suffix}"
-    )
-    is_notable = inst.state != "중립" or inst.extreme
-    return line, is_notable
-
-
-def render_telegram(report: PulseReport, market: str, lang: str = "ko") -> str:
-    """텔레그램 메시지(≤4096자). `lang`은 향후 다국어 확장을 위한 자리만 —
-    현재 실제 수신자는 한국어뿐이라 분기를 만들지 않는다(항상 한국어로 렌더)."""
+def render_telegram(report: PulseReport, market: str, lang: str = "ko",
+                    report_url: str | None = None) -> str:
+    """텔레그램 HTML 메시지(≤4096자, tgfmt, 2026-09-04). `lang`은 향후 다국어
+    확장을 위한 자리만 — 현재 실제 수신자는 한국어뿐이라 분기를 만들지 않는다
+    (항상 한국어로 렌더). `report_url`이 있으면(그날의 회사 리포트 HTML) 맨
+    끝에 링크를 붙인다."""
     label = _MARKET_LABEL.get(market, market)
-    lines = [f"📡 시장 펄스 (참고용 — 자동매매와 무관) — {label} {report.as_of.isoformat()}"]
+    header = tgfmt.b(f"📡 시장 펄스 (참고용 — 자동매매와 무관) — {label} {report.as_of.isoformat()}")
     notable: list[str] = []
+    missing: list[str] = []
+    table_rows = []
 
-    lines += ["", "[지수·ETF]"]
     for inst in report.instruments:
-        line, is_notable = _render_instrument_line(inst)
-        lines.append(line)
-        if is_notable and not inst.missing:
+        if inst.missing:
+            missing.append(f"{inst.label} 결측")
+            continue
+        rsi_s = f"{inst.rsi14:.0f}" if inst.rsi14 is not None else "n/a"
+        pctb_s = f"{inst.pct_b:.2f}" if inst.pct_b is not None else "n/a"
+        chg_cell = f"{_fmt_pct(inst.chg_1d_pct)}/{_fmt_pct(inst.chg_5d_pct)}/{_fmt_pct(inst.chg_20d_pct)}"
+        state_cell = inst.state + (" ⚠극단" if inst.extreme else "")
+        table_rows.append((inst.label, f"{inst.last:,.2f}", chg_cell, rsi_s, pctb_s, state_cell))
+        if inst.state != "중립" or inst.extreme:
             notable.append(f"{inst.label} {inst.state}{' ⚠극단' if inst.extreme else ''}")
 
-    lines += ["", "[금리·변동성]"]
+    sections: list[str] = []
+    if table_rows:
+        idx_table = tgfmt.pre(tgfmt.table(
+            ["종목", "현재가", "1d/5d/20d", "RSI", "%b", "상태"], table_rows,
+        ))
+        sections.append(f"{tgfmt.b('[지수·ETF]')}\n{idx_table}")
+    if missing:
+        sections.append(f"{tgfmt.b('[지수·ETF 결측]')}\n" + tgfmt.quote("\n".join(missing), expandable=True))
+
+    rate_lines: list[str] = []
     r = report.rates
     if r is not None and r.us10y_level is not None:
         chg = f"{r.us10y_chg20d_bp:+.0f}bp" if r.us10y_chg20d_bp is not None else "n/a"
         suffix = f" {r.us10y_label}" if r.us10y_label else ""
-        lines.append(f"10년물 {r.us10y_level:.2f}% (20일 {chg}){suffix}")
+        rate_lines.append(f"10년물 {r.us10y_level:.2f}% (20일 {chg}){suffix}")
         if r.us10y_label:
             notable.append(f"10년물 {r.us10y_label}")
     else:
-        lines.append("10년물 결측")
+        rate_lines.append("10년물 결측")
     if r is not None and r.spread_10y2y is not None:
         inv = " (역전)" if r.spread_inverted else ""
-        lines.append(f"10Y-2Y 스프레드 {r.spread_10y2y:+.2f}%p{inv}")
+        rate_lines.append(f"10Y-2Y 스프레드 {r.spread_10y2y:+.2f}%p{inv}")
         if r.spread_inverted:
             notable.append("10Y-2Y 스프레드 역전")
     else:
-        lines.append("10Y-2Y 스프레드 결측")
+        rate_lines.append("10Y-2Y 스프레드 결측")
     if r is not None and r.vix_level is not None:
-        lines.append(f"VIX {r.vix_level:.1f} → {r.vix_bucket}")
+        rate_lines.append(f"VIX {r.vix_level:.1f} → {r.vix_bucket}")
         if r.vix_bucket in ("공포", "극단"):
             notable.append(f"VIX {r.vix_bucket}")
     else:
-        lines.append("VIX 결측")
+        rate_lines.append("VIX 결측")
+    sections.append(f"{tgfmt.b('[금리·변동성]')}\n" + tgfmt.esc("\n".join(rate_lines)))
 
     if report.kr_flow is not None:
-        lines += ["", "[외국인 수급]"]
         kf = report.kr_flow
         if kf.net_trillion is not None:
-            lines.append(f"외국인+기관 순매수 {kf.net_trillion:+.2f}조 → {kf.state}")
+            flow_line = f"외국인+기관 순매수 {kf.net_trillion:+.2f}조 → {kf.state}"
             if kf.state not in ("중립", "결측"):
                 notable.append(f"외국인 수급 {kf.state}")
         else:
-            lines.append("외국인 수급 결측")
+            flow_line = "외국인 수급 결측"
+        sections.append(f"{tgfmt.b('[외국인 수급]')}\n" + tgfmt.esc(flow_line))
 
-    lines += ["", "요약"]
-    if notable:
-        lines += [f"- {n}" for n in notable]
-    else:
-        lines.append("- 특이사항 없음(전부 중립)")
+    summary_lines = [f"- {n}" for n in notable] if notable else ["- 특이사항 없음(전부 중립)"]
+    sections.append(f"{tgfmt.b('요약')}\n" + tgfmt.esc("\n".join(summary_lines)))
 
-    lines += ["", "⚠️ 기계적 임계값 기반 참고 지표입니다 — 투자 조언이 아닙니다."]
+    footer = tgfmt.i("⚠️ 기계적 임계값 기반 참고 지표입니다 — 투자 조언이 아닙니다.")
+    if report_url:
+        footer += "\n" + tgfmt.link("전체 리포트", report_url)
 
-    msg = "\n".join(lines)
-    if len(msg) > _MAX_CHARS:
-        msg = msg[: _MAX_CHARS - 1] + "…"
-    return msg
+    return tgfmt.compose(header, sections, footer)
 
 
 def label_snapshot(report: PulseReport) -> dict:

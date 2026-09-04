@@ -735,3 +735,47 @@ def test_ab_compare_ignores_trips_with_unknown_pnl():
     (row,) = ab_compare([_ab_trip("s", 5.0), unknown])
     assert row["catalyst"]["n"] == 0 and row["catalyst"]["n_unknown"] == 1
     assert row["catalyst"]["expectancy_bp"] is None
+
+
+# ── session_pnl_text HTML 서식 (2026-09-04, tgfmt) ────────────────────────
+
+import re as _re
+
+
+def _assert_balanced_html(text: str) -> None:
+    stack: list[str] = []
+    for m in _re.finditer(r"<(/?)([a-z]+)[^>]*>", text):
+        closing, name = m.group(1), m.group(2)
+        if not closing:
+            stack.append(name)
+        else:
+            assert stack and stack[-1] == name, f"짝이 안 맞는 태그 </{name}> in: {text!r}"
+            stack.pop()
+    assert not stack, f"닫히지 않은 태그 {stack} in: {text!r}"
+
+
+def test_session_pnl_text_html_is_balanced_with_and_without_trades():
+    empty = session_pnl_summary([], "KR", date(2026, 8, 12))
+    _assert_balanced_html(session_pnl_text(empty))
+
+    rows = [
+        _row("069500", "BUY", 10, 10000.0, "2026-08-12T00:30:00+00:00", strategy="orb_scan"),
+        _row("069500", "SELL", 10, 10200.0, "2026-08-12T01:00:00+00:00", pnl=2000.0, strategy="orb_scan"),
+    ]
+    summary = session_pnl_summary(rows, "KR", date(2026, 8, 12))
+    text = session_pnl_text(summary)
+    _assert_balanced_html(text)
+    assert "<pre>" in text and "<blockquote expandable>" in text
+
+
+def test_session_pnl_text_escapes_strategy_and_symbol_and_report_link():
+    rows = [
+        _row("A&B<x>", "BUY", 10, 10000.0, "2026-08-12T00:30:00+00:00", strategy="s<1>"),
+        _row("A&B<x>", "SELL", 10, 10200.0, "2026-08-12T01:00:00+00:00", pnl=2000.0, strategy="s<1>"),
+    ]
+    summary = session_pnl_summary(rows, "KR", date(2026, 8, 12))
+    text = session_pnl_text(summary, report_url="https://example.com/r?a=1&b=2")
+    _assert_balanced_html(text)
+    assert "s<1>" not in text and "s&lt;1&gt;" in text
+    assert "A&B<x>" not in text and "A&amp;B&lt;x&gt;" in text
+    assert '<a href="https://example.com/r?a=1&amp;b=2">전체 리포트</a>' in text

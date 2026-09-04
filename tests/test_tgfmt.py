@@ -82,6 +82,23 @@ def _tags_balanced(text: str) -> bool:
     return not stack
 
 
+def test_table_pads_columns_to_widest_cell():
+    out = tgfmt.table(["종목", "현재가"], [["QQQ", "500.00"], ["SPY전체", "1"]])
+    lines = out.splitlines()
+    width0 = max(len("종목"), len("QQQ"), len("SPY전체"))
+    assert lines[0] == "종목".ljust(width0) + "  " + "현재가"
+    assert lines[2] == "QQQ".ljust(width0) + "  " + "500.00"
+    # 마지막 열은 패딩하지 않는다 — 꼬리 공백 없음.
+    assert lines[3] == "SPY전체".ljust(width0) + "  " + "1"
+    assert not lines[3].endswith(" ")
+
+
+def test_table_returns_untagged_text_wrap_with_pre():
+    out = tgfmt.pre(tgfmt.table(["a"], [["<b>x</b>"]]))
+    assert out.startswith("<pre>") and out.endswith("</pre>")
+    assert "&lt;b&gt;x&lt;/b&gt;" in out
+
+
 def test_compose_joins_header_sections_footer():
     msg = tgfmt.compose(tgfmt.b("헤더"), [tgfmt.section("섹션1") + "\n본문", "섹션2"], footer="푸터")
     assert msg.startswith("<b>헤더</b>")

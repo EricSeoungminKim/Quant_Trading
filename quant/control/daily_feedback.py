@@ -36,6 +36,7 @@ import pandas as pd
 
 from quant.control.forensics import replay_all, summarize
 from quant.control.ledger import round_trips as _round_trips
+from quant.core import tgfmt
 
 # 진입 전/후 판정에 필요한 최소 봉 수 — forensics.entry_range_control 과 같은
 # 기준(5). 이보다 적으면 레인지 위치·거래량 비율·고점 시각이 소음이다.
@@ -211,46 +212,55 @@ def already_recorded(existing_rows: list[dict], target_date: str, market: str) -
     return any(r.get("date") == target_date and r.get("market") == market for r in existing_rows)
 
 
-def render_feedback_text(target_date, market: str, feedback: dict[str, dict]) -> str:
-    """사람이 읽는(텔레그램용) 피드백 텍스트. 판정 0건인 전략은 "특이사항 없음"
-    한 줄 — 없는 문제를 지어내지 않는다."""
-    lines = [f"📋 일일 피드백 — {market} {target_date.isoformat()}"]
+def render_feedback_text(target_date, market: str, feedback: dict[str, dict],
+                         report_url: str | None = None) -> str:
+    """텔레그램 HTML 피드백 텍스트(tgfmt, 2026-09-04). 판정 0건인 전략은
+    "특이사항 없음" 한 줄 — 없는 문제를 지어내지 않는다. 전략별 상세(판정·예시·
+    부검)는 길어질 수 있어 접이식 인용 블록에 담는다. `report_url`이 있으면
+    (그날의 회사 리포트 HTML) 맨 끝에 링크를 붙인다."""
+    header = tgfmt.b(f"📋 일일 피드백 — {market} {target_date.isoformat()}")
+    footer = tgfmt.i("※ 임계는 [미검증 초기값] — 이 피드백 자체의 적중도 표본이 쌓이면 조정한다.")
+    if report_url:
+        footer += "\n" + tgfmt.link("전체 리포트", report_url)
 
     if not feedback:
-        lines.append("오늘 진입 체결 없음")
-    else:
-        for strategy, d in sorted(feedback.items()):
-            lines.append(f"\n[{strategy}] 진입 {d['n_entries']}건")
-            if not d["finding_counts"]:
-                lines.append("  특이사항 없음")
-            else:
-                for tag, n in sorted(d["finding_counts"].items(), key=lambda kv: -kv[1]):
-                    lines.append(f"  {tag}: {n}건")
-                    ex = d["examples"].get(tag)
-                    if ex:
-                        lines.append(f"    예) {ex['symbol']} {ex['entry_ts']} — {ex['finding']}")
-                        if ex.get("reason"):
-                            lines.append(f"    진입 근거: {ex['reason']}")
-            fx = d.get("forensics") or {}
-            if fx.get("n"):
-                eff = fx.get("exit_efficiency_median")
-                lines.append(
-                    f"  청산: MFE 중앙 {fx['mfe_bp_median']:+.1f}bp · "
-                    f"MAE 중앙 {fx['mae_bp_median']:+.1f}bp · "
-                    f"청산효율 {('%.2f' % eff) if eff is not None else '측정 불가'}"
-                )
-            skipped = d.get("forensics_skipped", 0)
-            missing = d.get("bars_missing", 0)
-            if skipped or missing:
-                # 제외분의 원장 실현 합을 같이 보여야 부검 요약이 하루를 미화하지
-                # 않는다 — 스킵되는 건 주로 즉시 손절류 초단타다(위 주석 실측).
-                sk_bp = d.get("skipped_ledger_bp")
-                tail = f" · 제외분 원장 실현 합 {sk_bp:+.1f}bp" if sk_bp is not None else ""
-                lines.append(
-                    f"  (부검 제외 — 진입타이밍 {missing}건(봉 없음) · "
-                    f"청산부검 {skipped}건(봉 없음/보유가 1분봉 해상도 미만){tail})"
-                )
+        return tgfmt.compose(header, ["오늘 진입 체결 없음"], footer)
 
-    lines.append("")
-    lines.append("※ 임계는 [미검증 초기값] — 이 피드백 자체의 적중도 표본이 쌓이면 조정한다.")
-    return "\n".join(lines)
+    sections = []
+    for strategy, d in sorted(feedback.items()):
+        detail_lines: list[str] = []
+        if not d["finding_counts"]:
+            detail_lines.append("특이사항 없음")
+        else:
+            for tag, n in sorted(d["finding_counts"].items(), key=lambda kv: -kv[1]):
+                detail_lines.append(f"{tag}: {n}건")
+                ex = d["examples"].get(tag)
+                if ex:
+                    detail_lines.append(f"  예) {ex['symbol']} {ex['entry_ts']} — {ex['finding']}")
+                    if ex.get("reason"):
+                        detail_lines.append(f"  진입 근거: {ex['reason']}")
+        fx = d.get("forensics") or {}
+        if fx.get("n"):
+            eff = fx.get("exit_efficiency_median")
+            detail_lines.append(
+                f"청산: MFE 중앙 {fx['mfe_bp_median']:+.1f}bp · "
+                f"MAE 중앙 {fx['mae_bp_median']:+.1f}bp · "
+                f"청산효율 {('%.2f' % eff) if eff is not None else '측정 불가'}"
+            )
+        skipped = d.get("forensics_skipped", 0)
+        missing = d.get("bars_missing", 0)
+        if skipped or missing:
+            # 제외분의 원장 실현 합을 같이 보여야 부검 요약이 하루를 미화하지
+            # 않는다 — 스킵되는 건 주로 즉시 손절류 초단타다(위 주석 실측).
+            sk_bp = d.get("skipped_ledger_bp")
+            tail = f" · 제외분 원장 실현 합 {sk_bp:+.1f}bp" if sk_bp is not None else ""
+            detail_lines.append(
+                f"(부검 제외 — 진입타이밍 {missing}건(봉 없음) · "
+                f"청산부검 {skipped}건(봉 없음/보유가 1분봉 해상도 미만){tail})"
+            )
+        sections.append(
+            tgfmt.b(f"[{strategy}] 진입 {d['n_entries']}건") + "\n"
+            + tgfmt.quote("\n".join(detail_lines), expandable=True)
+        )
+
+    return tgfmt.compose(header, sections, footer)

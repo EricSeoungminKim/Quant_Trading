@@ -75,6 +75,7 @@ from quant.analyze import foreign_trend, swing_signals
 from quant.control import frgn_flow as frgn_flow_ledger
 from quant.control import selections
 from quant.core.models import market_of_symbol
+from quant.core import tgfmt
 
 logger = logging.getLogger(__name__)
 
@@ -640,20 +641,26 @@ def write_recs(recs: list[dict], root: Path, today: str) -> int:
 _MARKET_LABEL = {"KR": "한국", "US": "미국"}
 
 
-def render_telegram_message(recs: list[dict], market: str, max_n: int = 8) -> str:
+def render_telegram_message(recs: list[dict], market: str, max_n: int = 8,
+                            report_url: str | None = None) -> str:
+    """텔레그램 HTML 메시지(tgfmt, 2026-09-04) — 종목·종류·기준가·무효화·지평을
+    정렬된 표로 보여준다. `report_url`이 있으면(그날의 회사 리포트 HTML) 맨
+    끝에 링크를 붙인다."""
     label = _MARKET_LABEL.get(market, market)
-    header = f"📌 수동 계좌 추천 (자동매매 아님) — {label}"
+    header = tgfmt.b(f"📌 수동 계좌 추천 (자동매매 아님) — {label}")
     if not recs:
-        return f"{header}\n오늘은 추천 후보 없음"
+        return tgfmt.compose(header, ["오늘은 추천 후보 없음"])
 
-    lines = [header]
+    shown = recs[:max_n]
     shown_evidence: set[str] = set()
-    for r in recs[:max_n]:
+    evidence_lines: list[str] = []
+    rows = []
+    for r in shown:
         # 근거 문구(2026-09-03) — kind별로 한 번만, 그 kind의 첫 추천 앞에 붙인다
         # (_KIND_EVIDENCE에 없는 kind는 그냥 스킵 — 기존 4종은 이 문구가 없다).
         kind = r["kind"]
         if kind in _KIND_EVIDENCE and kind not in shown_evidence:
-            lines.append(f"\n— {kind} 근거: {_KIND_EVIDENCE[kind]}")
+            evidence_lines.append(tgfmt.esc(f"— {kind} 근거: {_KIND_EVIDENCE[kind]}"))
             shown_evidence.add(kind)
         name = r.get("name") or r["symbol"]
         if r.get("ref_price") is not None:
@@ -667,14 +674,21 @@ def render_telegram_message(recs: list[dict], market: str, max_n: int = 8) -> st
             # F1 이후 가격 없는 추천은 애초에 드롭돼 이 분기에 도달하지 않지만,
             # (테스트 등) 직접 호출 경로를 위해 문구 자체는 정확하게 고쳐둔다.
             price = "없음(기준가 조회 실패)"
-        lines.append(
-            f"\n[{r['kind']}] {name}({r['symbol']}) · 기준가 {price} · 지평 {r['horizon']}\n"
-            f"  근거: {r['reason']}\n"
-            f"  무효화: {r['invalidation']}"
-        )
+        rows.append((f"{name}({r['symbol']})", kind, price, str(r["invalidation"]), str(r["horizon"])))
+
+    sections: list[str] = []
+    if evidence_lines:
+        sections.append("\n".join(evidence_lines))
+    sections.append(tgfmt.pre(tgfmt.table(["종목", "종류", "기준가", "무효화", "지평"], rows)))
+
+    footer = None
     if len(recs) > max_n:
-        lines.append(f"\n… 외 {len(recs) - max_n}건 생략")
-    return "\n".join(lines)
+        footer = tgfmt.esc(f"… 외 {len(recs) - max_n}건 생략")
+    if report_url:
+        link = tgfmt.link("전체 리포트", report_url)
+        footer = f"{footer}\n{link}" if footer else link
+
+    return tgfmt.compose(header, sections, footer)
 
 
 # ========================================================================

@@ -501,7 +501,7 @@ def test_render_telegram_message_caps_at_eight_and_notes_the_rest():
 
     msg = manual_recs.render_telegram_message(recs, "KR")
 
-    assert msg.count("[frgn_accumulate]") == 8
+    assert msg.count("frgn_accumulate") == 8
     assert "외 2건 생략" in msg
 
 
@@ -517,7 +517,7 @@ def test_render_telegram_message_no_price_text_is_not_duplicated():
     msg = manual_recs.render_telegram_message(recs, "KR")
 
     assert "기준가 기준가" not in msg
-    assert "기준가 없음(기준가 조회 실패)" in msg
+    assert "없음(기준가 조회 실패)" in msg
 
 
 def test_render_telegram_message_labels_toss_sourced_price_as_live():
@@ -589,3 +589,48 @@ def test_scorecard_text_reports_hit_rate_and_mean_bp_at_or_above_30():
     assert "판단 불가" not in text
     assert "n=30" in text
     assert "67%" in text
+
+
+# ── render_telegram_message HTML 서식 (2026-09-04, tgfmt) ──────────────────
+
+import re as _re
+
+
+def _assert_balanced_html(text: str) -> None:
+    stack: list[str] = []
+    for m in _re.finditer(r"<(/?)([a-z]+)[^>]*>", text):
+        closing, name = m.group(1), m.group(2)
+        if not closing:
+            stack.append(name)
+        else:
+            assert stack and stack[-1] == name, f"짝이 안 맞는 태그 </{name}> in: {text!r}"
+            stack.pop()
+    assert not stack, f"닫히지 않은 태그 {stack} in: {text!r}"
+
+
+def test_render_telegram_message_html_is_balanced_empty_and_nonempty():
+    _assert_balanced_html(manual_recs.render_telegram_message([], "KR"))
+
+    recs = [manual_recs._rec_row(
+        symbol="000001", name=None, market="KR", kind="frgn_accumulate",
+        reason="근거", ref_price=12345.0, ref_date="2026-09-03",
+        invalidation="FRGN_EXIT", horizon="D+20",
+    )]
+    text = manual_recs.render_telegram_message(recs, "KR")
+    _assert_balanced_html(text)
+    assert "<pre>" in text
+
+
+def test_render_telegram_message_escapes_name_and_report_link():
+    recs = [manual_recs._rec_row(
+        symbol="000001", name="A&B<x>", market="KR", kind="frgn_accumulate",
+        reason="근거", ref_price=100.0, ref_date="2026-09-03",
+        invalidation="<STOP>", horizon="D+20",
+    )]
+    text = manual_recs.render_telegram_message(
+        recs, "KR", report_url="https://example.com/r?a=1&b=2",
+    )
+    _assert_balanced_html(text)
+    assert "A&B<x>" not in text and "A&amp;B&lt;x&gt;" in text
+    assert "<STOP>" not in text and "&lt;STOP&gt;" in text
+    assert '<a href="https://example.com/r?a=1&amp;b=2">전체 리포트</a>' in text

@@ -31,9 +31,9 @@
   변경기록.md` 상단): US 일중 계열은 10.7년 OOS에서 전부 왕복 비용(10.5bp)에
   패배(scalp_1m −2.2bp / orb_rvol −1.2bp / pullback_impulse +0.9bp, 게이트
   통과 0건). KR 1년 분봉 게이트는 scalp_1m만 결론이 났다(6폴드 양수 0건,
-  NO_GO) — orb_rvol·eod_reversal 은 2026-09-04 오전 KR 1년 분봉 게이트에서 NO_GO,
-  open_reversal 은 실행 중이라 아직 결론이 없다.
-  **아는 것과 모르는 것을 구분해 정직하게 적는다** — open_reversal/
+  NO_GO) — orb_rvol·eod_reversal·open_reversal 도 2026-09-04 KR 1년 분봉 게이트에서
+  전부 NO_GO(scalp_1m 포함 4/4).
+  **아는 것과 모르는 것을 구분해 정직하게 적는다** — 
   open_reversal에 "NO_GO"라고 단정하지 않는다(사실이 아니다). 오버나이트형
   6종(frgn_accumulate/close_bet/overnight_drift/rsi2_dip/mean_reversion/
   cross_momentum)은 "자동매매는 단타·스캘핑만" 정책(2026-09-03)으로
@@ -797,8 +797,8 @@ _SPECS: dict[str, dict] = {
         "theory_ko": "eod_reversal의 형제 전략 — 전일 크게 하락한 KR 종목이 다음날 개장 직후 반전한다는 국내 단기 반전 문헌(KCI 등재 2023, KAIST 계열 야간/일중 분해 연구) 기반 가설.",
         "theory_en": "A sibling strategy to eod_reversal — the hypothesis, based on Korean short-term-reversal literature (a 2023 KCI-indexed study and KAIST-affiliated overnight/intraday decomposition research), that KR symbols that fell sharply the prior day reverse right after the next day's open.",
         "entry": _entry_open_reversal, "exit": _exit_open_reversal,
-        "evidence_ko": "burn_in, enabled: false — 표본 0, 사람이 백테스트 통과를 확인한 뒤 켤 예정. KR 1년 분봉 게이트는 orb_rvol/eod_reversal 다음 순번이라 2026-09-04 기준 아직 실행되지 않았다.",
-        "evidence_en": "burn_in, enabled: false — zero samples; will be enabled only after a human confirms it passes backtest. The 1-year KR minute-bar gate had not run yet as of 2026-09-04 (queued after orb_rvol/eod_reversal).",
+        "evidence_ko": "burn_in, enabled: false — KR 1년 분봉(40종목) 게이트 NO_GO(2026-09-04): OOS 324왕복 기대값 −21.9bp(비용 2배 −34.3bp), 최악 폴드 −42.6bp. 전일 낙폭 종목의 시가 매수는 KR 개별주에서 비용을 못 넘었다. 국내 문헌의 반전 근거는 월간·주간 지평선이라 1일 지평선에는 직접 적용되지 않는다는 점도 확인.",
+        "evidence_en": "burn_in, enabled: false — KR 1-year minute-bar gate (40 names) NO_GO on 2026-09-04: 324 OOS round trips, expectancy −21.9bp (−34.3bp at 2× cost), worst fold −42.6bp. Buying prior-day losers at the open did not clear cost on KR single names; the Korean reversal literature is monthly/weekly-horizon and does not transfer to a 1-day horizon.",
         "refs": [],
     },
 }

@@ -282,3 +282,49 @@ def test_crontab_has_market_pulse_lines():
     assert "30 14 * * 1-5" in text
     assert "0 23 * * 1-5" in text
     assert "0 1,3,5 * * 2-6" in text
+
+
+# --------------------------------------------------------------------------- render_telegram HTML 서식 (2026-09-04, tgfmt)
+
+import re as _re
+
+
+def _assert_balanced_html(text: str) -> None:
+    stack: list[str] = []
+    for m in _re.finditer(r"<(/?)([a-z]+)[^>]*>", text):
+        closing, name = m.group(1), m.group(2)
+        if not closing:
+            stack.append(name)
+        else:
+            assert stack and stack[-1] == name, f"짝이 안 맞는 태그 </{name}> in: {text!r}"
+            stack.pop()
+    assert not stack, f"닫히지 않은 태그 {stack} in: {text!r}"
+
+
+def test_render_telegram_html_is_balanced():
+    bars = {
+        key: pd.DataFrame({"close": _closes([100.0 + (i % 7) - 3 + i * 0.01 for i in range(300)])})
+        for key in mp.US_ROSTER
+    }
+    report = mp.compute_pulse(bars, {}, as_of=date(2026, 9, 3))
+    text = mp.render_telegram(report, "US")
+    _assert_balanced_html(text)
+    assert "<pre>" in text
+    assert len(text) <= 4096
+
+
+def test_render_telegram_missing_instruments_go_in_expandable_blockquote():
+    report = mp.compute_pulse(
+        {"SPY": pd.DataFrame(), "QQQ": pd.DataFrame({"close": _closes([100.0] * 60)})},
+        {}, as_of=date(2026, 9, 3),
+    )
+    text = mp.render_telegram(report, "US")
+    _assert_balanced_html(text)
+    assert "<blockquote expandable>" in text
+
+
+def test_render_telegram_report_url_produces_escaped_link():
+    report = mp.compute_pulse({}, {}, as_of=date(2026, 9, 3))
+    text = mp.render_telegram(report, "US", report_url="https://example.com/r?a=1&b=2")
+    _assert_balanced_html(text)
+    assert '<a href="https://example.com/r?a=1&amp;b=2">전체 리포트</a>' in text

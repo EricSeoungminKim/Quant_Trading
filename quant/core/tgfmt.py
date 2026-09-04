@@ -138,6 +138,32 @@ def pnl(value: float | None, currency: str = "KRW") -> str:
     return f"{mark} {code(body)}"
 
 
+def table(headers: Iterable[object], rows: Iterable[Iterable[object]]) -> str:
+    """정렬된 모노스페이스 표 — 태그 없는 순수 텍스트다(`pre()`로 감싸 쓴다).
+    각 열은 그 열에서 가장 넓은 값(헤더 포함)에 맞춰 공백으로 좌측 정렬한다 —
+    market-pulse 지표 표·session-pnl 전략별 표·manual-recs 추천 목록처럼 "열이
+    맞아야 읽히는" 데이터에 쓴다. 이스케이프는 `pre()`가 완성된 문자열 전체에
+    한 번에 하므로 여기서는 하지 않는다."""
+    header_cells = [str(h) for h in headers]
+    row_cells = [[str(c) for c in r] for r in rows]
+    n_cols = len(header_cells)
+    widths = [len(header_cells[i]) for i in range(n_cols)]
+    for r in row_cells:
+        for i in range(n_cols):
+            widths[i] = max(widths[i], len(r[i]))
+
+    def _fmt_row(cells: list[str]) -> str:
+        # 마지막 열은 패딩하지 않는다 — 안 그러면 꼬리 공백이 붙는다.
+        return "  ".join(
+            cells[i] if i == n_cols - 1 else cells[i].ljust(widths[i])
+            for i in range(n_cols)
+        )
+
+    lines = [_fmt_row(header_cells), "  ".join("-" * w for w in widths)]
+    lines += [_fmt_row(r) for r in row_cells]
+    return "\n".join(lines)
+
+
 def compose(header: str, sections: Iterable[str] | None = None, footer: str | None = None) -> str:
     """헤더 + 섹션들 + 푸터를 빈 줄로 이어붙이고 4096자 이내로 맞춘다.
 

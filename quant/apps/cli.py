@@ -51,15 +51,28 @@ def _narrate_call(timeout: int = 20):
 
 
 def _narrated_text(kind: str, facts: dict, deterministic: str, *, no_narrate: bool) -> str:
-    """서술(성공 시) + 결정론 블록. 서술 실패·게이트오프·`--no-narrate`면
-    결정론 블록만 단독으로 나간다(narrator.py 모듈 docstring의 Fallback
-    계약) — 레이아웃은 소유자 지시대로 "서술 문단 먼저, 그다음 결정론 블록"."""
+    """서술(성공 시, <i> 이탤릭) + 결정론 블록(HTML). 서술 실패·게이트오프·
+    `--no-narrate`면 결정론 블록만 단독으로 나간다(narrator.py 모듈 docstring의
+    Fallback 계약) — 레이아웃은 소유자 지시대로 "서술 문단 먼저, 그다음 결정론
+    블록". 결정론 블록은 이미 parse_mode=HTML 이므로 서술 문단도 이스케이프해야
+    같은 메시지 안에서 태그가 안 깨진다(`tgfmt.i`가 이스케이프까지 한다)."""
     if no_narrate:
         return deterministic
     from quant.analyze.narrator import narrate
+    from quant.core import tgfmt
 
     text = narrate(kind, facts, call=_narrate_call())
-    return f"{text}\n\n{deterministic}" if text else deterministic
+    return f"{tgfmt.i(text)}\n\n{deterministic}" if text else deterministic
+
+
+def _daily_report_url(market: str, on) -> str:
+    """그날의 회사 리포트(개장 전 발행, `own_brief.sh`/`run_report.sh`가 쓰는
+    것과 같은 URL 규칙) HTML 링크. `REPORT_URL_BASE`가 없으면 두 스크립트와
+    같은 기본값(Tailscale 내부 호스트)을 쓴다 — 링크는 참고용이라 리포트가
+    실제로 그 시각에 존재하는지는 여기서 확인하지 않는다(텔레그램에서 열어보고
+    없으면 404일 뿐, 발송 자체를 막을 이유는 아니다)."""
+    base = os.environ.get("REPORT_URL_BASE") or "https://ip-172-31-63-20.tailfee6e9.ts.net"
+    return f"{base}/{on.year:04d}/{on.month:02d}/{on.day:02d}/{market}_report.html"
 
 
 def cmd_fitness(args: argparse.Namespace) -> None:
@@ -1211,7 +1224,8 @@ def cmd_daily_feedback(args: argparse.Namespace) -> None:
     # L2 서술(2026-09-04) — feedback dict(전략별 타이밍 판정)을 facts로 그대로 준다.
     print(_narrated_text(
         "daily_feedback", {"market": market, "date": on, "feedback": feedback},
-        render_feedback_text(target, market, feedback), no_narrate=args.no_narrate,
+        render_feedback_text(target, market, feedback, report_url=_daily_report_url(market, target)),
+        no_narrate=args.no_narrate,
     ))
 
     out_path = root / "data" / "ledger" / "daily_feedback.jsonl"
@@ -1894,6 +1908,50 @@ def _wrap_commits(root, on) -> list[str] | None:
     return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()][:10]
 
 
+def _daily_wrap_narration_text(sections: dict, market: str) -> str | None:
+    """마감 요약(daily-wrap) 서술 — 세션 실현손익·체결 수·최고/최저 전략·A/B
+    갈래 한 줄·체결 비용(가정 대비 실측)만 facts로 준다(2026-09-04). `sections`
+    전체(포지션·이상·커밋 등 세부 숫자까지)를 넘기면 narrator.verify_numbers가
+    거의 매번 폐기한다(`quant.apps.cli` 다른 서술 호출부의 관례와 동일 이유) —
+    딱 이 다섯 재료만 압축해서 넘긴다.
+
+    `narrate()`가 `None`을 돌려주면(게이트 꺼짐/호출 실패/숫자 검증 실패) 이
+    함수도 `None` — 호출부(`cmd_daily_wrap --narration-only`)는 그러면 아무것도
+    출력하지 않는다(daily_wrap.sh 계약: "OPS_NARRATOR 꺼짐이면 문서+캡션만")."""
+    from quant.analyze.narrator import narrate
+    from quant.core import tgfmt
+
+    perf = sections["performance"]
+    strategies = [r for r in (perf.get("strategies") or []) if r["avg_bps"] is not None]
+    best = max(strategies, key=lambda r: r["avg_bps"], default=None)
+    worst = min(strategies, key=lambda r: r["avg_bps"], default=None)
+
+    ab_lines = [
+        f"{row['base']}: 기준 n={row['n_a']} vs 촉매 n={row['n_b']} — "
+        + (row["reason"] or f"차이 {row['delta']:+.1f}bp (p={row['p_value']:.3f})")
+        for row in perf.get("ab", [])
+    ]
+    cost_lines = [
+        f"{g['label']}: 실측 {g['comparison']['observed_bp']:.1f}bp vs "
+        f"가정 {g['comparison']['assumed_bp']:.1f}bp — 가정이 {g['comparison']['verdict']}적"
+        for g in sections.get("cost", {}).get("groups", [])
+        if g.get("comparison")
+    ]
+
+    facts = {
+        "market": market,
+        "has_trades": perf["has_trades"],
+        "net_realized": perf["net_realized"] if perf["has_trades"] else None,
+        "n_fills": perf["n_fills"],
+        "best_strategy": best,
+        "worst_strategy": worst,
+        "ab": ab_lines,
+        "cost_drag": cost_lines,
+    }
+    text = narrate("daily_wrap", facts, call=_narrate_call())
+    return tgfmt.i(text) if text else None
+
+
 def cmd_daily_wrap(args: argparse.Namespace) -> None:
     """장 마감 하루 요약 HTML 한 장 — 실적/지분/문제/변경/지수 대비 성적
     (2026-08-28 소유자 지시, 지수 대비 성적 절은 2026-08-29 통합).
@@ -1903,7 +1961,13 @@ def cmd_daily_wrap(args: argparse.Namespace) -> None:
     네트워크에 의존하면 네트워크가 나쁜 날 하루가 통째로 기록되지 않는다.
 
     출력: `out/YYYY/MM/DD/{market}_wrap.html` 경로를 첫 줄에, 텔레그램 캡션을
-    `CAPTION:` 접두로 둘째 줄에 찍는다(ai_trader.sh 의 `AI_WATCH:` 와 같은 관례)."""
+    `CAPTION:` 접두로 둘째 줄에 찍는다(ai_trader.sh 의 `AI_WATCH:` 와 같은 관례).
+
+    `--narration-only`면 파일을 쓰지 않고 L2 서술(`_daily_wrap_narration_text`)
+    한 줄만 stdout에 낸다(게이트 꺼짐/실패/`--no-narrate`면 무출력) —
+    `daily_wrap.sh`가 문서를 보내기 **전에** 별도 텔레그램 메시지로 먼저 쏜다
+    (2026-09-04, "장중 알림 흐름을 오염시키지 않는다"는 이 리포트의 기존 역할
+    분리는 그대로 두고, 서술만 문서 발송 앞에 붙인다)."""
     import json as _json
     from datetime import date as _date
     from zoneinfo import ZoneInfo
@@ -1940,9 +2004,10 @@ def cmd_daily_wrap(args: argparse.Namespace) -> None:
         if market_of_symbol(sym) == market
     }
 
-    # `--date` 백필은 큐를 소비하지 않는다 — 과거를 다시 그리는 실행이 오늘
-    # 몫을 삼키면 그날 알림이 소유자에게 닿지 않는다.
-    consume_queue = args.date is None
+    # `--date` 백필도, `--narration-only`(문서를 안 쓰는 미리보기 호출)도 큐를
+    # 소비하지 않는다 — 과거를 다시 그리거나 서술만 뽑는 실행이 오늘 몫을
+    # 삼키면 그날 알림이 소유자에게 닿지 않는다.
+    consume_queue = args.date is None and not args.narration_only
     deferred = _wrap_deferred(root, on, consume=consume_queue)
 
     sections = DW.build_sections(
@@ -1959,6 +2024,13 @@ def cmd_daily_wrap(args: argparse.Namespace) -> None:
         # 30건에 한참 못 미쳐 매일 "판단 불가"만 찍힌다.
         all_trips=all_trips, ab_bases=ab_pairs_from_config(load_settings().raw),
     )
+
+    if args.narration_only:
+        if not args.no_narrate:
+            text = _daily_wrap_narration_text(sections, market)
+            if text:
+                print(text)
+        return
 
     out_path = (root / "out" / f"{on.year:04d}" / f"{on.month:02d}" / f"{on.day:02d}"
                 / f"{market}_wrap.html")
@@ -2194,7 +2266,10 @@ def cmd_session_pnl(args: argparse.Namespace) -> None:
     # L2 서술(2026-09-04) — facts는 summary 그대로(날짜 등 직렬화 안 되는 값도
     # narrator._flatten_facts는 str()로만 펼치므로 문제없다). 서술 실패/게이트
     # 꺼짐이면 _narrated_text가 결정론 텍스트만 그대로 돌려준다.
-    print(_narrated_text("session_pnl", summary, session_pnl_text(summary), no_narrate=args.no_narrate))
+    print(_narrated_text(
+        "session_pnl", summary, session_pnl_text(summary, report_url=_daily_report_url(market, on)),
+        no_narrate=args.no_narrate,
+    ))
     print()
 
     def _fmt(v: float) -> str:
@@ -2374,7 +2449,8 @@ def cmd_manual_recs(args: argparse.Namespace) -> None:
         "by_kind": dict(_Counter(r["kind"] for r in recs)),
     }
     print(_narrated_text(
-        "manual_recs", facts, manual_recs.render_telegram_message(recs, args.market),
+        "manual_recs", facts,
+        manual_recs.render_telegram_message(recs, args.market, report_url=_daily_report_url(args.market, on)),
         no_narrate=args.no_narrate,
     ))
 
@@ -2452,7 +2528,7 @@ def cmd_market_pulse(args: argparse.Namespace) -> None:
         kr_reasons = market_pulse.load_kr_regime_reasons(REPO_ROOT / "data" / "state" / "regime.json") or []
 
     report = market_pulse.compute_pulse(bars_by_key, macro, as_of=as_of, kr_reasons=kr_reasons)
-    msg = market_pulse.render_telegram(report, args.market)
+    msg = market_pulse.render_telegram(report, args.market, report_url=_daily_report_url(args.market, as_of))
     labels = market_pulse.label_snapshot(report)
     state_path = REPO_ROOT / "data" / "state" / f"market_pulse_{args.market}.json"
 
@@ -5748,7 +5824,10 @@ def main() -> None:
     p_wrap.add_argument("--market", required=True, choices=["KR", "US"], help="KR 또는 US")
     p_wrap.add_argument("--date", default=None, help="YYYY-MM-DD (기본: 그 시장 기준 오늘)")
     p_wrap.add_argument("--no-narrate", action="store_true",
-                        help="캡션에 L2 서술(자연어 요약)을 붙이지 않는다 — 결정론 캡션만")
+                        help="--narration-only 와 함께 쓰면 서술을 아예 시도하지 않는다(무출력)")
+    p_wrap.add_argument("--narration-only", action="store_true",
+                        help="문서를 쓰지 않고 L2 서술 한 줄만 stdout에 낸다(게이트 꺼짐/실패면 무출력) "
+                             "— daily_wrap.sh가 문서 발송 전 별도 메시지로 먼저 보낸다")
     p_wrap.set_defaults(func=cmd_daily_wrap)
 
     p_weekly = sub.add_parser("weekly-review", help="주간 재검토 — 전략별 성적·손해 패턴·주간 장 흐름·점수 적중률 (토 06:25)")

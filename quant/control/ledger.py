@@ -26,6 +26,7 @@ import pandas as pd
 from quant.core.ports import EventSink
 from quant.core.models import Fill, OrderStatus, Signal
 from quant.core import strategy_ids
+from quant.core import tgfmt
 
 logger = logging.getLogger(__name__)
 
@@ -744,43 +745,47 @@ def session_pnl_summary(all_trades: list[dict], market: str, on: date) -> dict:
     }
 
 
-def session_pnl_text(summary: dict) -> str:
-    """session_pnl_summary()의 구조화 결과를 사람이 읽는 텍스트로."""
+def session_pnl_text(summary: dict, report_url: str | None = None) -> str:
+    """session_pnl_summary()의 구조화 결과를 텔레그램 HTML로(2026-09-04, tgfmt).
+    `report_url`이 있으면(그날의 회사 리포트 HTML) 맨 끝에 링크를 붙인다."""
     market, on = summary["market"], summary["date"]
     start, end = session_window(market, on)
-    lines = [
-        f"💰 세션 손익 — {market} {on.isoformat()}",
-        f"({start.strftime('%Y-%m-%d %H:%M %Z')} ~ {end.strftime('%H:%M %Z')})",
-        "",
-    ]
+    header = (
+        f"{tgfmt.b(f'💰 세션 손익 — {market} {on.isoformat()}')}\n"
+        + tgfmt.esc(f"({start.strftime('%Y-%m-%d %H:%M %Z')} ~ {end.strftime('%H:%M %Z')})")
+    )
+
     # 이식 정리 제외 사실은 거래가 있든 없든 항상 밝힌다 — 조용히 빼면 원장 총액과
     # 리포트가 안 맞는 이유를 아무도 모른다(2026-09-02).
     seeding = summary.get("excluded_seeding") or {}
     seeding_line = None
     if seeding.get("n"):
         net_seed = float(seeding["gross"]) - float(seeding["fees"])
-        seeding_line = (
+        seeding_line = tgfmt.esc(
             f"이식 정리 {seeding['n']}건 제외: {_fmt_amount(net_seed, market)}"
             " (프로그램 매매 아님 — 실계좌 이식 시 물려받은 레거시 청산)"
         )
 
-    if not summary["has_trades"]:
-        lines.append("이 세션에 체결된 거래 없음")
-        if seeding_line:
-            lines.append(seeding_line)
-        return "\n".join(lines)
+    footer = tgfmt.link("전체 리포트", report_url) if report_url else None
 
-    lines.append(f"체결 {summary['n_fills']}건 (매수 {summary['n_buys']} · 매도 {summary['n_sells']})")
+    if not summary["has_trades"]:
+        sections = [tgfmt.esc("이 세션에 체결된 거래 없음")]
+        if seeding_line:
+            sections.append(seeding_line)
+        return tgfmt.compose(header, sections, footer)
+
     unk = summary["unknown_sells"]
-    lines.append(
-        f"실현손익(수수료 전) {_fmt_amount(summary['gross_realized'], market)}"
-        + (f" (손익미상 매도 {unk}건 제외)" if unk else "")
-    )
-    lines.append(f"수수료 합계 {_fmt_amount(summary['fees'], market)}")
-    lines.append(f"실현손익(순, 수수료 차감) {_fmt_amount(summary['net_realized'], market)}")
+    fills_block = [
+        tgfmt.esc(f"체결 {summary['n_fills']}건 (매수 {summary['n_buys']} · 매도 {summary['n_sells']})"),
+        tgfmt.esc(
+            f"실현손익(수수료 전) {_fmt_amount(summary['gross_realized'], market)}"
+            + (f" (손익미상 매도 {unk}건 제외)" if unk else "")
+        ),
+        tgfmt.esc(f"수수료 합계 {_fmt_amount(summary['fees'], market)}"),
+        tgfmt.esc(f"실현손익(순, 수수료 차감) {_fmt_amount(summary['net_realized'], market)}"),
+    ]
     if seeding_line:
-        lines.append(seeding_line)
-    lines.append("")
+        fills_block.append(seeding_line)
 
     if market == "US":
         # US 체결은 KRW 풀을 건드리지 않는다(dual_currency 지갑 분리) — KRW 델타를
@@ -788,45 +793,44 @@ def session_pnl_text(summary: dict) -> str:
         cash_delta = summary.get("cash_delta_usd")
         cu = summary.get("cash_delta_usd_unknown", 0)
         if cash_delta is not None:
-            lines.append(
+            cash_line = (
                 f"계좌 USD 현금 변화 ${cash_delta:+,.2f}"
                 + (f" (계산불가 {cu}건 제외)" if cu else "")
             )
         else:
-            lines.append(
-                "계좌 USD 현금 변화: 집계 불가(구 형식 — cash_after_usd 없는 원장 행)"
-            )
+            cash_line = "계좌 USD 현금 변화: 집계 불가(구 형식 — cash_after_usd 없는 원장 행)"
     else:
         cash_delta = summary["cash_delta_krw"]
         cu = summary["cash_delta_unknown"]
         if cash_delta is not None:
-            lines.append(
+            cash_line = (
                 f"계좌 현금 변화(KRW, paper 브로커 체결시점 환산 반영) {cash_delta:+,.0f}원"
                 + (f" (계산불가 {cu}건 제외)" if cu else "")
             )
         else:
-            lines.append("계좌 현금 변화: 계산 불가 (cash_after 없음 — 라이브 체결이거나 원장에 없음)")
-    lines.append("")
+            cash_line = "계좌 현금 변화: 계산 불가 (cash_after 없음 — 라이브 체결이거나 원장에 없음)"
+    cash_block = tgfmt.esc(cash_line)
 
-    lines.append("전략별:")
+    strat_rows = []
     for sid, d in sorted(summary["by_strategy"].items()):
         net_s = d["gross"] - d["fees"]
-        lines.append(
-            f"  [{sid}] {d['n']}건 · 순손익 {_fmt_amount(net_s, market)}"
-            + (f" (손익미상 매도 {d['unknown']}건 제외)" if d["unknown"] else "")
-        )
-    lines.append("")
+        pnl_cell = _fmt_amount(net_s, market) + (f" (미상 {d['unknown']}건)" if d["unknown"] else "")
+        strat_rows.append((sid, str(d["n"]), pnl_cell))
+    strategy_block = (
+        tgfmt.b("전략별") + "\n"
+        + tgfmt.pre(tgfmt.table(["전략", "건수", "순손익"], strat_rows))
+    )
 
-    lines.append("종목별:")
     ranked = sorted(summary["by_symbol"].items(), key=lambda kv: kv[1]["gross"] - kv[1]["fees"], reverse=True)
-    for sym, d in ranked:
-        net_s = d["gross"] - d["fees"]
-        lines.append(
-            f"  {sym}: {d['n']}건 · 순손익 {_fmt_amount(net_s, market)}"
-            + (f" (손익미상 매도 {d['unknown']}건 제외)" if d["unknown"] else "")
-        )
+    symbol_lines = [
+        f"{sym}: {d['n']}건 · 순손익 {_fmt_amount(d['gross'] - d['fees'], market)}"
+        + (f" (손익미상 매도 {d['unknown']}건 제외)" if d["unknown"] else "")
+        for sym, d in ranked
+    ]
+    symbol_block = tgfmt.b("종목별") + "\n" + tgfmt.quote("\n".join(symbol_lines), expandable=True)
 
-    return "\n".join(lines)
+    sections = ["\n".join(fills_block), cash_block, strategy_block, symbol_block]
+    return tgfmt.compose(header, sections, footer)
 
 
 # --- 갈래 A/B 승격 게이트 (2026-08-17, spec §5/§4) -----------------------------

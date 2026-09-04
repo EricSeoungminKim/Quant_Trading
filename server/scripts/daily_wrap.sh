@@ -38,6 +38,12 @@ log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 . "$(dirname "$0")/lib/memlog.sh"
 memlog_wrap "daily_wrap"
 
+# 서술(narration) 게이트 — server/scripts/lib/notify.sh (2026-09-04, 소유자 지시:
+# 문서 앞에 자연어 요약을 한 통 더 보낸다). OPS_NARRATOR 가 꺼져 있거나 서술이
+# 실패하면 `--narration-only` 는 무출력이고, 여기서도 조용히 건너뛴다 — 문서+
+# 캡션 계약은 그대로다.
+. "$(dirname "$0")/lib/notify.sh"
+
 # TZ 가드 — 크론 시각(KR 16:55 / US 06:55)은 호스트가 KST 라는 전제다.
 # ai_trader.sh 와 같은 계약이되, 여기서는 **중단하지 않는다**: 요약 파일은
 # 시각이 조금 어긋나도 만드는 편이 낫다(빠진 날은 나중에 복원할 수 없다).
@@ -61,15 +67,26 @@ if [ ! -f "$FILE" ]; then
   exit 0
 fi
 
+# 서술 미리보기 — 문서와 별도로 stdout 하나만 낸다(위 notify.sh 주석 참고).
+# 렌더 실패는 문서 발송을 막지 않는다(narration은 부가 기능, 문서가 본체다).
+NARRATION="$(timeout 60 .venv/bin/python -m quant.apps.cli daily-wrap --market "$MARKET" --narration-only 2>>"$LOG")"
+
 if [ "${DRY_RUN:-0}" = "1" ]; then
   echo "[DRY_RUN] file=$FILE"
   echo "[DRY_RUN] caption=$CAPTION"
+  [ -n "$NARRATION" ] && echo "[DRY_RUN] narration=$NARRATION"
   exit 0
 fi
 
 if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ]; then
   log "$MARKET 텔레그램 자격증명 없음 — 파일만 생성: $FILE"
   exit 0
+fi
+
+# 문서보다 먼저 보낸다(소유자 지시) — notify_now는 parse_mode=HTML로 즉시
+# 발송하고 텔레그램이 태그를 거부하면 평문으로 재시도한다(lib/notify.sh 계약).
+if [ -n "$NARRATION" ]; then
+  notify_now "$NARRATION" || log "$MARKET 서술 메시지 발송 실패 — 문서 발송은 계속 진행"
 fi
 
 send() {
