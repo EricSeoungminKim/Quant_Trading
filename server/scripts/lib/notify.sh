@@ -139,6 +139,11 @@ _notify_enqueue() {  # $1=source $2=text $3=level
 # **실패를 삼키지 않는다** — ops_watch.sh 가 `if tg ...; then mark; fi` 로 첫 알림
 # 유실을 잡던 계약을 그대로 승계한다(구 `|| true` 시절 알림이 유실돼도 상태가
 # 기록돼 영원히 재시도하지 않는 결함이 났다).
+#
+# parse_mode=HTML(2026-09-04, L1 서식) 로 먼저 보낸다 — 크론 리포트들이
+# quant.core.tgfmt 스타일 `<b>`/`<code>` 태그를 담은 텍스트를 넘기기 시작해서다.
+# 텔레그램이 태그를 거부하면(응답에 "ok":false) parse_mode 없이 **그 한 통만**
+# 평문으로 즉시 재시도한다 — 서식 버그로 알림 자체가 유실되면 안 된다.
 _notify_send() {  # $1=text
   local token chat resp
   token="$(_notify_token)"
@@ -150,6 +155,9 @@ _notify_send() {  # $1=text
     printf '[DRY_RUN][TG]\n%s\n' "$1"
     return 0
   fi
+  resp="$(curl -s -m 15 "${TELEGRAM_API_BASE:-https://api.telegram.org}/bot${token}/sendMessage" \
+    -d "chat_id=${chat}" -d "parse_mode=HTML" --data-urlencode "text=$1" 2>/dev/null)"
+  case "$resp" in *'"ok":true'*) return 0 ;; esac
   resp="$(curl -s -m 15 "${TELEGRAM_API_BASE:-https://api.telegram.org}/bot${token}/sendMessage" \
     -d "chat_id=${chat}" --data-urlencode "text=$1" 2>/dev/null)"
   case "$resp" in *'"ok":true'*) return 0 ;; esac

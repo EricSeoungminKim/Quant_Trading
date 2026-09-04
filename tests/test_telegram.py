@@ -115,3 +115,59 @@ def test_non_timeout_error_is_not_retried():
     ) as mock_post:
         n.send("hello")
     assert mock_post.call_count == 1
+
+
+# ── parse_mode=HTML + 평문 폴백 (2026-09-04, L1 서식) ──────────────────────────
+# 엔진 메시지가 quant.core.tgfmt로 만든 <b>/<code> 태그를 담는다 — 이스케이프를
+# 놓친 태그 하나가 400을 유발해도 알림 자체는 나가야 한다(서식 버그가 손절
+# 알림을 삼키면 안 된다).
+
+def _bad_request_response() -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = 400
+    resp.raise_for_status.return_value = None
+    return resp
+
+
+def test_send_uses_html_parse_mode_by_default():
+    n = TelegramNotifier("tkn", "chat")
+    with patch(
+        "quant.adapters.notify.telegram.httpx.post", return_value=_ok_response(),
+    ) as mock_post:
+        n.send("<b>제목</b>")
+    assert mock_post.call_count == 1
+    assert mock_post.call_args.kwargs["json"]["parse_mode"] == "HTML"
+    assert mock_post.call_args.kwargs["json"]["text"] == "<b>제목</b>"
+
+
+def test_html_parse_failure_falls_back_to_plain_text():
+    n = TelegramNotifier("tkn", "chat")
+    with patch(
+        "quant.adapters.notify.telegram.httpx.post",
+        side_effect=[_bad_request_response(), _ok_response()],
+    ) as mock_post:
+        n.send("<b>깨진 태그")
+    assert mock_post.call_count == 2
+    first_json = mock_post.call_args_list[0].kwargs["json"]
+    second_json = mock_post.call_args_list[1].kwargs["json"]
+    assert first_json["parse_mode"] == "HTML"
+    assert "parse_mode" not in second_json
+    assert second_json["text"] == "<b>깨진 태그"
+    # 폴백이 성공했으므로 알림 유실이 아니다 — 실패로 집계하지 않는다.
+    assert n._consecutive_failures == 0
+
+
+def test_html_parse_failure_then_plain_http_error_counts_as_failure():
+    n = TelegramNotifier("tkn", "chat")
+    real_bad = MagicMock()
+    real_bad.status_code = 400
+    real_bad.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "400", request=MagicMock(), response=real_bad,
+    )
+    with patch(
+        "quant.adapters.notify.telegram.httpx.post",
+        side_effect=[real_bad, real_bad],
+    ) as mock_post:
+        n.send("<b>깨진 태그")
+    assert mock_post.call_count == 2
+    assert n._consecutive_failures == 1

@@ -25,6 +25,8 @@ def test_successful_send_is_recorded(tmp_path, monkeypatch):
     monkeypatch.setattr(tg, "_LEDGER_PATH", ledger)
 
     class _Resp:
+        status_code = 200  # HTML parse_mode 성공 — 200이면 평문 폴백을 타지 않는다
+
         def raise_for_status(self):
             return None
 
@@ -60,6 +62,8 @@ def test_ledger_failure_never_breaks_sending(tmp_path, monkeypatch):
     monkeypatch.setattr(tg, "_LEDGER_PATH", tmp_path / "nope" / "x.jsonl")
 
     class _Resp:
+        status_code = 200  # HTML parse_mode 성공 — 200이면 평문 폴백을 타지 않는다
+
         def raise_for_status(self):
             return None
 

@@ -27,6 +27,41 @@ logger = logging.getLogger(__name__)
 _redact.install(extra_secrets=_redact.known_secrets(env=_load_dotenv_secrets()))
 
 
+# ── L2 서술(narration) 배선 (2026-09-04) ───────────────────────────────────
+#
+# `quant.analyze.narrator.narrate()`는 순수 함수라 실제 LLM 호출기를 스스로
+# 만들지 않는다 — `quant.analyze`는 `quant.adapters`를 임포트할 수 없다
+# (`tests/test_architecture.py` FORBIDDEN). `quant.apps`는 둘 다 알아도 되는
+# 평면이라 여기서 호출기를 조립해 주입한다(`quant.analyze.manual_recs`의
+# `price_of` 주입과 같은 관례) — `narrator.py` 모듈 docstring 참고.
+
+def _narrate_call(timeout: int = 20):
+    """narrate()에 넘길 콜러블 — `OPS_NARRATOR=openrouter`일 때만 만든다.
+    다른 값(미설정/claude/none)이면 `None`을 돌려주고, `narrate(call=None)`은
+    시도조차 하지 않는다 — 리포트 서술은 OpenRouter 전용이다(claude CLI의
+    기본 180s 타임아웃은 분 단위 발행 파이프라인에 못 쓴다)."""
+    if (os.environ.get("OPS_NARRATOR") or "").strip().lower() != "openrouter":
+        return None
+    from quant.adapters.narrate import make_narrator
+
+    narrator_obj = make_narrator(timeout=timeout)
+    if getattr(narrator_obj, "name", None) != "openrouter":
+        return None
+    return narrator_obj.narrate
+
+
+def _narrated_text(kind: str, facts: dict, deterministic: str, *, no_narrate: bool) -> str:
+    """서술(성공 시) + 결정론 블록. 서술 실패·게이트오프·`--no-narrate`면
+    결정론 블록만 단독으로 나간다(narrator.py 모듈 docstring의 Fallback
+    계약) — 레이아웃은 소유자 지시대로 "서술 문단 먼저, 그다음 결정론 블록"."""
+    if no_narrate:
+        return deterministic
+    from quant.analyze.narrator import narrate
+
+    text = narrate(kind, facts, call=_narrate_call())
+    return f"{text}\n\n{deterministic}" if text else deterministic
+
+
 def cmd_fitness(args: argparse.Namespace) -> None:
     """적합도 함수 — 에이전트가 부르는 진입점. JSON 한 덩어리를 stdout 으로 낸다.
 
@@ -1173,7 +1208,11 @@ def cmd_daily_feedback(args: argparse.Namespace) -> None:
 
     feedback = strategy_feedback(trips, bars_by_symbol)
     target = _date.fromisoformat(on)
-    print(render_feedback_text(target, market, feedback))
+    # L2 서술(2026-09-04) — feedback dict(전략별 타이밍 판정)을 facts로 그대로 준다.
+    print(_narrated_text(
+        "daily_feedback", {"market": market, "date": on, "feedback": feedback},
+        render_feedback_text(target, market, feedback), no_narrate=args.no_narrate,
+    ))
 
     out_path = root / "data" / "ledger" / "daily_feedback.jsonl"
     existing = read_jsonl(out_path)
@@ -2152,7 +2191,10 @@ def cmd_session_pnl(args: argparse.Namespace) -> None:
     ledger_path = repo_root / "data" / "state" / "trades.jsonl"
     trades = load_trades(ledger_path)
     summary = session_pnl_summary(trades, market, on)
-    print(session_pnl_text(summary))
+    # L2 서술(2026-09-04) — facts는 summary 그대로(날짜 등 직렬화 안 되는 값도
+    # narrator._flatten_facts는 str()로만 펼치므로 문제없다). 서술 실패/게이트
+    # 꺼짐이면 _narrated_text가 결정론 텍스트만 그대로 돌려준다.
+    print(_narrated_text("session_pnl", summary, session_pnl_text(summary), no_narrate=args.no_narrate))
     print()
 
     def _fmt(v: float) -> str:
@@ -2323,7 +2365,18 @@ def cmd_manual_recs(args: argparse.Namespace) -> None:
             return None
 
     recs = manual_recs.build_recs(REPO_ROOT, args.market, on, price_of=price_of)
-    print(manual_recs.render_telegram_message(recs, args.market))
+    # L2 서술(2026-09-04) — 추천 인트로만 짧게. 개별 추천의 reason 원문까지
+    # facts로 주면 숫자가 너무 많아져 검증에서 거의 매번 폐기된다 — 건수·종류
+    # 집계만 준다("추천 인트로" 범위, 종목별 상세는 결정론 블록이 이미 낸다).
+    from collections import Counter as _Counter
+    facts = {
+        "market": args.market, "date": on.isoformat(), "n_recs": len(recs),
+        "by_kind": dict(_Counter(r["kind"] for r in recs)),
+    }
+    print(_narrated_text(
+        "manual_recs", facts, manual_recs.render_telegram_message(recs, args.market),
+        no_narrate=args.no_narrate,
+    ))
 
     if args.dry_run:
         print(f"(dry-run — 선정 원장 기록 생략, 후보 {len(recs)}건)", file=sys.stderr)
@@ -2417,7 +2470,12 @@ def cmd_market_pulse(args: argparse.Namespace) -> None:
             print("(변경 없음 — --changes-only, 무출력)", file=sys.stderr)
             return
 
-    print(msg)
+    # L2 서술(2026-09-04) — labels(상태 라벨만, 모듈 docstring 참고)를 facts로
+    # 준다. 가격·RSI 원값이 아니라 라벨을 넘기는 이유: "SPY 과매수" 같은 짧은
+    # 판정 어휘가 프롬프트에도, 숫자 검증에도 더 안전하다(원값을 넘기면 모델이
+    # 반올림해 숫자 검증에서 매번 폐기될 위험이 크다).
+    facts = {"market": args.market, "as_of": as_of.isoformat(), **labels}
+    print(_narrated_text("market_pulse", facts, msg, no_narrate=args.no_narrate))
 
     if args.dry_run:
         print("(dry-run — 상태 파일 갱신 생략)", file=sys.stderr)
@@ -5689,6 +5747,8 @@ def main() -> None:
     )
     p_wrap.add_argument("--market", required=True, choices=["KR", "US"], help="KR 또는 US")
     p_wrap.add_argument("--date", default=None, help="YYYY-MM-DD (기본: 그 시장 기준 오늘)")
+    p_wrap.add_argument("--no-narrate", action="store_true",
+                        help="캡션에 L2 서술(자연어 요약)을 붙이지 않는다 — 결정론 캡션만")
     p_wrap.set_defaults(func=cmd_daily_wrap)
 
     p_weekly = sub.add_parser("weekly-review", help="주간 재검토 — 전략별 성적·손해 패턴·주간 장 흐름·점수 적중률 (토 06:25)")
@@ -5706,11 +5766,15 @@ def main() -> None:
     p_daily_fb = sub.add_parser("daily-feedback", help="일일 피드백 — 오늘 진입 타이밍 규칙 판정(고점매수/거래소강/늦은진입), 전략별 (픽 없으면 무출력)")
     p_daily_fb.add_argument("--market", required=True, choices=["KR", "US"], help="KR 또는 US")
     p_daily_fb.add_argument("--date", default=None, help="YYYY-MM-DD (기본: 그 시장 기준 오늘)")
+    p_daily_fb.add_argument("--no-narrate", action="store_true",
+                            help="L2 서술(자연어 요약)을 붙이지 않는다 — 결정론 텍스트만")
     p_daily_fb.set_defaults(func=cmd_daily_feedback)
 
     p_session_pnl = sub.add_parser("session-pnl", help="세션(정규장) 마감 후 실화폐 손익 리포트 (실현+미실현, 시장별 통화)")
     p_session_pnl.add_argument("--market", required=True, choices=["KR", "US"], help="KR 또는 US")
     p_session_pnl.add_argument("--date", default=None, help="YYYY-MM-DD (기본: 그 시장 기준 오늘)")
+    p_session_pnl.add_argument("--no-narrate", action="store_true",
+                               help="L2 서술(자연어 요약)을 붙이지 않는다 — 결정론 텍스트만")
     p_session_pnl.set_defaults(func=cmd_session_pnl)
 
     p_manual_recs = sub.add_parser(
@@ -5725,6 +5789,8 @@ def main() -> None:
                                 help="선정 원장에 쓰지 않고 메시지만 stdout에 출력")
     p_manual_recs.add_argument("--scorecard", action="store_true",
                                 help="선정 대신 producer manual_rec_v1의 D+5 적중률/평균bp를 출력")
+    p_manual_recs.add_argument("--no-narrate", action="store_true",
+                                help="추천 인트로에 L2 서술(자연어 요약)을 붙이지 않는다")
     p_manual_recs.set_defaults(func=cmd_manual_recs)
 
     p_market_pulse = sub.add_parser(
@@ -5736,6 +5802,8 @@ def main() -> None:
                                  help="상태 스냅샷 파일 갱신 없이 메시지만 stdout에 출력")
     p_market_pulse.add_argument("--changes-only", action="store_true",
                                  help="지난 실행과 라벨이 전부 같으면 무출력(기본: 매번 발송)")
+    p_market_pulse.add_argument("--no-narrate", action="store_true",
+                                 help="L2 서술(라벨 요약 자연어)을 붙이지 않는다 — 결정론 메시지만")
     p_market_pulse.set_defaults(func=cmd_market_pulse)
 
     p_strategy_pnl = sub.add_parser(

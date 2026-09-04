@@ -26,6 +26,7 @@ import pandas as pd
 from quant.trade.approval import STATUS_REJECTED, ApprovalGate, ApprovalRequest
 from quant.core import oms
 from quant.core import strategy_ids
+from quant.core import tgfmt
 from quant.trade.control import TradingControl
 from quant.core.ports import (
     ColdFetchBudgetExceeded, Context, EventSink, Notifier, OrderSink, RiskManager,
@@ -136,6 +137,13 @@ def _strategy_label(strategy_id: str | None) -> str:
             suffix = "촉매" if strategy_id.endswith(_CATALYST_ARM_SUFFIX) else "순수"
             label = f"{_STRATEGY_LABELS[base]}·{suffix}"
     return f"{label or strategy_id} ({strategy_id})"
+
+
+def _halt_notify_text(reason: str) -> str:
+    """"⛔ 거래 자동 중단" 알림 — 연속 사이클 실패/전략 오류 두 자동정지 경로가
+    공유하는 템플릿(2026-09-04, L1 서식). 헤더는 굵게, 사유는 그대로 통째로
+    한 줄에 담는다 — `reason`은 사람이 쓴 한국어 문장이라 별도 강조가 필요 없다."""
+    return tgfmt.compose(tgfmt.b("⛔ 거래 자동 중단"), [f"📕 사유 {tgfmt.esc(reason)}"])
 
 
 def _is_kr(symbol: str) -> bool:
@@ -572,14 +580,18 @@ def _execute_signal(
                 pos.ensure_lot(signal.strategy_id).update(signal.state_update)
         if notifier is not None:
             is_buy = fill.side is Side.BUY
+            # HTML 서식(2026-09-04, L1) — 헤더는 굵게, 항목별 줄은 모노스페이스.
+            # 각 줄은 **기존 문자열을 그대로 통째로** tgfmt.code()/b()로 감싸기만
+            # 한다(내부를 쪼개 일부만 감싸지 않는다) — 그래야 "🛡 손절    95,000원
+            # (-5.00%)" 같은 기존 테스트의 연속 부분열 검사가 그대로 성립한다.
             lines = [
-                "🟢 매수 체결" if is_buy else "🔴 매도 체결",
+                tgfmt.b("🟢 매수 체결" if is_buy else "🔴 매도 체결"),
                 "",
-                f"📌 종목    {_display(fill.symbol)}",
-                f"🧠 전략    {_strategy_label(fill.strategy_id)}",
-                f"🔢 수량    {fill.qty:g}주",
-                f"💵 체결가  {_price(fill.price, fill.symbol)}",
-                f"💰 총 금액 {_amount(fill.qty * fill.price, fill.symbol)}",
+                tgfmt.code(f"📌 종목    {_display(fill.symbol)}"),
+                tgfmt.code(f"🧠 전략    {_strategy_label(fill.strategy_id)}"),
+                tgfmt.code(f"🔢 수량    {fill.qty:g}주"),
+                tgfmt.code(f"💵 체결가  {_price(fill.price, fill.symbol)}"),
+                tgfmt.code(f"💰 총 금액 {_amount(fill.qty * fill.price, fill.symbol)}"),
             ]
             if is_buy:
                 # 손절/익절 가격 — 체결 직후 lot에는 아직 반영 전인 경우가 많으므로
@@ -599,10 +611,10 @@ def _execute_signal(
                     target = signal.target
                 if stop is not None:
                     pct = (float(stop) / fill.price - 1) * 100
-                    lines.append(f"🛡 손절    {_price(float(stop), fill.symbol)} ({pct:+.2f}%)")
+                    lines.append(tgfmt.code(f"🛡 손절    {_price(float(stop), fill.symbol)} ({pct:+.2f}%)"))
                 if target is not None:
                     pct = (float(target) / fill.price - 1) * 100
-                    lines.append(f"🎯 익절    {_price(float(target), fill.symbol)} ({pct:+.2f}%)")
+                    lines.append(tgfmt.code(f"🎯 익절    {_price(float(target), fill.symbol)} ({pct:+.2f}%)"))
             if not is_buy:
                 # 매도에도 **진입가와 그때 걸어둔 손절선**을 보여준다(2026-08-26
                 # 소유자: "매수랑 매도 메세지에서 해결해줘"). 청산가만 보면
@@ -617,27 +629,27 @@ def _execute_signal(
                 exit_stop = (exit_lot or {}).get("stop")
                 if entry_px:
                     gap = (fill.price / float(entry_px) - 1) * 100
-                    lines.append(
+                    lines.append(tgfmt.code(
                         f"💵 진입가  {_price(float(entry_px), fill.symbol)} "
                         f"→ 청산 {_price(fill.price, fill.symbol)} ({gap:+.2f}%)"
-                    )
+                    ))
                 if exit_stop:
-                    lines.append(f"🛡 손절선  {_price(float(exit_stop), fill.symbol)}")
+                    lines.append(tgfmt.code(f"🛡 손절선  {_price(float(exit_stop), fill.symbol)}"))
                 # 매도는 결과가 곧 성적이다 — 실현 손익(수수료 차감 후)을 바로 보여준다.
                 if fill.realized_pnl is not None:
                     net = fill.realized_pnl - fill.fee
                     notional = fill.qty * fill.price
                     pct = (net / (notional - net) * 100) if notional > net else 0.0
                     mark = "🔺 이익" if net > 0 else ("🔻 손실" if net < 0 else "➖ 본전")
-                    lines.append(
+                    lines.append(tgfmt.code(
                         f"{mark}    {_signed_amount(net, fill.symbol)}"
                         f" ({pct:+.2f}%, 수수료 {_amount(fill.fee, fill.symbol)} 차감 후)"
-                    )
+                    ))
                 else:
-                    lines.append("❔ 실현 손익 미상 (브로커가 원가를 제공하지 않음)")
+                    lines.append(tgfmt.code("❔ 실현 손익 미상 (브로커가 원가를 제공하지 않음)"))
                 if "손절" in fill.reason and cooldown_note:
-                    lines.append(f"⏳ {cooldown_note}")
-            lines += ["", f"📝 {fill.reason}"]
+                    lines.append(tgfmt.i(f"⏳ {cooldown_note}"))
+            lines += ["", f"📝 {tgfmt.esc(fill.reason)}"]
             notifier.send("\n".join(lines))
 
 
@@ -954,11 +966,11 @@ def _flatten_all(
         if control is not None:
             control.set_pending_flatten(scope, sorted(market_closed_symbols))
         if notifier is not None:
-            notifier.send(
-                "⏳ 청산 보류 — 장 마감\n\n"
-                f"🏢 {', '.join(sorted(market_closed_symbols))}\n"
-                "닫힌 시장에는 체결 가능한 가격이 없어 개장 시 엔진이 자동으로 재시도합니다."
-            )
+            notifier.send(tgfmt.compose(
+                tgfmt.b("⏳ 청산 보류 — 장 마감"),
+                [tgfmt.code(f"🏢 {', '.join(sorted(market_closed_symbols))}") + "\n"
+                 "닫힌 시장에는 체결 가능한 가격이 없어 개장 시 엔진이 자동으로 재시도합니다."],
+            ))
     return market_closed_symbols
 
 
@@ -995,7 +1007,7 @@ def _retry_pending_flatten(
         done = ", ".join(sorted(executed))
         logger.warning("보류됐던 청산 실행 완료: %s", done)
         if notifier is not None:
-            notifier.send(f"🧹 보류됐던 청산 실행: {done}")
+            notifier.send(tgfmt.b("🧹 보류됐던 청산 실행") + ": " + tgfmt.code(done))
 
 
 def _strategies_with_open_lots(ctx: Context, strategy_errors: dict[str, str]) -> list[str]:
@@ -1197,32 +1209,37 @@ def _heartbeat_text(
     cycle_line = f"🔄 {cycle_count:,}번째 사이클"
     if uptime_seconds is not None:
         cycle_line += f" · 가동 {_uptime_text(uptime_seconds)}"
+    cycle_line = tgfmt.code(cycle_line)
+    # HTML 서식(2026-09-04, L1) — 헤더는 굵게, 그 외 항목별 줄은 모노스페이스.
+    # 각 줄은 기존 문자열을 그대로 통째로 감싸기만 한다(내부 분할 없음) — 그래야
+    # "4,906번째 사이클"·"가동 6시간 51분" 같은 기존 테스트의 연속 부분열 검사가
+    # 그대로 성립한다.
     if halted:
         # 정지는 하트비트의 부속 한 줄이 아니라 머리기사다(2026-08-31 실사고:
         # 금요일 밤 자동 정지가 "중단됨" 한 줄로만 표시돼 월요일 KR 세션 전체가
         # 무체결로 지나갔다 — 사유도 대처법도 없어 방치됐다).
         reason = getattr(control, "halt_reason", "") or "사유 미기록"
         lines = [
-            "⛔ 거래 중단이 계속되고 있습니다",
+            tgfmt.b("⛔ 거래 중단이 계속되고 있습니다"),
             "",
-            f"📕 사유: {reason}",
-            "▶️ 신규 진입을 재개하려면 /resume (청산·손절은 계속 작동 중)",
+            tgfmt.code(f"📕 사유: {reason}"),
+            tgfmt.i("▶️ 신규 진입을 재개하려면 /resume (청산·손절은 계속 작동 중)"),
             "",
             cycle_line,
-            f"📦 보유 종목: {held_text}",
+            tgfmt.code(f"📦 보유 종목: {held_text}"),
         ]
     else:
         lines = [
-            "💓 엔진 상태 점검",
+            tgfmt.b("💓 엔진 상태 점검"),
             "",
             cycle_line,
             "✅ 거래 상태: 정상",
-            f"📦 보유 종목: {held_text}",
+            tgfmt.code(f"📦 보유 종목: {held_text}"),
         ]
 
     equity = _estimate_equity(ctx)
     if equity is not None:
-        lines.append(f"💰 추정 자산: {equity:,.0f}원")
+        lines.append(tgfmt.code(f"💰 추정 자산: {equity:,.0f}원"))
 
     health_fn = getattr(market_data, "health", None)
     if callable(health_fn):
@@ -1233,15 +1250,15 @@ def _heartbeat_text(
             pass
 
     if last_cycle_ms is not None:
-        lines.append(
+        lines.append(tgfmt.code(
             f"⚡ 처리 속도: 직전 {last_cycle_ms:,.0f}밀리초"
             f" · 최근 최대 {recent_max_cycle_ms:,.0f}밀리초"
-        )
+        ))
 
     if approval is not None:
         # 승인 게이트가 켜져 있으면 대기 건수를 항상 보여준다 — 0건도 의미가 있다
         # ("승인 게이트가 살아 있다"는 신호).
-        lines.append(f"🙋 승인 대기: {len(approval.pending())}건")
+        lines.append(tgfmt.code(f"🙋 승인 대기: {len(approval.pending())}건"))
 
     # 회로차단기 — 세션 마감 요약과 동일한 한 줄. 이게 없으면 레일이 걸려도
     # 장 마감까지 아무도 모른다.
@@ -1253,7 +1270,7 @@ def _heartbeat_text(
                 lines.append(breaker_line)
 
     if halted:
-        lines.append(f"📕 중단 사유: {control.halt_reason()}")
+        lines.append(tgfmt.code(f"📕 중단 사유: {control.halt_reason()}"))
     return "\n".join(lines)
 
 
@@ -1458,7 +1475,11 @@ def _position_report_text(ctx: Context, marks: dict[str, float], risk: RiskManag
                 invested += pos.avg_cost * pos.qty
         header += f"\n🏦 남은 현금 {portfolio.cash:,.0f}원 | 📦 주식 투자금 {invested:,.0f}원"
 
-    blocks: list[str] = [header]
+    # HTML 서식(2026-09-04, L1) — 헤더는 굵게, 종목별 블록은 정렬이 있는
+    # 모노스페이스(<pre>)로. 각 블록은 기존 문자열을 통째로 감싸기만 한다 —
+    # 그래야 "🏢 088350"·"평단가 4,606원" 같은 기존 테스트의 연속 부분열 검사가
+    # 그대로 성립한다.
+    blocks: list[str] = [tgfmt.b(header)]
 
     for symbol, pos in positions.items():
         cur = marks.get(symbol)
@@ -1566,7 +1587,7 @@ def _position_report_text(ctx: Context, marks: dict[str, float], risk: RiskManag
                 except (TypeError, ValueError):
                     pass
             lines.append("   " + " · ".join(rail))
-        blocks.append("\n".join(lines))
+        blocks.append(tgfmt.pre("\n".join(lines)))
 
     # 금일 손익 푸터 — 오늘 시작 자산(리스크 매니저가 KST 거래일 단위로 고정) 대비
     # 지금 이 순간의 MTM 자산. 시작값이 아직 없으면(오늘 첫 승인 전) 조용히 생략.
@@ -1579,7 +1600,7 @@ def _position_report_text(ctx: Context, marks: dict[str, float], risk: RiskManag
                 day_pnl = equity_now - day_start
                 day_pct = day_pnl / day_start * 100
                 mark = "🔺" if day_pnl > 0 else ("🔻" if day_pnl < 0 else "➖")
-                blocks.append(f"📈 금일 손익 {mark} {day_pnl:+,.0f}원 ({day_pct:+.2f}%)")
+                blocks.append(tgfmt.b(f"📈 금일 손익 {mark} {day_pnl:+,.0f}원 ({day_pct:+.2f}%)"))
         except Exception:  # noqa: BLE001 — 푸터 실패가 리포트를 죽이면 안 된다
             pass
 
@@ -2293,9 +2314,15 @@ async def run_paper_loop(
                         _cancel_approved(req, "수동 청산 실행됨", notifier)
                 if notifier is not None:
                     if flatten_scope == "day":
-                        notifier.send("🧹 단타 청산 완료\n\n단타 전략 보유분을 청산 처리했습니다(오버나이트 전략 보유분은 유지)")
+                        notifier.send(tgfmt.compose(
+                            tgfmt.b("🧹 단타 청산 완료"),
+                            ["단타 전략 보유분을 청산 처리했습니다(오버나이트 전략 보유분은 유지)"],
+                        ))
                     else:
-                        notifier.send("🧹 수동 청산 완료\n\n열린 포지션을 전량 청산 처리했습니다")
+                        notifier.send(tgfmt.compose(
+                            tgfmt.b("🧹 수동 청산 완료"),
+                            ["열린 포지션을 전량 청산 처리했습니다"],
+                        ))
             else:
                 # 장 마감으로 보류됐던 flatten이 있으면 개장한 종목만 골라 재시도한다
                 # (2026-09-04) — halt 여부와 무관하게, 일반 전략 사이클보다 먼저.
@@ -2325,7 +2352,7 @@ async def run_paper_loop(
                 control.halt(reason, by="auto")
                 logger.error(reason)
                 if notifier is not None:
-                    notifier.send(f"⛔ 거래 자동 중단\n\n📕 사유 {reason}")
+                    notifier.send(_halt_notify_text(reason))
         else:
             # 전략이 예외로 죽으면 그 전략의 **손절·목표가·EoD청산이 통째로 건너뛰어진다**
             # (포지션 관리가 전부 on_cycle 안에 있다). 사이클 자체는 성공했으므로 위
@@ -2359,7 +2386,7 @@ async def run_paper_loop(
                     control.halt(reason, by="auto")
                     logger.error(reason)
                     if notifier is not None:
-                        notifier.send(f"⛔ 거래 자동 중단\n\n📕 사유 {reason}")
+                        notifier.send(_halt_notify_text(reason))
             else:
                 consecutive_failures = 0
             # timings.total_ms는 flatten 경로(run_cycle 미호출)면 0.0으로 남는다 — 그 경우는

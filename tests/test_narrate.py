@@ -266,6 +266,20 @@ def test_factory_invalid_max_tokens_falls_back_to_default_not_exception():
     assert got._max_tokens == 700
 
 
+def test_factory_timeout_defaults_when_not_passed():
+    """timeout 을 안 주면 OpenRouterNarrator 기본값(60s)을 그대로 쓴다."""
+    got = make_narrator({"OPS_NARRATOR": "openrouter", "OPENROUTER_API_KEY": "k"})
+    assert got._timeout == 60
+
+
+def test_factory_honours_timeout_override():
+    """짧은 상한이 필요한 호출부(2026-09-04, L2 서술)용 — make_narrator(timeout=20)."""
+    got = make_narrator(
+        {"OPS_NARRATOR": "openrouter", "OPENROUTER_API_KEY": "k"}, timeout=20,
+    )
+    assert got._timeout == 20
+
+
 def test_factory_none_is_explicit():
     assert isinstance(make_narrator({"OPS_NARRATOR": "none"}), NullNarrator)
 

@@ -447,10 +447,17 @@ def chat_with_tools(
     return result
 
 
-def _make_openrouter_narrator(env: dict[str, str] | None, model: str | None = None):
+def _make_openrouter_narrator(
+    env: dict[str, str] | None, model: str | None = None, timeout: int | None = None,
+):
     """OpenRouter 레인 조립 — `make_narrator`(기본 레인)와 `make_quality_narrator`
     (품질 레인의 폴백)가 공유한다(2026-08-18, 중복 방지). 키가 없으면 `None`
-    (호출부가 `NullNarrator`로 낙착)."""
+    (호출부가 `NullNarrator`로 낙착).
+
+    `timeout`(2026-09-04, L2 서술) — 기본(60s)보다 짧게 강제하고 싶은 호출부용
+    (예: 텔레그램 리포트 서술은 발행 파이프라인이 분 단위라 20s 상한이 필요하다,
+    `quant.analyze.narrator` 모듈 docstring 참고). `None`이면 `OpenRouterNarrator`
+    기본값을 그대로 쓴다."""
     e = os.environ if env is None else env
     key = (e.get("OPENROUTER_API_KEY") or "").strip()
     if not key and env is None:
@@ -475,10 +482,15 @@ def _make_openrouter_narrator(env: dict[str, str] | None, model: str | None = No
                        raw_max_tokens)
             max_tokens = 700
     chosen_model = model or (e.get("OPENROUTER_MODEL") or DEFAULT_OPENROUTER_MODEL).strip()
-    return OpenRouterNarrator(key, model=chosen_model, max_tokens=max_tokens)
+    kwargs = {"model": chosen_model, "max_tokens": max_tokens}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    return OpenRouterNarrator(key, **kwargs)
 
 
-def make_narrator(env: dict[str, str] | None = None, model: str | None = None):
+def make_narrator(
+    env: dict[str, str] | None = None, model: str | None = None, timeout: int | None = None,
+):
     """`OPS_NARRATOR` 로 고른다. **절대 예외를 던지지 않는다** — 고를 수 없으면
     `NullNarrator` 이고, 호출자는 결정론적 형식으로 떨어진다.
 
@@ -489,6 +501,10 @@ def make_narrator(env: dict[str, str] | None = None, model: str | None = None):
     U(툴콜링 해석 에이전트)가 실측한 1순위 모델(`TOOL_MODEL`)을 명시적으로
     쓰고 싶은 호출부가 있다 — `make_narrator(model=TOOL_MODEL)`). claude 선택지는
     모델 개념이 없어 무시한다.
+
+    `timeout`(선택, 2026-09-04) — openrouter 선택 시에만 의미가 있다(claude
+    CLI는 별도 timeout 인자를 이미 생성자에서 받는다). 텔레그램 리포트 서술처럼
+    짧은 상한이 필요한 호출부가 쓴다.
     """
     e = os.environ if env is None else env
     choice = (e.get("OPS_NARRATOR") or "claude").strip().lower()
@@ -497,7 +513,7 @@ def make_narrator(env: dict[str, str] | None = None, model: str | None = None):
         return NullNarrator()
 
     if choice == "openrouter":
-        narrator = _make_openrouter_narrator(env, model)
+        narrator = _make_openrouter_narrator(env, model, timeout)
         return narrator if narrator is not None else NullNarrator()
 
     if choice == "claude":

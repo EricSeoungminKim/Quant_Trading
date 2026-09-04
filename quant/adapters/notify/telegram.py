@@ -51,7 +51,13 @@ class TelegramNotifier:
     def send(self, text: str) -> None:
         """POST to Telegram. Any exception -> one WARNING line, swallowed.
         After 5 straight failures, mute sends for 10 minutes (time-based),
-        then retry naturally on the next call — no unbounded retries."""
+        then retry naturally on the next call — no unbounded retries.
+
+        parse_mode=HTML(2026-09-04, L1 서식)로 먼저 보낸다 — 엔진 메시지가
+        `quant.core.tgfmt`로 만든 `<b>`/`<code>` 태그를 담고 있어서다. 텔레그램이
+        태그 불균형·미지원 엔티티를 400으로 거부하면(예: 이스케이프를 놓친
+        `&`/`<`/`>`), **그 한 통만** parse_mode 없이 평문으로 즉시 재시도한다 —
+        서식 버그 하나가 알림 자체를 삼키면 손절/체결 알림 유실로 직결된다."""
         if not self.enabled:
             return
         now = time.time()
@@ -60,23 +66,18 @@ class TelegramNotifier:
         if len(text) > _MAX_LEN:
             text = text[: _MAX_LEN - 1] + "…"
         try:
-            try:
-                resp = httpx.post(
-                    _SEND_URL.format(token=self.token),
-                    json={"chat_id": self.chat_id, "text": text},
-                    timeout=3.0,
-                )
-            except httpx.TimeoutException:
-                # 타임아웃은 대부분 일시적이다 — **딱 1회** 즉시 재시도(2026-08-24,
-                # 8-21 포지션 현황이 ReadTimeout 한 번에 영구 유실된 실측).
-                # 무한 재시도는 금지(아래 뮤트 회로차단기가 폭주 방지 담당이고,
-                # 이 재시도는 그 계약을 흔들지 않는다). 4xx 등 다른 예외는
-                # 재시도해도 같은 답이라 재시도하지 않는다.
-                resp = httpx.post(
-                    _SEND_URL.format(token=self.token),
-                    json={"chat_id": self.chat_id, "text": text},
-                    timeout=3.0,
-                )
+            resp = self._post_with_timeout_retry({
+                "chat_id": self.chat_id, "text": text, "parse_mode": "HTML",
+            })
+            if resp.status_code == 400:
+                # HTML 파싱 실패로 추정 — parse_mode 없이 평문 폴백 1회.
+                # 다른 400(chat 없음 등)이면 이 재시도도 400을 받고 그대로
+                # 아래 raise_for_status()가 예외로 떨어진다(폴백이 실패를 숨기지
+                # 않는다).
+                logger.warning("Telegram HTML 파싱 실패(400) — 평문 폴백 재시도")
+                resp = self._post_with_timeout_retry({
+                    "chat_id": self.chat_id, "text": text,
+                })
             resp.raise_for_status()
             self._consecutive_failures = 0
             self._record(text, ok=True)
@@ -90,6 +91,16 @@ class TelegramNotifier:
                 self._consecutive_failures = 0
                 logger.warning("Telegram %d회 연속 실패 — %d분간 알림 중단",
                                 _FAILURE_LIMIT, _MUTE_SECONDS // 60)
+
+    def _post_with_timeout_retry(self, payload: dict):
+        """sendMessage 1회 POST — 타임아웃이면 **딱 1회** 즉시 재시도(2026-08-24,
+        8-21 포지션 현황이 ReadTimeout 한 번에 영구 유실된 실측). 무한 재시도는
+        금지(뮤트 회로차단기가 폭주 방지 담당이고, 이 재시도는 그 계약을 흔들지
+        않는다). 4xx 등 다른 예외는 재시도해도 같은 답이라 재시도하지 않는다."""
+        try:
+            return httpx.post(_SEND_URL.format(token=self.token), json=payload, timeout=3.0)
+        except httpx.TimeoutException:
+            return httpx.post(_SEND_URL.format(token=self.token), json=payload, timeout=3.0)
 
     def _record(self, text: str, *, ok: bool, error: str | None = None) -> None:
         """보낸 메시지를 원장에 남긴다. **실패해도 삼킨다** — 기록이 알림을 막으면

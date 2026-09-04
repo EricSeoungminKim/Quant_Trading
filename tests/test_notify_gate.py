@@ -243,6 +243,36 @@ def test_sourcing_twice_is_a_no_op(gate):
     assert len(gate.queued()) == 1
 
 
+# ── parse_mode=HTML + 평문 폴백 (2026-09-04, L1 서식) ──────────────────────
+# 크론 리포트가 quant.core.tgfmt 스타일 <b>/<code> 태그를 담은 텍스트를 넘기기
+# 시작한다 — 텔레그램이 태그를 거부해도(첫 호출 ok:false) 그 한 통은 평문으로
+# 다시 나가야 한다(알림 유실 금지, engine notifier와 동일 계약).
+
+def test_send_tries_html_parse_mode_first(gate):
+    r = gate.run('notify_now "<b>제목</b>"', **OFF_HOURS)
+    assert r.returncode == 0, r.stderr
+    assert len(gate.sends()) == 1
+    assert "parse_mode=HTML" in gate.sends()[0]
+
+
+def test_html_rejected_falls_back_to_plain_text(gate, tmp_path):
+    """첫 curl 호출(HTML)은 ok:false, 두 번째(평문)는 ok:true — 발송이 성공해야 한다."""
+    curl = tmp_path / "bin" / "curl"
+    curl.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf \'%s\\n\' "$*" >> "$CURL_LOG"\n'
+        'if printf \'%s\' "$*" | grep -q "parse_mode=HTML"; then printf \'{"ok":false}\'; '
+        'else printf \'{"ok":true}\'; fi\n',
+        encoding="utf-8",
+    )
+    curl.chmod(0o755)
+    r = gate.run('notify_now "<b>깨진 태그" && echo SENT || echo FAILED', **OFF_HOURS)
+    assert "SENT" in r.stdout, r.stderr
+    assert len(gate.sends()) == 2
+    assert "parse_mode=HTML" in gate.sends()[0]
+    assert "parse_mode=HTML" not in gate.sends()[1]
+
+
 # ── 스크립트별 배선 — 분류표가 코드와 어긋나지 않게 ────────────────────────
 
 CLASSIFICATION = {

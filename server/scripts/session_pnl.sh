@@ -31,7 +31,11 @@ if [ "$(date +%z)" != "+0900" ]; then
   notify_defer "session_pnl" "⚠️ session_pnl(${MARKET}): 호스트 TZ가 KST가 아님($(date +%z)) — 크론이 마감 직후가 아닐 수 있음"
 fi
 
-OUT="$(timeout 60 .venv/bin/python -m quant.apps.cli session-pnl --market "$MARKET" 2>>"$LOG")"
+# timeout 120(2026-09-04, L2 서술 도입 전엔 60이었다) — narrate()가 OpenRouter
+# 실패 시 최대 1회(2s 대기 후) 재시도해 최악의 경우 서술만으로 ~40s를 쓸 수
+# 있다(quant.adapters.narrate.OpenRouterNarrator.narrate 참고). 다른 서술
+# 크론(manual_recs/market_pulse/daily_feedback)은 이미 120이라 맞춘다.
+OUT="$(timeout 120 .venv/bin/python -m quant.apps.cli session-pnl --market "$MARKET" 2>>"$LOG")"
 if [ -n "$OUT" ]; then
   notify_defer "session_pnl" "${OUT:0:3900}"
 else

@@ -174,14 +174,17 @@
 # 스코어보드는 누적 bps/승률이라 "오늘 얼마 벌었나"에 답하지 못한다. 이쪽은 그
 # 세션의 실현손익·수수료를 통화 단위로 보여준다(KRW/USD를 섞지 않는다).
 # KR 정규장 마감 15:30 KST → 15:35.
-35 15 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/session_pnl.sh KR >> data/session_pnl.log 2>&1
+# OPS_NARRATOR=openrouter(2026-09-04, L2 서술) — close_report/deepdive와 같은
+# 이유(EC2 1.8GB에서 기본값 claude CLI 못 띄운다). 없어도(키 없음 등) 결정론
+# 텍스트만 그대로 나간다(quant.analyze.narrator 모듈 docstring의 Fallback 계약).
+35 15 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 ./server/scripts/session_pnl.sh KR >> data/session_pnl.log 2>&1
 # 자본 곡선 스냅샷(2026-08-24, gs-quant 대조 도입) — 세션 손익 5분 뒤(시세 경로
 # 공유, 겹침 방지). 곡선이 쌓여야 `cli performance`(변동성·샤프·MDD)가 산다.
 40 15 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.cli equity-snapshot --market KR >> data/equity.log 2>&1
 
 # US 마감은 05:00 KST(EDT) / 06:00 KST(EST)라 06:10이면 서머타임 양쪽 모두 마감 후다.
 # 미국 월-금 세션은 한국 달력으로 익일에 걸리므로 요일이 화-토(2-6)다.
-10 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/session_pnl.sh US >> data/session_pnl.log 2>&1
+10 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 ./server/scripts/session_pnl.sh US >> data/session_pnl.log 2>&1
 15 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.cli equity-snapshot --market US >> data/equity.log 2>&1
 
 # KR 대형주 일봉 백필(2026-09-03, quant-backtest 워크포워드 신규 스윙 시그널
@@ -202,8 +205,9 @@
 # 추천으로만 나간다 — 소유자가 별도 계좌에서 직접 판단. 각 시장 정규장 마감
 # 직후(session_pnl과 같은 관례). KR은 15:40이 아니라 15:50이다 — 바로 위
 # backfill_kr_largecap_daily.sh(15:36)에 예산을 내주기 위해 2026-09-03 미뤘다.
-50 15 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/manual_recs.sh KR >> data/manual_recs.log 2>&1
-30 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/manual_recs.sh US >> data/manual_recs.log 2>&1
+# OPS_NARRATOR=openrouter(2026-09-04, L2 서술 — 위 세션 손익과 같은 이유).
+50 15 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 ./server/scripts/manual_recs.sh KR >> data/manual_recs.log 2>&1
+30 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 ./server/scripts/manual_recs.sh US >> data/manual_recs.log 2>&1
 
 # --- 시장 펄스 다이제스트 (2026-09-03 소유자 요청: "매매 안 할 때도 참고할
 # 시그널을 주기적으로") --- 지수/금리/달러/유가 과매수·과매도를 참고용으로
@@ -213,11 +217,12 @@
 # US 정규장 22:30(EDT)/23:30(EST) 개장 ~ 05:00/06:00 마감 구간을 23:00(개장
 # 직후, 월~금)·01:00/03:00/05:00(세션 중, 화~토 — 한국 달력 익일 걸침, 다른
 # US 새벽 크론과 같은 요일 패턴)으로 덮는다.
-40 9 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/market_pulse.sh KR >> data/market_pulse.log 2>&1
-0 12 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/market_pulse.sh KR >> data/market_pulse.log 2>&1
-30 14 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/market_pulse.sh KR >> data/market_pulse.log 2>&1
-0 23 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/market_pulse.sh US >> data/market_pulse.log 2>&1
-0 1,3,5 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/market_pulse.sh US >> data/market_pulse.log 2>&1
+# OPS_NARRATOR=openrouter(2026-09-04, L2 서술 — 위 세션 손익과 같은 이유).
+40 9 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 ./server/scripts/market_pulse.sh KR >> data/market_pulse.log 2>&1
+0 12 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 ./server/scripts/market_pulse.sh KR >> data/market_pulse.log 2>&1
+30 14 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 ./server/scripts/market_pulse.sh KR >> data/market_pulse.log 2>&1
+0 23 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 ./server/scripts/market_pulse.sh US >> data/market_pulse.log 2>&1
+0 1,3,5 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 ./server/scripts/market_pulse.sh US >> data/market_pulse.log 2>&1
 
 # 06:20 US — 공개 포트폴리오 사이트용 성과 JSON(data/public/performance.json).
 # 세션 손익(06:10) 뒤·일일 피드백(06:25) 전. 입력은 거래 원장 하나뿐(LLM/네트워크
@@ -228,8 +233,10 @@
 # 06:25 US — 일일 피드백(2026-08-26 소유자 조직도 역할 5). 자본 곡선(06:15)
 # 뒤로 10분 띄웠다 — 그 세션 체결 원장이 확정된 뒤. 오늘 US 진입 체결의 진입
 # 타이밍(고점매수/거래 소강 진입/늦은 진입)을 규칙 기반으로 판정해 전략별로
-# 텔레그램에 준다 — LLM 없음, 픽 없으면 무출력(daily_feedback.sh 주석 참고).
-25 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/daily_feedback.sh US >> data/daily_feedback.log 2>&1
+# 텔레그램에 준다 — 판정 자체는 LLM 없음(결정론), 픽 없으면 무출력
+# (daily_feedback.sh 주석 참고). OPS_NARRATOR=openrouter(2026-09-04)는 그
+# 판정 결과를 자연어로 한 번 더 감싸는 L2 서술만 켠다 — 판정을 대신하지 않는다.
+25 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 ./server/scripts/daily_feedback.sh US >> data/daily_feedback.log 2>&1
 
 # 06:55 US — 하루 요약 HTML 한 장을 텔레그램 **파일**로 (2026-08-28 소유자 지시:
 # "매매 관련만 장중에 메시지로, 마감 뒤엔 하루 요약을 HTML 파일로"). 세션
@@ -277,7 +284,7 @@
 # gap-only 멱등이라 하루 2회가 안전하고, 05:40 회차는 US 마감분을 마저 채운다.
 38 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backfill_1m.sh >> data/backfill.log 2>&1
 
-45 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/daily_feedback.sh KR >> data/daily_feedback.log 2>&1
+45 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 ./server/scripts/daily_feedback.sh KR >> data/daily_feedback.log 2>&1
 
 # 평일 16:50 KST — 자본 자동 강등(2026-08-28 배선, 소유자 북극성). KR 마감
 # 정산(outcomes 16:00 → close-report 16:20 → daily-feedback 16:45) 뒤. 종결
