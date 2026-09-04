@@ -36,3 +36,6 @@ graphify-out/
 docs/vault/graph/
 data/backups/
 out/
+
+# Playwright MCP 디버그 산출물(사이트 워커 도구 기본 경로) — 2026-09-04 두 번 실수로 커밋됨
+.playwright-mcp/
