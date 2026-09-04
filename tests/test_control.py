@@ -164,3 +164,98 @@ def test_flatten_scope_survives_restart(tmp_path):
     restarted = TradingControl(state_path=path)
     assert restarted.consume_flatten_scope() == "day"
 
+
+# ================================================= pending_flatten: 장 마감 재시도 대기열
+
+
+def test_no_pending_flatten_by_default(tmp_path):
+    control = TradingControl(state_path=tmp_path / "control.json")
+    assert control.pending_flatten() is None
+
+
+def test_set_pending_flatten_persists_scope_and_symbols(tmp_path):
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.set_pending_flatten("all", ["TQQQ", "005930"])
+
+    pending = control.pending_flatten()
+    assert pending is not None
+    assert pending["scope"] == "all"
+    assert pending["symbols"] == ["005930", "TQQQ"]  # 정렬됨
+    assert pending["requested_at"]  # 비어있지 않은 타임스탬프
+
+
+def test_set_pending_flatten_with_no_symbols_is_a_noop(tmp_path):
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.set_pending_flatten("all", [])
+    assert control.pending_flatten() is None
+
+
+def test_pending_flatten_survives_restart(tmp_path):
+    """엔진 재시작(=새 TradingControl 인스턴스)에도 대기 목록이 살아남아야
+    한다 — 이 결함의 핵심 요구사항(디스크 영속화)."""
+    path = tmp_path / "control.json"
+    first = TradingControl(state_path=path)
+    first.set_pending_flatten("day", ["TQQQ"])
+
+    restarted = TradingControl(state_path=path)
+    pending = restarted.pending_flatten()
+    assert pending is not None
+    assert pending["scope"] == "day"
+    assert pending["symbols"] == ["TQQQ"]
+
+
+def test_set_pending_flatten_merges_same_scope_and_keeps_original_timestamp(tmp_path):
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.set_pending_flatten("all", ["TQQQ"])
+    first_ts = control.pending_flatten()["requested_at"]
+
+    control.set_pending_flatten("all", ["SQQQ"])
+    pending = control.pending_flatten()
+    assert pending["symbols"] == ["SQQQ", "TQQQ"]
+    assert pending["requested_at"] == first_ts
+
+
+def test_set_pending_flatten_different_scope_replaces_previous_record(tmp_path):
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.set_pending_flatten("day", ["TQQQ"])
+    control.set_pending_flatten("all", ["SQQQ"])
+
+    pending = control.pending_flatten()
+    assert pending["scope"] == "all"
+    assert pending["symbols"] == ["SQQQ"]
+
+
+def test_clear_pending_flatten_removes_only_done_symbols(tmp_path):
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.set_pending_flatten("all", ["TQQQ", "SQQQ"])
+
+    control.clear_pending_flatten(["TQQQ"])
+    pending = control.pending_flatten()
+    assert pending is not None
+    assert pending["symbols"] == ["SQQQ"]
+
+
+def test_clear_pending_flatten_clears_record_when_all_symbols_done(tmp_path):
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.set_pending_flatten("all", ["TQQQ"])
+
+    control.clear_pending_flatten(["TQQQ"])
+    assert control.pending_flatten() is None
+
+
+def test_clear_pending_flatten_with_no_pending_record_is_a_noop(tmp_path):
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.clear_pending_flatten(["TQQQ"])  # 예외 없이 조용히 무시
+    assert control.pending_flatten() is None
+
+
+def test_old_schema_without_pending_flatten_defaults_to_none(tmp_path):
+    """이 필드가 생기기 전 control.json — 하위호환."""
+    import json
+
+    path = tmp_path / "control.json"
+    path.write_text(json.dumps({"halted": False}), encoding="utf-8")
+
+    control = TradingControl(state_path=path)
+    assert control.pending_flatten() is None
+

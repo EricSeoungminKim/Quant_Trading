@@ -17,9 +17,13 @@ import pytest
 
 from quant.apps.config import Settings
 from quant.trade.control import TradingControl
-from quant.trade.loop import CycleTimings, _build_marks_and_unpriced, run_cycle, run_paper_loop
+from quant.trade.loop import (
+    CycleTimings, _build_marks_and_unpriced, _flatten_all, _retry_pending_flatten,
+    run_cycle, run_paper_loop,
+)
 from quant.core.ports import Context
 from quant.core.models import Fill, Order, Position, Quote, Side, Signal, SignalAction
+from quant.trade.risk.manager import MARKET_CLOSED_MARKER
 
 _OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 
@@ -139,6 +143,67 @@ class FakeRisk:
             return None
         return Order(symbol=signal.symbol, side=Side.SELL, qty=qty,
                      strategy_id=signal.strategy_id, reason=signal.reason)
+
+
+class FakeMarketGatedRisk:
+    """FakeRisk와 동일하되, `closed_symbols`에 있는 심볼은 항상
+    RiskManagerImpl.approve()의 실제 장 마감 게이트(MARKET_CLOSED_MARKER)처럼
+    막는다 — pending_flatten 재시도 배관을 실제 리스크 판정 로직 없이 검증한다."""
+
+    def __init__(self, closed_symbols: frozenset[str] = frozenset()):
+        self.closed_symbols = set(closed_symbols)
+        self.calls: list[Signal] = []
+        self.last_block = ""
+
+    def approve(self, signal: Signal, ctx: Context, risk_multiplier: float = 1.0, marks=None):
+        self.calls.append(signal)
+        self.last_block = ""  # 실제 RiskManagerImpl.approve()처럼 매 호출 시작에 리셋
+        if signal.symbol in self.closed_symbols:
+            self.last_block = f"{MARKET_CLOSED_MARKER} — 주문 불가 (테스트)"
+            return None
+        if signal.action in (SignalAction.ENTER_LONG, SignalAction.SCALE_IN):
+            return Order(symbol=signal.symbol, side=Side.BUY, qty=1.0,
+                         strategy_id=signal.strategy_id, reason=signal.reason)
+        pos = ctx.broker.positions().get(signal.symbol)
+        qty = (pos.qty if pos is not None else 0.0) * signal.exit_fraction
+        if qty <= 0:
+            self.last_block = "보유 없음"
+            return None
+        return Order(symbol=signal.symbol, side=Side.SELL, qty=qty,
+                     strategy_id=signal.strategy_id, reason=signal.reason)
+
+
+class _FixedClock:
+    """`_retry_pending_flatten`의 게이트(is_market_open + in_continuous_session)를
+    결정론적으로 테스트하기 위한 고정 시각 클록. `now`는 tz-aware UTC datetime."""
+
+    def __init__(self, now: datetime, market_open: dict[str, bool]):
+        self._now = now
+        self._market_open = market_open
+
+    def now(self) -> datetime:
+        return self._now
+
+    def is_market_open(self, market: str) -> bool:
+        return self._market_open.get(market, False)
+
+    def minutes_to_close(self, market: str) -> float | None:
+        return 120.0
+
+    def cadence_minutes(self) -> float:
+        return 0.1
+
+    def should_flatten(self, market: str, flatten_minutes: float) -> bool:
+        return False
+
+
+# 2026-01-05(월) 10:00 ET = US 연속 거래 구간(09:30~16:00 ET) 한복판.
+_US_CONTINUOUS_NOW = datetime(2026, 1, 5, 15, 0, tzinfo=timezone.utc)
+# 2026-01-05(월) 10:00 KST = KR 연속 거래 구간(09:00~15:20 KST) 한복판.
+_KR_CONTINUOUS_NOW = datetime(2026, 1, 5, 1, 0, tzinfo=timezone.utc)
+# 동시호가 구간(US 09:00 ET, 정규장 09:30 전) — is_market_open은 True일 수 있어도
+# in_continuous_session은 False여야 한다.
+_US_PREOPEN_NOW = datetime(2026, 1, 5, 14, 0, tzinfo=timezone.utc)
 
 
 class FakeSink:
@@ -391,6 +456,186 @@ def test_flatten_is_one_shot_and_clears(tmp_path):
     # one-shot: 소비된 뒤엔 재시작해도 다시 청산 트리거 안 됨
     fresh = TradingControl(state_path=control_path)
     assert fresh.consume_flatten() is False
+
+
+# ------------------------------------------ flatten: 장 마감 보류 → 개장 시 자동 재시도
+#
+# 결함(2026-09-03/09-04 실측): /flatten이 장 마감 중이면 대상 종목을 로그로만
+# 알리고 요청 자체를 소비해버려, 개장 후 아무도 재시도하지 않았다 — 소유자가
+# 매번 수동으로 다시 요청해야 했다. 아래는 그 수리(control.pending_flatten +
+# loop._retry_pending_flatten)를 고정한다.
+
+def test_flatten_all_parks_market_closed_symbols_and_persists_pending(tmp_path):
+    """장이 닫힌 종목은 청산되지 않고 control.json에 pending으로 남는다 — 열린
+    시장 종목은 그 사이클에 정상 청산된다(부분 실행)."""
+    positions = {
+        "005930": Position(symbol="005930", qty=10.0, avg_cost=70000.0),  # 닫힘
+        "TQQQ": Position(symbol="TQQQ", qty=5.0, avg_cost=50.0),          # 열림
+    }
+    broker = FakeBroker(positions=positions)
+    ctx = Context(clock=FakeClock(), data=FakeDataFeed(), broker=broker)
+    risk = FakeMarketGatedRisk(closed_symbols=frozenset({"005930"}))
+    sinks = FakeSink()
+    notifier = FakeNotifier()
+    control = TradingControl(state_path=tmp_path / "control.json")
+
+    blocked = _flatten_all(ctx, risk, sinks, notifier, scope="all", control=control)
+
+    assert blocked == {"005930"}
+    assert broker.positions()["005930"].qty == 10.0  # 청산되지 않음
+    assert broker.positions()["TQQQ"].qty == 0.0      # 정상 청산
+
+    pending = control.pending_flatten()
+    assert pending is not None
+    assert pending["scope"] == "all"
+    assert pending["symbols"] == ["005930"]
+    assert any("자동으로 재시도" in m for m in notifier.messages)
+
+
+def test_flatten_all_without_control_still_returns_blocked_but_does_not_persist():
+    """control을 안 주는 기존 호출부(테스트 등)는 예전처럼 동작 — 반환값으로
+    블록된 종목을 알 수는 있지만 저장은 하지 않는다(하위호환)."""
+    positions = {"005930": Position(symbol="005930", qty=10.0, avg_cost=70000.0)}
+    broker = FakeBroker(positions=positions)
+    ctx = Context(clock=FakeClock(), data=FakeDataFeed(), broker=broker)
+    risk = FakeMarketGatedRisk(closed_symbols=frozenset({"005930"}))
+    sinks = FakeSink()
+
+    blocked = _flatten_all(ctx, risk, sinks, notifier=None, scope="all")
+
+    assert blocked == {"005930"}
+
+
+def test_retry_pending_flatten_noop_when_nothing_pending(tmp_path):
+    control = TradingControl(state_path=tmp_path / "control.json")
+    ctx = Context(
+        clock=_FixedClock(_US_CONTINUOUS_NOW, {"US": True}),
+        data=FakeDataFeed(), broker=FakeBroker(),
+    )
+    risk = FakeMarketGatedRisk()
+    _retry_pending_flatten(ctx, risk, FakeSink(), None, control, books=None)
+    assert risk.calls == []  # 대기가 없으면 approve()를 아예 부르지 않는다
+
+
+def test_retry_pending_flatten_noop_while_market_still_closed(tmp_path):
+    """대기 중인데 아직 개장 전이면 이번 사이클엔 아무 시도도 하지 않는다 —
+    매 사이클 헛되이 신호를 내지 않는다(로그 스팸 방지 원칙)."""
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.set_pending_flatten("all", ["TQQQ"])
+
+    ctx = Context(
+        clock=_FixedClock(_US_CONTINUOUS_NOW, {"US": False}),  # 아직 닫힘
+        data=FakeDataFeed(), broker=FakeBroker(positions={
+            "TQQQ": Position(symbol="TQQQ", qty=5.0, avg_cost=50.0),
+        }),
+    )
+    risk = FakeMarketGatedRisk()
+    _retry_pending_flatten(ctx, risk, FakeSink(), None, control, books=None)
+
+    assert risk.calls == []
+    pending = control.pending_flatten()
+    assert pending is not None
+    assert pending["symbols"] == ["TQQQ"]
+
+
+def test_retry_pending_flatten_noop_during_preopen_auction_even_if_market_open_flag_true(tmp_path):
+    """동시호가처럼 `is_market_open`은 True여도 연속 거래 구간이 아니면 재시도하지
+    않는다 — risk.approve가 실제로 쓰는 게이트와 같은 기준."""
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.set_pending_flatten("all", ["TQQQ"])
+
+    ctx = Context(
+        clock=_FixedClock(_US_PREOPEN_NOW, {"US": True}),
+        data=FakeDataFeed(), broker=FakeBroker(positions={
+            "TQQQ": Position(symbol="TQQQ", qty=5.0, avg_cost=50.0),
+        }),
+    )
+    risk = FakeMarketGatedRisk()
+    _retry_pending_flatten(ctx, risk, FakeSink(), None, control, books=None)
+
+    assert risk.calls == []
+    assert control.pending_flatten()["symbols"] == ["TQQQ"]
+
+
+def test_retry_pending_flatten_executes_when_market_opens_and_clears_pending(tmp_path):
+    """장 마감으로 보류됐던 종목이 개장하면 다음 사이클에 자동으로 청산되고
+    pending에서 지워진다 — 이 결함의 핵심 요구사항."""
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.set_pending_flatten("all", ["TQQQ"])
+
+    broker = FakeBroker(positions={"TQQQ": Position(symbol="TQQQ", qty=5.0, avg_cost=50.0)})
+    ctx = Context(clock=_FixedClock(_US_CONTINUOUS_NOW, {"US": True}), data=FakeDataFeed(), broker=broker)
+    risk = FakeMarketGatedRisk()
+    sinks = FakeSink()
+    notifier = FakeNotifier()
+
+    _retry_pending_flatten(ctx, risk, sinks, notifier, control, books=None)
+
+    assert broker.positions()["TQQQ"].qty == 0.0
+    assert control.pending_flatten() is None
+    assert any("보류됐던 청산 실행" in m for m in notifier.messages)
+
+
+def test_retry_pending_flatten_survives_engine_restart(tmp_path):
+    """엔진 프로세스가 재시작돼도(새 TradingControl 인스턴스가 같은 파일을 읽어도)
+    보류됐던 청산이 개장 시 그대로 재시도된다."""
+    path = tmp_path / "control.json"
+    first = TradingControl(state_path=path)
+    first.set_pending_flatten("all", ["TQQQ"])
+
+    restarted = TradingControl(state_path=path)
+    broker = FakeBroker(positions={"TQQQ": Position(symbol="TQQQ", qty=5.0, avg_cost=50.0)})
+    ctx = Context(clock=_FixedClock(_US_CONTINUOUS_NOW, {"US": True}), data=FakeDataFeed(), broker=broker)
+    risk = FakeMarketGatedRisk()
+
+    _retry_pending_flatten(ctx, risk, FakeSink(), None, restarted, books=None)
+
+    assert broker.positions()["TQQQ"].qty == 0.0
+    assert restarted.pending_flatten() is None
+    # 재확인: control.json에서 새로 읽어도 대기가 사라져 있어야 한다.
+    assert TradingControl(state_path=path).pending_flatten() is None
+
+
+def test_retry_pending_flatten_drops_symbol_already_flat_without_order(tmp_path):
+    """대기 중이던 종목의 포지션이 (다른 경로로) 이미 사라졌으면 주문 없이
+    pending에서만 지운다."""
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.set_pending_flatten("all", ["TQQQ"])
+
+    broker = FakeBroker(positions={})  # 이미 청산됨/보유 없음
+    ctx = Context(clock=_FixedClock(_US_CONTINUOUS_NOW, {"US": True}), data=FakeDataFeed(), broker=broker)
+    risk = FakeMarketGatedRisk()
+    sinks = FakeSink()
+
+    _retry_pending_flatten(ctx, risk, sinks, None, control, books=None)
+
+    assert risk.calls == []  # 신호 자체가 만들어지지 않는다 — 주문 없음
+    assert sinks.signals == []
+    assert control.pending_flatten() is None  # 그래도 대기 목록에서는 지워진다
+
+
+def test_retry_pending_flatten_retries_only_the_now_open_symbol_kr_us_mixed(tmp_path):
+    """KR/US가 섞인 대기열에서 US만 개장했으면 US만 재시도하고 KR은 계속 대기."""
+    control = TradingControl(state_path=tmp_path / "control.json")
+    control.set_pending_flatten("all", ["TQQQ", "005930"])
+
+    broker = FakeBroker(positions={
+        "TQQQ": Position(symbol="TQQQ", qty=5.0, avg_cost=50.0),
+        "005930": Position(symbol="005930", qty=10.0, avg_cost=70000.0),
+    })
+    ctx = Context(
+        clock=_FixedClock(_US_CONTINUOUS_NOW, {"US": True, "KR": False}),
+        data=FakeDataFeed(), broker=broker,
+    )
+    risk = FakeMarketGatedRisk()
+
+    _retry_pending_flatten(ctx, risk, FakeSink(), None, control, books=None)
+
+    assert broker.positions()["TQQQ"].qty == 0.0
+    assert broker.positions()["005930"].qty == 10.0  # KR은 아직 손대지 않음
+    pending = control.pending_flatten()
+    assert pending is not None
+    assert pending["symbols"] == ["005930"]
 
 
 # --------------------------------------------------------------------- 하트비트

@@ -17,6 +17,7 @@ Portfolio(quant/trade/portfolio/portfolio.py)와 동일한 tmp-write-then-replac
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 DEFAULT_STATE_PATH = Path("data/state/control.json")
@@ -30,6 +31,7 @@ class TradingControl:
         self._halted_by = "manual"
         self._flatten_requested = False
         self._flatten_scope = "all"
+        self._pending_flatten: dict | None = None
         self._load()
 
     def _load(self) -> None:
@@ -49,6 +51,17 @@ class TradingControl:
         # flatten_scope: "all"(전량) 또는 "day"(단타 전략 보유분만). 이 필드가
         # 생기기 전 데이터는 항상 전량 flatten이었으므로 기본값은 "all".
         self._flatten_scope = data.get("flatten_scope", "all")
+        # pending_flatten: 장 마감으로 청산하지 못해 개장까지 대기 중인 종목들
+        # (2026-09-04). 이 필드가 없던(구 스키마) 데이터는 대기 없음으로 취급한다.
+        pending = data.get("pending_flatten")
+        if isinstance(pending, dict) and pending.get("symbols"):
+            self._pending_flatten = {
+                "scope": pending.get("scope", "all"),
+                "symbols": list(pending.get("symbols", [])),
+                "requested_at": pending.get("requested_at", ""),
+            }
+        else:
+            self._pending_flatten = None
 
     def _save(self) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,6 +71,7 @@ class TradingControl:
             "halted_by": self._halted_by,
             "flatten_requested": self._flatten_requested,
             "flatten_scope": self._flatten_scope,
+            "pending_flatten": self._pending_flatten,
         }
         tmp = self.state_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -125,3 +139,46 @@ class TradingControl:
             self._flatten_scope = "all"
             self._save()
         return scope
+
+    def set_pending_flatten(self, scope: str, symbols: list[str]) -> None:
+        """장 마감으로 청산하지 못한 종목을 개장까지 대기시킨다 (2026-09-04).
+
+        `_flatten_all`이 시장이 닫힌 종목을 만나면 이 메서드로 넘긴다 — 예전에는
+        로그 경고만 남기고 요청 자체를 소비해버려 소유자가 개장 후 수동으로
+        다시 요청해야 했다. 재시작에도 살아남도록 디스크에 저장하고, 엔진은 매
+        사이클 `pending_flatten()`으로 읽어 시장이 열린 종목만 골라 재시도한다.
+
+        같은 scope로 이미 대기 중인 레코드가 있으면 종목을 합집합으로 병합한다
+        (원래 요청 시각은 유지). scope가 다르면 새 요청이 우선해 이전 레코드를
+        덮어쓴다 — 두 scope의 대기를 동시에 유지하지는 않는다."""
+        self._load()
+        if not symbols:
+            return
+        if self._pending_flatten is not None and self._pending_flatten.get("scope") == scope:
+            merged = sorted(set(self._pending_flatten.get("symbols", [])) | set(symbols))
+            requested_at = self._pending_flatten.get("requested_at") or datetime.now(timezone.utc).isoformat()
+        else:
+            merged = sorted(set(symbols))
+            requested_at = datetime.now(timezone.utc).isoformat()
+        self._pending_flatten = {"scope": scope, "symbols": merged, "requested_at": requested_at}
+        self._save()
+
+    def pending_flatten(self) -> dict | None:
+        """대기 중인 flatten 레코드(`{"scope", "symbols", "requested_at"}`)를 반환한다.
+        대기가 없으면 None. 소비하지 않는다 — 실행은 `clear_pending_flatten()`으로
+        마친 종목만 명시적으로 지운다(부분 재시도를 지원하기 위함)."""
+        self._load()
+        return dict(self._pending_flatten) if self._pending_flatten is not None else None
+
+    def clear_pending_flatten(self, symbols_done: list[str]) -> None:
+        """`symbols_done`을 대기 목록에서 지운다. 남은 종목이 없으면 레코드 전체를
+        지운다. 대기 레코드가 없으면 아무 것도 하지 않는다."""
+        self._load()
+        if self._pending_flatten is None:
+            return
+        done = set(symbols_done)
+        remaining = [s for s in self._pending_flatten.get("symbols", []) if s not in done]
+        self._pending_flatten = (
+            {**self._pending_flatten, "symbols": remaining} if remaining else None
+        )
+        self._save()

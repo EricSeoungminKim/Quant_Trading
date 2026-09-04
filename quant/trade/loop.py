@@ -35,6 +35,7 @@ from quant.core.models import (
     Fill, Order, OrderState, Quote, Side, Signal, SignalAction, market_of_symbol,
 )
 from quant.core.portfolio.portfolio import to_krw
+from quant.core.session import in_continuous_session
 from quant.trade.risk.books import StrategyBooks
 from quant.trade.risk.manager import MARKET_CLOSED_MARKER
 from quant.trade.watch_conditions import Rule as WatchRule
@@ -854,9 +855,15 @@ def _cancel_open_orders_before_flatten(broker) -> None:
 def _flatten_all(
     ctx: Context, risk: RiskManager, sinks: EventSink, notifier: Notifier | None,
     books: StrategyBooks | None = None, scope: str = "all",
-) -> None:
+    symbols: list[str] | None = None, control: TradingControl | None = None,
+) -> set[str]:
     """열린 포지션 전부(또는 scope="day"면 단타 전략 보유분만)를 즉시 청산한다 —
-    TradingControl.request_flatten()의 실행부.
+    TradingControl.request_flatten()의 실행부. 반환값은 이번 호출에서 장 마감으로
+    청산하지 못한 종목 집합(빈 집합이면 전부 처리됨).
+
+    `symbols`를 주면(장 마감으로 보류됐던 종목의 개장 후 재시도 경로,
+    `_retry_pending_flatten` 참고) 그 종목들만 대상으로 삼는다 — None이면(기본,
+    사용자의 최초 /flatten 요청) 엔진 소유 열린 포지션 전부가 대상이다.
 
     halt와 달리 여기서 만드는 Signal은 항상 EXIT_LONG이라 run_cycle의 halt 체크
     (_ENTRY_ACTIONS)에 걸리지 않는다: halt 중에도 flatten은 반드시 동작해야 한다.
@@ -864,7 +871,9 @@ def _flatten_all(
     **장이 닫힌 종목은 risk.approve의 물리적 제약(A-5)에 그대로 걸린다** — flatten만
     이 게이트를 우회하지 않는다(닫힌 시장에 체결 가능한 가격이 없다는 사실은 flatten이라고
     바뀌지 않는다). 대신 여기서 우회하지 않는 대가로 **조용히 무시하지 않는다**: 게이트에
-    막힌 종목은 한 번에 모아 "다음 개장까지 대기"임을 사용자에게 알린다.
+    막힌 종목은 `control`(주어졌으면)에 pending_flatten으로 영속화해 개장 시 엔진이
+    스스로 재시도하게 하고, 사용자에게도 한 번에 모아 알린다 (2026-09-04 — 이전에는
+    로그만 남기고 요청을 소비해버려 소유자가 개장 후 수동으로 재요청해야 했다).
 
     `scope="day"`: 오버나이트 캐리가 설계인 전략(`_OVERNIGHT_STRATEGIES`/`_is_overnight`
     — EoD 강제청산 여부를 가르는 데 이미 쓰던 같은 분류를 재사용한다)의 lot은
@@ -882,8 +891,14 @@ def _flatten_all(
         sym for sym, pos in positions.items()
         if pos.is_open and (not callable(engine_owned_qty) or engine_owned_qty(sym) > 0)
     ]
+    if symbols is not None:
+        # 재시도 경로: 이번에 시장이 열린 것으로 확인된 종목만 처리한다. 이미
+        # 포지션이 사라진 종목(다른 경로로 이미 청산됨)은 조용히 걸러진다 —
+        # 호출자가 pending에서 지울 때 "실행됨"으로 표시해도 실제 주문은 없다.
+        wanted = set(symbols)
+        open_symbols = [sym for sym in open_symbols if sym in wanted]
     if not open_symbols:
-        return
+        return set()
     scope_label = "단타 보유분" if scope == "day" else "전량"
     logger.warning("수동 청산 요청 처리 — %s 청산: %s", scope_label, ", ".join(open_symbols))
     market_closed_symbols: set[str] = set()
@@ -934,14 +949,53 @@ def _flatten_all(
 
     if market_closed_symbols:
         logger.warning(
-            "수동 청산 보류 — 장 마감 (다음 개장까지 대기): %s", ", ".join(sorted(market_closed_symbols)),
+            "수동 청산 보류 — 개장 시 자동 재시도: %s", ", ".join(sorted(market_closed_symbols)),
         )
+        if control is not None:
+            control.set_pending_flatten(scope, sorted(market_closed_symbols))
         if notifier is not None:
             notifier.send(
                 "⏳ 청산 보류 — 장 마감\n\n"
                 f"🏢 {', '.join(sorted(market_closed_symbols))}\n"
-                "닫힌 시장에는 체결 가능한 가격이 없어 다음 개장까지 청산이 보류됩니다."
+                "닫힌 시장에는 체결 가능한 가격이 없어 개장 시 엔진이 자동으로 재시도합니다."
             )
+    return market_closed_symbols
+
+
+def _retry_pending_flatten(
+    ctx: Context, risk: RiskManager, sinks: EventSink, notifier: Notifier | None,
+    control: TradingControl, books: StrategyBooks | None,
+) -> None:
+    """장 마감으로 보류된 flatten을 개장 시 자동 재시도한다 (2026-09-04).
+
+    `_flatten_all`이 장이 닫혀 청산하지 못한 종목은 `control.pending_flatten()`에
+    남는다. 매 사이클(일반 flatten 요청이 없는 사이클) 여기서 그중 시장이 열려
+    **연속 거래 구간**에 들어간 종목만 골라 다시 청산을 시도한다 — risk.approve가
+    실제로 쓰는 게이트(is_market_open)와 동일한 판정을 미리 걸러, 동시호가처럼
+    체결 가능한 가격이 아직 없는 구간에 헛되이 주문을 내지 않는다.
+
+    대기 중인 게 없거나 아직 열린 종목이 하나도 없으면 아무 것도 하지 않는다 —
+    매 사이클 로그를 남기면 대기 기간 내내 스팸이 된다(모듈 상단 원칙)."""
+    pending = control.pending_flatten()
+    if pending is None:
+        return
+    ready = [
+        sym for sym in pending["symbols"]
+        if ctx.clock.is_market_open(market_of_symbol(sym))
+        and in_continuous_session(market_of_symbol(sym), ctx.clock.now())
+    ]
+    if not ready:
+        return
+    still_blocked = _flatten_all(
+        ctx, risk, sinks, notifier, books, scope=pending["scope"], symbols=ready, control=control,
+    )
+    executed = [sym for sym in ready if sym not in still_blocked]
+    if executed:
+        control.clear_pending_flatten(executed)
+        done = ", ".join(sorted(executed))
+        logger.warning("보류됐던 청산 실행 완료: %s", done)
+        if notifier is not None:
+            notifier.send(f"🧹 보류됐던 청산 실행: {done}")
 
 
 def _strategies_with_open_lots(ctx: Context, strategy_errors: dict[str, str]) -> list[str]:
@@ -2232,7 +2286,7 @@ async def run_paper_loop(
                 # flatten은 승인을 거치지 않는다 — kill switch가 승인 대기로 막히면
                 # 안 된다. 대기 중이던 진입 요청은 만료시켜 청산 직후 되살아나지
                 # 않게 한다(expire_seconds=0 = 지금 pending인 것 전부).
-                _flatten_all(ctx, risk, sinks, notifier, books, scope=flatten_scope)
+                _flatten_all(ctx, risk, sinks, notifier, books, scope=flatten_scope, control=control)
                 if approval is not None:
                     approval.expire_stale(0)
                     for req in approval.take_approved():
@@ -2243,6 +2297,9 @@ async def run_paper_loop(
                     else:
                         notifier.send("🧹 수동 청산 완료\n\n열린 포지션을 전량 청산 처리했습니다")
             else:
+                # 장 마감으로 보류됐던 flatten이 있으면 개장한 종목만 골라 재시도한다
+                # (2026-09-04) — halt 여부와 무관하게, 일반 전략 사이클보다 먼저.
+                _retry_pending_flatten(ctx, risk, sinks, notifier, control, books)
                 if approval is not None:
                     _process_approvals(
                         ctx, risk, sinks, notifier, control,
