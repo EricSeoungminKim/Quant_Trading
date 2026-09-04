@@ -51,7 +51,7 @@ fi
 
 OUT="$(timeout 120 .venv/bin/python -m quant.apps.cli market-pulse --market "$MARKET" $DRY_RUN_FLAG $CHANGES_FLAG 2>>"$LOG")"
 if [ -n "$OUT" ]; then
-  if notify_now "${OUT:0:3900}"; then  # 2026-09-03: 주기 다이제스트는 큐에 넣지 않고 즉시 보낸다(장중 큐잉이면 마감 wrap 때야 도착)
+  if notify_now "${OUT}"; then  # 2026-09-03: 주기 다이제스트는 큐에 넣지 않고 즉시 보낸다(장중 큐잉이면 마감 wrap 때야 도착)
   echo "[$(date "+%F %T")] ${MARKET} 전송 성공" >> "$LOG"
 else
   echo "[$(date "+%F %T")] ${MARKET} 전송 실패(텔레그램 ok:true 아님 또는 토큰 없음)" >> "$LOG"

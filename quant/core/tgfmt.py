@@ -31,6 +31,7 @@
 """
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Iterable
 
 MAX_CHARS = 4096
@@ -138,24 +139,39 @@ def pnl(value: float | None, currency: str = "KRW") -> str:
     return f"{mark} {code(body)}"
 
 
+def display_width(s: str) -> int:
+    """모노스페이스 렌더링에서 문자열이 차지하는 "칸" 수. 한글·한자처럼 East
+    Asian Wide/Fullwidth 문자(`unicodedata.east_asian_width`가 'W'/'F')는
+    2칸, 나머지는 1칸이다. `len()`은 코드포인트 개수일 뿐이라 한글 셀이 섞인
+    표에서 정렬이 밀린다(예: "KODEX코스닥150" 행이 옆 ASCII 열보다 넓게
+    보여 어긋난다, 2026-09-04 실측 — `<pre>` 블록은 진짜 모노스페이스라
+    코드포인트 수가 아니라 표시 폭이 맞아야 한다)."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in s)
+
+
 def table(headers: Iterable[object], rows: Iterable[Iterable[object]]) -> str:
     """정렬된 모노스페이스 표 — 태그 없는 순수 텍스트다(`pre()`로 감싸 쓴다).
-    각 열은 그 열에서 가장 넓은 값(헤더 포함)에 맞춰 공백으로 좌측 정렬한다 —
-    market-pulse 지표 표·session-pnl 전략별 표·manual-recs 추천 목록처럼 "열이
-    맞아야 읽히는" 데이터에 쓴다. 이스케이프는 `pre()`가 완성된 문자열 전체에
-    한 번에 하므로 여기서는 하지 않는다."""
+    각 열은 그 열에서 가장 넓은 값(헤더 포함, `display_width()` 기준)에 맞춰
+    공백으로 좌측 정렬한다 — market-pulse 지표 표·session-pnl 전략별 표·
+    manual-recs 추천 목록처럼 "열이 맞아야 읽히는" 데이터에 쓴다. 이스케이프는
+    `pre()`가 완성된 문자열 전체에 한 번에 하므로 여기서는 하지 않는다."""
     header_cells = [str(h) for h in headers]
     row_cells = [[str(c) for c in r] for r in rows]
     n_cols = len(header_cells)
-    widths = [len(header_cells[i]) for i in range(n_cols)]
+    widths = [display_width(header_cells[i]) for i in range(n_cols)]
     for r in row_cells:
         for i in range(n_cols):
-            widths[i] = max(widths[i], len(r[i]))
+            widths[i] = max(widths[i], display_width(r[i]))
+
+    def _pad(cell: str, width: int) -> str:
+        # str.ljust()는 len() 기준이라 여기서는 못 쓴다 — display_width 기준으로
+        # 직접 공백을 채운다.
+        return cell + " " * max(0, width - display_width(cell))
 
     def _fmt_row(cells: list[str]) -> str:
         # 마지막 열은 패딩하지 않는다 — 안 그러면 꼬리 공백이 붙는다.
         return "  ".join(
-            cells[i] if i == n_cols - 1 else cells[i].ljust(widths[i])
+            cells[i] if i == n_cols - 1 else _pad(cells[i], widths[i])
             for i in range(n_cols)
         )
 

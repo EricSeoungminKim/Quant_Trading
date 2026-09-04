@@ -342,11 +342,21 @@ def _fmt_pct(x: float | None) -> str:
 
 
 def render_telegram(report: PulseReport, market: str, lang: str = "ko",
-                    report_url: str | None = None) -> str:
+                    report_url: str | None = None, narration: str | None = None) -> str:
     """텔레그램 HTML 메시지(≤4096자, tgfmt, 2026-09-04). `lang`은 향후 다국어
     확장을 위한 자리만 — 현재 실제 수신자는 한국어뿐이라 분기를 만들지 않는다
     (항상 한국어로 렌더). `report_url`이 있으면(그날의 회사 리포트 HTML) 맨
-    끝에 링크를 붙인다."""
+    끝에 링크를 붙인다.
+
+    `narration`(선택, L2 서술 — `quant.analyze.narrator.narrate()`가 만든
+    문장, 이미 `NARRATION_MAX_CHARS` 안에서 문장 경계로 잘려 있다) — 주어지면
+    헤더 바로 다음 섹션으로 넣는다. `compose()`는 뒤쪽 섹션부터 덜어내므로
+    (모듈 docstring "4096자 상한과 truncate 전략" 참고), 서술을 맨 앞 섹션에
+    두면 메시지가 넘칠 때 결측 종목 같은 LOW-priority 접힘 블록이 먼저
+    빠지고 서술은 마지막까지 남는다 — 서술이 통째로 잘리는 것보다 그쪽이
+    낫다(2026-09-04 실측: 서술+결정론 블록을 compose() 밖에서 이어붙였더니
+    합쳐서 4096자를 넘겨도 아무도 안 걸러 발송 스크립트의 하드컷(3900자)이
+    문장 중간을 잘랐다)."""
     label = _MARKET_LABEL.get(market, market)
     header = tgfmt.b(f"📡 시장 펄스 (참고용 — 자동매매와 무관) — {label} {report.as_of.isoformat()}")
     notable: list[str] = []
@@ -366,6 +376,8 @@ def render_telegram(report: PulseReport, market: str, lang: str = "ko",
             notable.append(f"{inst.label} {inst.state}{' ⚠극단' if inst.extreme else ''}")
 
     sections: list[str] = []
+    if narration:
+        sections.append(tgfmt.i(narration))
     if table_rows:
         idx_table = tgfmt.pre(tgfmt.table(
             ["종목", "현재가", "1d/5d/20d", "RSI", "%b", "상태"], table_rows,

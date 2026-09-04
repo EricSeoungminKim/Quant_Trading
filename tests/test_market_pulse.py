@@ -328,3 +328,43 @@ def test_render_telegram_report_url_produces_escaped_link():
     text = mp.render_telegram(report, "US", report_url="https://example.com/r?a=1&b=2")
     _assert_balanced_html(text)
     assert '<a href="https://example.com/r?a=1&amp;b=2">전체 리포트</a>' in text
+
+
+# --------------------------------------------------------------------------- 서술(narration) 배치(F1, 2026-09-04)
+
+
+def test_render_telegram_narration_appears_first_as_italic_section():
+    report = mp.compute_pulse({}, {}, as_of=date(2026, 9, 3))
+    text = mp.render_telegram(report, "US", narration="오늘은 특이사항이 없었습니다.")
+    _assert_balanced_html(text)
+    narration_pos = text.index("<i>오늘은 특이사항이 없었습니다.</i>")
+    rates_pos = text.index("[금리·변동성]")
+    assert narration_pos < rates_pos  # 서술이 결정론 섹션들보다 앞
+
+
+def test_render_telegram_without_narration_omits_italic_block():
+    """서술이 없으면 <i> 블록은 푸터의 고정 안내문(항상 있음) 하나뿐이어야
+    한다 — 서술 섹션 자체가 추가로 안 생겼는지 확인."""
+    report = mp.compute_pulse({}, {}, as_of=date(2026, 9, 3))
+    text = mp.render_telegram(report, "US")
+    assert text.count("<i>") == 1
+    assert "기계적 임계값 기반 참고 지표" in text
+
+
+def test_render_telegram_drops_low_priority_missing_block_before_narration_when_overflowing():
+    """메시지가 4096자를 넘기면 서술이 아니라 결측 종목 같은 LOW-priority
+    접힘(blockquote expandable) 블록이 먼저 빠져야 한다(모듈 docstring
+    참고) — 서술+결정론 블록을 compose() 밖에서 이어붙이면 아무도 이 우선순위를
+    강제하지 못했던 실측 결함(2026-09-04)의 회귀 가드."""
+    # 결측 종목을 대량으로 만들어 "[지수·ETF 결측]" 접힘 블록 하나만으로
+    # 4096자를 훌쩍 넘기게 한다.
+    bars = {f"MISSING{i:04d}": pd.DataFrame() for i in range(400)}
+    report = mp.compute_pulse(bars, {}, as_of=date(2026, 9, 3))
+    narration = "오늘은 지수가 대체로 중립이었습니다. 오늘 눈여겨볼 것: 없음."
+
+    text = mp.render_telegram(report, "US", narration=narration)
+
+    assert len(text) <= 4096
+    assert f"<i>{narration}</i>" in text  # 서술은 온전히 남는다
+    assert "[지수·ETF 결측]" not in text  # LOW-priority 블록이 먼저 빠졌다
+    assert "길이 제한으로 생략됨" in text

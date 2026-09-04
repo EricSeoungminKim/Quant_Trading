@@ -186,7 +186,7 @@ class OpenRouterNarrator:
     name = "openrouter"
 
     def __init__(self, api_key: str, model: str = DEFAULT_OPENROUTER_MODEL,
-                 timeout: int = 60, poster=None, max_tokens: int = 700,
+                 timeout: int = 60, poster=None, max_tokens: int = 1500,
                  json_mode: bool = False):
         self._key = api_key
         self._model = model
@@ -235,11 +235,16 @@ class OpenRouterNarrator:
             {"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"},
             {"model": self._model,
              "messages": [{"role": "user", "content": prompt}],
-             # 기본값 700인 이유: 서술은 짧아야 한다 — 텔레그램 한 통에 들어가고,
-             # 길면 사람이 안 읽는다. 파라미터화한 이유: **추론 모델은 최종 답
+             # 기본값 1500인 이유: 서술은 짧아야 한다 — 텔레그램 한 통에 들어가고,
+             # 길면 사람이 안 읽는다(문자 수 상한은 narrator.py의
+             # NARRATION_MAX_CHARS=700이 문장 경계로 자른다). 다만 700 토큰은
+             # 한국어 3~6문장(≈600자)에 너무 빠듯했다 — 한글은 토큰당 표시
+             # 글자 수가 영어보다 작아, 답이 완성되기 전에 토큰이 바닥나 문장
+             # 중간에서 잘려 나갔다(실측, 2026-09-04 market-pulse: "...스프레"
+             # 처럼 단어 중간 절단). 파라미터화한 이유: **추론 모델은 최종 답
              # 전에 "생각"에 토큰을 쓴다** — 기본 모델(nemotron-3-ultra)로 9K자
-             # deepdive 프롬프트를 돌리면 700 토큰이 생각 과정에서 전부 소진돼
-             # 최종 답이 잘리고 파싱 후보가 0건이 된다(실측 2026-08-15). 호출부가
+             # deepdive 프롬프트를 돌리면 토큰이 생각 과정에서 전부 소진돼 최종
+             # 답이 잘리고 파싱 후보가 0건이 된다(실측 2026-08-15). 호출부가
              # 프롬프트 성격에 맞게 올려 쓸 수 있어야 한다.
              "max_tokens": self._max_tokens, "temperature": 0.2},
             self._timeout,
@@ -470,17 +475,17 @@ def _make_openrouter_narrator(
     if not key:
         log.warning("OPENROUTER_API_KEY 없음 — 서술 없이 동작한다")
         return None
-    max_tokens = 700
+    max_tokens = 1500
     raw_max_tokens = (e.get("OPENROUTER_MAX_TOKENS") or "").strip()
     if raw_max_tokens:
         try:
             max_tokens = int(raw_max_tokens)
         except ValueError:
-            # 절대 예외를 던지지 않는다 — 잘못된 값은 기본값(700)으로
+            # 절대 예외를 던지지 않는다 — 잘못된 값은 기본값(1500)으로
             # 조용히 떨어지고 경고만 남긴다.
-            log.warning("OPENROUTER_MAX_TOKENS=%r 정수가 아니다 — 기본값 700 사용",
+            log.warning("OPENROUTER_MAX_TOKENS=%r 정수가 아니다 — 기본값 1500 사용",
                        raw_max_tokens)
-            max_tokens = 700
+            max_tokens = 1500
     chosen_model = model or (e.get("OPENROUTER_MODEL") or DEFAULT_OPENROUTER_MODEL).strip()
     kwargs = {"model": chosen_model, "max_tokens": max_tokens}
     if timeout is not None:

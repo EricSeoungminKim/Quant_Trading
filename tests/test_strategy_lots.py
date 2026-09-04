@@ -43,7 +43,10 @@ class _Feed:
 def _broker(price: float = 100.0, **kw) -> PaperBroker:
     return PaperBroker(
         data=_Feed(price),
-        portfolio=Portfolio(cash=10_000_000.0, positions={}),
+        # state_path=None — 영속화 끔(test_paper_dual_currency.py와 같은 관례).
+        # 기본값(DEFAULT_STATE_PATH=data/state/portfolio.json)을 쓰면 -n auto
+        # 병렬 워커들이 같은 실 파일에 동시에 write()해 충돌한다(2026-09-04 실측 플레이키).
+        portfolio=Portfolio(cash=10_000_000.0, positions={}, state_path=None),
         fee_bps=0.0,
         market_of={SYMBOL: "US"},
         **kw,
@@ -310,7 +313,8 @@ def test_e2e_two_strategies_hold_same_symbol_and_ledger_round_trips_close_indepe
     그대로 → 마지막에 B도 청산 → 원장에서 (전략,심볼) 라운드트립이 각각 정상
     종결된다(2026-08-11 실사고 회귀 가드: 다른 전략이 청산해 라운드트립이 영원히
     안 닫히던 사고)."""
-    portfolio = Portfolio(cash=10_000_000.0, positions={})
+    # state_path=None — 영속화 끔(위 _broker() 헬퍼와 같은 이유, -n auto 충돌 방지).
+    portfolio = Portfolio(cash=10_000_000.0, positions={}, state_path=None)
     data = _Feed(100.0)
     broker = PaperBroker(data=data, portfolio=portfolio, fee_bps=0.0, market_of={SYMBOL: "US"})
     risk = RiskManagerImpl(

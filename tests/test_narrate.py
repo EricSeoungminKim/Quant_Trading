@@ -71,10 +71,10 @@ def test_openrouter_default_model_has_no_date_suffix():
     assert not DEFAULT_OPENROUTER_MODEL.rstrip(":free").endswith(tuple("0123456789"))
 
 
-def test_openrouter_default_max_tokens_is_700_for_short_ops_narration():
-    """운영 서술("텔레그램 한 통") 경로는 기본값이 바뀌면 안 된다 — 파라미터화
-    (E2E 실측 2026-08-15, deepdive 프롬프트가 700에서 잘리던 문제)가 이 기본
-    동작을 건드리지 않았는지 고정한다."""
+def test_openrouter_default_max_tokens_is_1500_for_short_ops_narration():
+    """운영 서술("텔레그램 한 통") 경로 기본값(2026-09-04: 700 -> 1500,
+    한국어 3~6문장(narrator.py NARRATION_MAX_CHARS=700자)이 700 토큰에 못
+    미쳐 문장 중간에서 잘리던 실측 결함 수리) — 이 기본 동작을 고정한다."""
     seen = {}
 
     def poster(url, headers, payload, timeout):
@@ -82,7 +82,7 @@ def test_openrouter_default_max_tokens_is_700_for_short_ops_narration():
         return _reply("짧은 서술")
 
     OpenRouterNarrator("k", poster=poster).narrate("x")
-    assert seen["payload"]["max_tokens"] == 700
+    assert seen["payload"]["max_tokens"] == 1500
 
 
 def test_openrouter_honours_injected_max_tokens():
@@ -247,9 +247,9 @@ def test_factory_honours_model_override():
     assert got._model == "google/gemma-4-31b-it:free"
 
 
-def test_factory_openrouter_max_tokens_defaults_to_700():
+def test_factory_openrouter_max_tokens_defaults_to_1500():
     got = make_narrator({"OPS_NARRATOR": "openrouter", "OPENROUTER_API_KEY": "k"})
-    assert got._max_tokens == 700
+    assert got._max_tokens == 1500
 
 
 def test_factory_honours_max_tokens_override():
@@ -263,7 +263,7 @@ def test_factory_invalid_max_tokens_falls_back_to_default_not_exception():
     got = make_narrator({"OPS_NARRATOR": "openrouter", "OPENROUTER_API_KEY": "k",
                          "OPENROUTER_MAX_TOKENS": "많이"})
     assert isinstance(got, OpenRouterNarrator)
-    assert got._max_tokens == 700
+    assert got._max_tokens == 1500
 
 
 def test_factory_timeout_defaults_when_not_passed():

@@ -2528,7 +2528,6 @@ def cmd_market_pulse(args: argparse.Namespace) -> None:
         kr_reasons = market_pulse.load_kr_regime_reasons(REPO_ROOT / "data" / "state" / "regime.json") or []
 
     report = market_pulse.compute_pulse(bars_by_key, macro, as_of=as_of, kr_reasons=kr_reasons)
-    msg = market_pulse.render_telegram(report, args.market, report_url=_daily_report_url(args.market, as_of))
     labels = market_pulse.label_snapshot(report)
     state_path = REPO_ROOT / "data" / "state" / f"market_pulse_{args.market}.json"
 
@@ -2550,8 +2549,22 @@ def cmd_market_pulse(args: argparse.Namespace) -> None:
     # 준다. 가격·RSI 원값이 아니라 라벨을 넘기는 이유: "SPY 과매수" 같은 짧은
     # 판정 어휘가 프롬프트에도, 숫자 검증에도 더 안전하다(원값을 넘기면 모델이
     # 반올림해 숫자 검증에서 매번 폐기될 위험이 크다).
+    #
+    # 여기서는 `_narrated_text`(서술을 compose() 밖에서 이어붙이는 범용
+    # 헬퍼)를 쓰지 않는다 — 그러면 서술+결정론 블록 합계가 4096자를 넘어도
+    # 아무도 걸러내지 못한다(실측, 2026-09-04). 대신 narrate()를 먼저 불러
+    # `render_telegram(..., narration=...)`에 넘겨 **같은 compose() 호출
+    # 안에서** 우선순위가 매겨지게 한다 — 그 함수 docstring 참고.
     facts = {"market": args.market, "as_of": as_of.isoformat(), **labels}
-    print(_narrated_text("market_pulse", facts, msg, no_narrate=args.no_narrate))
+    narration = None
+    if not args.no_narrate:
+        from quant.analyze.narrator import narrate
+
+        narration = narrate("market_pulse", facts, call=_narrate_call())
+    msg = market_pulse.render_telegram(
+        report, args.market, report_url=_daily_report_url(args.market, as_of), narration=narration,
+    )
+    print(msg)
 
     if args.dry_run:
         print("(dry-run — 상태 파일 갱신 생략)", file=sys.stderr)

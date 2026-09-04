@@ -43,6 +43,31 @@ from collections.abc import Callable
 # 문장 시작 등) 부호로 인정한다.
 _NUMBER_RE = re.compile(r"(?<![0-9])[+-]?\d[\d,]*\.?\d*")
 
+# 서술 문단 예산(문자 수) — "3~6개의 짧은 문장"(시스템 프롬프트) 한 문단은
+# 보통 600자 안팎이다. 이보다 넉넉히 잡아두고, 그래도 넘치면(모델이 규칙을
+# 어기고 길게 쓰거나 사고과정 일부가 섞여도) 마지막 문장 종결부호 뒤에서만
+# 자른다 — 단어 중간에서 자르면 안 된다(실측, 2026-09-04 market-pulse: "...금리
+# 10년물 라벨은 없음, 스프레"처럼 잘려 나갔었다). 텔레그램 어댑터(`quant/
+# adapters/notify/telegram.py`)의 4096자 하드컷과는 별개 계층 — 그쪽은 전체
+# 메시지 바이트 상한, 이건 서술 한 문단의 문장 경계 보장이다.
+NARRATION_MAX_CHARS = 700
+_SENTENCE_END_CHARS = ".!?。"
+
+
+def _sentence_safe_truncate(text: str, limit: int) -> str:
+    """`text`가 `limit`자를 넘으면 그 안에서 마지막 문장 종결부호(., !, ?, 。)
+    뒤까지만 남기고 자른다. 종결부호를 못 찾으면(문장 하나가 limit보다 길거나
+    구두점이 아예 없음) 안전망으로 `limit`에서 그냥 자른다 — 그런 극단적인
+    경우까지 완벽을 기하기보다, 정상적인 3~6문장 응답이 절대 단어 중간에서
+    잘리지 않게 하는 것이 목적이다."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    cut = max((head.rfind(ch) for ch in _SENTENCE_END_CHARS), default=-1)
+    if cut <= 0:
+        return head.rstrip()
+    return head[: cut + 1].rstrip()
+
 _SYSTEM_PROMPT_KO = (
     "당신은 차분하고 친근한 퀀트 트레이딩 어시스턴트입니다. 소유자에게 오늘 "
     "결과를 말하듯 자연스러운 한국어로 3~6개의 짧은 문장을 쓰세요.\n"
@@ -53,6 +78,8 @@ _SYSTEM_PROMPT_KO = (
     "3. [사실]에 없는 숫자를 절대 지어내지 마세요.\n"
     "4. 마지막 한 문장은 반드시 '오늘 눈여겨볼 것: '으로 시작하고, [사실] 안의 "
     "내용에서만 뽑아 마무리하세요.\n"
+    "5. [사실]에 없는 항목(값이 비어 있어 아예 나열되지 않은 항목 포함)은 "
+    "언급하지 마세요.\n"
 )
 
 
@@ -68,11 +95,15 @@ def _flatten_facts(facts: dict) -> list[str]:
             for i, v in enumerate(value):
                 _walk(f"{prefix}[{i}]", v)
         else:
-            # None을 파이썬 리터럴 그대로 프롬프트에 박으면 모델이 "None으로
-            # 기록되었다"처럼 그대로 따라 쓴다(실측, 2026-09-04 market-pulse
-            # 실호출) — 한국어 사람이 쓰는 말로 미리 바꿔둔다.
-            shown = "없음" if value is None else value
-            lines.append(f"{prefix}: {shown}")
+            # None/빈 문자열은 아예 줄을 만들지 않는다 — "없음"으로 치환했더니
+            # 모델이 그 문구를 그대로 따라 써 "금리 10년물 라벨은 없음"처럼
+            # 있지도 않은 사실을 언급했다(실측, 2026-09-04 market-pulse
+            # 실호출). 값이 없으면 애초에 [사실]에 등장시키지 않는다 — 시스템
+            # 프롬프트 규칙 5와 짝(둘 다 있어야 한다: 규칙만으로는 모델이
+            # 프롬프트에 있는 줄 자체를 무시하지 못할 때가 있었다).
+            if value is None or value == "":
+                return
+            lines.append(f"{prefix}: {value}")
 
     _walk("", facts)
     return lines
@@ -145,4 +176,6 @@ def narrate(
         return None
     if not verify_numbers(text, facts):
         return None
-    return text
+    # 숫자 검증 다음에 자른다 — 뒤쪽만 잘라내므로 새 숫자가 생길 일은 없다
+    # (재검증 불필요).
+    return _sentence_safe_truncate(text, NARRATION_MAX_CHARS)

@@ -83,12 +83,19 @@ def test_build_prompt_includes_kind_and_flattened_facts():
     assert "spy.rsi: 55" in prompt
 
 
-def test_build_prompt_shows_none_as_korean_not_python_literal():
-    """실측(2026-09-04, market-pulse 실호출): facts에 None이 그대로 들어가면
-    모델이 "None으로 기록되었다"처럼 파이썬 리터럴을 그대로 따라 쓴다."""
-    prompt = narrator.build_prompt("session_pnl", {"cash_delta_krw": None})
-    assert "cash_delta_krw: 없음" in prompt
+def test_build_prompt_omits_none_and_empty_facts_entirely():
+    """실측(2026-09-04, market-pulse 실호출): facts에 None을 "없음"으로 바꿔
+    프롬프트에 넣었더니 모델이 그 문구를 그대로 따라 써 "금리 10년물 라벨은
+    없음"처럼 있지도 않은 사실을 언급했다. 값이 없으면 애초에 그 항목 자체를
+    프롬프트에서 빼야 한다 — "없음" 치환도, "None" 리터럴도 등장하면 안 된다."""
+    prompt = narrator.build_prompt(
+        "session_pnl", {"cash_delta_krw": None, "note": "", "n_fills": 3},
+    )
+    assert "cash_delta_krw" not in prompt
+    assert "note" not in prompt
+    assert "없음" not in prompt
     assert "None" not in prompt
+    assert "n_fills: 3" in prompt
 
 
 def test_build_prompt_handles_empty_facts():
@@ -104,3 +111,39 @@ def test_verify_numbers_true_for_subset_and_false_for_extra():
 
 def test_verify_numbers_true_when_no_numbers_in_text():
     assert narrator.verify_numbers("숫자가 전혀 없는 문장입니다", {"a": 1}) is True
+
+
+# --------------------------------------------------------------------------- 서술 문단 예산(F1, 2026-09-04)
+
+
+def test_narrate_truncates_overlong_text_at_last_sentence_not_mid_word():
+    """실측(2026-09-04, market-pulse): 응답이 예산을 넘기면 "...스프레"처럼
+    단어 중간에서 잘렸다. 마지막 문장 종결부호 뒤에서만 자르고, 그 뒤 조각은
+    통째로 버려야 한다."""
+    facts = {"x": 1}
+    long_sentence = "그리고 " * 200 + "스프레드가 있습니다."  # 종결부호는 맨 끝에만
+
+    def _call(prompt: str) -> str:
+        return f"문장 하나입니다. {long_sentence}"
+
+    text = narrator.narrate("market_pulse", facts, call=_call)
+    assert text is not None
+    assert len(text) <= narrator.NARRATION_MAX_CHARS
+    assert text.endswith(("다.", "!", "?", "。"))
+    assert "스프레" not in text  # 잘린 문장은 아예 버려졌다 — 단어 조각이 안 남는다
+
+
+def test_narrate_leaves_short_text_untouched():
+    facts = {"n_fills": 3}
+
+    def _call(prompt: str) -> str:
+        return "체결은 3건이었습니다. 오늘 눈여겨볼 것: 없음."
+
+    text = narrator.narrate("session_pnl", facts, call=_call)
+    assert text == "체결은 3건이었습니다. 오늘 눈여겨볼 것: 없음."
+
+
+def test_sentence_safe_truncate_falls_back_to_hard_cut_without_terminator():
+    """종결부호가 아예 없으면(극단적 사고 유출 등) 안전망으로 limit에서 자른다."""
+    text = "가" * 50
+    assert narrator._sentence_safe_truncate(text, 10) == "가" * 10

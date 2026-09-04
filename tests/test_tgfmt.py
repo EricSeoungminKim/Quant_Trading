@@ -85,12 +85,30 @@ def _tags_balanced(text: str) -> bool:
 def test_table_pads_columns_to_widest_cell():
     out = tgfmt.table(["종목", "현재가"], [["QQQ", "500.00"], ["SPY전체", "1"]])
     lines = out.splitlines()
-    width0 = max(len("종목"), len("QQQ"), len("SPY전체"))
-    assert lines[0] == "종목".ljust(width0) + "  " + "현재가"
-    assert lines[2] == "QQQ".ljust(width0) + "  " + "500.00"
+    # 폭은 East Asian display width 기준(F3) — "SPY전체"는 len()=5지만
+    # 화면 폭은 7(한글 2글자가 2칸씩)이라 그쪽이 가장 넓다.
+    width0 = max(tgfmt.display_width("종목"), tgfmt.display_width("QQQ"), tgfmt.display_width("SPY전체"))
+    assert lines[0] == "종목" + " " * (width0 - tgfmt.display_width("종목")) + "  " + "현재가"
+    assert lines[2] == "QQQ" + " " * (width0 - tgfmt.display_width("QQQ")) + "  " + "500.00"
     # 마지막 열은 패딩하지 않는다 — 꼬리 공백 없음.
-    assert lines[3] == "SPY전체".ljust(width0) + "  " + "1"
+    assert lines[3] == "SPY전체" + "  " + "1"
     assert not lines[3].endswith(" ")
+
+
+def test_table_pads_by_east_asian_display_width_not_codepoint_count():
+    """"KODEX코스닥150" 처럼 한글이 섞인 셀은 len()보다 화면 폭이 넓다 — 실제
+    <pre> 모노스페이스 렌더에서는 표시 폭 기준으로 패딩해야 옆 ASCII 열이
+    밀리지 않는다(2026-09-04 실측)."""
+    out = tgfmt.table(["종목", "현재가"], [["KODEX코스닥150", "50,000"], ["QQQ", "500.00"]])
+    lines = out.splitlines()
+    width0 = max(
+        tgfmt.display_width("종목"),
+        tgfmt.display_width("KODEX코스닥150"),
+        tgfmt.display_width("QQQ"),
+    )
+    assert lines[0] == "종목" + " " * (width0 - tgfmt.display_width("종목")) + "  " + "현재가"
+    assert lines[2] == "KODEX코스닥150" + "  " + "50,000"
+    assert lines[3] == "QQQ" + " " * (width0 - tgfmt.display_width("QQQ")) + "  " + "500.00"
 
 
 def test_table_returns_untagged_text_wrap_with_pre():
