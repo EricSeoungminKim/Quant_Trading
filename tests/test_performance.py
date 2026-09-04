@@ -196,7 +196,10 @@ def test_no_forbidden_fields_in_output():
             "name_en",
             # 2026-09-04 — 전략 설명 드로어용 콘텐츠(quant.control.strategy_help).
             "help",
+            # 2026-09-04 — 전략별 지분곡선(종목/수량과 무관, 날짜·손익·건수만).
+            "curve",
         }
+        assert set(strat["curve"].keys()) == {"asia", "us"}
         help_blob = json.dumps(strat["help"], ensure_ascii=False)
         for forbidden in ("005930", "523860", "2100000", "263416"):
             assert forbidden not in help_blob, f"help 필드에 금지 값 유출: {forbidden!r}"
@@ -654,3 +657,136 @@ def test_every_enabled_strategy_has_non_id_name_in_both_languages():
         assert ko and ko != sid, f"{sid}: KO 표시명 없음(원문 id 노출)"
         assert en and en != sid, f"{sid}: EN 표시명 없음(원문 id 노출)"
     assert checked > 0, "config/settings.yaml에 활성 전략이 하나도 없다 — 가드가 공회전 중"
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-04: 전략별 지분곡선(strategies[].curve) — 공개 사이트가 전략마다
+# 색깔 있는 라인 하나씩 그려 서로 비교할 수 있게. lifetime 스코프(strategies[]
+# 통계와 동일), 통화별(asia=KRW/us=USD) 분리, 종결 왕복 기준 누적 순손익.
+# ---------------------------------------------------------------------------
+
+
+def _curve_fixture():
+    """alpha(KR 두 트립 같은 날 + KR 한 트립 다음날 + US 한 트립) / beta(KR
+    한 트립, 수수료 있음) — 두 전략 · 두 시장 · 부분 청산(같은 날 두 번 진입/
+    청산)을 한 원장에 담는다."""
+    return [
+        # alpha / KR 069500: 같은 거래일(2026-08-10)에 트립 두 개(부분 청산 패턴)
+        _trade(ts="2026-08-10T00:00:00+00:00", strategy_id="alpha", symbol="069500",
+               side="buy", qty=1, price=10000.0, fee=0.0, realized_pnl=0.0, market="KR"),
+        _trade(ts="2026-08-10T01:00:00+00:00", strategy_id="alpha", symbol="069500",
+               side="sell", qty=1, price=10100.0, fee=0.0, realized_pnl=100.0, market="KR"),
+        _trade(ts="2026-08-10T02:00:00+00:00", strategy_id="alpha", symbol="069500",
+               side="buy", qty=1, price=10000.0, fee=0.0, realized_pnl=0.0, market="KR"),
+        _trade(ts="2026-08-10T03:00:00+00:00", strategy_id="alpha", symbol="069500",
+               side="sell", qty=1, price=10050.0, fee=0.0, realized_pnl=50.0, market="KR"),
+        # alpha / KR 069500: 다음 거래일(2026-08-11), 손실 트립
+        _trade(ts="2026-08-11T00:00:00+00:00", strategy_id="alpha", symbol="069500",
+               side="buy", qty=1, price=10000.0, fee=0.0, realized_pnl=0.0, market="KR"),
+        _trade(ts="2026-08-11T01:00:00+00:00", strategy_id="alpha", symbol="069500",
+               side="sell", qty=1, price=9970.0, fee=0.0, realized_pnl=-30.0, market="KR"),
+        # alpha / US TQQQ: 트립 한 개
+        _trade(ts="2026-08-10T04:00:00+00:00", strategy_id="alpha", symbol="TQQQ",
+               side="buy", qty=1, price=70.0, fee=0.0, realized_pnl=0.0, market="US"),
+        _trade(ts="2026-08-10T05:00:00+00:00", strategy_id="alpha", symbol="TQQQ",
+               side="sell", qty=1, price=72.0, fee=0.0, realized_pnl=2.0, market="US"),
+        # beta / KR 005935: 트립 한 개, 수수료 있음 (US 트립 없음 — 빈 곡선 확인용)
+        _trade(ts="2026-08-12T00:00:00+00:00", strategy_id="beta", symbol="005935",
+               side="buy", qty=1, price=5000.0, fee=2.0, realized_pnl=0.0, market="KR"),
+        _trade(ts="2026-08-12T01:00:00+00:00", strategy_id="beta", symbol="005935",
+               side="sell", qty=1, price=5010.0, fee=3.0, realized_pnl=10.0, market="KR"),
+    ]
+
+
+def test_strategy_curve_construction_two_strategies_two_markets_partial_exits():
+    payload = build_performance_payload(_curve_fixture(), EXECUTION_CFG)
+    alpha = next(s for s in payload["strategies"] if s["id"] == "alpha")
+    beta = next(s for s in payload["strategies"] if s["id"] == "beta")
+
+    assert alpha["curve"]["asia"] == [
+        {"date": "2026-08-10", "day_net": 150.0, "cum_net": 150.0, "cum_trips": 2},
+        {"date": "2026-08-11", "day_net": -30.0, "cum_net": 120.0, "cum_trips": 3},
+    ]
+    assert alpha["curve"]["us"] == [
+        {"date": "2026-08-10", "day_net": 2.0, "cum_net": 2.0, "cum_trips": 1},
+    ]
+    # 수수료(2.0+3.0)가 실현손익(10.0)에서 빠져야 한다 — 순손익 기준.
+    assert beta["curve"]["asia"] == [
+        {"date": "2026-08-12", "day_net": 5.0, "cum_net": 5.0, "cum_trips": 1},
+    ]
+    assert beta["curve"]["us"] == [], "그 시장에 트립이 없으면 빈 리스트(None이 아니다)"
+
+
+def test_strategy_curve_dates_sorted_ascending():
+    payload = build_performance_payload(_curve_fixture(), EXECUTION_CFG)
+    alpha = next(s for s in payload["strategies"] if s["id"] == "alpha")
+    dates = [r["date"] for r in alpha["curve"]["asia"]]
+    assert dates == sorted(dates) and len(dates) == 2
+
+
+def test_strategy_curve_cum_net_equals_market_round_trip_total_at_last_point():
+    """곡선의 마지막 누적값은 그 시장에 속한 트립들의 순손익(수수료 차감 후)
+    총합과 같아야 한다 — 부분 구간을 빠뜨리거나 중복 세면 안 된다."""
+    payload = build_performance_payload(_curve_fixture(), EXECUTION_CFG)
+    alpha = next(s for s in payload["strategies"] if s["id"] == "alpha")
+    assert alpha["curve"]["asia"][-1]["cum_net"] == round(100.0 + 50.0 - 30.0, 2)
+    assert alpha["curve"]["us"][-1]["cum_net"] == round(2.0, 2)
+
+
+def test_strategy_curve_excludes_trip_crossing_seeding_boundary():
+    """이식 경계에 걸친 미종결 lot 은 `round_trips`가 트립으로 세지 않는다
+    (`_strategy_stats` docstring 참고) — `curve`도 같은 트립 리스트를 재사용
+    하므로 똑같이 제외돼야 한다(2026-09-01 gap_fade TQQQ 실측 결함과 동일 패턴)."""
+    trades = [
+        # 이식 시점에 열려 있던(상계 행 없이 사라진) 매수 — 트립이 되면 안 된다
+        _trade(ts="2026-09-01T13:50:00+00:00", strategy_id="gap_fade", symbol="TQQQ",
+               side="buy", qty=9, price=69.4, fee=0.62, market="US"),
+        _trade(ts="2026-09-01T14:01:08+00:00", strategy_id="legacy", symbol="SOXL",
+               side="sell", qty=13, price=105.67, fee=1.4, realized_pnl=-706.42,
+               market="US", reason=_SEED_REASON, cash_after=2_979_569.0),
+        _trade(ts="2026-09-01T14:06:20+00:00", strategy_id="gap_fade", symbol="TQQQ",
+               side="buy", qty=1, price=69.2, fee=0.07, market="US"),
+        _trade(ts="2026-09-01T15:47:26+00:00", strategy_id="gap_fade", symbol="TQQQ",
+               side="sell", qty=1, price=70.5, fee=0.08, realized_pnl=1.29, market="US"),
+    ]
+    payload = build_performance_payload(trades, EXECUTION_CFG)
+    gap = next(s for s in payload["strategies"] if s["id"] == "gap_fade")
+    expected_net = round(1.29 - 0.07 - 0.08, 2)
+    assert gap["curve"]["us"] == [
+        {"date": "2026-09-01", "day_net": expected_net, "cum_net": expected_net, "cum_trips": 1},
+    ]
+
+
+def test_strategy_curve_no_forbidden_fields():
+    """곡선 필드(date/day_net/cum_net/cum_trips)에도 종목코드·수량·계좌잔고
+    절대값 문자열이 없어야 한다 — 기존 forbidden-fields 계약을 curve 추가 후
+    다시 확인한다."""
+    payload = build_performance_payload(_curve_fixture(), EXECUTION_CFG)
+    blob = json.dumps(payload, ensure_ascii=False)
+    for forbidden in ("069500", "005935", "TQQQ"):
+        assert forbidden not in blob, f"금지 필드 유출: {forbidden!r}"
+    for strat in payload["strategies"]:
+        for rows in strat["curve"].values():
+            for row in rows:
+                assert set(row.keys()) == {"date", "day_net", "cum_net", "cum_trips"}
+
+
+def test_strategy_curves_note_present_in_both_languages():
+    payload = build_performance_payload(_curve_fixture(), EXECUTION_CFG)
+    assert payload["strategy_curves_note"]
+    assert payload["strategy_curves_note_en"]
+    assert not _HANGUL_RE.search(payload["strategy_curves_note_en"])
+
+
+def test_build_performance_payload_is_deterministic():
+    """동일 입력 → 완전히 동일한 출력(키 순서 포함) — 대시보드가 캐시하거나
+    재생성해도 숫자가 흔들리면 안 된다."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    trades = _curve_fixture()
+    now = datetime(2026, 9, 4, 12, 0, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    first = build_performance_payload(trades, EXECUTION_CFG, now=now)
+    second = build_performance_payload(trades, EXECUTION_CFG, now=now)
+    assert first == second
+    assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)

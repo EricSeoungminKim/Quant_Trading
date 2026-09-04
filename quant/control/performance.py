@@ -546,8 +546,45 @@ def _strategy_stats(trades: list[dict], strategies_cfg: dict | None = None) -> l
                 "asia": _round_trip_stats(known_kr) if known_kr else None,
                 "us": _round_trip_stats(known_us) if known_us else None,
             },
+            # 2026-09-04 — 공개 사이트 전략별 라인 차트용 곡선(종결 왕복 기준
+            # 누적 순손익). `by_market`과 달리 트립이 없으면 None이 아니라 빈
+            # 리스트 — 차트가 "그 시장은 아직 안 돈다"를 빈 선으로 그리면 된다.
+            "curve": {
+                "asia": _strategy_curve(known_kr),
+                "us": _strategy_curve(known_us),
+            },
         })
     return stats
+
+
+def _strategy_curve(known: list[dict]) -> list[dict]:
+    """전략별 지분곡선(2026-09-04) — 이미 한 시장으로 필터링된 트립 리스트(`known`,
+    `pnl_known`만)를 받아 종결일(exit_ts, 파일 전체와 동일한 `trading_day()` 귀속)
+    별로 묶는다. `pnl`은 `round_trips`가 이미 수수료 차감 후로 낸 값 그대로 쓴다
+    (중복 계산 금지). lifetime 스코프(`strategies[]` 통계와 동일 — 모의 시대 포함,
+    이식 경계를 가로지르는 트립은 `round_trips`가 이미 버린다) — 사이트가 통화별로
+    한 줄씩 그릴 수 있게 `day_net`/`cum_net`/`cum_trips`를 서버가 미리 낸다. 트립이
+    없으면 빈 리스트(None이 아니다 — 실제로 그 시장에 트립이 없다는 뜻)."""
+    by_day: dict[date, dict] = {}
+    for t in known:
+        day = trading_day(_parse_ts({"ts": t["exit_ts"]}))
+        b = by_day.setdefault(day, {"net": 0.0, "n": 0})
+        b["net"] += t["pnl"]
+        b["n"] += 1
+    cum_net = 0.0
+    cum_trips = 0
+    rows = []
+    for day in sorted(by_day):
+        b = by_day[day]
+        cum_net += b["net"]
+        cum_trips += b["n"]
+        rows.append({
+            "date": day.isoformat(),
+            "day_net": round(b["net"], 2),
+            "cum_net": round(cum_net, 2),
+            "cum_trips": cum_trips,
+        })
+    return rows
 
 
 def _excluded_summary(excluded: list[dict]) -> dict:
@@ -810,6 +847,15 @@ def build_performance_payload(
         ),
         "strategies_note_en": (
             f"Strategy stats are lifetime incl. paper era, {strategy_trips} round trips"
+        ),
+        # 2026-09-04 — strategies[].curve 의 스코프/한계를 밝힌다(strategies_note와
+        # 같은 lifetime 스코프이지만, 곡선은 실현손익 누적이지 시가평가가 아니다).
+        "strategy_curves_note": (
+            "전략별 곡선은 종결 왕복 기준 누적 순손익(수수료 차감), 통화별 · 평가손익 미포함"
+        ),
+        "strategy_curves_note_en": (
+            "Per-strategy curves are cumulative net P&L (after fees) from closed "
+            "round trips, by currency — unrealized (mark-to-market) P&L is not included"
         ),
         "excluded": _excluded_summary(excluded),
         "costs": _costs(execution_cfg, _fee_drag_pct_of_gross(curve_rows)),
