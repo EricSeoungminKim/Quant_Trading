@@ -569,6 +569,32 @@ def _exit_eod_reversal(p):
     )
 
 
+def _entry_trend_day(p):
+    return _join(
+        _clause(
+            "시장 대리 지수가 {rm}일선 위(상승 국면)이고 당일 시가가 전일 종가 이상일 때만 본다",
+            "Only looks when the market proxy closed above its {rm}-day moving average (up regime) and the day opened at or above the prior close",
+            rm=_p(p, "regime_ma_days"),
+        ),
+        _clause(
+            "개장 {om}분 레인지가 ATR14의 {oa}배를 넘는 '추세일'에서, {bi}분봉 종가가 그 레인지 고가와 세션 VWAP을 동시에 넘으면 매수(개장 후 {ew}분까지)",
+            "On a 'trend day' whose first {om} minutes range exceeds {oa}x ATR14, buys when a {bi}-minute bar closes above both that range high and the session VWAP (until {ew} minutes after open)",
+            om=_p(p, "or_minutes"), oa=_p(p, "or_atr_mult"),
+            bi=_p(p, "bar_interval_minutes"), ew=_p(p, "entry_window_min"),
+        ),
+    )
+
+
+def _exit_trend_day(p):
+    return _join(
+        _clause(
+            "손절은 진입가가 아니라 **진입 시점 세션 VWAP − {sa}×ATR14**, 목표 없이 마감 {ee}분 전 전량 청산(오버나이트 금지)",
+            "The stop is not entry-based but **session VWAP at entry minus {sa}x ATR14**; no target, flattens entirely {ee} minutes before close (no overnight holding)",
+            sa=_p(p, "stop_atr_mult"), ee=_p(p, "eod_exit_min"),
+        ),
+    )
+
+
 def _entry_open_reversal(p):
     return _join(
         _clause(
@@ -791,6 +817,15 @@ _SPECS: dict[str, dict] = {
         "evidence_ko": "burn_in, enabled: false — KR 1년 분봉(40종목) 게이트 NO_GO(2026-09-04): OOS 1,141왕복 기대값 −11.5bp(비용 2배 −44.7bp), 손절 36건이 −178bp로 손실 주도. US 317종목 스크리닝도 순 −23.6bp(t=−16). 문헌의 마감 반전은 롱숏 포트폴리오 효과라 롱온리 개별 진입으로는 비용을 못 넘는다.",
         "evidence_en": "burn_in, enabled: false — zero samples; will be enabled only after a human confirms it passes backtest. KR 1-year minute-bar gate (40 names) NO_GO on 2026-09-04: 1,141 OOS round trips, expectancy −11.5bp (−44.7bp at 2× cost), 36 stops averaging −178bp drove the loss; the US 317-name screen was also net −23.6bp (t=−16). The literature effect is a long-short portfolio effect and does not clear cost as long-only single-name entries.",
         "refs": [],
+    },
+    "trend_day": {
+        "category": "intraday",
+        "theory_ko": "1분·5분 아이디어가 전부 왕복 비용에 죽은 뒤 세운 가설 — 거래당 총 엣지를 키우려면 봉을 15분으로 늘리고, 개장 30분 레인지가 ATR 대비 크게 벌어진 '추세일'만 골라, 넓은 VWAP 기준 손절로 마감까지 들고 가야 한다(Zarattini 계열 ORB + trend day 실무 통계).",
+        "theory_en": "A hypothesis formed after every 1- and 5-minute idea died on round-trip cost: to make the gross edge per trade larger, widen bars to 15 minutes, take only 'trend days' whose first 30-minute range is wide relative to ATR, and hold to the close behind a wide VWAP-anchored stop (Zarattini-family ORB plus practitioner trend-day statistics).",
+        "entry": _entry_trend_day, "exit": _exit_trend_day,
+        "evidence_ko": "burn_in, enabled: false — 원장 표본 0. US 400종목 1분봉(2024-09~2026-08) 스크리닝에서 7,472거래 총 −9.4bp로 게이트 미달(2026-09-04). 국면 분리는 실제로 작동했다(상승 +3.2bp / 하락 −30.1bp)지만 좋은 쪽조차 왕복 25.2bp의 1/3이다. 개장 레인지 문턱을 올리면 거래당 엣지가 단조 증가(2.5배에서 +41bp)하나 그 구간은 n=82로 날짜군집 t≈0이다.",
+        "evidence_en": "burn_in, enabled: false — zero ledger samples. Screening on 400 US names (1-minute bars, 2024-09 to 2026-08) gave 7,472 trades at −9.4bp gross, below the gate (2026-09-04). The regime split did work (up +3.2bp vs down −30.1bp), but even the good half is a third of the 25.2bp round-trip cost. Raising the opening-range threshold makes per-trade edge rise monotonically (+41bp at 2.5x), but that slice has n=82 and a date-clustered t near zero.",
+        "refs": [{"label": "Zarattini, Barbon & Aziz (2024), \"Stocks in Play\", SSRN 4729284", "url": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4729284"}],
     },
     "open_reversal": {
         "category": "intraday",

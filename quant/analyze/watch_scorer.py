@@ -18,6 +18,7 @@ v1 → v2 변경 배경 (적대적 리뷰 verdict REJECT 반영):
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
@@ -857,3 +858,42 @@ def run_watch_score(
         result.passed = result.prereq_ok and result.score >= eff_threshold
         results.append(result)
     return results
+
+
+# ── 탈락 사유 요약(2026-09-04) — own_brief.log 감사성 ────────────────────────
+# `cmd_watch_score`가 매 종목의 breakdown/reasons를 이미 stdout에 찍지만,
+# own_brief.sh는 PASS 통과 종목이 하나라도 있으면 그 전체 출력(SCORE_LINES)을
+# 버리고 "watch-score rc=... 통과: ..." 요약 한 줄만 로그에 남긴다(SCORE_LINES는
+# PASS가 빈 경우에만 쓰인다) — 그래서 몇 건이 왜 탈락했는지가 own_brief.log에서
+# 통째로 사라졌다. 이 두 함수는 탈락 사유를 심볼 단위로 남기지 않고 "사유
+# 카테고리별 건수"로 압축해, PASS 줄과 별개로 항상 stdout에 남긴다.
+
+_REASON_CATEGORY_SPLIT = re.compile(r"[:—]")  # ':' 또는 '—'(em dash) 앞부분만
+
+
+def _reject_reason_category(result: ScoreResult) -> str:
+    """탈락 사유 한 줄 카테고리 — 사유 문자열의 콜론(:)/em dash(—) 앞부분을 쓴다
+    (기존 reasons 문구가 이미 "유동성 부족: ...", "시총 미확인 — ..." 처럼
+    접두어로 분류돼 있다). 프리퍼시티 게이트 실패가 아니라 점수 미달로
+    탈락했으면(하드 실패 사유가 없다) "점수미달"로 분류한다."""
+    if not result.prereq_ok and result.reasons:
+        return _REASON_CATEGORY_SPLIT.split(result.reasons[0], maxsplit=1)[0].strip()
+    return "점수미달"
+
+
+def rejection_summary(results: list[ScoreResult], max_entries: int = 20) -> tuple[dict[str, int], list[str]]:
+    """탈락(FAIL) 종목의 사유별 건수 + `심볼:사유` 목록(최대 `max_entries`건).
+
+    `run_watch_score`가 매긴 `passed`만 본다 — PASS는 여기서 아무것도 만들지
+    않는다. 반환된 카운트/목록을 `cmd_watch_score`가 PASS 줄과 함께 그대로
+    출력한다."""
+    counts: dict[str, int] = {}
+    entries: list[str] = []
+    for r in results:
+        if r.passed:
+            continue
+        category = _reject_reason_category(r)
+        counts[category] = counts.get(category, 0) + 1
+        if len(entries) < max_entries:
+            entries.append(f"{r.symbol}:{category}")
+    return counts, entries

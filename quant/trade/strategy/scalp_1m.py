@@ -336,6 +336,22 @@ class Scalp1mStrategy:
         # 프리마켓 직접 진입(모듈 docstring "프리마켓" 절 2번). 기본 켜짐(사용자
         # 찬성) — 유동성 가드가 실질 방어선이다.
         self.premarket_entry: bool = params.get("premarket_entry", True)
+        # 진입 패턴 A/B 개별 온오프(2026-09-04). 원장 151 트립(2026-08-18~09-04,
+        # data/state/trades.jsonl) 재생: 패턴A 평균 -61.1bp(n=97), 패턴B 평균
+        # -23.7bp(n=54) — 시장별로는 KR 패턴A가 -86.8bp(n=58)로 최악, KR 패턴B는
+        # -1.8bp(n=30)로 훨씬 낫다. 인샘플 관찰이므로 기본값(둘 다 켜짐 = 기존
+        # 동작)은 바꾸지 않고, A/B 팔로 나눠(settings.yaml에서 entry_patterns 지정)
+        # 실측으로 검증한다. 문자열("A", "B", "A,B")과 리스트(["A","B"]) 둘 다 받는다.
+        _raw_entry_patterns = params.get("entry_patterns", ["A", "B"])
+        _pattern_parts = (
+            _raw_entry_patterns.split(",") if isinstance(_raw_entry_patterns, str)
+            else list(_raw_entry_patterns)
+        )
+        self.entry_patterns: frozenset[str] = frozenset(
+            p.strip().upper() for p in _pattern_parts if p.strip()
+        )
+        self.pattern_a_enabled: bool = "A" in self.entry_patterns
+        self.pattern_b_enabled: bool = "B" in self.entry_patterns
         # 분당 최소 거래대금 가드 — 프리마켓은 유동성이 얇아 1분봉 패턴 전제
         # (거래량 서지 등)가 왜곡될 수 있다. 통화가 시장마다 달라 파라미터를
         # 분리한다(KR=원, US=달러) — 하나로 합치면 원/달러 환산 없이는 어느
@@ -410,6 +426,8 @@ class Scalp1mStrategy:
             raise ValueError("max_atr_ratio는 양수여야 합니다.")
         if self.kr_entry_open_delay_min < 0:
             raise ValueError("kr_entry_open_delay_min은 0(비활성) 이상이어야 합니다.")
+        if not self.entry_patterns or not self.entry_patterns <= {"A", "B"}:
+            raise ValueError("entry_patterns는 'A'/'B' 중 하나 이상만 담을 수 있고 최소 1개가 필요합니다.")
 
         self._session_date: dict[str, dtdate] = {}
         self._pattern_a_used: dict[str, bool] = {}
@@ -671,7 +689,10 @@ class Scalp1mStrategy:
             return None
 
         basis: tuple[str, float] | None = None
-        if not self._pattern_a_used.get(symbol, False):
+        # entry_patterns가 A를 껐으면 A 슬롯이 소진된 것처럼 취급해 바로 B로
+        # 넘어간다(모듈 docstring 근거 주석) — 둘 다 켜진 기본값에선 이 조건이
+        # 항상 참이라 기존 분기와 100% 동일하다.
+        if self.pattern_a_enabled and not self._pattern_a_used.get(symbol, False):
             # _premarket_confirmed는 _PREMARKET_WINDOWS에 등록된 시장의 심볼만
             # 채워진다(_observe_premarket) — market 분기 없이 조회해도 안전하다.
             p_pre = self._premarket_confirmed.get(symbol)
@@ -685,7 +706,7 @@ class Scalp1mStrategy:
                 basis = ("A", p1_l1[1])
             else:
                 self.last_reject[symbol] = "패턴A 미충족"
-        elif not self._pattern_b_used.get(symbol, False):
+        elif self.pattern_b_enabled and not self._pattern_b_used.get(symbol, False):
             ma_val = self._check_pattern_b(today_bars, bars)
             if ma_val is not None:
                 basis = ("B", ma_val)
@@ -951,6 +972,9 @@ class Scalp1mStrategy:
                 "(08:30~09:00 동시호가는 09:00 에 일괄 체결). 체결될 수 없는 주문은 내지 않는다"
             )
             return None
+        if not self.pattern_a_enabled:
+            self.last_reject[symbol] = "패턴A 비활성(entry_patterns)"
+            return None
         if not self.premarket_entry:
             self.last_reject[symbol] = "프리마켓 직접 진입 비활성(premarket_entry=false)"
             return None
@@ -1200,6 +1224,9 @@ class Scalp1mPureStrategy:
         self.trail_bp = self._legacy.trail_bp
         self.flatten_minutes = self._legacy.flatten_minutes
         self.premarket_entry = self._legacy.premarket_entry
+        self.entry_patterns = self._legacy.entry_patterns
+        self.pattern_a_enabled = self._legacy.pattern_a_enabled
+        self.pattern_b_enabled = self._legacy.pattern_b_enabled
         self.premarket_min_volume_krw = self._legacy.premarket_min_volume_krw
         self.premarket_min_volume_usd = self._legacy.premarket_min_volume_usd
         self.trend_gate_mode = self._legacy.trend_gate_mode
@@ -1410,7 +1437,9 @@ class Scalp1mPureStrategy:
             return None
 
         basis: tuple[str, float] | None = None
-        if not pattern_a_used.get(symbol, False):
+        # 레거시 `_check_entry_for`와 동일 분기(entry_patterns 근거는 그쪽
+        # 생성자 주석 참고) — 둘 다 켜진 기본값에선 기존 분기와 100% 동일하다.
+        if self.pattern_a_enabled and not pattern_a_used.get(symbol, False):
             p_pre = premarket_confirmed.get(symbol)
             if p_pre is not None:
                 p1_l1 = Scalp1mStrategy._check_pattern_a_accelerated(today_bars, open_price, p_pre)
@@ -1418,7 +1447,7 @@ class Scalp1mPureStrategy:
                 p1_l1 = self._legacy._check_pattern_a(today_bars, bars, open_price)
             if p1_l1 is not None:
                 basis = ("A", p1_l1[1])
-        elif not pattern_b_used.get(symbol, False):
+        elif self.pattern_b_enabled and not pattern_b_used.get(symbol, False):
             ma_val = self._legacy._check_pattern_b(today_bars, bars)
             if ma_val is not None:
                 basis = ("B", ma_val)
@@ -1512,6 +1541,8 @@ class Scalp1mPureStrategy:
         # state == "premarket" — 직접 진입 평가(패턴 A만).
         # 레거시와 동일: 연속 호가창이 없는 시장(KR)은 구조적으로 진입 불가.
         if market not in _PREMARKET_DIRECT_ENTRY_MARKETS:
+            return None
+        if not self.pattern_a_enabled:
             return None
         if not self.premarket_entry:
             return None

@@ -28,6 +28,7 @@ I/O 와 배선은 `quant.apps.cli health` 가 한다.
 """
 from __future__ import annotations
 
+import hashlib
 import statistics
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -201,10 +202,32 @@ def clock_findings(utc_offset_seconds: int | None, engine_stamp: str | None,
 
 # ── 원장 ↔ 포트폴리오 ────────────────────────────────────────────────────
 
-def positions_from_trades(trades: list[dict]) -> dict[str, float]:
-    """체결 원장에서 종목별 보유 수량을 재구성한다. buy 는 +, sell 은 −."""
+def positions_from_trades(trades: list[dict], boundary_ts: datetime | None = None) -> dict[str, float]:
+    """체결 원장에서 종목별 보유 수량을 재구성한다. buy 는 +, sell 은 −.
+
+    `boundary_ts`가 있으면(실계좌 이식 경계, `quant.control.ledger.
+    seeding_boundary_ts`) 그 시각 이하의 체결은 재구성에서 뺀다 — 이식 시점에
+    포트폴리오 전체가 실계좌 스냅샷으로 갈아끼워지므로 그 이전 원장 잔량은
+    더 이상 유효하지 않다. `quant.control.ledger.round_trips`가 라운드트립을
+    셀 때 쓰는 것과 같은 경계다(2026-09-04) — 안 쓰면 이식 이전 paper 시대
+    매매가 실계좌 스냅샷과 이중으로 잡혀, 이미 이관 정리로 청산된 종목이
+    "원장 재구성 N vs 포트폴리오 0"으로 매시간 오경보됐다(실측: 000500/
+    001450/007070/007340/GLDM/GOOGL 등, 452회 누적 10회/일).
+
+    ts 를 못 읽는 행은 `boundary_ts` 가 있을 때 **보수적으로 제외**한다 —
+    경계 이전인지 알 수 없는 걸 이후로 단정하지 않는다."""
     qty: dict[str, float] = {}
     for rec in trades:
+        if boundary_ts is not None:
+            ts: datetime | None
+            try:
+                ts = datetime.fromisoformat(str(rec.get("ts")))
+            except ValueError:
+                ts = None
+            if ts is not None and ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if ts is None or ts <= boundary_ts:
+                continue
         symbol = str(rec.get("symbol") or "").strip()
         side = str(rec.get("side") or "").strip().lower()
         if not symbol or side not in ("buy", "sell"):
@@ -220,10 +243,20 @@ def ledger_portfolio_findings(trades: list[dict], portfolio: dict | None,
 
     **실거래에서 20주 중 8주만 채워지면 원장은 20주로 안다** — paper 는 즉시 체결이라
     이 불일치가 안 보인다. Phase 6(OMS)가 근본 해결이고, 여기서는 감지만 한다.
+
+    실계좌 이식 경계(`quant.control.ledger.seeding_boundary_ts`) 이전 체결은
+    재구성에서 뺀다(`positions_from_trades` 참고) — 이식으로 포트폴리오가
+    통째로 갈아끼워진 뒤에는 그 이전 잔량이 무의미하기 때문이다. `quant.
+    control.ledger`는 이 모듈과 같은 평면(`quant/control/`)이라 임포트해도
+    아키텍처 규칙에 걸리지 않는다(`selections._natural_key`를 이미 같은
+    방식으로 쓴다).
     """
     if portfolio is None:
         return [Finding("ledger", UNKNOWN, "포트폴리오 상태를 읽지 못했다 — 대사 불가")]
-    from_trades = positions_from_trades(trades)
+    from quant.control.ledger import seeding_boundary_ts
+
+    boundary_ts = seeding_boundary_ts(trades)
+    from_trades = positions_from_trades(trades, boundary_ts)
     held = {
         sym: float((pos or {}).get("qty") or 0)
         for sym, pos in (portfolio.get("positions") or {}).items()
@@ -235,6 +268,59 @@ def ledger_portfolio_findings(trades: list[dict], portfolio: dict | None,
             out.append(Finding("ledger", ALERT,
                                f"{symbol}: 원장 재구성 {a:g} vs 포트폴리오 {b:g}"))
     return out
+
+
+# ── 반복 알림 억제 (2026-09-04) ────────────────────────────────────────────
+
+def alert_fingerprint(f: Finding) -> str:
+    """Finding 하나의 안정적 지문(check+level+detail 해시) — 반복 알림 억제
+    (`dedupe_repeat_alerts`)의 키. 같은 사유가 같은 문구로 다시 나오면 같은
+    지문이 나온다."""
+    key = f"{f.check}|{f.level}|{f.detail}"
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+def dedupe_repeat_alerts(
+    findings: list[Finding], last_alerted: dict[str, str], now: datetime,
+    window: timedelta = timedelta(hours=24),
+) -> tuple[list[Finding], list[Finding], dict[str, str]]:
+    """반복 알림 억제 — Finding 단위 지문으로 `window`(기본 24시간) 안에 이미
+    통보한 발견은 통보 목록에서 뺀다. **로그에는 여전히 남는다** — 호출부가
+    원본 findings(억제 여부와 무관)를 그대로 기록한다. 이 함수는 "통보할지"만
+    답한다.
+
+    유래: `ops_watch.sh`의 기존 억제는 **보고서 전체**를 findings detail
+    목록 하나로 묶어 해시화해 12시간 지나면 무조건 다시 알렸다 — 다른 발견
+    하나가 새로 생기거나 사라지기만 해도 전체 해시가 바뀌어, 몇 주째 안
+    변한 "원장 재구성 vs 포트폴리오" 불일치까지(452회 누적, 하루 10회) 매번
+    같이 다시 통보됐다. Finding 단위로 쪼개면 그 항목만 억제되고 새로 생긴
+    발견은 그대로 통과한다.
+
+    반환: (통보할 것, 억제된 것, 갱신된 last_alerted). `last_alerted`는
+    {지문: 마지막으로 **통보**한 시각 ISO} — 호출부가 디스크에 영속화한다
+    (이 함수는 순수 계산만 한다). 억제된 항목은 맵의 시각을 갱신하지 않는다
+    — 억제 자체가 재알림 시계를 리셋하면 window를 넘겨도 계속 억제되는
+    영구 침묵이 생긴다."""
+    to_notify: list[Finding] = []
+    suppressed: list[Finding] = []
+    updated = dict(last_alerted)
+    for f in findings:
+        h = alert_fingerprint(f)
+        last = last_alerted.get(h)
+        last_dt: datetime | None = None
+        if last is not None:
+            try:
+                last_dt = datetime.fromisoformat(last)
+            except ValueError:
+                last_dt = None
+            if last_dt is not None and last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+        if last_dt is not None and (now - last_dt) < window:
+            suppressed.append(f)
+            continue
+        to_notify.append(f)
+        updated[h] = now.isoformat()
+    return to_notify, suppressed, updated
 
 
 # ── 시크릿이 로그에 새고 있나 ─────────────────────────────────────────────

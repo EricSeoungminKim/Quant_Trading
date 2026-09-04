@@ -27,6 +27,7 @@ from quant.trade.strategy.rsi2_dip import Rsi2DipShell
 from quant.trade.strategy.orb_rvol import OrbRvolShell
 from quant.trade.strategy.eod_reversal import EodReversalShell
 from quant.trade.strategy.open_reversal import OpenReversalShell
+from quant.trade.strategy.trend_day import TrendDayShell
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,11 @@ STRATEGY_REGISTRY = {
     "orb_rvol": OrbRvolShell,           # Zarattini/Barbon/Aziz 2024 "Stocks in Play" — 개장 레인지 돌파 + rvol 선별
     "eod_reversal": EodReversalShell,   # 장 막판 일중 반전(Baltussen/Da/Soebhag 2024 + KOSPI 실증)
     "open_reversal": OpenReversalShell,  # 전일 패자 개장 매수(국내 단기 반전 문헌)
+    # 15분봉 추세일 지속(2026-09-04) — 1분·5분이 전부 비용에 죽은 뒤 "거래당
+    # 크기를 키운다"는 방향으로 만든 첫 15분봉 전략. **스크리닝을 통과하지
+    # 못했다**(US 400종목 실측: 상승 국면 총 +3.2bp < 왕복 25.2bp) — 모듈
+    # docstring "실측 결과를 먼저 밝힌다" 절. 등록만 하고 `enabled: false`.
+    "trend_day": TrendDayShell,
 }
 
 
@@ -138,7 +144,7 @@ TAG_ASSIGNMENT: dict[str, list[str]] = {
     # 2026-09-03 추가 3종도 태그 게이트가 없다 — `universe: watchlist` 로 유니버스
     # 전체를 심볼로 받고 `tags_of` 를 아예 모른다(생성자에 그 인자가 없다).
     "*": ["intraday_scan", "orb_scan", "cross_momentum", "confluence", "scalp_1m",
-          "orb_rvol", "eod_reversal", "open_reversal"],
+          "orb_rvol", "eod_reversal", "open_reversal", "trend_day"],
 }
 
 

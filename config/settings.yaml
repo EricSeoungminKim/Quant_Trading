@@ -1242,6 +1242,46 @@ strategies:
       eod_exit_min: 3
       target_weight: 0.5
       daily_bars: 10
+  # ④ 15분봉 추세일 지속(2026-09-04) — 1분·5분 아이디어가 전부 왕복 비용에 죽은 뒤
+  #    "거래당 크기를 키운다"는 방향으로 만든 첫 15분봉 전략. **스크리닝을 통과하지
+  #    못했다**: US 400종목 1분봉(2024-09~2026-08, 왕복 25.2bp) 실측에서 상승 국면
+  #    총 엣지 +3.2bp, 하락 국면 -30.1bp — 국면 게이트는 소유자 직관대로 작동하지만
+  #    좋은 쪽조차 비용의 1/3 이다(quant/trade/strategy/trend_day.py 모듈 docstring
+  #    "실측 결과를 먼저 밝힌다"). 코드·측정 기준점으로만 남긴다.
+  #    **켜기 전 조건**: 비용이 내려가거나 더 강한 선별이 붙어 스크리닝을 다시
+  #    통과해야 한다. 그 근거 없이 enabled 를 true 로 바꾸지 마라.
+  trend_day:
+    class: trend_day
+    enabled: false
+    capital_fraction:
+      KR: 0.0 # 실측이 US 400종목뿐이다 — KR 은 재지 않았으므로 자본을 주지 않는다
+      US: 0.05
+    validation:
+      status: burn_in
+    universe: watchlist
+    symbols: []
+    params:
+      bar_interval_minutes: 15
+      or_minutes: 30 # 개장 레인지 길이(15의 배수여야 한다 — 봉 경계)
+      or_atr_mult: 0.8 # 개장 레인지 > 0.8 x ATR14 인 날만 "추세일"로 본다
+      stop_atr_mult: 0.25 # 손절 = 진입 시점 세션 VWAP - 0.25 x ATR14 (진입가 기준이 아니다)
+      atr_period: 14
+      avg_volume_days: 14
+      regime_ma_days: 20 # 대리 지수 일봉 20일선 위일 때만 진입
+      require_gap_up: true # 당일 시가 >= 전일 종가
+      regime_symbols:
+        KR: "069500"
+        US: "QQQ"
+      entry_window_min: 330 # 개장 후 5.5시간까지만 — 마감 직전 진입은 왕복 비용만 낸다
+      min_price:
+        KR: 1000
+        US: 5
+      min_avg_volume:
+        KR: 100000 # 주식 수 기준(orb_rvol 과 같은 한계 — 거래대금이 아니다)
+        US: 1000000
+      eod_exit_min: 3
+      target_weight: 0.5
+      min_stop_bp: 40 # VWAP 기준 손절은 원래 넓다 — 이 게이트가 걸리면 그날은 추세일이 아니다
 
 risk:
   # 확장 세션 허용 목록 (2026-08-18, 사용자 결정: 프리마켓 직접 진입 찬성).

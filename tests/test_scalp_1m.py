@@ -491,6 +491,109 @@ def test_kr_entry_open_delay_min_defaults_to_30():
     assert strat.kr_entry_open_delay_min == 30
 
 
+# ============================================================ entry_patterns (패턴 A/B 개별 온오프, 2026-09-04)
+#
+# 원장 151 트립(2026-08-18~09-04, data/state/trades.jsonl) 재생 근거는 모듈
+# docstring의 생성자 주석 참고 — 기본값(둘 다 켜짐)은 기존 동작과 동일해야 한다.
+
+def test_entry_patterns_defaults_to_both_enabled():
+    strat = Scalp1mStrategy(["AAA"], _params())
+    assert strat.entry_patterns == frozenset({"A", "B"})
+    assert strat.pattern_a_enabled is True
+    assert strat.pattern_b_enabled is True
+
+
+def test_entry_patterns_accepts_comma_string_and_list_equivalently():
+    strat_list = Scalp1mStrategy(["AAA"], _params(entry_patterns=["B"]))
+    strat_str = Scalp1mStrategy(["AAA"], _params(entry_patterns="b"))
+    assert strat_list.entry_patterns == strat_str.entry_patterns == frozenset({"B"})
+    strat_csv = Scalp1mStrategy(["AAA"], _params(entry_patterns="a, B"))
+    assert strat_csv.entry_patterns == frozenset({"A", "B"})
+
+
+def test_entry_patterns_default_matches_explicit_both_enabled():
+    """entry_patterns 키가 없을 때와 명시적으로 ["A","B"]를 줄 때 신호가
+    완전히 동일해야 한다 — "기본값은 오늘과 100% 동일"이라는 주장의 근거."""
+    bars = {"AAA": _pattern_a_bars(surge=True)}
+    strat_default = Scalp1mStrategy(["AAA"], _params())
+    strat_explicit = Scalp1mStrategy(["AAA"], _params(entry_patterns=["A", "B"]))
+    sig_default = strat_default.on_cycle(_ctx({"AAA": 102.4}, _now_within_window(3.0), bars=bars))
+    sig_explicit = strat_explicit.on_cycle(_ctx({"AAA": 102.4}, _now_within_window(3.0), bars=bars))
+    assert len(sig_default) == len(sig_explicit) == 1
+    assert sig_default[0].reason == sig_explicit[0].reason
+    assert sig_default[0].stop == pytest.approx(sig_explicit[0].stop)
+
+
+def test_entry_patterns_b_only_suppresses_pattern_a_entry():
+    """패턴 A가 완성된 봉이어도 entry_patterns=["B"]면 A로 진입하지 않는다 —
+    기본값이면 이 봉 시퀀스는 패턴 A로 즉시 진입한다
+    (test_pattern_a_enters_on_breakout_with_volume_surge 참고). A가 꺼지면
+    바로 B를 평가하는데, 이 봉(28개, MA60 워밍업 60개 미만)으로는 B도
+    성립하지 않아 "패턴B 미충족"으로 거부된다 — A로 새지 않는다는 확인."""
+    strat = Scalp1mStrategy(["AAA"], _params(entry_patterns=["B"]))
+    bars = {"AAA": _pattern_a_bars(surge=True)}
+    signals = strat.on_cycle(_ctx({"AAA": 102.4}, _now_within_window(3.0), bars=bars))
+    assert signals == []
+    assert strat._pattern_a_used.get("AAA", False) is False
+    assert strat.last_reject.get("AAA") == "패턴B 미충족"
+
+
+def test_entry_patterns_a_only_suppresses_pattern_b_entry():
+    """A를 이미 쓴 뒤에도 entry_patterns=["A"]면 B로 진입하지 않는다 — 기본값
+    이면 test_pattern_b_enters_after_pattern_a_already_used가 진입시키는
+    동일한 봉 시퀀스."""
+    strat = Scalp1mStrategy(["AAA"], _params(entry_patterns=["A"]))
+    strat._pattern_a_used["AAA"] = True
+    strat._session_date["US"] = DAY1
+
+    open_ts = datetime.combine(DAY1, US_OPEN, tzinfo=NY)
+    warmup_idx, warmup_rows = _warmup(NY, open_ts, 59)
+    touch_ts = open_ts
+    confirm_ts = open_ts + timedelta(minutes=1)
+    touch_confirm = pd.DataFrame(
+        [
+            {"open": 100.0, "high": 100.1, "low": 99.85, "close": 99.85, "volume": 1000.0},
+            {"open": 99.9, "high": 100.4, "low": 99.85, "close": 100.3, "volume": 1000.0},
+        ],
+        index=pd.DatetimeIndex([touch_ts, confirm_ts], tz=NY),
+    )
+    bars_df = pd.concat([
+        pd.DataFrame(warmup_rows, index=pd.DatetimeIndex(warmup_idx, tz=NY)),
+        touch_confirm,
+    ])
+    now = confirm_ts + timedelta(seconds=30)
+    signals = strat.on_cycle(_ctx({"AAA": 100.35}, now, bars={"AAA": bars_df}))
+    assert signals == []
+    assert strat._pattern_b_used.get("AAA", False) is False
+    assert strat.last_reject.get("AAA") == "세션 진입 상한(A+B) 도달"
+
+
+def test_entry_patterns_disables_premarket_pattern_a_path():
+    """entry_patterns=["B"]면 프리마켓 직접 진입(패턴 A 전용) 경로도 막힌다 —
+    기본값이면 이 봉 시퀀스는 프리마켓에서 즉시 진입한다
+    (test_kr_premarket_never_enters_directly_even_on_perfect_pattern의 대칭
+    US 버전, 여기서는 유동성/시장 제약 없이 순수 entry_patterns 효과만 본다)."""
+    strat = Scalp1mStrategy([US_PRE_SYMBOL], _params(entry_patterns=["B"]))
+    bars = {US_PRE_SYMBOL: _us_premarket_entry_bars(surge=True, notional_ok=True)}
+    now = _us_now(dtime(8, 2, 30))
+    ctx = _us_ctx({US_PRE_SYMBOL: 102.3}, now, bars=bars)
+
+    signals = strat.on_cycle(ctx)
+
+    assert signals == []
+    assert strat.last_reject.get(US_PRE_SYMBOL) == "패턴A 비활성(entry_patterns)"
+
+
+def test_entry_patterns_empty_raises():
+    with pytest.raises(ValueError):
+        Scalp1mStrategy(["AAA"], _params(entry_patterns=[]))
+
+
+def test_entry_patterns_unknown_value_raises():
+    with pytest.raises(ValueError):
+        Scalp1mStrategy(["AAA"], _params(entry_patterns=["C"]))
+
+
 # ============================================================ 랏 소유권
 
 def test_does_not_manage_another_strategys_position():

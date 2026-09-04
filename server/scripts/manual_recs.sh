@@ -32,6 +32,20 @@ fi
 
 LOG="data/manual_recs.log"
 mkdir -p data
+# market_pulse.sh와 같은 관례(2026-09-04) — 발송 결과를 로그에 남긴다. 이
+# 스크립트는 notify_auto를 쓰므로(장중이면 큐 적재, 장외면 즉시 전송) 셋 다
+# 나올 수 있다 — 어느 쪽이었는지는 notify_auto를 부르기 직전의
+# notify_auto_would_defer로 안다(같은 순간의 벽시계를 보므로 notify_auto
+# 자신의 판단과 갈릴 일이 없다).
+_log_notify() {  # $1=would_defer(0/1) $2=notify_auto rc $3=라벨
+  if [ "$2" -ne 0 ]; then
+    echo "[$(date "+%F %T")] $3 실패" >> "$LOG"
+  elif [ "$1" -eq 0 ]; then
+    echo "[$(date "+%F %T")] $3 큐 적재" >> "$LOG"
+  else
+    echo "[$(date "+%F %T")] $3 전송 성공" >> "$LOG"
+  fi
+}
 
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
@@ -56,8 +70,11 @@ if [ "${DRY_RUN:-0}" = "1" ]; then
 fi
 
 OUT="$(timeout 120 .venv/bin/python -m quant.apps.cli manual-recs --market "$MARKET" $DRY_RUN_FLAG 2>>"$LOG")"
+notify_auto_would_defer; WOULD_DEFER=$?
 if [ -n "$OUT" ]; then
   notify_auto "manual_recs" "${OUT:0:3900}"
+  _log_notify "$WOULD_DEFER" $? "${MARKET} manual-recs"
 else
   notify_auto "manual_recs" "manual-recs(${MARKET}) 생성 실패 — ${LOG} 확인"
+  _log_notify "$WOULD_DEFER" $? "${MARKET} manual-recs 생성 실패 알림"
 fi

@@ -14,11 +14,14 @@ from datetime import datetime, timedelta, timezone
 from quant.control.health import (
     ALERT,
     UNKNOWN,
+    alert_fingerprint,
     backup_findings,
     bar_findings,
     bar_sanity_findings,
     clock_findings,
+    dedupe_repeat_alerts,
     feed_findings,
+    Finding,
     flow_anomaly_findings,
     frgn_flow_degenerate_findings,
     install_drift_findings,
@@ -258,6 +261,108 @@ def test_partial_fill_style_mismatch_is_alert():
 
 def test_unreadable_portfolio_is_unknown():
     assert _levels(ledger_portfolio_findings([], None)) == [UNKNOWN]
+
+
+# ── 실계좌 이식 경계(2026-09-04) ────────────────────────────────────────────
+# cmd_seed_real이 남기는 "실계좌 이식 정리" 매도 이후로는 포트폴리오 전체가
+# 실계좌 스냅샷으로 갈아끼워진다 — 그 이전 원장 잔량을 계속 반영하면 이미
+# 이관 정리로 청산된 종목이 "원장 재구성 N vs 포트폴리오 0"으로 영원히
+# 오경보된다(실측: 452회 누적, 하루 10회). round_trips와 같은 경계를 쓴다.
+
+_SEED_REASON = "실계좌 이식 정리 — 소유자 지시 2026-09-01: 005930만 보유 유지, 나머지 정리"
+
+
+def test_positions_from_trades_ignores_trades_at_or_before_boundary():
+    boundary = datetime(2026, 9, 1, 3, 0, tzinfo=timezone.utc)
+    trades = [
+        {"symbol": "000500", "side": "buy", "qty": 10, "ts": "2026-08-20T01:00:00+00:00"},
+        {"symbol": "000500", "side": "sell", "qty": 7, "ts": "2026-09-01T03:00:00+00:00"},
+    ]
+    assert positions_from_trades(trades, boundary_ts=boundary) == {}
+
+
+def test_positions_from_trades_counts_only_after_boundary():
+    boundary = datetime(2026, 9, 1, 3, 0, tzinfo=timezone.utc)
+    trades = [
+        {"symbol": "005930", "side": "buy", "qty": 100, "ts": "2026-08-01T01:00:00+00:00"},
+        {"symbol": "005930", "side": "buy", "qty": 5, "ts": "2026-09-02T01:00:00+00:00"},
+    ]
+    assert positions_from_trades(trades, boundary_ts=boundary) == {"005930": 5.0}
+
+
+def test_ledger_portfolio_findings_uses_seeding_boundary_for_pre_transplant_symbols():
+    """이식 이전 paper 매매 잔량이 이관 정리 매도와 이중으로 잡혀 "원장 재구성
+    N vs 포트폴리오 0"을 오경보하던 결함 — 경계 이후 거래가 없는 종목은 더
+    이상 알리지 않는다."""
+    trades = [
+        {"symbol": "000500", "side": "buy", "qty": 10, "ts": "2026-08-20T01:00:00+00:00"},
+        {"symbol": "000500", "side": "sell", "qty": 7, "ts": "2026-09-01T03:00:00+00:00",
+         "reason": _SEED_REASON},
+    ]
+    portfolio = {"positions": {}}  # 이관 정리 후 실제 보유 없음
+
+    assert ledger_portfolio_findings(trades, portfolio) == []
+
+
+def test_ledger_portfolio_findings_still_alerts_on_genuine_post_boundary_mismatch():
+    """경계 자체를 고쳐도 **경계 이후의 진짜 불일치**는 그대로 잡혀야 한다."""
+    trades = [
+        {"symbol": "000500", "side": "sell", "qty": 7, "ts": "2026-09-01T03:00:00+00:00",
+         "reason": _SEED_REASON},
+        {"symbol": "005930", "side": "buy", "qty": 3, "ts": "2026-09-02T01:00:00+00:00"},
+    ]
+    portfolio = {"positions": {"005930": {"qty": 0.0}}}  # 실제론 매도됐는데 원장은 3주
+
+    findings = ledger_portfolio_findings(trades, portfolio)
+
+    assert _levels(findings) == [ALERT]
+    assert "005930" in findings[0].detail
+
+
+# ── 반복 알림 억제(2026-09-04) ──────────────────────────────────────────────
+
+def test_dedupe_repeat_alerts_first_occurrence_passes():
+    f = Finding("ledger", ALERT, "005930: 원장 재구성 3 vs 포트폴리오 0")
+
+    to_notify, suppressed, updated = dedupe_repeat_alerts([f], {}, NOW)
+
+    assert to_notify == [f]
+    assert suppressed == []
+    assert updated[alert_fingerprint(f)] == NOW.isoformat()
+
+
+def test_dedupe_repeat_alerts_suppresses_within_24h():
+    f = Finding("ledger", ALERT, "005930: 원장 재구성 3 vs 포트폴리오 0")
+    last_alerted = {alert_fingerprint(f): (NOW - timedelta(hours=1)).isoformat()}
+
+    to_notify, suppressed, updated = dedupe_repeat_alerts([f], last_alerted, NOW)
+
+    assert to_notify == []
+    assert suppressed == [f]
+    assert updated == last_alerted  # 억제된 항목은 재알림 시계를 리셋하지 않는다
+
+
+def test_dedupe_repeat_alerts_passes_again_after_24h():
+    f = Finding("ledger", ALERT, "005930: 원장 재구성 3 vs 포트폴리오 0")
+    fp = alert_fingerprint(f)
+    last_alerted = {fp: (NOW - timedelta(hours=25)).isoformat()}
+
+    to_notify, suppressed, updated = dedupe_repeat_alerts([f], last_alerted, NOW)
+
+    assert to_notify == [f]
+    assert suppressed == []
+    assert updated[fp] == NOW.isoformat()
+
+
+def test_dedupe_repeat_alerts_new_finding_passes_even_if_sibling_suppressed():
+    stale = Finding("ledger", ALERT, "005930: 원장 재구성 3 vs 포트폴리오 0")
+    fresh = Finding("bars", ALERT, "QQQ 1d: 마지막 봉이 5일 낡았다")
+    last_alerted = {alert_fingerprint(stale): (NOW - timedelta(hours=1)).isoformat()}
+
+    to_notify, suppressed, _ = dedupe_repeat_alerts([stale, fresh], last_alerted, NOW)
+
+    assert to_notify == [fresh]
+    assert suppressed == [stale]
 
 
 # ── 시크릿 ───────────────────────────────────────────────────────────────

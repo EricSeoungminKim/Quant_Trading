@@ -374,6 +374,78 @@ def test_pattern_b_entry_after_pattern_a_used_equivalence():
     assert "패턴B" in sig_legacy[0].reason
 
 
+# ============================================================ entry_patterns (패턴 A/B 개별 온오프, 2026-09-04)
+# 근거는 scalp_1m.py 생성자 주석 참고 — 여기서는 레거시/순수 두 구현이 같은
+# 신호(또는 같은 무신호)를 내는지만 고정한다.
+
+def test_entry_patterns_b_only_equivalence():
+    """entry_patterns=["B"]면 두 구현 모두 패턴 A로 진입하지 않는다 —
+    A가 꺼지면 곧바로 B를 평가하는데 이 봉(MA60 워밍업 부족)으로는 B도
+    성립하지 않아 결국 무신호(test_scalp_1m.py의
+    test_entry_patterns_b_only_suppresses_pattern_a_entry와 동일 시나리오)."""
+    legacy, pure = _strats(["AAA"], _params(entry_patterns=["B"]))
+    bars = {"AAA": _pattern_a_bars(surge=True)}
+    now = _now_within_window(3.0)
+
+    sig_legacy = legacy.on_cycle(_ctx({"AAA": 102.4}, now, bars=bars))
+    sig_pure = pure.on_cycle(_ctx({"AAA": 102.4}, now, bars=bars))
+    assert sig_legacy == [] and sig_pure == []
+    assert legacy._pattern_a_used.get("AAA", False) is False
+    assert pure._state.get("pattern_a_used", {}).get("AAA", False) is False
+
+
+def test_entry_patterns_a_only_equivalence():
+    """A를 이미 쓴 뒤 entry_patterns=["A"]면 두 구현 모두 B로 진입하지 않는다
+    (test_scalp_1m.py의 test_entry_patterns_a_only_suppresses_pattern_b_entry와
+    동일 시나리오)."""
+    open_ts = datetime.combine(DAY1, US_OPEN, tzinfo=NY)
+    warmup_idx, warmup_rows = _warmup(open_ts, 59)
+    touch_ts = open_ts
+    confirm_ts = open_ts + timedelta(minutes=1)
+    touch_confirm = pd.DataFrame(
+        [
+            {"open": 100.0, "high": 100.1, "low": 99.85, "close": 99.85, "volume": 1000.0},
+            {"open": 99.9, "high": 100.4, "low": 99.85, "close": 100.3, "volume": 1000.0},
+        ],
+        index=pd.DatetimeIndex([touch_ts, confirm_ts], tz=NY),
+    )
+    bars_df = pd.concat([
+        pd.DataFrame(warmup_rows, index=pd.DatetimeIndex(warmup_idx, tz=NY)),
+        touch_confirm,
+    ])
+    now = confirm_ts + timedelta(seconds=30)
+
+    legacy, pure = _strats(["AAA"], _params(entry_patterns=["A"]))
+    legacy._pattern_a_used["AAA"] = True
+    legacy._session_date["US"] = DAY1
+    pure._state = {"pattern_a_used": {"AAA": True}, "session_date": {"US": DAY1}}
+
+    sig_legacy = legacy.on_cycle(_ctx({"AAA": 100.35}, now, bars={"AAA": bars_df}))
+    sig_pure = pure.on_cycle(_ctx({"AAA": 100.35}, now, bars={"AAA": bars_df}))
+    assert sig_legacy == [] and sig_pure == []
+    assert legacy._pattern_b_used.get("AAA", False) is False
+    assert pure._state.get("pattern_b_used", {}).get("AAA", False) is False
+
+
+def test_entry_patterns_disables_premarket_pattern_a_equivalence():
+    """entry_patterns=["B"]면 프리마켓 직접 진입(패턴 A 전용) 경로도 두
+    구현 모두에서 막힌다."""
+    legacy, pure = _strats([US_PRE_SYMBOL], _params(entry_patterns=["B"], premarket_min_volume_usd=50_000))
+    bars = {US_PRE_SYMBOL: _us_premarket_entry_bars(surge=True, notional_ok=True)}
+    now = _us_now(dtime(8, 2, 30))
+
+    sig_legacy = legacy.on_cycle(_ctx({US_PRE_SYMBOL: 101.3}, now, bars=bars, open_markets=frozenset()))
+    sig_pure = pure.on_cycle(_ctx({US_PRE_SYMBOL: 101.3}, now, bars=bars, open_markets=frozenset()))
+    assert sig_legacy == [] and sig_pure == []
+
+
+def test_entry_patterns_invalid_raises_for_pure_too():
+    """`Scalp1mPureStrategy`는 파라미터 검증을 `self._legacy`(내부 헬퍼
+    인스턴스)에 위임한다 — entry_patterns 검증도 같은 경로로 동작해야 한다."""
+    with pytest.raises(ValueError):
+        Scalp1mPureShell(["AAA"], _params(entry_patterns=[]))
+
+
 def test_session_entry_cap_equivalence():
     legacy, pure = _strats(["AAA"], _params())
     legacy._pattern_a_used["AAA"] = True

@@ -19,6 +19,7 @@ from quant.analyze.watch_scorer import (
     _trend_score,
     effective_threshold,
     macro_sector_adjustment,
+    rejection_summary,
     resolve_regime_label,
     run_watch_score,
     score_symbol,
@@ -1160,3 +1161,72 @@ def test_run_watch_score_us_symbol_unaffected_by_sector_daily_ctx():
     )
     assert with_ctx[0].score == plain[0].score
     assert not any("주도섹터:" in r for r in with_ctx[0].reasons)
+
+
+# --------------------------------------------------------- 탈락 사유 요약(2026-09-04)
+# own_brief.sh가 PASS 통과 종목이 하나라도 있으면 cmd_watch_score의 전체 stdout을
+# 버리고 요약 한 줄만 로그에 남긴다 — 탈락 사유가 own_brief.log에서 사라지던 결함
+# 재발 방지. `rejection_summary`가 그 사유를 카테고리별 건수 + 상세로 압축한다.
+
+def _result(symbol: str, passed: bool, prereq_ok: bool, reasons: list[str]) -> ScoreResult:
+    return ScoreResult(symbol=symbol, score=0, passed=passed, tags=[], reasons=reasons,
+                       prereq_ok=prereq_ok)
+
+
+def test_rejection_summary_excludes_passing_results():
+    results = [_result("005930", passed=True, prereq_ok=True, reasons=["시총 확인: 1원"])]
+
+    counts, entries = rejection_summary(results)
+
+    assert counts == {}
+    assert entries == []
+
+
+def test_rejection_summary_categorizes_prereq_failures_by_colon_prefix():
+    results = [
+        _result("000660", passed=False, prereq_ok=False,
+                reasons=["유동성 부족: 14일 평균 거래대금 100원 < 기준 1,000,000,000원"]),
+        _result("035420", passed=False, prereq_ok=False,
+                reasons=["유동성 부족: 14일 평균 거래대금 50원 < 기준 1,000,000,000원"]),
+        _result("096770", passed=False, prereq_ok=False,
+                reasons=["시총 <3,000억: 100원 < 300,000,000,000원 (자동등록 차단, 수동 /watch는 가능)"]),
+    ]
+
+    counts, entries = rejection_summary(results)
+
+    assert counts == {"유동성 부족": 2, "시총 <3,000억": 1}
+    assert entries == ["000660:유동성 부족", "035420:유동성 부족", "096770:시총 <3,000억"]
+
+
+def test_rejection_summary_categorizes_em_dash_reasons():
+    """"시총 미확인 — ..." 처럼 콜론이 없고 em dash(—)만 있는 사유도 짧게 잘린다."""
+    results = [_result("012345", passed=False, prereq_ok=False,
+                       reasons=["시총 미확인 — sharesOutstanding 조회 불가 (자동등록 차단, 수동 /watch는 가능)"])]
+
+    counts, entries = rejection_summary(results)
+
+    assert counts == {"시총 미확인": 1}
+    assert entries == ["012345:시총 미확인"]
+
+
+def test_rejection_summary_categorizes_score_shortfall_as_score_miss():
+    """프리퍼시티는 통과했지만(하드 실패 사유 없음) 점수가 임계 미달이면 "점수미달"."""
+    results = [_result("005930", passed=False, prereq_ok=True,
+                       reasons=["[TREND] 5일 수익률 +1.00% (+0)"])]
+
+    counts, entries = rejection_summary(results)
+
+    assert counts == {"점수미달": 1}
+    assert entries == ["005930:점수미달"]
+
+
+def test_rejection_summary_caps_entries_but_not_counts():
+    results = [
+        _result(f"{i:06d}", passed=False, prereq_ok=False, reasons=["유동성 부족: 부족"])
+        for i in range(25)
+    ]
+
+    counts, entries = rejection_summary(results, max_entries=20)
+
+    assert counts == {"유동성 부족": 25}  # 카운트는 전수
+    assert len(entries) == 20             # 상세 목록만 상한

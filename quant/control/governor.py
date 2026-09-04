@@ -165,6 +165,8 @@ ALLOWED_KILL_SWITCH: dict[str, int] = {
     "strategies.orb_rvol.enabled": 5,
     "strategies.eod_reversal.enabled": 5,
     "strategies.open_reversal.enabled": 5,
+    # 15분봉 추세일 지속(2026-09-04) — 같은 이유로 미리 등재한다.
+    "strategies.trend_day.enabled": 5,
     # strategies.scalp_1m.enabled — 의도적으로 뺐다(보호 목록, 위 설명).
     # strategies.scalp_1m_cat.enabled — 같은 이유로 뺐다(2026-09-03): `_cat` 은
     # 같은 클래스의 다른 유니버스 갈래라 보호를 **상속**한다. 한쪽만 자동으로

@@ -15,6 +15,10 @@ fi
 
 LOG="data/session_pnl.log"
 mkdir -p data
+# market_pulse.sh와 같은 관례(2026-09-04) — 발송 결과를 로그에 남긴다. 이
+# 스크립트는 notify_defer만 쓰므로(항상 큐에만 쌓인다, "전송 성공"은 나올 수
+# 없다) 성공/실패 두 상태만 있다.
+_log_notify() { echo "[$(date "+%F %T")] $1" >> "$LOG"; }
 
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
@@ -37,9 +41,17 @@ fi
 # 크론(manual_recs/market_pulse/daily_feedback)은 이미 120이라 맞춘다.
 OUT="$(timeout 120 .venv/bin/python -m quant.apps.cli session-pnl --market "$MARKET" 2>>"$LOG")"
 if [ -n "$OUT" ]; then
-  notify_defer "session_pnl" "${OUT:0:3900}"
+  if notify_defer "session_pnl" "${OUT:0:3900}"; then
+    _log_notify "${MARKET} session-pnl 큐 적재"
+  else
+    _log_notify "${MARKET} session-pnl 큐 적재 실패"
+  fi
 else
-  notify_defer "session_pnl" "session-pnl(${MARKET}) 생성 실패 — ${LOG} 확인"
+  if notify_defer "session_pnl" "session-pnl(${MARKET}) 생성 실패 — ${LOG} 확인"; then
+    _log_notify "${MARKET} session-pnl 생성 실패 알림 큐 적재"
+  else
+    _log_notify "${MARKET} session-pnl 생성 실패 알림 큐 적재 실패"
+  fi
 fi
 
 # 전략별 성과(2026-08-19 사용자 요청: "각 전략마다 1000만원으로 시작, 텔레그램도
@@ -53,8 +65,18 @@ fi
 STRAT_OUT="$(timeout 60 .venv/bin/python -m quant.apps.cli strategy-pnl 2>>"$LOG")"
 if [ -n "$STRAT_OUT" ]; then
   while IFS= read -r -d $'\x1e' msg; do
-    [ -n "$msg" ] && notify_defer "session_pnl" "${msg:0:3900}"
+    if [ -n "$msg" ]; then
+      if notify_defer "session_pnl" "${msg:0:3900}"; then
+        _log_notify "${MARKET} strategy-pnl 큐 적재"
+      else
+        _log_notify "${MARKET} strategy-pnl 큐 적재 실패"
+      fi
+    fi
   done <<< "${STRAT_OUT}"$'\x1e'
 else
-  notify_defer "session_pnl" "strategy-pnl 생성 실패 — ${LOG} 확인"
+  if notify_defer "session_pnl" "strategy-pnl 생성 실패 — ${LOG} 확인"; then
+    _log_notify "${MARKET} strategy-pnl 생성 실패 알림 큐 적재"
+  else
+    _log_notify "${MARKET} strategy-pnl 생성 실패 알림 큐 적재 실패"
+  fi
 fi

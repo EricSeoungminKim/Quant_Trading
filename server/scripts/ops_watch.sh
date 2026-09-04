@@ -35,7 +35,6 @@ cd "$(dirname "$0")/../.."
 
 PY=.venv/bin/python
 LOG="data/ops_watch.log"
-STATE="data/state/ops_watch.state"   # 마지막으로 알린 발견 집합의 해시 (중복 방지)
 # 라벨용일 뿐이다 — 실제 선택과 실행파일 경로 기본값은 make_narrator() 가 갖는다.
 # (CLAUDE_BIN 은 어댑터가 직접 env 에서 읽으므로 여기서 세팅하지 않는다.)
 NARRATOR="${OPS_NARRATOR:-claude}"
@@ -78,7 +77,6 @@ printf '%s\n' "$REPORT" >> "$LOG"
 
 if [ "$RC" -eq 0 ]; then
   log "정상 — 알리지 않음"
-  rm -f "$STATE"          # 회복했으면 다음 이상은 새 사건이다
   [ "${DRY_RUN:-0}" = "1" ] && echo "[DRY_RUN] verdict=ok — 알림 없음"
   exit 0
 fi
@@ -89,24 +87,49 @@ if [ -z "$REPORT" ]; then
   exit 1
 fi
 
-# --- 2. 중복 방지 ---
-# 같은 이상으로 매시간 알림이 오면 사람이 끈다. 발견 집합이 바뀔 때만 알린다.
-HASH="$(printf '%s' "$REPORT" | "$PY" -c '
-import hashlib, json, sys
+# --- 2. 반복 알림 억제(2026-09-04) ---
+# Finding 단위 지문으로 24시간 안에 이미 통보한 발견은 통보 대상에서 뺀다
+# (quant.control.health.dedupe_repeat_alerts) — 위에서 로그(`$LOG`)에는 이미
+# findings 전체(억제와 무관, rc/verdict 계산에 쓰인 원본)가 남았다. 상태는
+# **알림 발송에 성공했을 때만** 기록한다(아래 4번 — 예전과 같은 원칙: 발송
+# 실패를 "이미 알렸다"로 남기지 않는다).
+#
+# 예전 억제는 보고서 전체를 findings detail 목록 하나로 묶어 해시화하고
+# 12시간 하트비트로만 갱신했다 — 다른 발견 하나만 새로 생기거나 사라져도
+# 전체 해시가 바뀌어, 몇 주째 안 변한 "원장 재구성 vs 포트폴리오" 불일치까지
+# 매번 같이 재통보됐다(452회 누적, 하루 10회). Finding 단위로 걸러야 그
+# 상호간섭이 없어진다.
+ALERT_STATE="data/state/ops_watch_alert_hashes.json"
+DEDUP_OUT="$(printf '%s' "$REPORT" | ALERT_STATE_PATH="$ALERT_STATE" "$PY" -c '
+import json, os, sys
+from datetime import datetime, timezone
+from quant.control.health import Finding, dedupe_repeat_alerts
+
+body = json.load(sys.stdin)
+findings = [Finding(f["check"], f["level"], f["detail"]) for f in body.get("findings", [])]
+path = os.environ["ALERT_STATE_PATH"]
 try:
-    body = json.load(sys.stdin)
-except json.JSONDecodeError:
-    print("unparsable"); raise SystemExit
-key = json.dumps(sorted(f["detail"] for f in body.get("findings", [])), ensure_ascii=False)
-print(hashlib.sha256(key.encode()).hexdigest()[:16])
+    with open(path, encoding="utf-8") as fh:
+        last_alerted = json.load(fh)
+    if not isinstance(last_alerted, dict):
+        last_alerted = {}
+except (OSError, json.JSONDecodeError):
+    last_alerted = {}
+to_notify, suppressed, updated = dedupe_repeat_alerts(findings, last_alerted, datetime.now(timezone.utc))
+body["findings"] = [f.to_dict() for f in to_notify]
+print(json.dumps(body, ensure_ascii=False))
+print(json.dumps(updated, ensure_ascii=False))
+print(len(suppressed))
 ')"
-# mtime 하트비트: 같은 발견 집합이라도 12시간 넘게 지속 중이면 다시 알린다 —
-# "아직도 안 고쳐졌다"는 그 자체로 새 정보다.
-if [ -f "$STATE" ] && [ "$(cat "$STATE")" = "$HASH" ] \
-   && [ -z "$(find "$STATE" -mmin +720 2>/dev/null)" ] && [ "${DRY_RUN:-0}" != "1" ]; then
-  log "같은 발견 집합($HASH) — 알림 생략"
+NOTIFY_REPORT="$(printf '%s\n' "$DEDUP_OUT" | sed -n '1p')"
+UPDATED_ALERT_STATE="$(printf '%s\n' "$DEDUP_OUT" | sed -n '2p')"
+N_SUPPRESSED="$(printf '%s\n' "$DEDUP_OUT" | sed -n '3p')"
+
+if [ -z "$(printf '%s' "$NOTIFY_REPORT" | "$PY" -c 'import json,sys; print(json.load(sys.stdin).get("findings") or "")')" ]; then
+  log "전부 반복 억제(24시간 내 동일 발견, ${N_SUPPRESSED:-0}건) — 알림 생략, 로그만 남김"
   exit "$RC"
 fi
+REPORT="$NOTIFY_REPORT"
 
 # --- 3. 서술 (갈아끼울 수 있는 경계) ---
 PROMPT="다음은 개인 자동매매 시스템의 운영 점검 결과 JSON이다. 한국어로 6줄 이내로
@@ -150,18 +173,20 @@ if [ -z "${BODY:-}" ]; then
 $(printf '%s' "$REPORT" | head -c 2500)"
 fi
 
+# --- 4. 통보 ---
 HEAD="$([ "$RC" -eq 1 ] && echo '🚨 운영 감시: 이상' || echo '❔ 운영 감시: 확인 못 한 항목')"
 if notify_now "${HEAD}
 
 ${BODY}
 
 전체: data/ops_watch.log"; then
-  # **발송에 성공했을 때만** 상태를 기록한다. 예전엔 무조건 기록해서, 첫 알림이
-  # 마침 네트워크 문제로 유실되면 "이미 알렸다"로 남아 그 문제에 대해 영원히
-  # 아무 알림도 못 받았다 — 문제가 사라졌다 재발할 때만 새 사건으로 잡혔다.
-  [ "${DRY_RUN:-0}" != "1" ] && printf '%s' "$HASH" > "$STATE"
-  log "알림 전송 (verdict rc=$RC, 해시 $HASH, 서술기 $NARRATOR)"
+  # **발송에 성공했을 때만** 반복 억제 상태를 기록한다. 예전엔 무조건 기록해서,
+  # 첫 알림이 마침 네트워크 문제로 유실되면 "이미 알렸다"로 남아 그 문제에
+  # 대해 영원히 아무 알림도 못 받았다 — 문제가 사라졌다 재발할 때만 새
+  # 사건으로 잡혔다.
+  [ "${DRY_RUN:-0}" != "1" ] && printf '%s' "$UPDATED_ALERT_STATE" > "$ALERT_STATE"
+  log "알림 전송 (verdict rc=$RC, 서술기 $NARRATOR, 반복억제 ${N_SUPPRESSED:-0}건)"
 else
-  log "알림 전송 실패 — 상태 미기록(다음 주기에 재시도) (verdict rc=$RC, 해시 $HASH)"
+  log "알림 전송 실패 — 상태 미기록(다음 주기에 재시도) (verdict rc=$RC)"
 fi
 exit "$RC"

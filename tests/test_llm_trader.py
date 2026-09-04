@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -363,6 +364,88 @@ def test_permanent_rejections_are_not_retried_across_cycles():
 
     assert first == [] and second == []
     assert "ord-1" in strat._consumed_ids
+
+
+def test_pending_exit_dropped_when_symbol_already_flat_and_market_closed():
+    """2026-09-04 실사고 수리: 시장이 닫혀 있어도 포지션 조회는 가능하다 —
+    이미 청산된 종목의 대기 매도 결정을 "시장 닫힘/동시호가" 사유로 매
+    사이클 재시도하지 않고 즉시 영구 폐기한다(실측: 088350 등 3종목이 09:15
+    청산된 뒤 15:50 재시작 이후 장마감 내내 이 사유로 재시도되며 26,445줄
+    중 16,667줄을 차지했다)."""
+    strat = _strategy([_order(action="sell", weight=None)])
+    ctx = _ctx(quotes={"005930": 1000.0}, kr_open=False)  # 무포지션 + 시장 닫힘
+
+    signals = strat.on_cycle(ctx)
+
+    assert signals == []
+    assert "ord-1" in strat._consumed_ids  # 영구 폐기 — 재시도 없음
+    assert "보류 결정 폐기" in strat.last_reject["005930"]
+    assert "포지션 없음" in strat.last_reject["005930"]
+
+    second = strat.on_cycle(ctx)
+    assert second == []
+
+
+def test_pending_exit_still_retried_when_market_closed_and_holding():
+    """대칭 확인 — 포지션이 아직 열려 있으면(체결 미확인) 시장이 닫혀 있을 때도
+    기존처럼 소비되지 않고 다음 사이클에 재평가된다(위 테스트와의 대조군)."""
+    strat = _strategy([_order(action="sell", weight=None)])
+    positions = {"005930": _lot_position("005930")}
+    ctx = _ctx(quotes={"005930": 1000.0}, kr_open=False, positions=positions)
+
+    signals = strat.on_cycle(ctx)
+
+    assert signals == []
+    assert "ord-1" not in strat._consumed_ids
+    assert "시장 닫힘/동시호가" in strat.last_reject["005930"]
+
+
+def test_stale_entry_is_dropped_and_logged_once(caplog):
+    """거래일이 지난 보류 결정은 조용히 매 사이클 다시 걸러지는 대신, 한 번
+    로그하고 영구 소비된다(2026-09-04)."""
+    yesterday = NOW - timedelta(days=1)
+    strat = _strategy([_order(ts=yesterday.isoformat())])
+    ctx = _ctx(quotes={"005930": 1000.0})
+
+    with caplog.at_level(logging.INFO):
+        signals = strat.on_cycle(ctx)
+
+    assert signals == []
+    assert "ord-1" in strat._consumed_ids
+    assert "보류 결정 폐기" in strat.last_reject["005930"]
+    assert "거래일 경과" in strat.last_reject["005930"]
+    matching = [r for r in caplog.records if "보류 결정 폐기" in r.message]
+    assert len(matching) == 1
+
+    # 이미 영구 소비됐으므로 다음 사이클엔 아무 일도 일어나지 않는다(재로그 없음).
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        assert strat.on_cycle(ctx) == []
+    assert not caplog.records
+
+
+def test_rejection_log_throttled_to_once_per_30_minutes_per_decision(caplog):
+    """같은 결정(oid)의 거부가 30분 안에 반복되면 로그를 또 남기지 않는다 —
+    한 심볼에 pending 결정이 여러 개 있을 때 서로 다른 oid가 매 사이클
+    last_reject[symbol]을 번갈아 갱신해 무한 재로그되던 결함(2026-09-04,
+    15:50 재시작 이후 26,445줄 중 16,667줄) 재발 방지."""
+    strat = _strategy([_order()])  # buy, 시장 닫힘 → 소비되지 않고 매 사이클 재시도
+    ctx = _ctx(quotes={"005930": 1000.0}, kr_open=False)
+
+    with caplog.at_level(logging.INFO):
+        strat.on_cycle(ctx)
+        strat.on_cycle(ctx)
+        strat.on_cycle(ctx)
+
+    matching = [r for r in caplog.records if "시장 닫힘/동시호가" in r.message]
+    assert len(matching) == 1  # 3번 호출했지만 로그는 최초 1번만
+
+    # 30분이 지나면 다시 한 번 로그된다(하트비트 — 계속 억제되진 않는다).
+    later_ctx = _ctx(now=NOW + timedelta(minutes=31), quotes={"005930": 1000.0}, kr_open=False)
+    with caplog.at_level(logging.INFO):
+        strat.on_cycle(later_ctx)
+    matching_after = [r for r in caplog.records if "시장 닫힘/동시호가" in r.message]
+    assert len(matching_after) == 2
 
 
 def test_restart_does_not_replay_a_previous_trading_days_order():

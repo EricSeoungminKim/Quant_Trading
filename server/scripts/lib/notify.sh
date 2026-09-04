@@ -20,6 +20,13 @@
 #   notify_defer "<source>" "<text>"  **절대 발송하지 않는다.** 큐에만 쌓는다.
 #                                    (백필 결과·요약·정보성 — 마감 HTML 로만 간다)
 #
+# 세 함수 모두 반환값이 **실제 결과**다(0=성공, 그 외=실패) — notify_defer도
+# 큐 쓰기 자체가 실패하면 0이 아니다(2026-09-04 수정). session_pnl.sh/
+# manual_recs.sh처럼 발송 결과를 로그에 남기고 싶은 호출부는 이 값을 그대로
+# 쓰면 된다. notify_auto가 이번에 큐에 넣을지 즉시 보낼지 미리 알고 싶으면
+# (성공 시 "전송 성공"과 "큐 적재"를 구분해 로그로 남기고 싶을 때)
+# `notify_auto_would_defer`(공개 API, 아래)를 부르면 된다.
+#
 # 미뤄진 것은 `data/notify_queue.jsonl` 에 append 되고, 마감 HTML 리포트가 이걸
 # 읽어 "문제 발견 및 개선" 절에 넣는다. 줄 형식(계약):
 #
@@ -114,9 +121,15 @@ _notify_json_escape() {
     | awk 'BEGIN{ORS=""} NR>1{print "\\n"} {print}'
 }
 
-# 큐에 한 줄 append. **실패해도 절대 스크립트를 죽이지 않는다.**
+# 큐에 한 줄 append. 반환값은 **실제 쓰기 성공 여부**를 반영한다(2026-09-04
+# 수정 — 이전엔 항상 0을 반환해 notify_defer/notify_auto 호출부가 "큐 적재
+# 성공/실패"를 구분할 방법이 없었다: session_pnl.sh/manual_recs.sh가 발송
+# 결과를 로그에 남기려 해도 그 값이 항상 성공만 가리켰다). 실패해도 **호출
+# 스크립트를 죽이지는 않는다** — 이 파일을 쓰는 크론 중 `set -e`를 켠 곳이
+# 없고(`set -u`뿐), 반환값을 무시하는 기존 호출부(`notify_auto ... || true`)도
+# 그대로 안전하다.
 _notify_enqueue() {  # $1=source $2=text $3=level
-  local f line
+  local f line rc
   f="${NOTIFY_QUEUE:-$_NOTIFY_ROOT/data/notify_queue.jsonl}"
   mkdir -p "$(dirname "$f")" 2>/dev/null || true
   line="$(printf '{"ts":"%s","source":"%s","text":"%s","level":"%s"}' \
@@ -127,11 +140,13 @@ _notify_enqueue() {  # $1=source $2=text $3=level
   # 크론이 겹치면 3900자 메시지 두 개가 섞여 JSON 이 깨진다(append 원자성은
   # PIPE_BUF 까지만). flock 이 있으면 쓴다 — 없으면(맥) 그냥 append.
   if command -v flock >/dev/null 2>&1; then
-    ( flock 200; printf '%s\n' "$line" >&200 ) 200>>"$f" 2>/dev/null || true
+    ( flock 200; printf '%s\n' "$line" >&200 ) 200>>"$f" 2>/dev/null
+    rc=$?
   else
-    printf '%s\n' "$line" >> "$f" 2>/dev/null || true
+    printf '%s\n' "$line" >> "$f" 2>/dev/null
+    rc=$?
   fi
-  return 0
+  return "$rc"
 }
 
 # 실제 발송. 0=보냄(또는 토큰 없어 no-op), 1=발송 실패.
@@ -183,6 +198,15 @@ notify_auto() {  # $1=source $2=text
   else
     _notify_send "$2"
   fi
+}
+
+# notify_auto가 **지금** 호출되면 큐에 넣을지(장중) 즉시 보낼지(장외)를 미리
+# 알려준다 — notify_auto 자체의 동작·반환값 계약(0/1)은 바꾸지 않는 순수 조회다.
+# 호출부가 "전송 성공"과 "큐 적재"를 구분해 로그에 남기고 싶을 때 쓴다
+# (session_pnl.sh/manual_recs.sh, 2026-09-04) — notify_auto를 부르기 직전/직후
+# 어느 쪽에서 호출해도 같은 순간의 벽시계를 보므로 결과가 갈릴 일은 사실상 없다.
+notify_auto_would_defer() {
+  _in_market_hours
 }
 
 fi

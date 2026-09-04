@@ -912,24 +912,21 @@ def cmd_watch_score(args: argparse.Namespace) -> None:
             token = r.symbol + (":" + "+".join(r.tags) if r.tags else "")
             passing.append(token)
 
-    # 시총 게이트 탈락 요약(2026-09-03 소유자 철학 지시 A) — 미확인("시총
-    # 미확인")과 미달("시총 <3,000억")을 한 줄로 합산해 own_brief.sh 로그에서
-    # 그날 몇 건이 시총 때문에 빠졌는지 바로 보이게 한다.
-    cap_rejected = sum(
-        1 for r in results
-        if any(reason.startswith("시총 미확인") or reason.startswith("시총 <") for reason in r.reasons)
-    )
-    if cap_rejected:
-        print(f"시총 <3,000억 탈락 {cap_rejected}건")
-
-    # 전일 상한가 게이트 탈락 요약(2026-09-03 소유자 결정) — 위 시총 요약과 같은
-    # 패턴. watch_scorer._check_prerequisites의 "전일 상한가: +X.X%" 사유 문자열과
-    # 접두어를 맞춘다.
-    prev_limit_up_rejected = sum(
-        1 for r in results if any(reason.startswith("전일 상한가") for reason in r.reasons)
-    )
-    if prev_limit_up_rejected:
-        print(f"전일 상한가 탈락 {prev_limit_up_rejected}건")
+    # 탈락 사유 요약(2026-09-04) — own_brief.sh가 PASS 통과 종목이 하나라도
+    # 있으면 이 stdout 전체(SCORE_LINES)를 버리고 "watch-score rc=... 통과: ..."
+    # 요약 한 줄만 로그에 남긴다(server/scripts/own_brief.sh) — 그래서 몇 건이
+    # 왜 탈락했는지가 own_brief.log에서 통째로 사라졌었다. 사유 카테고리별
+    # 건수 + 심볼별 상세(최대 20건)를 PASS 줄과 함께 항상 찍는다(2026-09-03
+    # 소유자 철학 지시 A의 시총/전일 상한가 전용 요약을 일반화한 것).
+    from quant.analyze.watch_scorer import rejection_summary
+    reject_counts, reject_entries = rejection_summary(results)
+    if reject_counts:
+        summary_line = " · ".join(
+            f"{category} {n}건"
+            for category, n in sorted(reject_counts.items(), key=lambda kv: -kv[1])
+        )
+        print(f"탈락 사유 요약: {summary_line}")
+        print("REJECT: " + "|".join(reject_entries))
 
     print(f"PASS: {' '.join(passing) if passing else '없음'}")
 

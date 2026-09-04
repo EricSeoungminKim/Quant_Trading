@@ -165,7 +165,7 @@ _tradable`과 같은 게이트). **그 밖의 보유 관리는 하지 않는다*
 from __future__ import annotations
 
 import logging
-from datetime import date as dtdate, datetime, timezone
+from datetime import date as dtdate, datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Mapping
 
 from quant.core.models import Position, Signal, SignalAction, trading_day
@@ -181,6 +181,14 @@ DEFAULT_STOP_PCT = 5.0
 # 전략들의 flatten_before_close_minutes 기본값(1~10)과 같은 자리 — 동시호가 직전
 # 청산 시도가 씹히지 않도록 여유를 둔다.
 DEFAULT_FLATTEN_BEFORE_CLOSE_MINUTES = 10
+# 거부/폐기 로그 반복 억제(2026-09-04) — 같은 결정(oid)의 거부가 이 창 안에서
+# 다시 나면 로그를 또 남기지 않는다. 예전엔 심볼 단위로 "직전 사유 문자열과
+# 다르면 로그"였는데, 한 심볼에 pending 결정이 둘 이상이면 서로 다른 oid가
+# 매 사이클 last_reject[symbol]을 번갈아 갱신해 사실상 매번 "새 사유"로 보여
+# 무한 재로그됐다(실측: 15:50 재시작 이후 26,445줄 중 16,667줄이 이 거부
+# 로그였다). `quant/control/ledger.py`의 REJECT_LOG_COOLDOWN(1시간)과 같은
+# 발상이지만 여기는 결정(oid) 단위라 창을 더 짧게(30분) 잡는다.
+_REJECT_LOG_THROTTLE = timedelta(minutes=30)
 
 _KR_MARKET = "KR"
 
@@ -252,8 +260,12 @@ class LlmTraderStrategy:
         # "상태" 절). 거래일이 바뀌면 통째로 비운다.
         self._consumed_day: dtdate | None = None
         self._consumed_ids: set[str] = set()
-        # 진단용 — symbol → 마지막 거부 사유. `_reject`가 갱신하고 즉시 로그한다.
+        # 진단용 — symbol → 마지막 거부 사유. `_reject`가 갱신한다(로그 여부와 무관).
         self.last_reject: dict[str, str] = {}
+        # 거부 로그 반복 억제(위 _REJECT_LOG_THROTTLE) — oid → 마지막으로 실제
+        # 로그를 남긴 시각. 프로세스 재시작 시 소실되며, 그래도 무해하다(재시작
+        # 직후 한 번 더 로그되는 정도).
+        self._reject_logged_at: dict[str, datetime] = {}
 
     # ------------------------------------------------------------------ 사이클
 
@@ -360,10 +372,24 @@ class LlmTraderStrategy:
             return None
 
         ts = _parse_ts(order.get("ts"))
-        if ts is None or trading_day(ts) != today:
-            # 과거/미상 ts — 소비 처리하지 않는다. 매 사이클 다시 걸러도 무해하고
-            # (모듈 docstring "상태" 절), 소비 마킹을 안 해야 "오늘의 자정 이후
-            # 재평가" 같은 경계 사고를 만들지 않는다.
+        if ts is None:
+            # 파싱 불가 — 소비 처리하지 않는다. 매 사이클 다시 걸러도 무해하다
+            # (모듈 docstring "상태" 절).
+            return None
+        decision_day = trading_day(ts)
+        if decision_day < today:
+            # 거래일이 지난 보류 결정(2026-09-04 수리) — 예전엔 이 분기도 조용히
+            # 매 사이클 다시 걸렀을 뿐 로그도, 영구 소비도 하지 않았다. 과거로
+            # 되돌아가지 않으니 오늘 다시 봐도 내일 다시 봐도 결론이 같다 —
+            # 한 번 로그하고 영구 소비한다(재시작 방어선인 ts 필터 자체는 그대로
+            # 다음 거래일에도 걸러낸다. 매 사이클 무의미하게 재평가하며 조용히
+            # 쌓이던 낭비만 없앤다).
+            self._reject(str(order.get("symbol")),
+                         f"보류 결정 폐기: 거래일 경과(#{oid})", oid, ctx.clock.now())
+            self._consumed_ids.add(oid)
+            return None
+        if decision_day != today:
+            # 미래 ts(시계 오차 등) — 소비하지 않고 조용히 건너뛴다(기존 동작).
             return None
 
         # 아래부터 소비 마킹 시점이 갈린다(2026-09-02 결함 B 수정). **형식이 잘못된
@@ -390,26 +416,24 @@ class LlmTraderStrategy:
         symbol = order.get("symbol")
         if not _is_kr_symbol(symbol):
             self._consumed_ids.add(oid)
-            self._reject(str(symbol), f"KR 심볼 아님(#{oid}): {symbol!r}")
+            self._reject(str(symbol), f"KR 심볼 아님(#{oid}): {symbol!r}", oid, ctx.clock.now())
             return None
 
         action = order.get("action")
         if action not in ("buy", "sell"):
             self._consumed_ids.add(oid)
-            self._reject(symbol, f"알 수 없는 action(#{oid}): {action!r}")
+            self._reject(symbol, f"알 수 없는 action(#{oid}): {action!r}", oid, ctx.clock.now())
             return None
 
         horizon = order.get("horizon")
         if horizon not in _VALID_HORIZONS:
             self._consumed_ids.add(oid)
-            self._reject(symbol, f"horizon 값 오류(#{oid}): {horizon!r} (단타/스윙/장기만 허용)")
+            self._reject(symbol, f"horizon 값 오류(#{oid}): {horizon!r} (단타/스윙/장기만 허용)",
+                        oid, ctx.clock.now())
             return None
 
-        if not tradable:
-            # 소비하지 않는다 — 연속거래 재개 후 같은 oid가 다시 평가된다(위 설명).
-            self._reject(symbol, f"시장 닫힘/동시호가(#{oid}) — 다음 사이클 재시도")
-            return None
-
+        # 포지션 조회는 시장 개폐와 무관하다 — tradable 게이트보다 먼저 계산해
+        # 둔다(아래 "이미 무포지션인 매도" 조기 폐기가 이 값을 써야 한다).
         pos = positions.get(symbol)
         my_lot = pos.lot(self.id) if pos is not None else None
         holding = bool(
@@ -417,10 +441,27 @@ class LlmTraderStrategy:
             and float(my_lot.get("qty", 0.0)) > 0
         )
 
+        if not tradable:
+            if action == "sell" and not holding:
+                # 2026-09-04 실사고 수리: 이미 청산된 종목의 대기 매도 결정이
+                # "시장 닫힘/동시호가 — 다음 사이클 재시도"로 영원히 재시도됐다
+                # (088350/042660/006800이 09:15 청산된 뒤 15:50 재시작 이후
+                # 장마감 내내 — 약 17시간, 26,445줄 중 16,667줄). 포지션 없음은
+                # 시장이 닫혀 있어도 이미 확정된 사실이므로(포지션 조회는
+                # tradable과 무관) 재시도로 미루지 않고 그 자리에서 영구 폐기한다.
+                self._reject(symbol, f"보류 결정 폐기: 포지션 없음(#{oid})", oid, ctx.clock.now())
+                self._consumed_ids.add(oid)
+                return None
+            # 그 외엔 소비하지 않는다 — 연속거래 재개 후 같은 oid가 다시
+            # 평가된다(위 설명).
+            self._reject(symbol, f"시장 닫힘/동시호가(#{oid}) — 다음 사이클 재시도",
+                        oid, ctx.clock.now())
+            return None
+
         if action == "buy":
             signal = self._enter(symbol, order, oid, horizon, positions, holding, ctx)
         else:
-            signal = self._exit(symbol, order, oid, horizon, holding)
+            signal = self._exit(symbol, order, oid, horizon, holding, ctx)
 
         if signal is None:
             # _enter/_exit 자체 가드(중복 매수/보유 없음/비중 오류/시세 없음/한도
@@ -435,7 +476,7 @@ class LlmTraderStrategy:
         positions: dict[str, Position], holding: bool, ctx: Context,
     ) -> Signal | None:
         if holding:
-            self._reject(symbol, f"이미 보유 중 — 중복 매수 거부(#{oid})")
+            self._reject(symbol, f"이미 보유 중 — 중복 매수 거부(#{oid})", oid, ctx.clock.now())
             return None
 
         open_count = sum(
@@ -444,23 +485,24 @@ class LlmTraderStrategy:
             and float(p.lot(self.id).get("qty", 0.0)) > 0
         )
         if open_count >= self.max_positions:
-            self._reject(symbol, f"동시 보유 한도 초과({open_count}/{self.max_positions}, #{oid})")
+            self._reject(symbol, f"동시 보유 한도 초과({open_count}/{self.max_positions}, #{oid})",
+                        oid, ctx.clock.now())
             return None
 
         weight_raw = order.get("weight")
         try:
             weight = float(weight_raw)
         except (TypeError, ValueError):
-            self._reject(symbol, f"weight 형식 오류(#{oid}): {weight_raw!r}")
+            self._reject(symbol, f"weight 형식 오류(#{oid}): {weight_raw!r}", oid, ctx.clock.now())
             return None
         if not 0 < weight <= 1:
-            self._reject(symbol, f"weight 범위 오류(#{oid}): {weight}")
+            self._reject(symbol, f"weight 범위 오류(#{oid}): {weight}", oid, ctx.clock.now())
             return None
         target_weight = min(weight, self.max_weight_per_position)
 
         quote = ctx.data.quote(symbol)
         if quote is None or quote.price <= 0:
-            self._reject(symbol, f"현재가 없음(#{oid})")
+            self._reject(symbol, f"현재가 없음(#{oid})", oid, ctx.clock.now())
             return None
         price = float(quote.price)
         stop = price * (1 - self.stop_pct / 100)
@@ -481,9 +523,13 @@ class LlmTraderStrategy:
 
     def _exit(
         self, symbol: str, order: Mapping[str, Any], oid: str, horizon: str, holding: bool,
+        ctx: Context,
     ) -> Signal | None:
         if not holding:
-            self._reject(symbol, f"보유 없음 — 매도 거부(#{oid})")
+            # 시장이 열려 있는데 이미 무포지션인 경우(장중 재평가) — 여기 걸린다.
+            # 시장이 닫혀 있을 때의 동일 상황은 `_process_order`가 이 함수를
+            # 부르기 전에 이미 조기 폐기한다(모듈 docstring "방어선" 절 참고).
+            self._reject(symbol, f"보유 없음 — 매도 거부(#{oid})", oid, ctx.clock.now())
             return None
         reason = str(order.get("reason") or "근거 없음")
         return Signal(
@@ -492,7 +538,20 @@ class LlmTraderStrategy:
             reason=f"[{horizon}] LLM 매도(#{oid}): {reason}",
         )
 
-    def _reject(self, symbol: str, reason: str) -> None:
-        if self.last_reject.get(symbol) != reason:
-            logger.info("[%s] 진입/청산 거부 %s: %s", self.id, symbol, reason)
+    def _reject(self, symbol: str, reason: str, oid: str, now: datetime) -> None:
+        """거부/폐기 사유를 기록한다. `self.last_reject[symbol]`은 항상 갱신하지만
+        (진단용 — 마지막 사유 조회), 실제 `logger.info` 호출은 **결정(oid) 단위로
+        `_REJECT_LOG_THROTTLE`(30분)에 한 번**만 남긴다.
+
+        이전엔 "직전 로그한 사유 문자열과 다르면 로그"를 심볼 단위로 판정했다 —
+        한 심볼에 pending 결정이 둘 이상이면 서로 다른 oid가 매 사이클
+        last_reject[symbol]을 번갈아 갱신해, 사이클마다 "새 사유"로 보여
+        무한 재로그됐다(2026-09-04 실측: 15:50 재시작 이후 26,445줄 중
+        16,667줄이 이 거부 로그였다). oid 단위 시각 억제로 바꾸면 그 상호간섭이
+        없어진다."""
         self.last_reject[symbol] = reason
+        last_logged = self._reject_logged_at.get(oid)
+        if last_logged is not None and (now - last_logged) < _REJECT_LOG_THROTTLE:
+            return
+        logger.info("[%s] 진입/청산 거부 %s: %s", self.id, symbol, reason)
+        self._reject_logged_at[oid] = now

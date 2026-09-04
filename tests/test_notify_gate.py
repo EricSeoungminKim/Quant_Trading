@@ -194,6 +194,45 @@ def test_queue_write_failure_does_not_kill_the_script(gate, tmp_path):
     assert "ALIVE" in r.stdout
 
 
+def test_queue_write_failure_is_reported_via_return_code(gate, tmp_path):
+    """2026-09-04 수정: 예전엔 큐 쓰기가 실패해도 notify_defer/notify_auto가
+    항상 0을 반환해, session_pnl.sh/manual_recs.sh 같은 호출부가 "큐 적재
+    성공/실패"를 로그로 구분할 방법이 없었다. 이제 실제 쓰기 결과를 그대로
+    반환한다 — 스크립트를 죽이지는 않는다(위 테스트)."""
+    blocker = tmp_path / "블로커"
+    blocker.write_text("", encoding="utf-8")
+    r = gate.run(
+        'notify_defer "x" "본문" && echo QUEUED || echo FAILED',
+        NOTIFY_QUEUE=str(blocker / "queue.jsonl"),
+        **IN_HOURS,
+    )
+    assert "FAILED" in r.stdout, r.stderr
+
+
+def test_queue_write_success_is_reported_via_return_code(gate):
+    r = gate.run('notify_defer "x" "본문" && echo QUEUED || echo FAILED', **IN_HOURS)
+    assert "QUEUED" in r.stdout, r.stderr
+
+
+# ── notify_auto_would_defer — 로그용 순수 조회(2026-09-04) ─────────────────
+
+def test_would_defer_true_in_market_hours(gate):
+    r = gate.run("notify_auto_would_defer && echo DEFER || echo SEND", **IN_HOURS)
+    assert "DEFER" in r.stdout, r.stderr
+
+
+def test_would_defer_false_off_hours(gate):
+    r = gate.run("notify_auto_would_defer && echo DEFER || echo SEND", **OFF_HOURS)
+    assert "SEND" in r.stdout, r.stderr
+
+
+def test_would_defer_does_not_itself_send_or_queue(gate):
+    """순수 조회다 — 호출만으로 큐에 쌓이거나 텔레그램이 나가면 안 된다."""
+    gate.run("notify_auto_would_defer", **IN_HOURS)
+    assert gate.sends() == []
+    assert gate.queued() == []
+
+
 # ── ⑦ 장중 판정 — 주말·US 세션 경계 ───────────────────────────────────────
 
 @pytest.mark.parametrize(
