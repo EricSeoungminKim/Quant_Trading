@@ -79,6 +79,7 @@ from quant.control.ledger import (
     is_seeding_liquidation,
     round_trips,
 )
+from quant.control.strategy_help import build_strategy_help
 from quant.core.models import trading_day
 
 __all__ = ["build_performance_payload"]
@@ -537,6 +538,10 @@ def _strategy_stats(trades: list[dict], strategies_cfg: dict | None = None) -> l
             "trades_per_day": round(len(known) / len(days), 2) if days else None,
             "avg_hold_minutes": round(sum(holds) / len(holds), 1) if holds else None,
             "enabled": bool((strategies_cfg.get(sid) or {}).get("enabled", False)),
+            # 공개 사이트 "전략 설명" 드로어용 콘텐츠(2026-09-04) — 가설·진입·
+            # 청산·사이징·근거. quant.control.strategy_help가 종목/파라미터를
+            # 지어내지 않고 strategies_cfg에서 그 자리에서 읽는다(모듈 docstring).
+            "help": build_strategy_help(sid, strategies_cfg),
             "by_market": {
                 "asia": _round_trip_stats(known_kr) if known_kr else None,
                 "us": _round_trip_stats(known_us) if known_us else None,

@@ -194,7 +194,12 @@ def test_no_forbidden_fields_in_output():
             "trades_per_day", "avg_hold_minutes", "enabled",
             # 2026-09-03(F6) — 공개 사이트 EN 로케일용 영문 표시명.
             "name_en",
+            # 2026-09-04 — 전략 설명 드로어용 콘텐츠(quant.control.strategy_help).
+            "help",
         }
+        help_blob = json.dumps(strat["help"], ensure_ascii=False)
+        for forbidden in ("005930", "523860", "2100000", "263416"):
+            assert forbidden not in help_blob, f"help 필드에 금지 값 유출: {forbidden!r}"
         assert set(strat["total"].keys()) == {
             "trips", "wins", "win_rate", "ci_low", "ci_high",
             "expectancy_bp", "verdict", "sample_warning", "markets",
