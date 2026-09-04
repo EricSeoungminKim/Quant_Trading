@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import json
+import logging
 from datetime import date, datetime
 
 import pandas as pd
@@ -47,6 +49,62 @@ def test_candidate_codes_dedupes_keeping_first_name_and_sorts(tmp_path):
     out = kld.candidate_codes(tmp_path)
 
     assert out == [("005930", "삼성전자"), ("035720", "카카오")]
+
+
+# --------------------------------------------------------------------- candidate_codes 폴백
+
+
+def test_candidate_codes_falls_back_to_dart_when_kind_blocked(tmp_path, monkeypatch, caplog):
+    """KIND 403(EC2 IP 차단) → DART 공시 법인목록 캐시로 폴백."""
+    def _blocked(path):
+        raise RuntimeError("403 Client Error: Forbidden")
+    monkeypatch.setattr(kld, "fetch_kind_corp_list", _blocked)
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    dart_cache_dir = tmp_path / "root" / "data" / "cache"
+    dart_cache_dir.mkdir(parents=True)
+    (dart_cache_dir / "dart_corp_codes.json").write_text(
+        json.dumps([{"corp_code": "00126380", "corp_name": "삼성전자", "stock_code": "005930"}]),
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.INFO):
+        out = kld.candidate_codes(cache_dir, root=tmp_path / "root")
+
+    assert out == [("005930", "삼성전자")]
+    assert any("DART" in r.message for r in caplog.records)
+
+
+def test_candidate_codes_falls_back_to_local_union_when_kind_and_dart_both_down(
+    tmp_path, monkeypatch, caplog,
+):
+    """KIND도 DART도 죽으면 data/history + frgn_flow.jsonl 합집합으로, WARNING과 함께."""
+    def _blocked(path):
+        raise RuntimeError("403 Client Error: Forbidden")
+    monkeypatch.setattr(kld, "fetch_kind_corp_list", _blocked)
+
+    root = tmp_path / "root"
+    history_dir = root / "data" / "history" / "005930" / "1d"
+    history_dir.mkdir(parents=True)
+    # US 티커 혼입 방지 검증용 — 6자리 코드가 아니므로 제외돼야 한다.
+    (root / "data" / "history" / "AAPL" / "1d").mkdir(parents=True)
+    ledger_dir = root / "data" / "ledger"
+    ledger_dir.mkdir(parents=True)
+    (ledger_dir / "frgn_flow.jsonl").write_text(
+        json.dumps({"date": "2026-09-01", "symbol": "000660"}) + "\n"
+        + "not json\n"
+        + json.dumps({"date": "2026-09-02", "symbol": "005930"}) + "\n",  # 중복
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        # DART도 실패시키려면 캐시 없음 + api_key="" 로 네트워크를 막는다
+        # (실제 .env.local에 DART_API_KEY가 있어도 이 테스트는 네트워크를 타지 않는다).
+        out = kld.candidate_codes(tmp_path / "cache", root=root, dart_api_key="")
+
+    assert out == [("000660", "000660"), ("005930", "005930")]
+    assert any("로컬 합집합" in r.message for r in caplog.records)
 
 
 # --------------------------------------------------------------------- 시가총액

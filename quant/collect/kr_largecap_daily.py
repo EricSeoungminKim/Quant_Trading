@@ -112,14 +112,92 @@ def parse_kind_codes(raw: bytes) -> list[tuple[str, str, str]]:
     return out
 
 
-def candidate_codes(cache_dir: Path = KIND_CACHE_DIR) -> list[tuple[str, str]]:
-    """전체 상장 종목 (코드, 이름) 후보, 코드 오름차순, 중복 제거."""
-    raw = fetch_kind_corp_list(cache_dir / "kind_corplist.html")
-    records = parse_kind_codes(raw)
-    by_code: dict[str, str] = {}
-    for code, name, _market in records:
-        by_code.setdefault(code, name)
-    return sorted(by_code.items())
+def _dart_candidate_codes(root: Path, *, api_key: str | None = None, getter=None) -> dict[str, str]:
+    """DART 공시 법인목록(`data/cache/dart_corp_codes.json`) → {종목코드: 회사명}.
+
+    `quant/collect/sources/dart_financials.py`가 이미 매일 이 캐시를 갱신하므로
+    (재무제표 배치의 corp_code 매핑 전제) **새 네트워크 의존이 생기지 않는다** —
+    같은 모듈(`quant.collect`)이라 평면 규칙 위반도 없다. 캐시가 없으면 그 모듈이
+    직접 DART API를 1회 호출해 채운다(`get_corp_code_map`). 시장구분(유가/코스닥)은
+    DART에 없어 못 채우지만 이 후보 목록은 시장구분을 쓰지 않는다."""
+    from quant.collect.sources.dart_financials import get_corp_code_map
+
+    corp_map, err = get_corp_code_map(root, api_key=api_key, getter=getter)
+    if err:
+        logger.warning("DART 공시 법인목록도 실패: %s", err)
+        return {}
+    return {code: info["corp_name"] for code, info in corp_map.items() if info.get("corp_name")}
+
+
+def _local_symbol_union(root: Path) -> set[str]:
+    """`data/history/{symbol}/1d` 디렉터리 + `data/ledger/frgn_flow.jsonl` 심볼의
+    합집합 — KIND·DART 상장법인목록 소스가 둘 다 죽어도 유니버스가 완전히 비지
+    않게 하는 마지막 방어선이다(2026-09-04, EC2에서 KIND 403 차단으로 유니버스가
+    하루 통째로 빈 사고). "우리가 이미 아는 종목"일 뿐 상장법인목록이 아니라
+    6자리 종목코드만 남긴다(US 티커 등 다른 시장 혼입 방지)."""
+    out: set[str] = set()
+
+    history_dir = root / "data" / "history"
+    if history_dir.is_dir():
+        for entry in history_dir.iterdir():
+            if entry.is_dir() and _CODE.match(entry.name) and (entry / "1d").is_dir():
+                out.add(entry.name)
+
+    flow_path = root / "data" / "ledger" / "frgn_flow.jsonl"
+    if flow_path.exists():
+        for line in flow_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            symbol = row.get("symbol") if isinstance(row, dict) else None
+            if symbol and _CODE.match(str(symbol)):
+                out.add(str(symbol))
+
+    return out
+
+
+def candidate_codes(
+    cache_dir: Path = KIND_CACHE_DIR, *, root: Path = REPO_ROOT,
+    dart_api_key: str | None = None, dart_getter=None,
+) -> list[tuple[str, str]]:
+    """전체 상장 종목 (코드, 이름) 후보, 코드 오름차순, 중복 제거.
+
+    3단계 폴백(2026-09-04): KIND 상장법인목록 → DART 공시 법인목록(리포트 계층이
+    쓰는 것과 같은 폴백, `quant/analyze/entities.py`의 `_dart_name_map` 참고) →
+    로컬 보유 심볼 합집합(`_local_symbol_union`). KIND가 EC2 IP를 403으로 막으면
+    (2026-08부터 알려진 문제, 리포트 계층은 이미 DART로 폴백한다) 이 함수만 그
+    폴백이 없어 유니버스 재계산이 통째로 실패했었다 — 스윙 추천 생산기가 그날
+    0건을 냈다. 마지막 단계(로컬 합집합)는 상장법인목록이 아니라 "우리가 이미
+    아는 종목"이라 이름을 모른다 — 코드를 이름 자리에도 채운다(모르는 이름을
+    지어내지 않는다)."""
+    try:
+        raw = fetch_kind_corp_list(cache_dir / "kind_corplist.html")
+        records = parse_kind_codes(raw)
+    except Exception as e:  # noqa: BLE001 — KIND 실패는 DART 폴백으로
+        logger.warning("KIND 상장법인목록 실패 — DART 공시 법인목록으로 폴백: %s: %s",
+                       type(e).__name__, e)
+    else:
+        by_code: dict[str, str] = {}
+        for code, name, _market in records:
+            by_code.setdefault(code, name)
+        logger.info("후보 종목 목록 소스: KIND 상장법인목록 (%d종목)", len(by_code))
+        return sorted(by_code.items())
+
+    dart_map = _dart_candidate_codes(root, api_key=dart_api_key, getter=dart_getter)
+    if dart_map:
+        logger.info("후보 종목 목록 소스: DART 공시 법인목록 (%d종목)", len(dart_map))
+        return sorted(dart_map.items())
+
+    local_codes = _local_symbol_union(root)
+    logger.warning(
+        "KIND·DART 상장법인목록 모두 불가 — 로컬 보유 심볼 합집합으로 대체. "
+        "후보 종목 목록 소스: 로컬 합집합 (%d종목, 이름 없음)", len(local_codes),
+    )
+    return sorted((code, code) for code in local_codes)
 
 
 # ========================================================================
