@@ -298,3 +298,57 @@ def test_render_includes_finding_example_and_reason_quote():
 def test_render_includes_unverified_threshold_footer():
     out = render_feedback_text(date(2026, 8, 24), "KR", {})
     assert "미검증 초기값" in out
+
+
+# ── render_feedback_text HTML 서식 (2026-09-04, tgfmt) ────────────────────
+
+import re as _re
+
+
+def _assert_balanced_html(text: str) -> None:
+    stack: list[str] = []
+    for m in _re.finditer(r"<(/?)([a-z]+)[^>]*>", text):
+        closing, name = m.group(1), m.group(2)
+        if not closing:
+            stack.append(name)
+        else:
+            assert stack and stack[-1] == name, f"짝이 안 맞는 태그 </{name}> in: {text!r}"
+            stack.pop()
+    assert not stack, f"닫히지 않은 태그 {stack} in: {text!r}"
+
+
+def test_render_feedback_text_html_is_balanced_empty_and_nonempty():
+    _assert_balanced_html(render_feedback_text(date(2026, 8, 24), "KR", {}))
+
+    feedback = {
+        "donchian": {
+            "n_entries": 1,
+            "finding_counts": {"고점매수": 1},
+            "examples": {"고점매수": {"symbol": "005930", "entry_ts": "2026-08-24T00:09:00+00:00",
+                                      "reason": "패턴A 채널 상단 돌파",
+                                      "finding": "고점매수 — 레인지 위치 100%"}},
+            "forensics": {"n": 0}, "forensics_skipped": 0, "bars_missing": 0,
+        }
+    }
+    text = render_feedback_text(date(2026, 8, 24), "KR", feedback)
+    _assert_balanced_html(text)
+    assert "<blockquote expandable>" in text
+
+
+def test_render_feedback_text_escapes_reason_and_report_link():
+    feedback = {
+        "donchian": {
+            "n_entries": 1,
+            "finding_counts": {"고점매수": 1},
+            "examples": {"고점매수": {"symbol": "005930", "entry_ts": "2026-08-24T00:09:00+00:00",
+                                      "reason": "A&B<x> 채널 상단 돌파",
+                                      "finding": "고점매수 — 레인지 위치 100%"}},
+            "forensics": {"n": 0}, "forensics_skipped": 0, "bars_missing": 0,
+        }
+    }
+    text = render_feedback_text(
+        date(2026, 8, 24), "KR", feedback, report_url="https://example.com/r?a=1&b=2",
+    )
+    _assert_balanced_html(text)
+    assert "A&B<x>" not in text and "A&amp;B&lt;x&gt;" in text
+    assert '<a href="https://example.com/r?a=1&amp;b=2">전체 리포트</a>' in text

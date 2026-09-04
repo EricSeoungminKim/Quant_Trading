@@ -770,8 +770,8 @@ def test_session_pnl_text_html_is_balanced_with_and_without_trades():
 
 def test_session_pnl_text_escapes_strategy_and_symbol_and_report_link():
     rows = [
-        _row("A&B<x>", "BUY", 10, 10000.0, "2026-08-12T00:30:00+00:00", strategy="s<1>"),
-        _row("A&B<x>", "SELL", 10, 10200.0, "2026-08-12T01:00:00+00:00", pnl=2000.0, strategy="s<1>"),
+        _row("A&B<x>", "BUY", 10, 10000.0, "2026-08-12T00:30:00+00:00", strategy="s<1>", market="KR"),
+        _row("A&B<x>", "SELL", 10, 10200.0, "2026-08-12T01:00:00+00:00", pnl=2000.0, strategy="s<1>", market="KR"),
     ]
     summary = session_pnl_summary(rows, "KR", date(2026, 8, 12))
     text = session_pnl_text(summary, report_url="https://example.com/r?a=1&b=2")
