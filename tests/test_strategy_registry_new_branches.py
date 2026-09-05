@@ -86,8 +86,14 @@ def test_enabled_in_real_config_now_that_tag_wiring_is_done():
     # 추가한다). 반대로 이 assert가 실패했는데 승격한 기억이 없다면 그건 진짜
     # 회귀다(누군가 settings.yaml을 실수로 건드렸거나 promote를 잘못된 대상에
     # 돌렸다는 뜻).
-    assert strat_cfg["frgn_accumulate"]["enabled"] is False
-    assert strat_cfg["close_bet"]["enabled"] is False
+    #
+    # **2026-09-06 소유자 최종 결정으로 위 2026-09-03 저녁 방침이 뒤집혔다**:
+    # "final form = auto lanes(외국인 수급 적립 + 종가배팅 + 긍정뉴스 적립 —
+    # 이 셋은 오버나이트 허용) + quant lane(LETF 롱/숏 스캘핑) + 그 외 성과 내는
+    # 것 전부." capital_policy: fixed_dual 전환과 함께 frgn_accumulate/close_bet를
+    # 다시 켠다. overnight_drift/rsi2_dip는 이 최종 목록에 없어 계속 비활성이다.
+    assert strat_cfg["frgn_accumulate"]["enabled"] is True
+    assert strat_cfg["close_bet"]["enabled"] is True
     assert strat_cfg["overnight_drift"]["enabled"] is False
     assert strat_cfg["rsi2_dip"]["enabled"] is False
     built = build_strategies(settings.raw)
@@ -129,10 +135,23 @@ def test_enabled_in_real_config_now_that_tag_wiring_is_done():
     # 아이디어는 manual_recs 레인으로 이동). 활성 11종 — intraday_momentum 은
     # 2026-09-05 비활성(소유자 위임 결정: 원장 9트립 0승 −65bp + 같은 계열 10년
     # walk-forward 전부 음수, 변경기록 2026-09-05).
+    # 2026-09-06 소유자 최종 결정으로 **17종 체제** — capital_policy: fixed_dual
+    # 전환("each strategy is its own account: 10,000,000 KRW / $10,000")과 함께
+    # "final form" 로스터를 확정했다: 위에서 다시 켠 frgn_accumulate/close_bet
+    # (외국인 수급 적립·종가배팅, 오버나이트 허용) + 신규 news_accumulate(긍정뉴스
+    # 적립, frgn_accumulate와 같은 클래스 — 태그만 EVENT/EVENT_EXIT) + 09-05
+    # 증거로 비활성했던 intraday_momentum(한 달 관찰용 재활성, 판정 철회 아님) +
+    # quant 레인 letf_pair_qqq/letf_pair_sox(walk-forward NO_GO였지만 소유자 요청
+    # 으로 페이퍼 관찰 — settings.yaml letf_pair_qqq 블록 주석 참고). 시행 횟수
+    # 재신고 대상은 그대로 스캘핑/단기 레인 12개(letf_pair 둘은 서로 다른 신호
+    # 심볼을 매매하는 별개 레인이라 그 모집단에 넣지 않는다 — settings.yaml
+    # letf_pair_sox 블록 주석과 같은 구분).
     assert ids == {
         "news_momentum", "scalp_1m",
         "pullback_impulse", "mr_vwap_quiet",
         "vol_breakout", "gap_fade",
         "llm_trader", "news_scalp",
         "scalp_1m_cat", "pullback_impulse_cat", "vol_breakout_cat",
+        "frgn_accumulate", "close_bet", "news_accumulate",
+        "intraday_momentum", "letf_pair_qqq", "letf_pair_sox",
     }, "활성 전략 목록이 바뀌었다 — 늘리려면 소유자 결정 + 시행 횟수 재신고"

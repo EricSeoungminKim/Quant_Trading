@@ -800,3 +800,151 @@ def test_session_pnl_text_escapes_strategy_and_symbol_and_report_link():
     assert "s<1>" not in text and "s&lt;1&gt;" in text
     assert "A&B<x>" not in text and "A&amp;B&lt;x&gt;" in text
     assert '<a href="https://example.com/r?a=1&amp;b=2">전체 리포트</a>' in text
+
+
+# ===================================================================
+# 페이퍼 에폭 리셋 (2026-09-06, capital_policy: fixed_dual 전환)
+# ===================================================================
+
+def _epoch_marker_row(ts: str, *, capital_policy: str = "fixed_dual") -> dict:
+    from quant.control.ledger import PAPER_EPOCH_MARKER
+
+    return {
+        "ts": ts, "strategy_id": "epoch", "symbol": "_EPOCH_", "side": "buy",
+        "qty": 0.0, "price": 0.0, "fee": 0.0, "realized_pnl": 0.0,
+        "cash_after": None, "cash_after_usd": None,
+        "reason": f"{PAPER_EPOCH_MARKER} — capital_policy={capital_policy}, at {ts}",
+        "market": "US",
+    }
+
+
+def test_is_paper_epoch_marker_detects_reason_marker():
+    from quant.control.ledger import is_paper_epoch_marker
+
+    marker = _epoch_marker_row("2026-09-07T00:00:00+09:00")
+    normal = _row("TQQQ", "BUY", 1, 10.0, "2026-09-07T01:00:00+00:00", strategy="gap_fade")
+    assert is_paper_epoch_marker(marker) is True
+    assert is_paper_epoch_marker(normal) is False
+
+
+def test_paper_epoch_ts_returns_none_without_a_marker():
+    from quant.control.ledger import paper_epoch_ts
+
+    assert paper_epoch_ts([]) is None
+    assert paper_epoch_ts([_row("TQQQ", "BUY", 1, 10.0, "2026-09-07T01:00:00+00:00")]) is None
+
+
+def test_paper_epoch_ts_picks_the_latest_marker():
+    """에폭을 두 번 돌리면(재전환 등) 가장 최근 마커가 경계다."""
+    from quant.control.ledger import paper_epoch_ts
+
+    trades = [
+        _epoch_marker_row("2026-09-07T00:00:00+09:00"),
+        _epoch_marker_row("2026-10-01T00:00:00+09:00"),
+    ]
+    ts = paper_epoch_ts(trades)
+    assert ts is not None
+    assert ts.isoformat() == datetime.fromisoformat("2026-10-01T00:00:00+09:00").isoformat()
+
+
+def test_paper_epoch_ts_defaults_to_loading_the_ledger_file(monkeypatch):
+    """trades를 생략하면(None) load_trades()로 직접 읽는다 —
+    quant.control.performance가 인자 없이 호출하는 계약. `load_trades`의 기본
+    인자(DEFAULT_LEDGER_PATH)는 정의 시점에 묶여 monkeypatch로 갈아끼울 수
+    없으므로, `load_trades` 함수 자체를 대체해 이 위임 경로만 검증한다."""
+    from quant.control import ledger as ledger_module
+
+    monkeypatch.setattr(
+        ledger_module, "load_trades",
+        lambda: [_epoch_marker_row("2026-09-07T00:00:00+09:00")],
+    )
+
+    ts = ledger_module.paper_epoch_ts()
+    assert ts is not None
+
+
+def test_round_trips_discards_lots_open_before_the_paper_epoch():
+    """에폭 마커 이전에 열린 lot은 그 시대의 것이 아니다 — 트립으로 세지 않는다
+    (seeding_boundary_ts와 같은 원칙, F2)."""
+    from quant.control.ledger import round_trips
+
+    trades = [
+        _row("TQQQ", "BUY", 10, 50.0, "2026-08-20T01:00:00+00:00", strategy="gap_fade"),
+        _epoch_marker_row("2026-09-07T00:00:00+09:00"),
+        # 에폭 이전 진입의 매도 — 에폭 이후에 왔지만 상대(매수)가 이 시대에 없다.
+        _row("TQQQ", "SELL", 10, 55.0, "2026-09-08T01:00:00+00:00",
+             pnl=50.0, strategy="gap_fade"),
+        # 에폭 이후 정상 왕복 — 트립으로 잡혀야 한다.
+        _row("TQQQ", "BUY", 5, 60.0, "2026-09-08T02:00:00+00:00", strategy="gap_fade"),
+        _row("TQQQ", "SELL", 5, 62.0, "2026-09-08T03:00:00+00:00",
+             pnl=10.0, strategy="gap_fade"),
+    ]
+    trips = round_trips(trades)
+    assert len(trips) == 1
+    assert trips[0]["pnl"] == pytest.approx(10.0)
+    assert not any(t["strategy"] == "epoch" for t in trips), "마커 행 자체는 트립 재료가 아니다"
+
+
+def test_round_trips_uses_the_later_of_seeding_or_paper_epoch_boundary():
+    """이식 경계와 에폭 경계가 둘 다 있으면 **더 나중** 것이 이긴다."""
+    from quant.control.ledger import SEEDING_LIQUIDATION_MARKER, round_trips
+
+    seeding_row = {
+        "ts": "2026-09-01T14:00:00+00:00", "strategy_id": "legacy", "symbol": "005930",
+        "side": "sell", "qty": 6.0, "price": 70000.0, "fee": 0.0, "realized_pnl": -100.0,
+        "reason": SEEDING_LIQUIDATION_MARKER, "market": "KR",
+    }
+    trades = [
+        # 이식 경계보다도 먼저 열린 lot — 두 경계 중 더 이른 이식 경계 하나만
+        # 봐도 이미 버려질 lot.
+        _row("005930", "BUY", 6.0, 65000.0, "2026-08-25T00:00:00+00:00", strategy="frgn_accumulate"),
+        seeding_row,
+        # 이식 이후·에폭 이전에 연 lot — 에폭 마커가 이걸 버려야 한다(더 나중
+        # 경계가 이긴다는 것을 이 트립의 부재로 검증).
+        _row("005930", "BUY", 3.0, 71000.0, "2026-09-03T00:00:00+00:00", strategy="frgn_accumulate"),
+        _epoch_marker_row("2026-09-07T00:00:00+09:00"),
+        _row("005930", "SELL", 3.0, 72000.0, "2026-09-08T00:00:00+00:00",
+             pnl=999.0, strategy="frgn_accumulate"),  # 상대(매수) 없음 — 버려짐
+        # 에폭 이후 정상 왕복.
+        _row("005930", "BUY", 1.0, 70000.0, "2026-09-08T01:00:00+00:00", strategy="frgn_accumulate"),
+        _row("005930", "SELL", 1.0, 70500.0, "2026-09-08T02:00:00+00:00",
+             pnl=500.0, strategy="frgn_accumulate"),
+    ]
+    trips = round_trips(trades)
+    assert len(trips) == 1
+    assert trips[0]["pnl"] == pytest.approx(500.0)
+
+
+def test_strategy_start_capital_reads_the_books_file(tmp_path):
+    import json
+
+    from quant.control.ledger import strategy_start_capital
+
+    books_path = tmp_path / "strategy_books.json"
+    books_path.write_text(json.dumps({
+        "version": 1, "initial_krw": 0.0,
+        "books": {
+            "gap_fade": {"initial_krw": 10_000_000.0, "initial_usd": 10_000.0},
+            "scalp_1m": {"initial_krw": 10_000_000.0},
+        },
+    }), encoding="utf-8")
+
+    assert strategy_start_capital("gap_fade", books_path) == {"KRW": 10_000_000.0, "USD": 10_000.0}
+    # 구버전 장부(initial_usd 없음)는 USD가 0.0으로 떨어진다 — books.py `_ensure`
+    # 하위호환 기본값과 같은 계약.
+    assert strategy_start_capital("scalp_1m", books_path) == {"KRW": 10_000_000.0, "USD": 0.0}
+    assert strategy_start_capital("never_traded", books_path) == {"KRW": 0.0, "USD": 0.0}
+
+
+def test_strategy_start_capital_returns_zeros_when_file_missing(tmp_path):
+    from quant.control.ledger import strategy_start_capital
+
+    assert strategy_start_capital("gap_fade", tmp_path / "nope.json") == {"KRW": 0.0, "USD": 0.0}
+
+
+def test_strategy_start_capital_returns_zeros_on_corrupted_file(tmp_path):
+    from quant.control.ledger import strategy_start_capital
+
+    p = tmp_path / "strategy_books.json"
+    p.write_text("{not valid json", encoding="utf-8")
+    assert strategy_start_capital("gap_fade", p) == {"KRW": 0.0, "USD": 0.0}

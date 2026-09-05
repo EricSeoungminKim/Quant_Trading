@@ -100,6 +100,45 @@ def test_summary_omits_top_line_when_all_baselines_are_none(tmp_path, capsys):
     assert out == "후보 2개"
 
 
+def test_summary_shows_report_accuracy_line_when_measured(tmp_path, capsys):
+    """2026-09-06 소유자 지시 priority-1 §2 — report_accuracy.measured=True 면
+    발행 요약 마지막 줄에 방향 정확도 한 줄이 붙는다."""
+    payload = {
+        "schema": 1, "market": "KR", "session_date": "2026-08-17",
+        "auto_watch": "AUTO_WATCH: 없음",
+        "symbols": [],
+        "report_accuracy": {
+            "measured": True,
+            "telegram_line": "리포트 정확도 방향 D+1 61%(n=310)",
+        },
+    }
+    _write_engine_json(tmp_path / "out", "KR", date(2026, 8, 17), payload)
+
+    _run(tmp_path, "KR", date(2026, 8, 17))
+    out = capsys.readouterr().out.strip("\n")
+
+    lines = out.split("\n")
+    assert lines[0] == "후보 0개"
+    assert lines[-1] == "리포트 정확도 방향 D+1 61%(n=310)"
+
+
+def test_summary_omits_report_accuracy_line_when_unmeasured(tmp_path, capsys):
+    """표본이 min_n 미만(measured=False)이면 노이즈를 더하지 않는다 — 발행
+    알림에는 "정확도 미측정" 줄조차 안 붙는다(리포트 본문에서 이미 보인다)."""
+    payload = {
+        "schema": 1, "market": "KR", "session_date": "2026-08-17",
+        "auto_watch": "AUTO_WATCH: 없음",
+        "symbols": [],
+        "report_accuracy": {"measured": False, "telegram_line": "정확도 미측정"},
+    }
+    _write_engine_json(tmp_path / "out", "KR", date(2026, 8, 17), payload)
+
+    _run(tmp_path, "KR", date(2026, 8, 17))
+    out = capsys.readouterr().out.strip("\n")
+
+    assert out == "후보 0개"
+
+
 def test_summary_tie_breaks_equal_scores_by_change_pct_then_symbol_code(tmp_path, capsys):
     """동점 1순위는 당일 등락률 내림차순 — baseline 포화(08-16 실측 100점 9개,
     백로그 P1-b) 상태에서 코드순만 쓰면 당일 -5.8% 종목이 텔레그램 요약 맨

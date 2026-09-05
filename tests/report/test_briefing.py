@@ -171,14 +171,14 @@ def _anchors(**pcts):
 
 def test_stance_is_neutral_when_nothing_crosses_threshold():
     s = stance(_snap(), {}, {"quotes": {}, "flow": {}})
-    assert s["label"] == "중립" and s["score"] == 0 and s["score100"] == 50
+    assert s["tier"] == "중립" and s["score"] == 0 and s["score100"] == 50
 
 
 def test_stance_turns_aggressive_on_stacked_positives():
     s = stance(_snap(market=_quotes(**{"^KS11": 0.0, "^VIX": 12.0}),
                      kospi_flow=_flow(외국인=26395, 기관계=7887)),
                {}, {"quotes": {}, "flow": {}})
-    assert s["label"] in ("약한 상승 신호", "강한 상승 신호") and s["score"] >= 2
+    assert s["tier"] in ("약한 상승 신호", "강한 상승 신호") and s["score"] >= 2
 
 
 def test_stance_turns_defensive_on_stacked_negatives():
@@ -188,7 +188,7 @@ def test_stance_turns_defensive_on_stacked_negatives():
         "crosscheck": {"checked": [], "warnings": []}})
     s = stance(_snap(market=mkt, kospi_flow=_flow(외국인=-26395, 기관계=-100)),
                {}, {"quotes": {}, "flow": {}})
-    assert s["label"] in ("약한 하락 신호", "강한 하락 신호") and s["score"] <= -2
+    assert s["tier"] in ("약한 하락 신호", "강한 하락 신호") and s["score"] <= -2
 
 
 def test_imminent_event_overrides_action_even_when_aggressive():
@@ -285,11 +285,29 @@ def test_label_100_covers_full_ordinal_scale_for_stance():
     assert label_100(0, "상승 신호", "하락 신호") == "강한 하락 신호"
 
 
-def test_stance_label_matches_label_100_for_score100():
+def test_stance_tier_matches_label_100_for_score100():
     from quant.analyze.scoring import label_100
     s = stance(_snap(kospi_flow=_flow(외국인=26395, 기관계=7887)), {},
                {"quotes": {}, "flow": {}})
-    assert s["label"] == label_100(s["score100"], "상승 신호", "하락 신호")
+    assert s["tier"] == label_100(s["score100"], "상승 신호", "하락 신호")
+
+
+def test_stance_label_is_generic_same_day_reference_wording():
+    """2026-09-06 감사: 방향콜 D+3 적중률 25.9%(CI가 50%를 배제, n=27)라
+    "강한 상승 신호"처럼 여러 날짜에 걸친 확신을 주장하는 문구를 쓰지 않는다
+    — score(음/양/중립) 어느 쪽이든 label은 고정 문구다."""
+    from quant.analyze.briefing import STANCE_LABEL
+
+    bullish = stance(_snap(market=_quotes(**{"^KS11": 0.0, "^VIX": 12.0}),
+                           kospi_flow=_flow(외국인=26395, 기관계=7887)),
+                     {}, {"quotes": {}, "flow": {}})
+    bearish = stance(_snap(kospi_flow=_flow(외국인=-26395, 기관계=-100)), {},
+                     {"quotes": {}, "flow": {}})
+    neutral = stance(_snap(), {}, {"quotes": {}, "flow": {}})
+    for s in (bullish, bearish, neutral):
+        assert s["label"] == STANCE_LABEL == "당일 스탠스(참고)"
+        assert "상승" not in s["label"] and "하락" not in s["label"]
+        assert "강한" not in s["label"] and "약한" not in s["label"]
 
 
 # ── 조사 처리 ────────────────────────────────────────────────

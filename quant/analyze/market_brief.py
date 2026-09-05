@@ -483,6 +483,13 @@ def brief_text(payload: dict, market: str, url: str | None = None,
     score100 = stance.get("score100")
     if score100 is not None:
         lines.append(f"\n📊 종합 {int(score100)}점/100점 — {stance.get('label') or '?'}")
+    # 방향 판정 실측 정확도(2026-09-06 소유자 지시 priority-1 §2) — payload에
+    # report_accuracy 키가 없으면(호출부 하위호환 — 옛 엔진 JSON, 단위 테스트
+    # 픽스처) 줄 자체를 안 붙인다. `quant.control.report_accuracy.report_summary`
+    # 가 이미 "정확도 미측정"까지 채운 문자열을 낸다.
+    acc_line = (payload.get("report_accuracy") or {}).get("stance_line")
+    if acc_line:
+        lines.append(str(acc_line))
     if stance.get("line"):
         lines.append(str(stance["line"]))
 

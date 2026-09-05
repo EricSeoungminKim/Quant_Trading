@@ -895,7 +895,15 @@ class RiskManagerImpl:
         strategy_id = signal.strategy_id
         book = self.books.books.get(strategy_id, {}) if self.books else {}
         book_positions: dict = book.get("positions", {}) or {}
-        cash = self.books.available_cash_krw(strategy_id) if self.books else 0.0
+        # market 인자로 조회한다(2026-09-06, capital_policy: fixed_dual) — books가
+        # dual_currency=True면 이 값이 그 시장 지갑(KR=cash_krw/US=cash_usd)만
+        # KRW로 환산해 돌려주고, 그 외 정책(dual_currency=False)에서는 지금까지처럼
+        # cash_krw(단일 환산 풀) 그대로다(books.py available_cash_krw_for_market
+        # docstring). "책은 서로 현금을 나누지 않는다"는 시장 경계가 여기서 지켜진다.
+        cash = (
+            self.books.available_cash_krw_for_market(strategy_id, market, self.fx)
+            if self.books else 0.0
+        )
 
         def _book_market(sym: str) -> str:
             p = book_positions.get(sym) or {}

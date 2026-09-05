@@ -42,6 +42,16 @@ ANCHOR_STRONG_PCT = 3.0
 # 가점 가능한 요인 5개(지수 모멘텀, 외국인, 기관계, VIX, 앵커)의 고정 분모.
 STANCE_SPAN = 5
 
+# 방향콜 라벨 문구(2026-09-06 리포트 정확도 감사, 소유자 지시 priority-1 §2).
+# 실측(2026-08-13~09-05 KR+US): 방향콜(bull/bear) D+3 적중률 25.9%(CI
+# [13.2%, 44.7%], n=27) — 50%를 배제하는 신뢰구간으로, 방향콜이 여러 날짜에
+# 걸친 확신을 주장할 근거가 못 됐다. "강한 상승 신호"처럼 세기(강한/약한)와
+# 방향을 함께 내세우는 옛 문구 대신, 당일 한정·참고용임을 못박는 고정 문구로
+# 바꾼다 — 세기 구분은 score100 숫자 자체가 이미 담고 있으므로 라벨에서
+# 반복하지 않는다. `direction_bucket`(quant.control.report_accuracy)은
+# score100 임계 폴백이 있어 이 문구 변경으로 방향 채점이 깨지지 않는다.
+STANCE_LABEL = "당일 스탠스(참고)"
+
 _MAIN_INDEX = {"KR": "^KS11", "US": "^GSPC"}
 
 
@@ -160,7 +170,10 @@ def stance(snap: Snapshot, cont: dict[str, dict], delta: dict) -> dict:
         minus.append(f"{event_term(imminent[0]['name'])} {imminent[0]['dday']}")
 
     score100 = to_100(score, STANCE_SPAN)
-    label = label_100(score100, "상승 신호", "하락 신호")
+    # tier — 세기+방향 문구("강한 상승 신호" 등). 사람에게 보이는 라벨이 아니라
+    # 템플릿 CSS 배지 색상 전용 내부 키다(위 STANCE_LABEL 상수 주석 참고).
+    tier = label_100(score100, "상승 신호", "하락 신호")
+    label = STANCE_LABEL
     if imminent:
         # 이벤트 이름은 바로 앞 절에 이미 나온다 — 반복하면 문장이 늘어진다
         action = "발표를 확인한 뒤 진입한다."
@@ -188,6 +201,7 @@ def stance(snap: Snapshot, cont: dict[str, dict], delta: dict) -> dict:
 
     return {
         "label": label,
+        "tier": tier,
         "score": score,
         "score100": score100,
         "line": line,

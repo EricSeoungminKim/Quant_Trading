@@ -90,6 +90,11 @@ class ReportModel:
     # 창(news_since_for)에 대해 계산한다. None이면(수집 실패 등) 섹션 생략 —
     # 다른 `_build_*` 결과와 같은 관례.
     channel_digest: object | None = None
+    # 리포트 정확도(report_accuracy, 2026-09-06 소유자 지시 priority-1 §2) —
+    # payload["report_accuracy"]와 같은 값(quant.control.report_accuracy.
+    # report_summary 결과). None이면(호출부 하위호환) 방향콜 라벨 옆 참고용
+    # 줄도 '리포트 정확도' 박스도 렌더가 생략한다(us_kr_bridge와 같은 관례).
+    report_accuracy: dict | None = None
 
 
 @dataclass

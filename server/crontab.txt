@@ -259,6 +259,13 @@
 # 판정 결과를 자연어로 한 번 더 감싸는 L2 서술만 켠다 — 판정을 대신하지 않는다.
 25 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 ./server/scripts/daily_feedback.sh US >> data/daily_feedback.log 2>&1
 
+# 06:40 US — 리포트 정확도 스코어카드(2026-09-06 소유자 지시 priority-1: 데일리
+# 마켓 리포트의 방향콜·종목 후보 청구가 실제로 맞았는지 채점). KR/US 양쪽 청구를
+# 한 번에 본다 — daily_feedback.sh 와 같은 이유로 "2-6"(US 세션이 자정을 넘겨
+# 화~토 KST 아침에 마감한다) 요일에 US 세션 마감(daily_feedback 06:25) 뒤·하루
+# 요약 HTML(06:55) 전에 돈다.
+40 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/report_accuracy.sh >> data/report_accuracy.log 2>&1
+
 # 06:55 US — 하루 요약 HTML 한 장을 텔레그램 **파일**로 (2026-08-28 소유자 지시:
 # "매매 관련만 장중에 메시지로, 마감 뒤엔 하루 요약을 HTML 파일로"). 세션
 # 손익(06:10)·자본 곡선(06:15)·일일 피드백(06:25)이 전부 끝난 뒤라야 그날

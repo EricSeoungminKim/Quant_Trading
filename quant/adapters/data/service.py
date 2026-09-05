@@ -22,6 +22,7 @@ Toss는 시세는 있지만 1분봉 히스토리가 며칠뿐이고 웹소켓이
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -202,6 +203,11 @@ class MarketDataService:
         # self._clock은 백테스트에서 점프하므로 스로틀 판정에 쓸 수 없다.
         self._route_last_warned: dict[tuple[str, str], float] = {}
         self._route_was_failing: set[tuple[str, str]] = set()
+        # 짧은 프레임 스로틀(2026-09-06 안정성 감사 P1-1) — (route, symbol, interval)별
+        # 마지막 INFO 시각. 위 실패 스로틀과 같은 메커니즘(monotonic + 10분 창)을
+        # 재사용하되 별도 dict를 쓴다 — 이건 "예외로 실패"가 아니라 "성공했지만
+        # 짧았다"는 다른 사건이라 (route, symbol) 키만으로는 interval이 구분 안 된다.
+        self._short_frame_last_warned: dict[tuple[str, str, str], float] = {}
 
     def quote(self, symbol: str) -> Quote | None:
         """한 사이클 안에서 같은 심볼을 여러 번 물어도 소스는 한 번만 친다.
@@ -307,6 +313,52 @@ class MarketDataService:
         (None) 카운터는 그냥 안 쓰인다 — 호출해도 무해하다."""
         self._cold_fetch_count = 0
 
+    def prefetch(
+        self,
+        symbols: list[str] | tuple[str, ...],
+        needs: list[tuple[str, int]] | tuple[tuple[str, int], ...],
+        time_budget_seconds: float | None = None,
+    ) -> int:
+        """신규 편입 심볼의 봉 캐시를 미리 데운다(2026-09-06 안정성 감사 P1-2).
+
+        유니버스 롤 직후 첫 정상 사이클에서 신규 심볼 수십 개의 캐시 미스가 한꺼번에
+        몰려 그 사이클 자체가 최대 30초까지 늘어지는 문제(EC2 5일 로그 실측, 08:27 KR
+        경계에서 30,528ms/20,808ms 사이클)의 완화책이다. 여기서 history()를 호출해
+        정상 캐시 경로(_store_bars)를 그대로 타므로, 여기서 데운 (symbol, interval)
+        조합은 다음 실제 사이클에서 캐시 히트가 된다.
+
+        needs는 (interval, n) 쌍의 목록 — 호출부(quant/trade/loop.py
+        _roll_universe)가 넘긴다. 전략마다 정확히 무엇이 필요한지 다 추적하는
+        대신 흔히 쓰이는 조합 몇 개만 데우는 근사다 — 완벽할 필요는 없다,
+        못 데운 조합은 평소처럼 그 전략의 사이클에서 콜드 페치되고
+        (cold_fetch_budget_per_cycle로 이미 스로틀됨) 그건 이 프리페치 이전과
+        동일한 기존 동작이다.
+
+        time_budget_seconds(None=무제한)를 넘기면 남은 조합은 건너뛴다 —
+        프리페치 자체가 리로드 경계에 새로운 무제한 지연을 만들면 이 수정의
+        목적(사이클 하나가 통째로 멎는 것을 막는다)에 반한다.
+
+        실패는 조용히 넘어간다(각 소스가 이미 자기 폴백/health를 갖고 있다 —
+        프리페치는 "최선을 다해 데운다"이지 성공을 보장하는 계약이 아니고, 실패로
+        유니버스 롤 자체를 막으면 안 된다). 반환값은 실제로 데운 (symbol, interval)
+        조합 수(관측/테스트용)."""
+        started = time.monotonic()
+        warmed = 0
+        for symbol in symbols:
+            for interval, n in needs:
+                if (
+                    time_budget_seconds is not None
+                    and (time.monotonic() - started) >= time_budget_seconds
+                ):
+                    return warmed
+                try:
+                    result = self.history(symbol, interval, n)
+                except Exception:  # noqa: BLE001 -- prefetch failure must not block universe roll
+                    continue
+                if not result.empty:  # 전 라우트 소진(빈 프레임)은 "데움"으로 안 친다
+                    warmed += 1
+        return warmed
+
     def _finalize_bars(self, frame: pd.DataFrame, interval: str, n: int) -> pd.DataFrame:
         """완성봉 필터와 tail(n)은 **캐시 뒤가 아니라 앞**에서 매번 새로 적용한다.
         캐시에는 정규화만 된 원본이 들어가므로, 같은 경계 안이라도 look-ahead 방어선은
@@ -347,7 +399,20 @@ class MarketDataService:
         # 랭킹하지 못했다(전 종목, 전 회차). 형성 중일 수 있는 봉은 어느
         # interval이든 마지막 1개뿐이므로 여유분은 +1이면 충분하고, 마지막
         # tail(n)이 초과분을 잘라 장 마감 후에도 결과는 정확히 n개다.
+        #
+        # **짧은 프레임 폴백(2026-09-06 안정성 감사 P1-1)**: 예전엔 예외 없이
+        # 반환된 결과는 길이와 무관하게 즉시 성공 처리했다 — 1순위 소스(예: Toss)가
+        # 신규 상장/거래정지/응답 절단으로 30개 요청에 5개만 돌려줘도 그걸 성공으로
+        # 받아들이고 더 깊은 히스토리를 가진 낮은 우선순위 소스(로컬 Parquet 등)로
+        # 폴백하지 않았다. ATR/RSI 등 창 기반 지표와 손절 쿨다운의 "경과 봉 수"
+        # 판정이 조용히 왜곡될 수 있는 결함이었다. 이제는 반환된 봉 수가
+        # `expected_floor`(요청의 최소 절반, 바닥 2) 미만이면 "성공했지만 부족함"
+        # 으로 보고 다음 라우트를 계속 시도한다. 모든 라우트가 부족해도 예외를
+        # 던지지 않고 **그중 가장 긴** 프레임을 쓴다(데이터 없음보다 낫다).
+        expected_floor = max(2, math.ceil(n * 0.5))
+        shortness_threshold = min(n, expected_floor)
         pending: list[tuple[tuple[str, str], str]] = []
+        best_frame: pd.DataFrame | None = None
         for route in self._candidates(Capability.BARS, symbol, interval):
             self._bar_source_calls += 1
             try:
@@ -361,13 +426,44 @@ class MarketDataService:
                 ))
                 continue
             self._record_success(route.name)
+            self._log_route_recovery(route.name, symbol)
+            normalized = _normalize_frame(result)
+            if best_frame is None or len(normalized) > len(best_frame):
+                best_frame = normalized
+            if len(normalized) >= shortness_threshold:
+                # 충분히 길다 — 더 낮은 우선순위 소스로 폴백할 필요 없음.
+                self._last_unserved = False
+                self._flush_route_failures(pending, fallback_succeeded=True)
+                return normalized
+            # 짧다 — 데이터 손실은 아니므로(응답은 왔다) pending에는 넣지 않고
+            # 별도로 스로틀된 INFO만 남긴 뒤 다음 라우트를 계속 시도한다.
+            self._log_short_frame(route.name, symbol, interval, len(normalized), n)
+        if best_frame is not None:
+            # 모든 라우트가 짧았지만 그나마 가장 긴 프레임을 쓴다 — 짧은 데이터라도
+            # 없는 것보다 낫고, 어차피 위에서 부족 사실은 이미 로그로 남겼다.
             self._last_unserved = False
             self._flush_route_failures(pending, fallback_succeeded=True)
-            self._log_route_recovery(route.name, symbol)
-            return _normalize_frame(result)
+            return best_frame
         self._last_unserved = True
         self._flush_route_failures(pending, fallback_succeeded=False)
         return pd.DataFrame(columns=_OHLCV_COLUMNS)
+
+    def _log_short_frame(self, route_name: str, symbol: str, interval: str, got: int, requested: int) -> None:
+        """짧은 프레임 스로틀(D5/D6과 같은 monotonic+10분 창 메커니즘 재사용) —
+        (route, symbol, interval)별로 10분에 한 번만 INFO를 남긴다. 폴백이
+        결국 더 긴 프레임으로 성공하더라도 "짧은 응답이 있었다" 자체는 관측
+        가능해야 하므로 이 로그는 실제 데이터 손실 스로틀(_flush_route_failures)과
+        별개다."""
+        ident = (route_name, symbol, interval)
+        now = time.monotonic()
+        last = self._short_frame_last_warned.get(ident)
+        if last is None or (now - last) >= _FAILURE_WARN_INTERVAL_SECONDS:
+            self._short_frame_last_warned[ident] = now
+            logger.info(
+                "MarketDataService: %s.history(%s,%s) 짧은 프레임(%d개 < 요청 %d개) — "
+                "다음 라우트로 폴백 시도",
+                route_name, symbol, interval, got, requested,
+            )
 
     def health(self) -> ServiceHealth:
         """소스별 현재 상태 스냅샷과 전체 degraded 여부.

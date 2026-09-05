@@ -616,7 +616,13 @@ strategies:
     # manual_recs 레인으로 텔레그램 추천. 이 전략은 판단 자체가 일 1회 적립매수 +
     # 이탈 시 분할청산(오버나이트 보유가 전략 정의)이라 대상. 코드·params·
     # capital_fraction은 그대로 둔다(자본 재분배 없음 — 현금 버퍼로 남긴다).
-    enabled: false
+    # **2026-09-06 재활성** — 소유자 최종 결정: "자동 레인 = 외국인 수급 적립 +
+    # 종가배팅 + 긍정뉴스 적립(오버나이트 허용) + 퀀트 레인(LETF 스캘핑) + 그
+    # 외 성과 내는 것." 자동매매=단타·스캘핑만 방침을 뒤집는 결정이다 — 오버나이트
+    # 보유 자체가 이제 "허용된 자동 레인" 목록에 명시적으로 있다
+    # (risk.overnight_strategies/loop.py _OVERNIGHT_STRATEGIES가 여전히 EoD
+    # 강제청산에서 제외한다, 동작 변화 없음).
+    enabled: true
     capital_fraction:
       KR: 0.14
 
@@ -635,6 +641,44 @@ strategies:
       eval_after_minutes_after_open: 60
       exit_fraction_first: 0.5
 
+  news_accumulate:
+    # 긍정뉴스 적립(2026-09-06, 소유자 최종 결정 "자동 레인 = 외국인 수급 적립 +
+    # 종가배팅 + 긍정뉴스 적립(오버나이트 허용) + 퀀트 레인 + 그 외 성과 내는
+    # 것"). frgn_accumulate와 **같은 클래스**를 재사용한다 — 판단 로직(일 1회
+    # 평가, 태그 있으면 적립매수, 이탈 조건이면 절반→전량 분할청산)은 완전히
+    # 동일하고 **어떤 태그를 보는가만 다르다**(quant/trade/strategy/
+    # frgn_accumulate.py 모듈 docstring "태그 이름 일반화" 절). 외국인 수급
+    # 대신 뉴스 촉매(EVENT, news_momentum과 같은 태그 — watch_scorer가 채점)가
+    # 붙은 종목을 적립 매수 대상으로 삼는다.
+    #
+    # **exit_tag(EVENT_EXIT)를 실제로 붙이는 생산자가 오늘은 없다** — EVENT는
+    # 채점하지만 그 이탈 판정 파이프라인은 아직 없다. 그 상태로 두면 이 전략은
+    # 절대 청산하지 못하는 채로 굳는다. 그래서 exit_when_tag_absent_days: 2를
+    # 추가로 켠다 — EVENT 태그가 2 평가일 연속 부재하면 절반 청산, 그 다음
+    # 평가일에도 부재가 이어지면 잔량 전량 청산(모듈 docstring "태그 부재 기반
+    # 청산" 절). exit_tag 배선이 나중에 완성되면 그 경로도 함께 살아있다(둘은
+    # 서로 다른 연속 카운터를 쓴다 — 어느 한쪽이 다른 쪽을 가리지 않는다).
+    class: frgn_accumulate
+    enabled: true
+    capital_fraction:
+      # news_momentum과 같은 시장 범위(KR 전용) — EVENT 태그 데이터 소스가
+      # 한국 뉴스다. fixed_dual에서 이 값은 사이징이 아니라 boolean 게이트다.
+      KR: 0.1
+      US: 0.0
+    validation:
+      status: burn_in # 신규 레인 — 백테스트 미검증, paper 원장으로 판정
+    universe: watchlist # tags_of(EVENT/EVENT_EXIT)도 관심종목 파일에서 함께 읽는다
+    symbols: []
+    params:
+      bar_interval_minutes: 1440 # frgn_accumulate와 동일 — 판단 빈도가 일 1회
+      cooldown_bars_after_stop: 1 # 1일 x 1봉 = 1거래일
+      buy_qty: 1
+      eval_after_minutes_after_open: 60
+      exit_fraction_first: 0.5
+      accumulate_tag: EVENT
+      exit_tag: EVENT_EXIT
+      exit_when_tag_absent_days: 2 # 위 주석 참고 — EVENT_EXIT 생산자가 없어서 필요
+
   close_bet:
     class: close_bet
     # 종가배팅(2026-08-25, 전략 4종 체제 ③) — 장중 리포트가 수급·거래대금·뉴스
@@ -651,7 +695,11 @@ strategies:
     # manual_recs 레인으로 텔레그램 추천. 이 전략은 정의 자체가 "오늘 사서 내일
     # 아침 판다"(오버나이트 갭 실현)라 대상. 코드·params·capital_fraction은
     # 그대로 둔다(자본 재분배 없음 — 현금 버퍼로 남긴다).
-    enabled: false
+    # **2026-09-06 재활성** — 소유자 최종 결정: 자동 레인 = 외국인 수급 적립 +
+    # 종가배팅(이 전략) + 긍정뉴스 적립 + 퀀트 레인(오버나이트 명시 허용). 위
+    # 2026-09-03 "단타만" 방침을 뒤집는다 — frgn_accumulate 블록의 같은 날짜
+    # 주석 참고.
+    enabled: true
     # 2026-09-03: KR 0.1→0.2 + target_weight 0.1→0.5. 실측(EC2 9/2 15:00) '배분 자금
     # 부족(예산 95,888원)' — 종가배팅은 한 종목을 통째로 사는 전략인데 예산이
     # 200,000원대 대형주 1주도 못 샀다(8/25 이후 체결 0건의 원인). declared 정책
@@ -861,7 +909,12 @@ strategies:
     # 추종, SPY 2007~2024 비용 차감 후 Sharpe 1.33. 롱온리 계좌라 하방 신호는
     # SQQQ(인버스) **매수**로 표현한다 — **하락장 레인**이 이 블록이다.
     # 2026-09-05 소유자 위임 결정: 원장 9트립 0승 −65bp(VWAP 재교차 휩소) + 같은 계열(QQQ→TQQQ/SQQQ 전환) 10년 walk-forward 전부 음수(변경기록 2026-09-05) → 비활성. 코드·원장은 남긴다.
-    enabled: false
+    # 2026-09-06 재활성 — 소유자 지시: "기존 전략 전부 한 달가량 살려 둔다."
+    # 위 09-05 비활성 근거(음의 실측 증거)는 철회되지 않았다 — 이번 재활성은
+    # 그 판정을 뒤집은 게 아니라, capital_policy: fixed_dual 전환에 맞춰 **한
+    # 달짜리 측정 구간**(paper-epoch 이후)에 다시 태워 표본을 더 쌓기 위함이다.
+    # 한 달 뒤 재판정 시 09-05 증거 + 이번 구간 증거를 함께 본다.
+    enabled: true
     symbols: [] # 심볼은 params 의 signal/long/short 3개로 내부 구성(전략이 무시)
     capital_fraction:
       KR: 0.0
@@ -1300,11 +1353,19 @@ strategies:
   # `capital_fraction` 양 시장 0(자본 배정은 게이트 통과 후 소유자가 정한다).
   letf_pair_qqq:
     class: letf_pair
-    enabled: false
+    # 관찰 레인 — walk-forward NO_GO(변경기록 2026-09-05), 소유자 요청으로
+    # 페이퍼 관찰(2026-09-06). 독립 백테스터(quant-backtest) F1 walk-forward
+    # 17폴드가 NO_GO 판정을 냈지만(위 커밋 로그 "KR 레버리지 페어 일봉 방향
+    # 규칙 검증 NO_GO"), 소유자가 "그래도 페이퍼로 지켜보자"고 결정 — 승격
+    # 후보가 아니라 관찰 대상이라는 뜻에서 validation.status는 burn_in에 둔다.
+    enabled: true
     symbols: [] # 전략이 params의 signal/long/short 3개로 내부 구성(전략이 무시)
     capital_fraction:
       KR: 0.0
-      US: 0.0 # 게이트 통과 전 — 위 헤더 주석 참고
+      # US 0.05(2026-09-06) — fixed_dual에서 이 값은 사이징에 쓰이지 않는다(risk
+      # 블록 capital_policy 주석 참고), "이 시장에 계좌가 있는가" boolean
+      # 게이트로만 쓰인다. 실제 시작 자본은 risk.per_strategy_initial_usd($10k).
+      US: 0.05
     validation:
       status: burn_in
     params: &letf_pair_params
@@ -1314,8 +1375,16 @@ strategies:
       n_fast: 8
       n_slow: 21
       n_atr: 14
-      k_min: 0.25
-      stop_atr_mult: 1.5
+      # k_min/stop_atr_mult/day_filter(2026-09-06) — 스펙 기본값이 아니라
+      # walk-forward(results/letf/20260904T192019Z_qqq_f1_15m.json)
+      # param_stability의 폴드별 최다 선택값(최빈값)으로 덮어쓴다. k_min=0.5는
+      # 17폴드 중 15폴드가 선택(명확한 최빈값). stop_atr_mult는 원시 최빈값은
+      # 1.0(8/17)이지만 2.0이 2/17로 근소하게 뒤지면서도 **가장 최근 6개 폴드
+      # (2023~2026, fold 11~16)에서 만장일치로 선택**됐다 — 최근 국면을 더
+      # 신뢰해 2.0을 쓴다(소유자 결정, 단순 다수결이 아니라 최근성 가중).
+      # day_filter는 값을 보고한 모든 폴드에서 true였다(fold 11/12만 미보고).
+      k_min: 0.5
+      stop_atr_mult: 2.0
       trail_atr_mult: 0 # 0 = 비활성(기본)
       # 손절/익절 규칙 확장(2026-09-05, 소유자 청산 규칙). 전부 기본값(atr 모드,
       # 사다리 꺼짐)이라 이 블록만 봐서는 동작이 하나도 안 바뀐다 — 켜려면 아래
@@ -1342,7 +1411,7 @@ strategies:
       max_entries_per_day: 3
       switch: true
       exit_on_neutral: false
-      day_filter: false
+      day_filter: true # 2026-09-06 — walk-forward 최빈값(위 k_min/stop_atr_mult 주석 참고)
       gap_min: 0.005
       or_atr_min: 0.8
       overnight: false # true 변형은 연구용(스펙 "overnight=true variant") — 기본 배포는 항상 false
@@ -1355,12 +1424,14 @@ strategies:
     # 앵커 공유 + signal/long/short만 YAML 병합 키로 override), 유니버스(반도체
     # 섹터)만 다르다. `_cat` A/B 갈래와 달리 이건 서로 다른 신호 심볼을 매매하는
     # 별개의 레인이다(같은 종목을 놓고 갈리는 A/B가 아니다).
+    # 관찰 레인 — walk-forward NO_GO(변경기록 2026-09-05), 소유자 요청으로
+    # 페이퍼 관찰(2026-09-06) — letf_pair_qqq와 같은 근거·같은 결정.
     class: letf_pair
-    enabled: false
+    enabled: true
     symbols: []
     capital_fraction:
       KR: 0.0
-      US: 0.0
+      US: 0.05 # letf_pair_qqq와 동일 근거 — fixed_dual에서 사이징에 안 쓰이는 boolean 게이트
     validation:
       status: burn_in
     params:
@@ -1439,8 +1510,28 @@ risk:
   # capital_fraction의 크기 정보가 통째로 죽었고, 설정 파일이 사실과 다른 말을
   # 하게 됐다(위 2026-09-02 경고가 그 상태를 기록한 것이다). declared는 그
   # 선언을 그대로 집행한다 — "scalp_1m에 US 18%"라고 써 놓았으면 실제로 18%다.
-  capital_policy: declared # fixed | equal_split | declared — 코드 기본값은 fixed
-  per_strategy_initial_krw: 10000000 # capital_policy: fixed 로 되돌릴 때만 쓰는 값(지금은 미사용)
+  # 2026-09-06 — declared → fixed_dual. 소유자 결정: "each strategy is its own
+  # account: 10,000,000 KRW for KR strategies, $10,000 for US strategies; each
+  # account runs its own quant/auto program; Toss is only the exchange." declared는
+  # 브로커의 실제 현금을 시장별 풀로 나눠 전략에 배분했지만(총현금이 병목),
+  # fixed_dual은 총현금을 아예 조회하지 않는다 — 시장마다 참여하는 전략에게
+  # 통화별 고정액을 그대로 준다(assembly.py `fixed_dual_books` docstring). paper
+  # 지갑은 이 합계를 절대 넘을 일이 없도록 `quant.apps.cli paper-epoch`가 에폭
+  # 전환 시점에 KRW/USD 풀을 그 합계로 맞춘다 — **풀이 병목이 될 수 없다**.
+  #
+  # **`strategies.*.capital_fraction`은 fixed_dual에서 사이징에 쓰이지 않는다.**
+  # declared처럼 "KRW풀 x fraction"으로 시작 명목자본을 정하는 대신, fixed_dual은
+  # `capital_fraction[market] > 0`을 "이 전략이 이 시장에 계좌가 있는가" boolean
+  # 게이트로만 쓰고, 실제 시작 명목자본은 아래 `per_strategy_initial_krw`/
+  # `per_strategy_initial_usd` 고정값이다. 진입 크기는 그 위에서 `target_weight x
+  # 전략자본(그 전략의 book) x risk_multiplier`(fixed/declared와 같은 공식,
+  # `strategy_equity` 출처만 다르다) — capital_fraction의 "값"(0.05 vs 0.3)은
+  # 이제 죽은 크기 정보다(on/off 게이트만 살아있다). 아래 전략 블록들의
+  # capital_fraction 값은 지우지 않는다 — 실전(capital_mode: shared) 복귀 시
+  # 그 값들이 즉시 다시 의미를 갖는다.
+  capital_policy: fixed_dual # fixed | equal_split | declared | fixed_dual — 코드 기본값은 fixed
+  per_strategy_initial_krw: 10000000 # fixed_dual: KR 참여 전략마다 이 금액(원) 고정 지급. fixed 전용이면 "되돌릴 때만 쓰는 값"
+  per_strategy_initial_usd: 10000 # fixed_dual 전용(2026-09-06): US 참여 전략마다 이 금액(달러) 고정 지급
   # 사이징 기준. capital_fraction(기본) = target_weight x 전략자본(=capital_fraction x 총자산).
   # cash_pct = target_weight x **그날 실제 가용 현금**(브로커 buying-power).
   # 사용자가 같은 계좌에서 손으로도 매매하므로 실계좌에서는 cash_pct가 맞다 —
@@ -1547,6 +1638,16 @@ risk:
     - close_bet
     - overnight_drift
     - rsi2_dip
+    - news_accumulate # 2026-09-06 — frgn_accumulate와 같은 클래스·같은 이유(오버나이트 보유가 전략 정의)
+  # 적립(오버나이트 캐리) 전략 전용 포트폴리오 레벨 최대손실 레일(2026-09-06
+  # 안정성 감사 P1-4). frgn_accumulate/news_accumulate는 가격 기반 손절이 전혀
+  # 없고(설계 의도 — 태그 소멸로만 청산) 위 intraday 하드레일에서도 제외된다.
+  # 태그 파이프라인이 조용히 멎으면 이 두 레인은 회로차단기가 전혀 없다 — 그
+  # disclosure 갭을 메우는 옵트인 레일이다(loop.py `_accumulate_max_loss_check`).
+  # 위 overnight_strategies 목록에 속한 전략의 lot만 대상이고, 판정은 lot의
+  # 평균단가(avg_cost) 대비 손실률이다. 청산은 절대 막지 않는다(이 파일 원칙).
+  # 0으로 두면 완전히 비활성(기존 동작 그대로).
+  accumulate_max_loss_pct: 15.0
   # 전일/당일 상한가 진입 금지(2026-09-03, 소유자 결정 — "상한가 종목 진입 금지
   # 필터 단타 전략에 바로 적용해줘"). 근거: KR 일봉 2016~2026 3,263종목 실측에서
   # 상한가(+29.5%) 다음날 매수가 −227bp(1일 보유)~−358bp(대형주 유니버스)로
@@ -1648,6 +1749,27 @@ kiwoom:
     # 소유자 지시 "세력 들어가는 곳 빨리 탐지"의 1단계(하루 실프레임으로 FID
     # 형식 확정 → 선행 신호 실측 → 전략화). 수집 전용이라 매매 판단에 미개입.
     smart_flow_enabled: true
+
+# 2026-09-06 안정성 감사 P1-2 — kiwoom_us(usa06010) 429 폭주(EC2 5일 실측 약
+# 15만 회) 대응. `quant/adapters/brokers/kiwoom/us_datafeed.py`의
+# `KiwoomUSDataFeed`가 keyword 인자(breaker_failure_threshold/
+# breaker_window_seconds/breaker_open_seconds)로 이미 구현·단위테스트돼 있고
+# 여기 값은 그 인자들의 기본값과 동일하다 — **다만 이 키를 실제로 읽어
+# 생성자에 넘기는 배선(quant/apps/assembly.py `build_kiwoom_us_route`)은 이번
+# 감사 수정 범위 밖이다(동시 편집 중인 파일)**. 코드 기본값이 이미 이 값과
+# 같으므로 지금 당장 기능이 빠진 건 아니다 — 나중에 다른 값으로 튜닝하려면
+# assembly.py에서 이 키를 읽어 생성자로 전달하는 한 줄만 추가하면 된다.
+datafeed:
+  kiwoom_us_breaker:
+    failure_threshold: 5 # 이 창 안에 연속 이 횟수 실패하면 차단기 오픈
+    window_seconds: 60.0 # "연속"으로 칠 시간 창
+    open_seconds: 1800.0 # 오픈 유지 시간(30분) — 그동안 라우트 전체를 완전히 스킵
+  # 유니버스 롤 직후 신규 편입 심볼의 봉 캐시 프리페치(P1-2b, quant/trade/loop.py
+  # `_roll_universe`)에 쓸 시간 예산. 이 값은 실제로 loop.py가 읽어 쓴다(assembly.py
+  # 배선 불필요 — settings.raw를 직접 읽는다). 예산을 넘으면 남은 신규 심볼은
+  # 평소처럼 각 전략의 사이클에서 콜드 페치된다(cold_fetch_budget_per_cycle로
+  # 이미 스로틀됨) — 프리페치 실패/예산 초과가 거래를 막지 않는다.
+  prefetch_time_budget_seconds: 3.0
 
 notifications:
   telegram:

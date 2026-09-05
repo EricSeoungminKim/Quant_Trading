@@ -115,6 +115,58 @@ def test_derive_mapping_and_lookup_failure_counts_cover_the_full_expanded_list(
     assert "시세 미확보 4건 / 조사 12건" in err
 
 
+# ── 리포트 정확도 배선(2026-09-06 소유자 지시 priority-1 §2) ────────────────
+
+def test_derive_wires_unmeasured_report_accuracy_when_ledger_absent(monkeypatch, tmp_path):
+    """`report_accuracy.jsonl`이 아직 없으면(최초 실행) payload["report_accuracy"]가
+    "정확도 미측정"으로 채워진 dict여야 한다 — 키 자체가 없거나 예외가 새면 안 된다."""
+    codes = ["SYM00"]
+    cont = {c: _cont_entry(i) for i, c in enumerate(codes)}
+    _wire_cont(monkeypatch, cont)
+    monkeypatch.setattr(
+        report_core, "fetch_symbol_quotes",
+        lambda syms: {s: {"close": 100.0, "change_pct": 0.0} for s in syms},
+    )
+
+    snap = _snap("US")
+    _, _, _, payload, _, _, _, _ = report_cli._derive(snap, tmp_path, tmp_path / "snapshots")
+
+    assert payload["report_accuracy"]["measured"] is False
+    assert payload["report_accuracy"]["stance_line"] == "정확도 미측정"
+
+
+def test_derive_wires_measured_report_accuracy_from_latest_ledger_row(monkeypatch, tmp_path):
+    """원장(`report_accuracy.jsonl`)의 마지막 행을 읽어 report_summary로 접어
+    payload에 싣는다 — 여러 행이 있어도 항상 마지막 행이 이긴다."""
+    codes = ["SYM00"]
+    cont = {c: _cont_entry(i) for i, c in enumerate(codes)}
+    _wire_cont(monkeypatch, cont)
+    monkeypatch.setattr(
+        report_core, "fetch_symbol_quotes",
+        lambda syms: {s: {"close": 100.0, "change_pct": 0.0} for s in syms},
+    )
+
+    ledger_dir = tmp_path / "data" / "ledger"
+    ledger_dir.mkdir(parents=True)
+    stale_row = {"as_of": "2026-09-01", "n_claims": 1, "min_n": 20, "direction": {}, "candidates": {}}
+    latest_row = {
+        "as_of": "2026-09-06", "n_claims": 500, "min_n": 20,
+        "direction": {"3": {"n": 27, "rate": 0.259, "ci_lo": 0.132, "ci_hi": 0.447}},
+        "candidates": {"horizons": {}, "ic": {}, "ic_n": {}},
+    }
+    (ledger_dir / "report_accuracy.jsonl").write_text(
+        json.dumps(stale_row) + "\n" + json.dumps(latest_row) + "\n", encoding="utf-8",
+    )
+
+    snap = _snap("US")
+    _, _, _, payload, _, _, _, _ = report_cli._derive(snap, tmp_path, tmp_path / "snapshots")
+
+    acc = payload["report_accuracy"]
+    assert acc["measured"] is True
+    assert acc["stance_line"] == "방향 판정 정확도(최근 n=27, D+3): 26% — 참고용"
+    assert acc["as_of"] == "2026-09-06"  # 마지막 행(latest_row)을 썼다 — stale_row 아님
+
+
 # ── §E-2 실배선: _derive → baselines → machine_payload (2026-08-15 리뷰 M3) ──
 
 def _uptrend_ohlcv(n: int = 60) -> pd.DataFrame:

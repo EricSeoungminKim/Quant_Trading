@@ -27,6 +27,13 @@ def _strategy_modules() -> dict[str, str]:
         if f.stem in _NOT_STRATEGIES:
             continue
         out[f.stem] = f.read_text(encoding="utf-8")
+    # news_accumulate(2026-09-06)는 별도 파일이 없다 — config/settings.yaml에서
+    # `class: frgn_accumulate`로 그 클래스를 그대로 재사용한다
+    # (frgn_accumulate.py 모듈 docstring "태그 이름 일반화" 절). 실제로 도는
+    # 소스가 frgn_accumulate.py와 같으므로 같은 소스로 판정한다 — 안 그러면
+    # "파일이 없다"는 이유로 이 대조에서 조용히 빠진다.
+    if "frgn_accumulate" in out:
+        out["news_accumulate"] = out["frgn_accumulate"]
     return out
 
 

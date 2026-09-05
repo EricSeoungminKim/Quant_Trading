@@ -1327,6 +1327,10 @@ _OVERNIGHT_STRATEGIES = frozenset({
     # rsi2_dip(2026-08-29): 마감 직전 매수 → 며칠 보유(RSI 회복/시간/하드레일
     # 청산)가 전략 정의다. overnight_drift 와 같은 이유로 누락 시 무효화된다.
     "rsi2_dip",
+    # news_accumulate(2026-09-06, frgn_accumulate와 같은 클래스·태그만 EVENT/
+    # EVENT_EXIT) — 일 1회 적립 매수 + 이탈 시 분할청산이 전략 정의라
+    # frgn_accumulate와 같은 이유로 오버나이트 대상이다.
+    "news_accumulate",
     # llm_trader는 여기 없다(2026-09-03 소유자 결정: 자동매매는 단타·스캘핑만).
     # 2026-08-30~2026-09-02에는 "LLM이 청산도 스스로 판단하는 실험"으로 오버나이트를
     # 허용했지만, 오버나이트/장기 아이디어는 이제 자동매매가 아니라
@@ -1454,6 +1458,76 @@ def _intraday_hard_stop_check(
                 _hard_rail_exit(
                     strategy_id, symbol, ctx, risk, sinks, notifier, books,
                     "하드 익절 +10%(리스크 레일)",
+                )
+
+
+def _accumulate_max_loss_check(
+    ctx: Context,
+    risk: RiskManager,
+    sinks: EventSink,
+    notifier: Notifier | None,
+    books: StrategyBooks | None,
+    marks: dict[str, float],
+    settings: EngineSettings,
+) -> None:
+    """적립(오버나이트 캐리 설계) 전략 전용 포트폴리오 레벨 최대손실 레일
+    (2026-09-06 안정성 감사 P1-4). `frgn_accumulate`/`news_accumulate`는 가격
+    기반 손절이 전혀 없고(설계 의도 — 태그 소멸로만 청산) `_OVERNIGHT_STRATEGIES`
+    에 속해 `_intraday_hard_stop_check`의 −5% 백스톱에서도 제외된다. 태그 파이프
+    라인(뉴스/수급 이벤트)이 건강한 동안은 노출이 각 전략의 고정 배분으로
+    한정되지만, 파이프라인이 조용히 멎으면 이 두 레인은 가격 기반 회로차단기가
+    **전혀 없다** — 그 disclosure 갭을 메우는 옵트인 레일이다.
+
+    `_intraday_hard_stop_check`와 같은 패턴(엔진 레벨, 사이클마다 브로커 lot을
+    직접 대조, `_hard_rail_exit` 재사용)이지만 세 가지가 다르다:
+    1. **대상이 반대다** — intraday 레일은 오버나이트 전략을 *제외*하고, 이
+       레일은 `risk.overnight_strategies`(설정 파일 원본 목록, loop.py의
+       `_OVERNIGHT_STRATEGIES` 하드코딩 집합이 아니다 — 이 레일은 오직 설정으로만
+       켜진다)에 *속한* 전략만 본다.
+    2. **기준가가 entry가 아니라 avg_cost다** — 적립 전략은 여러 날에 걸쳐 분할
+       매수하므로 "진입가" 하나가 아니라 lot의 평균단가 대비 손실을 본다.
+    3. **기본이 꺼져 있다** — `risk.accumulate_max_loss_pct`가 0/미설정이면
+       완전히 비활성(이 함수의 기존 동작 없음, 하위호환).
+
+    청산은 절대 막지 않는다(이 파일 전체의 원칙) — 이 레일은 강제 EXIT
+    신호만 만들 뿐, `risk.approve()`의 진입 게이트는 건드리지 않는다."""
+    risk_cfg = settings.raw.get("risk", {}) or {}
+    max_loss_pct = float(risk_cfg.get("accumulate_max_loss_pct", 15.0) or 0.0) / 100
+    if max_loss_pct <= 0:
+        return
+    overnight = frozenset(risk_cfg.get("overnight_strategies", []) or [])
+    if not overnight:
+        return
+    try:
+        positions = ctx.broker.positions()
+    except Exception:  # noqa: BLE001 — 조회 실패가 사이클을 죽이면 안 된다
+        logger.warning("적립 최대손실 레일 — 포지션 조회 실패, 이번 사이클 건너뜀", exc_info=True)
+        return
+    for symbol, pos in list(positions.items()):
+        if not pos.is_open:
+            continue
+        price = marks.get(symbol)
+        if price is None:
+            continue  # 시세 없음 — unpriced 경보가 이미 다룬다
+        lots = pos.meta.get("lots") or {}
+        for strategy_id, lot in list(lots.items()):
+            qty = float(lot.get("qty", 0.0) or 0.0)
+            if qty <= 0:
+                continue
+            if strategy_id not in overnight and _base_strategy_id(strategy_id) not in overnight:
+                continue
+            avg_cost = lot.get("avg_cost", pos.avg_cost)
+            try:
+                avg_cost = float(avg_cost)
+            except (TypeError, ValueError):
+                continue
+            if avg_cost <= 0:
+                continue
+            loss_pct = (avg_cost - price) / avg_cost
+            if loss_pct >= max_loss_pct:
+                _hard_rail_exit(
+                    strategy_id, symbol, ctx, risk, sinks, notifier, books,
+                    f"적립 최대손실 -{max_loss_pct * 100:.0f}%(리스크 레일)",
                 )
 
 
@@ -1981,10 +2055,26 @@ def _carry_session_state(old: object, fresh: object) -> None:
             fresh_val.update(old_val)
 
 
+# 프리페치 기본 needs(2026-09-06 안정성 감사 P1-2b) — 전략별 정확한 DataNeeds를
+# 하나하나 조사해 합치는 대신, 실제 전략들이 흔히 쓰는 (interval, n) 조합 몇 개만
+# 데운다. 완벽할 필요는 없다 — 못 데운 조합은 평소처럼 그 전략의 사이클에서
+# 콜드 페치되고(cold_fetch_budget_per_cycle로 이미 스로틀됨), 이건 이 프리페치가
+# 없던 시절과 동일한 기존 동작이라 안전한 폴백이다. 목적은 "신규 심볼의 캐시가
+# 전부 비어 있는" 상태를 줄여 유니버스 롤 직후 첫 사이클의 콜드 페치 몰림을
+# 완화하는 것.
+_PREFETCH_DEFAULT_NEEDS: tuple[tuple[str, int], ...] = (
+    ("1m", 30), ("5m", 60), ("15m", 30), ("1d", 25),
+)
+_DEFAULT_PREFETCH_TIME_BUDGET_SECONDS = 3.0
+
+
 def _roll_universe(
     universe: object,
     rebuild_strategies: Callable[[], list[Strategy]] | None,
     strategies: list[Strategy],
+    market_data: object | None = None,
+    prefetch_needs: tuple[tuple[str, int], ...] = _PREFETCH_DEFAULT_NEEDS,
+    prefetch_time_budget_seconds: float | None = _DEFAULT_PREFETCH_TIME_BUDGET_SECONDS,
 ) -> list[Strategy]:
     """세션 롤: 유니버스를 다시 읽고 전략을 재조립한다. **항상 쓸 수 있는 전략 목록을
     돌려준다** — 어느 단계가 실패하든 기존 전략을 그대로 반환한다(거래가 멈추면 안 된다).
@@ -1994,7 +2084,14 @@ def _roll_universe(
     `_entered_today` 같은 인메모리 세션 상태가 장중에 리셋되어 하루 1회 진입 제한이
     풀린다. 심볼이 실제로 바뀐 전략만 교체하므로, 유니버스를 소비하지 않는 고정 심볼
     쌍 전략들은 이 경로에서 아무 영향도 받지 않는다.
-    """
+
+    **신규 심볼 프리페치(2026-09-06 안정성 감사 P1-2b)**: EC2 5일 로그 실측에서
+    이 롤 직후 첫 사이클이 최대 30초까지 늘어졌다(신규 편입 심볼 수십 개의 캐시
+    미스가 한꺼번에 몰려서 — P1-2 참고). `market_data`가 `prefetch()`를 노출하면
+    (보통 `MarketDataService`), 이번 롤에서 **새로 생긴** 심볼만 골라 시간
+    예산 안에서 미리 데운다 — 전략 루프가 아니라 이 롤 경계에서 하므로 스레드
+    동시성 문제 없이(단일 스레드), 그리고 예산으로 상한을 걸어 이 프리페치 자체가
+    새로운 무제한 지연을 만들지 않는다."""
     try:
         universe.refresh()
         symbols = list(universe.symbols())
@@ -2021,11 +2118,11 @@ def _roll_universe(
         return strategies
     previous = {getattr(s, "id", None): s for s in strategies}
     merged: list[Strategy] = []
+    new_symbols: set[str] = set()
     for fresh in rebuilt:
         old = previous.get(getattr(fresh, "id", None))
-        same_symbols = old is not None and list(getattr(old, "symbols", [])) == list(
-            getattr(fresh, "symbols", [])
-        )
+        fresh_symbols = list(getattr(fresh, "symbols", []) or [])
+        same_symbols = old is not None and list(getattr(old, "symbols", [])) == fresh_symbols
         if old is not None and not same_symbols:
             # 심볼이 바뀌어 교체하는 경우: 새 인스턴스(핫 리로드된 params·tags_of)가
             # 이기되, 이전 인스턴스의 **당일 상태**는 이월한다. 유니버스는 하루 3번
@@ -2034,8 +2131,28 @@ def _roll_universe(
             # 리셋됐다 — frgn_accumulate 의 `_evaluated_date`(오늘 이미 평가함)가
             # 지워지면 같은 날 같은 종목을 다시 산다(2026-08-21 결함).
             _carry_session_state(old, fresh)
+        if not same_symbols:
+            # 새로 생긴 심볼만 프리페치 대상이다 — old가 없으면(신규 전략) 전량,
+            # old가 있으면(심볼 교체) 차집합만.
+            old_symbols = set(getattr(old, "symbols", []) or []) if old is not None else set()
+            new_symbols |= (set(fresh_symbols) - old_symbols)
         merged.append(old if same_symbols else fresh)
     logger.info("활성 전략/심볼: %s", {getattr(s, "id", "?"): list(getattr(s, "symbols", [])) for s in merged})
+
+    if new_symbols:
+        prefetch_fn = getattr(market_data, "prefetch", None)
+        if callable(prefetch_fn):
+            try:
+                warmed = prefetch_fn(
+                    sorted(new_symbols), prefetch_needs,
+                    time_budget_seconds=prefetch_time_budget_seconds,
+                )
+                logger.info(
+                    "신규 종목 %d개 프리페치 완료(%d개 (심볼,interval) 조합 데움)",
+                    len(new_symbols), warmed,
+                )
+            except Exception as e:  # noqa: BLE001 — 프리페치 실패가 유니버스 롤을 막으면 안 된다
+                logger.warning("신규 종목 프리페치 실패(무시하고 계속): %s: %s", type(e).__name__, e)
     return merged
 
 
@@ -2171,8 +2288,18 @@ async def run_paper_loop(
     )
     sinks = tally
 
+    def _on_settings_reload_error(e: Exception) -> None:
+        # P0-1(2026-09-06 안정성 감사): 파싱 실패는 이제 config.py가 삼키고
+        # 마지막 성공 설정을 유지한다 — 여기서는 국면 refresh 실패와 같은
+        # 패턴으로 ops 레인에 1회 알리기만 한다(엔진은 계속 돈다).
+        if notifier is not None:
+            notifier.send(
+                f"⚠️ settings.yaml 리로드 실패 — 마지막 정상 설정 유지\n\n📕 사유 {e}",
+                lane="ops",
+            )
+
     while True:
-        if settings.reload_if_changed():
+        if settings.reload_if_changed(on_error=_on_settings_reload_error):
             logger.info("settings.yaml 변경 감지 — 리로드")
         cycle_count += 1
         tally.cycles += 1  # 배관 점검용 — 세션 마감 요약이 "루프가 살아 있었나"의 증거로 쓴다
@@ -2248,7 +2375,15 @@ async def run_paper_loop(
             bucket = _universe_roll_bucket()
             if bucket != universe_day:
                 universe_day = bucket
-                strategies = _roll_universe(universe, rebuild_strategies, strategies)
+                datafeed_cfg = settings.raw.get("datafeed", {}) or {}
+                prefetch_budget = datafeed_cfg.get(
+                    "prefetch_time_budget_seconds", _DEFAULT_PREFETCH_TIME_BUDGET_SECONDS
+                )
+                strategies = _roll_universe(
+                    universe, rebuild_strategies, strategies,
+                    market_data=market_data,
+                    prefetch_time_budget_seconds=prefetch_budget,
+                )
 
         timings = CycleTimings()
         # 보유 종목의 사이클 시세 스냅샷 — risk.approve()가 daily_loss_limit_pct 평가금액
@@ -2313,6 +2448,9 @@ async def run_paper_loop(
             # 돈다. 청산은 절대 막지 않는다는 이 레일 전체의 원칙(모듈 상단 참고)
             # 그대로, 하드 손절도 예외가 아니다.
             _intraday_hard_stop_check(ctx, risk, sinks, notifier, books, marks)
+            # 적립 전략 최대손실 레일(2026-09-06 안정성 감사 P1-4) — 위와 같은
+            # 원칙(청산은 절대 막지 않는다), 대상만 반대(오버나이트 캐리 전략).
+            _accumulate_max_loss_check(ctx, risk, sinks, notifier, books, marks, settings)
             flatten_scope = control.consume_flatten_scope()
             if flatten_scope:
                 # flatten은 승인을 거치지 않는다 — kill switch가 승인 대기로 막히면

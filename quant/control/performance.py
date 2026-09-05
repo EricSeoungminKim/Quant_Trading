@@ -82,6 +82,27 @@ from quant.control.ledger import (
 from quant.control.strategy_help import build_strategy_help
 from quant.core.models import trading_day
 
+# 2026-09-06 오너 결정(전략별 독립 모의계좌 재시작, "paper_epoch" 절 참고) —
+# `PAPER_EPOCH_MARKER`/`paper_epoch_ts`/`strategy_start_capital`는
+# `quant.control.ledger`에 병행 작업 중이다(다른 워커). 착륙 전에는 아래 폴백이
+# `NotImplementedError`를 내고, `_build_paper_epoch`가 그걸 잡아 빈 dict를
+# 낸다 — 이 모듈의 기존 기능·테스트가 그 의존성 하나 때문에 깨지면 안 된다.
+# TODO(2026-09-06): 착륙하면 이 try/except를 지우고 평범한 import 한 줄로 바꿔라.
+try:
+    from quant.control.ledger import PAPER_EPOCH_MARKER, paper_epoch_ts, strategy_start_capital
+except ImportError:  # pragma: no cover — 착륙 전 임시 경로
+    PAPER_EPOCH_MARKER = "__PAPER_EPOCH_MARKER_NOT_LANDED__"
+
+    def paper_epoch_ts() -> datetime:  # type: ignore[misc]
+        raise NotImplementedError(
+            "quant.control.ledger.paper_epoch_ts 미착륙 — 2026-09-06 병행 작업 대기"
+        )
+
+    def strategy_start_capital(strategy_id: str) -> dict[str, float]:  # type: ignore[misc]
+        raise NotImplementedError(
+            "quant.control.ledger.strategy_start_capital 미착륙 — 2026-09-06 병행 작업 대기"
+        )
+
 __all__ = ["build_performance_payload"]
 
 # 2026-09-01 실계좌 이식 스냅샷 환율(소유자 지시: "원화는 원화, 달러는 달러로만 —
@@ -92,6 +113,12 @@ FX_KRW_PER_USD = 1376.7
 # `quant.control.ledger`로 옮겼다 — 세션 손익(`session_pnl_summary`)이 같은
 # 판별식을 쓰지 않아 텔레그램만 이식 정리를 성과로 세고 있었다(ledger.py 참고).
 # 여기서는 기존 임포트 경로를 깨지 않기 위해 이름만 다시 내건다.
+
+# 2026-09-06 오너 결정 — 전략마다 독립 모의계좌로 재시작(아래 `_build_paper_epoch`
+# 절 참고). `PAPER_SEED_KRW`(2026-08 이전, 단일 가상계좌 관례)와는 다른 개념이다
+# — 값이 우연히 같아도(1천만원) 재사용하면 두 시대의 의미가 뒤섞인다.
+EPOCH_KR_START_KRW = 10_000_000
+EPOCH_US_START_USD = 10_000
 
 # paper 시대 참고 시드 — 위 모듈 docstring "알려진 한계" 참고.
 PAPER_SEED_KRW = 10_000_000
@@ -116,6 +143,9 @@ STRATEGY_NAME_KO: dict[str, str] = {
     "intraday_scan": "장중 신고가 스캐너",
     "scalp_1m": "1분봉 스캘핑",
     "frgn_accumulate": "외국인 수급 적립매수",
+    # news_accumulate(2026-09-06) — frgn_accumulate와 같은 클래스, 태그만 다르다
+    # (EVENT/EVENT_EXIT) — quant/trade/strategy/frgn_accumulate.py 모듈 docstring.
+    "news_accumulate": "긍정뉴스 적립매수",
     "news_momentum": "뉴스 모멘텀",
     "news_scalp": "뉴스 스캘프",
     "confluence": "복합 신호 합류",
@@ -136,6 +166,9 @@ STRATEGY_NAME_KO: dict[str, str] = {
     "orb_rvol": "개장 상대거래량 돌파",
     "eod_reversal": "장마감 반전",
     "open_reversal": "전일 패자 개장 반전",
+    # 2026-09-06 — 관찰 레인(walk-forward NO_GO, 소유자 요청으로 페이퍼 관찰).
+    "letf_pair_qqq": "QQQ 레버리지 페어 전환",
+    "letf_pair_sox": "SOXX 레버리지 페어 전환",
 }
 
 # 전략 id → 영문 표시명. STRATEGY_NAME_KO와 1:1 대응 — 항목을 추가하면 여기도
@@ -147,6 +180,7 @@ STRATEGY_NAME_EN: dict[str, str] = {
     "intraday_scan": "Intraday New-High Scanner",
     "scalp_1m": "1-Minute Scalping",
     "frgn_accumulate": "Foreign Flow Accumulation",
+    "news_accumulate": "Positive-News Accumulation",
     "news_momentum": "News Momentum",
     "news_scalp": "News Scalp",
     "confluence": "Signal Confluence",
@@ -165,6 +199,8 @@ STRATEGY_NAME_EN: dict[str, str] = {
     "orb_rvol": "Opening Range RVOL Breakout",
     "eod_reversal": "End-of-Day Reversal",
     "open_reversal": "Prior-Day Loser Open Reversal",
+    "letf_pair_qqq": "QQQ Leveraged Pair Switching",
+    "letf_pair_sox": "SOXX Leveraged Pair Switching",
 }
 
 
@@ -729,9 +765,210 @@ def _phase_boundaries(rows: list[dict], phases: list[dict]) -> list[dict]:
     return marks
 
 
+# ---------------------------------------------------------------------------
+# 2026-09-06 오너 결정 — 전략마다 독립된 모의계좌로 재시작(KR 1,000만원 /
+# US $10,000, 에폭 2026-09-07 00:00 KST). 위 phases/equity_asia/equity_us/
+# strategies[].curve(2026-09-01 실계좌 이식 경계 기준, lifetime 스코프)는
+# ledger.py의 다른 리포트(daily_wrap 등)가 여전히 쓰므로 그대로 두고 건드리지
+# 않는다 — `paper_epoch`는 그와 독립적인 새 서브트리다(다른 경계, 다른 스코프).
+# ---------------------------------------------------------------------------
+
+
+def _is_epoch_marker(trade: dict) -> bool:
+    """이 체결이 paper_epoch 리셋을 표시하는 장부상 마커 행인가(실제 매매가
+    아니다). `PAPER_EPOCH_MARKER`는 `quant.control.ledger`(다른 워커, 2026-09-06)가
+    정의 — 정확한 용도가 확정되면 이 함수도 맞춰 갱신한다. 현재는 방어적으로
+    `is_seeding_liquidation`과 같은 reason 마커 판별 방식을 따른다."""
+    return PAPER_EPOCH_MARKER in str(trade.get("reason") or "")
+
+
+def _epoch_trades(trades: list[dict], epoch_ts: datetime) -> list[dict]:
+    """`epoch_ts` 이후 체결만(마커 행 제외) — 경계 이전 이력이 새 곡선에 새지
+    않게 하는 단일 지점(소유자 지시: 에폭 이전 이력이 새 곡선에 leak 되면 안
+    된다)."""
+    return [t for t in trades if not _is_epoch_marker(t) and _parse_ts(t) >= epoch_ts]
+
+
+def _epoch_market_curve(known: list[dict], start_native: float | None) -> list[dict]:
+    """paper_epoch 전략별 단일 시장 곡선 — 종결 왕복(`pnl_known`만) 날짜별
+    순손익 누적(네이티브 통화) + 시작자본 대비 누적 %. `start_native`가 없거나
+    0이면 `cum_pct`는 None(지어내지 않는다). 트립이 없으면 빈 리스트 — 그
+    시장에 배정된 계좌가 없다는 뜻이 아니라 "아직 거래가 없다"는 뜻이라, 호출부
+    (`_build_paper_epoch`)가 이 빈 리스트를 여전히 `strategies[]`에 싣는다(오너
+    지시 2026-09-06: 거래 없는 레인도 표에서 빠지면 안 된다 — 프론트가 빈
+    리스트를 "0% 평행선"으로 그린다)."""
+    by_day: dict[date, dict] = {}
+    for t in known:
+        day = trading_day(_parse_ts({"ts": t["exit_ts"]}))
+        b = by_day.setdefault(day, {"net": 0.0, "n": 0})
+        b["net"] += t["pnl"]
+        b["n"] += 1
+    cum_net = 0.0
+    rows = []
+    for day in sorted(by_day):
+        b = by_day[day]
+        cum_net += b["net"]
+        cum_pct = round(cum_net / start_native * 100, 4) if start_native else None
+        rows.append({
+            "date": day.isoformat(),
+            "day_native": round(b["net"], 2),
+            "cum_native": round(cum_net, 2),
+            "cum_pct": cum_pct,
+            "trips": b["n"],
+        })
+    return rows
+
+
+def _epoch_overall_rows(known_all: list[dict], overall_seed_krw: float | None) -> list[dict]:
+    """전 전략·전 시장 합산 "계좌 합산" 곡선(오너 지시 2026-09-06: 사이트 전체
+    지분곡선은 여러 독립 계좌의 합). 시장별 순손익을 KRW로 환산해 더한다.
+
+    **FX 출처**: `FX_KRW_PER_USD`(이 모듈 상단, 2026-09-01 실계좌 이식 스냅샷
+    고정 참고환율)를 그대로 쓴다 — 이 저장소엔 일별 실제 환율을 공급하는 데이터
+    소스가 없어(어댑터/설정 어디에도 FX 시계열이 없다) "그날 환율"이 아니라
+    고정값이다. 이 사실은 `_build_paper_epoch`가 `overall.fx_source_note`로
+    명시한다."""
+    by_day: dict[date, float] = {}
+    for t in known_all:
+        day = trading_day(_parse_ts({"ts": t["exit_ts"]}))
+        rate = FX_KRW_PER_USD if t["market"] == "US" else 1.0
+        by_day[day] = by_day.get(day, 0.0) + t["pnl"] * rate
+    cum = 0.0
+    rows = []
+    for day in sorted(by_day):
+        day_krw = by_day[day]
+        cum += day_krw
+        cum_pct = round(cum / overall_seed_krw * 100, 4) if overall_seed_krw else None
+        rows.append({
+            "date": day.isoformat(),
+            "day_krw": round(day_krw, 2),
+            "cum_krw": round(cum, 2),
+            "cum_pct": cum_pct,
+        })
+    return rows
+
+
+def _build_paper_epoch(trades: list[dict], strategies_cfg: dict | None) -> dict:
+    """2026-09-06 오너 결정 서브트리 — `{}` 또는:
+
+    - `epoch`: 에폭 시각(KST, 초 단위 ISO).
+    - `account_model`: KR/US 시작자본 + 사람이 읽을 설명(ko/en).
+    - `overall`: 모든 계좌를 KRW로 합산한 지분곡선(`_epoch_overall_rows`).
+    - `strategies`: 전략별 `start_capital` + 통화별 곡선(`_epoch_market_curve`).
+
+    `strategy_start_capital(sid)`가 빈 dict를 내는 전략은 목록에서 빠진다(그
+    전략에 배정된 계좌 자체가 없다는 뜻) — 계좌가 있는데 거래가 아직 없는
+    경우(빈 `curve` 리스트)와는 다르다(위 `_epoch_market_curve` docstring).
+
+    `paper_epoch_ts()`/`strategy_start_capital()`이 아직 `quant.control.ledger`에
+    착륙하지 않았으면(`NotImplementedError`) 빈 dict — 이 함수 하나 때문에
+    기존 payload 생성이 깨지면 안 된다. **착륙 후에도** `paper_epoch_ts()`가
+    `None`을 낼 수 있다(2026-09-06 착륙 시 확인 — 아직 `paper-epoch` 명령을 한
+    번도 안 돌린 원장이면 마커 행 자체가 없다, `ledger.paper_epoch_ts` docstring
+    "마커가 없으면 None") — `NotImplementedError`와 같은 대우로 빈 dict다."""
+    strategies_cfg = strategies_cfg or {}
+    try:
+        epoch_ts = paper_epoch_ts()
+    except NotImplementedError:
+        return {}
+    if epoch_ts is None:
+        return {}
+
+    scoped = _epoch_trades(trades, epoch_ts)
+    trips = round_trips(scoped)
+    known_all = [t for t in trips if t["pnl_known"]]
+
+    strategy_rows = []
+    overall_seed_krw = 0.0
+    for sid in sorted(strategies_cfg):
+        start_capital = strategy_start_capital(sid)
+        if not start_capital:
+            continue  # 이 전략엔 배정된 계좌가 없다 — "거래 없음"과 다르다
+        overall_seed_krw += float(start_capital.get("KRW", 0.0))
+        overall_seed_krw += float(start_capital.get("USD", 0.0)) * FX_KRW_PER_USD
+        strip = [t for t in known_all if t["strategy"] == sid]
+        strategy_rows.append({
+            "id": sid,
+            "start_capital": start_capital,
+            "curve": {
+                "asia": (
+                    _epoch_market_curve([t for t in strip if t["market"] == "KR"], start_capital.get("KRW"))
+                    if "KRW" in start_capital else []
+                ),
+                "us": (
+                    _epoch_market_curve([t for t in strip if t["market"] == "US"], start_capital.get("USD"))
+                    if "USD" in start_capital else []
+                ),
+            },
+        })
+
+    overall_rows = _epoch_overall_rows(known_all, overall_seed_krw or None)
+    return {
+        "epoch": _ts_iso(epoch_ts),
+        "account_model": {
+            "kr_start_krw": EPOCH_KR_START_KRW,
+            "us_start_usd": EPOCH_US_START_USD,
+            "note_ko": (
+                "전략마다 독립된 모의계좌 — KR 1,000만원 / US $10,000로 각각 "
+                "2026-09-07 00:00 KST에 시작한다. 토스는 체결·수수료 산정용 "
+                "거래소일 뿐, 계좌 간 자금은 섞이지 않는다."
+            ),
+            "note_en": (
+                "Each strategy runs its own independent paper account, starting at "
+                "10,000,000 KRW (KR) / $10,000 (US) from 2026-09-07 00:00 KST. Toss "
+                "is used only as the execution venue for fills and fees — capital is "
+                "not pooled across accounts."
+            ),
+        },
+        "overall": {
+            "currency": "KRW",
+            "seed_krw": round(overall_seed_krw, 2) if overall_seed_krw else None,
+            "fx_source_note": (
+                "USD 계좌를 KRW로 합산할 때 이 모듈의 고정 참고환율 "
+                f"FX_KRW_PER_USD={FX_KRW_PER_USD}(2026-09-01 스냅샷)을 그대로 "
+                "쓴다 — 이 저장소엔 일별 실제 환율을 공급하는 데이터 소스가 "
+                "없어, 날짜별 실제 환율이 아니라 고정값이라는 뜻이다."
+            ),
+            "fx_source_note_en": (
+                "USD accounts are converted to KRW using this module's fixed "
+                f"reference rate FX_KRW_PER_USD={FX_KRW_PER_USD} (2026-09-01 "
+                "snapshot) — this repo has no data source for actual daily FX "
+                "rates, so this is a fixed value, not the day-specific rate."
+            ),
+            "rows": overall_rows,
+            "max_drawdown_pct": _max_drawdown_pct(overall_rows),
+            "chart": {"y_axis": _chart_axis(overall_rows)},
+        },
+        "strategies": strategy_rows,
+    }
+
+
+def _build_report_accuracy_block(latest: dict | None) -> dict:
+    """리포트 정확도 스코어카드 요약 — 공개 사이트 payload 의 별도 서브트리
+    (2026-09-06, 소유자 지시 priority-1: 데일리 마켓 리포트가 낸 방향콜·종목
+    후보 청구가 실제로 맞았는지 재는 장치). 순수 함수 — 호출부(CLI)가
+    `data/ledger/report_accuracy.jsonl`의 마지막 행(`quant.apps.report_cli
+    cmd_accuracy`가 쓴 것)을 읽어 넘긴다. 한 번도 안 돈 상태면 `latest=None`
+    — 빈 dict를 반환한다(착륙 전 의존성 없음, `_build_paper_epoch`와 같은 관례).
+    """
+    if not latest:
+        return {}
+    candidates = latest.get("candidates") or {}
+    return {
+        "as_of": latest.get("as_of"),
+        "since": latest.get("since"),
+        "until": latest.get("until"),
+        "n_claims": latest.get("n_claims"),
+        "min_n": latest.get("min_n"),
+        "direction": latest.get("direction") or {},
+        "candidate_horizons": candidates.get("horizons") or {},
+    }
+
+
 def build_performance_payload(
     trades: list[dict], execution_cfg: dict, *, now: datetime | None = None,
     real_account_snapshot: dict | None = None, strategies_cfg: dict | None = None,
+    report_accuracy_latest: dict | None = None,
 ) -> dict:
     """`trades.jsonl` 원장(dict 리스트, `ledger.load_trades` 출력) → 공개 성과 JSON.
 
@@ -859,4 +1096,11 @@ def build_performance_payload(
         ),
         "excluded": _excluded_summary(excluded),
         "costs": _costs(execution_cfg, _fee_drag_pct_of_gross(curve_rows)),
+        # 2026-09-06 오너 결정 — 전략별 독립 모의계좌 재시작. 위 필드들과는 별개
+        # 경계(에폭)·별개 스코프를 쓰는 독립 서브트리(`_build_paper_epoch`
+        # docstring 참고) — 착륙 전 의존성이 없으면 `{}`.
+        "paper_epoch": _build_paper_epoch(trades, strategies_cfg),
+        # 2026-09-06 — 리포트 정확도 스코어카드(소유자 지시 priority-1). 한 번도
+        # 안 돈 상태면 `{}`(위 함수 docstring 참고).
+        "report_accuracy": _build_report_accuracy_block(report_accuracy_latest),
     }

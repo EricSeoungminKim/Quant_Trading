@@ -218,6 +218,38 @@ def test_toss_calendar_falls_back_loudly_and_retries(caplog):
     assert client.calls == 2, "실패를 캐시하면 일시적 장애가 하루 종일 지속된다"
 
 
+def test_toss_calendar_api_failure_on_a_real_holiday_misjudges_market_as_open(caplog):
+    """2026-09-06 안정성 감사 §holiday-handling — 자기 문서화된 블라인드 스팟을
+    실제 미국 공휴일 날짜로 구체화한다: Toss 캘린더 API가 **하필 공휴일에**
+    실패하면(네트워크 장애가 날짜를 골라 터지지는 않으니 우연이지만, 실제로
+    일어날 수 있다), `StaticSessionCalendar` 폴백은 요일만 보고 공휴일을 모르므로
+    2024-07-04(독립기념일, 목요일 — 실제로는 NYSE 휴장)에도 **열린 정규장**을
+    돌려준다.
+
+    이건 새로 발견한 버그가 아니다 — `TossSessionCalendar` docstring과 이
+    파일의 `test_toss_calendar_falls_back_loudly_and_retries`가 이미 "API
+    실패는 휴장으로 오인하면 안 된다"는 의도적 설계를 고정하고 있다. 하지만 그
+    설계의 **대가**(폴백 자체가 진짜 휴장일에 열림으로 오판할 수 있다)는 추상적
+    경고 로그로만 존재했지, 구체적인 실제 휴장일로 잠긴 테스트가 없었다 — 이
+    테스트가 그 갭을 메운다. 고치는 게 아니라, 이 리스크를 로그 문자열이 아니라
+    테스트로 드러내는 것이 목적이다."""
+    client = _FakeTossClient(error=RuntimeError("connection reset"))
+    cal = TossSessionCalendar(client)
+    july4_2024 = datetime(2024, 7, 4, 12, 0, tzinfo=NY)  # 독립기념일(목요일), NYSE 휴장
+
+    with caplog.at_level("WARNING"):
+        session = cal.session("US", july4_2024)
+
+    # 오늘의 실제(의도적으로 받아들여진) 동작: 폴백이 이 공휴일을 정규 개장일로
+    # 오판한다 — StaticSessionCalendar는 요일만 본다.
+    assert session is not None, (
+        "이 폴백은 휴장일을 모른다 — 공휴일에도 세션을 돌려주는 게 오늘의 실제 동작"
+    )
+    assert session.open == datetime(2024, 7, 4, 9, 30, tzinfo=NY)
+    assert session.close == datetime(2024, 7, 4, 16, 0, tzinfo=NY)
+    assert "폴백" in caplog.text  # 적어도 조용히 넘어가지는 않는다
+
+
 def test_toss_calendar_parses_kr_nested_integrated_shape():
     """KR 응답은 US와 달리 세션이 `integrated` 아래 중첩된다 — `today.regularMarket`을
     그대로 찾으면(US 파싱 로직) KR은 항상 휴장으로 오판한다."""

@@ -179,7 +179,7 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
     delta = compare(snap, previous_snapshot(snap.market, snap.session_date, snap_root))
     brief = build_brief(snap, cont, delta)
     view = stance(snap, cont, delta)
-    scores = score_all(cont, details)
+    scores = score_all(cont, details, trending)
     # 최근 거래량 몰림 감시(2026-08-25 소유자 지시: "최근 거래량이 몰렸던 종목들도
     # 계속 감시 리스트로") — 최근 5일 거래대금 보드 상위에 2회 이상 등장한 KR
     # 종목을 AUTO_WATCH 에 RANK 태그로 합류시킨다(새 태그 없음 — RANK→TREND
@@ -233,6 +233,25 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
         payload["index_outlook"] = build_index_outlook(snap, root)
     except Exception as e:  # noqa: BLE001
         print(f"지수별 전망 생략: {type(e).__name__}: {e}", file=sys.stderr)
+    # 리포트 정확도(2026-09-06, 소유자 지시 priority-1 §2) — 방향콜 라벨 옆
+    # 참고용 한 줄("정확도 미측정" 포함) + '리포트 정확도' 박스가 이 값을
+    # 그대로 쓴다. `report_accuracy.jsonl`이 아직 없거나(최초 실행) 깨지면
+    # report_summary(None)이 "정확도 미측정"으로 채운 dict를 낸다 —
+    # index_outlook과 같은 관례로 실패해도 리포트 발행을 막지 않는다.
+    try:
+        from quant.control import report_accuracy as _report_accuracy
+
+        acc_path = root / "data" / "ledger" / "report_accuracy.jsonl"
+        latest = None
+        if acc_path.exists():
+            acc_lines = acc_path.read_text(encoding="utf-8").splitlines()
+            if acc_lines:
+                import json as _json
+
+                latest = _json.loads(acc_lines[-1])
+        payload["report_accuracy"] = _report_accuracy.report_summary(latest)
+    except Exception as e:  # noqa: BLE001
+        print(f"리포트 정확도 요약 생략: {type(e).__name__}: {e}", file=sys.stderr)
     # 합류 종목(뉴스 언급 없이 감시 축으로만 들어온)도 선정 원장에 남긴다 —
     # payload["symbols"] 는 cont 에서만 만들어져 이 종목들이 채점 표본에서
     # 통째로 빠져 있었다(2026-08-26 감사). ledger.py 의 함수가 사유를 설명한다.

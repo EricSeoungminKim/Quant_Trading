@@ -154,14 +154,23 @@ def test_production_settings_yaml_passes_the_gate_as_intended():
     # 손대지 않았으므로(코드·params·배분 보존 방침) 레인 목록에서만 뺀다 —
     # 비활성 전략은 validated_capital_fractions의 active 판정에서 제외되고
     # 이 테스트의 nonzero 대조는 active 기준이라 자동으로 맞는다.
+    # 2026-09-06 소유자 최종 결정("final form" 로스터, capital_policy: fixed_dual
+    # 전환과 동시) — frgn_accumulate/close_bet(외국인 수급 적립·종가배팅, 오버나이트
+    # 허용)를 다시 켜고 news_accumulate(긍정뉴스 적립, 같은 클래스)를 새로 추가했다.
     kr_lanes = ("news_momentum", "news_scalp",
                 "scalp_1m", "scalp_1m_cat", "vol_breakout", "vol_breakout_cat",
-                "llm_trader")
-    # intraday_momentum 은 2026-09-05 비활성(소유자 위임 결정 — 원장 9트립 0승 −65bp,
-    # 같은 계열 10년 walk-forward 전부 음수; 변경기록 2026-09-05).
+                "llm_trader", "frgn_accumulate", "close_bet", "news_accumulate")
+    # intraday_momentum 은 2026-09-05 비활성됐다가(소유자 위임 결정 — 원장 9트립
+    # 0승 −65bp, 같은 계열 10년 walk-forward 전부 음수; 변경기록 2026-09-05)
+    # 2026-09-06 "기존 전략 한 달 더 관찰" 결정으로 재활성 — 09-05 판정은 철회되지
+    # 않았다(settings.yaml intraday_momentum 블록 주석 참고). letf_pair_qqq/sox는
+    # walk-forward NO_GO(변경기록 2026-09-05)였지만 소유자 요청으로 페이퍼 관찰
+    # 레인으로 켰다(settings.yaml letf_pair_qqq 블록 주석 참고) — capital_fraction의
+    # US 비중은 fixed_dual에서 사이징에 쓰이지 않는 boolean 게이트일 뿐이지만, 이
+    # 게이트 자체(burn_in 캡·바닥)는 정책과 무관하게 여전히 검산 대상이다.
     us_lanes = ("scalp_1m", "scalp_1m_cat", "pullback_impulse", "pullback_impulse_cat",
                 "mr_vwap_quiet", "vol_breakout", "vol_breakout_cat",
-                "gap_fade")
+                "gap_fade", "intraday_momentum", "letf_pair_qqq", "letf_pair_sox")
 
     active = [sid for sid, c in cfg["strategies"].items() if c.get("enabled", True)]
     for market, lanes in (("KR", kr_lanes), ("US", us_lanes)):

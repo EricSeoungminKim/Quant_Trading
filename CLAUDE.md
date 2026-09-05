@@ -6,7 +6,7 @@
 
 ## 이 시스템은 무엇인가
 
-KR+US 정규장에서 11개 전략을 동시 운용하는 개인 자동매매 엔진이다 (2026-09-03
+KR+US 정규장에서 17개 전략을 동시 운용하는 개인 자동매매 엔진이다 (2026-09-06
 기준 EC2에서 paper 가동 중). 가동 목록의 진실은 config/settings.yaml `strategies:`
 의 `enabled` 이다 — 이 문단은 그 요약일 뿐이다:
 
@@ -18,21 +18,43 @@ KR+US 정규장에서 11개 전략을 동시 운용하는 개인 자동매매 �
 - **mr_vwap_quiet** — 저거래량 종목 VWAP 평균회귀 스캘핑 (US 0.06)
 - **vol_breakout** / **vol_breakout_cat** — 전일 레인지 기반 변동성 돌파(Larry Williams),
   마감 직전 청산 (각 KR 0.07 / US 0.05)
-- ~~intraday_momentum~~ — 5분봉 일중 모멘텀. **2026-09-05 비활성**(원장 9트립 0승 −65bp,
-  같은 계열 10년 walk-forward 전부 음수 — 변경기록 참고)
+- **intraday_momentum** — 5분봉 일중 모멘텀. 2026-09-05 비활성(원장 9트립 0승 −65bp,
+  같은 계열 10년 walk-forward 전부 음수) → **2026-09-06 한 달 관찰용 재활성**(그
+  판정 자체는 철회되지 않음, 변경기록 참고)
 - **gap_fade** — 갭하락 되돌림 매수, 롱 온리 (US 0.03, 2026-09-05 하한 축소 — 9트립 −35bp)
 - **scalp_1m** / **scalp_1m_cat** — 1분봉 조기 진입 스캘프 (각 KR 0.03 / US 0.03, 2026-09-05
   하한으로 축소 + KR 은 패턴B만 — 원장 149트립 −48.4bp)
 - **llm_trader** — LLM이 직접 판단하는 실험 레인 (KR 0.08 / US 0.0)
+- **frgn_accumulate** — 외국인 수급 적립 매수 + 이탈 분할청산, 오버나이트 허용
+  (KR 0.14 / US 0.0) — 2026-09-03 저녁 "단타만" 방침으로 비활성됐다가 2026-09-06
+  소유자 최종 결정("final form" 자동 레인)으로 재활성
+- **close_bet** — 종가배팅(오후장 매수 → 익일 아침 매도), 오버나이트 허용
+  (KR 0.2 / US 0.0) — frgn_accumulate와 같은 날 같은 이유로 재활성
+- **news_accumulate**(신규, 2026-09-06) — frgn_accumulate와 **같은 클래스**를
+  재사용, 태그만 EVENT/EVENT_EXIT(긍정뉴스 촉매 적립) (KR 0.1 / US 0.0) —
+  EVENT_EXIT 생산자가 없어 `exit_when_tag_absent_days`로 부재 기반 청산도 겸함
+- **letf_pair_qqq** / **letf_pair_sox** — QQQ/SOXX 신호로 3배 롱/인버스 ETF
+  전환(관찰 레인, US 각 0.05) — walk-forward NO_GO(2026-09-05)였지만 소유자
+  요청으로 2026-09-06 페이퍼 관찰 재활성(판정 철회 아님)
 
 `<id>_cat`(2026-09-03)은 파라미터가 아니라 유니버스(`universe_filter`)만 다른
 A/B 실험 갈래다 — 뉴스·수급 촉매 태그가 붙은 종목만 보는 쪽인지를 잰다
 (`quant/trade/strategy/CLAUDE.md`의 A/B 예외 참고, `run scoreboard --ab`로 판정).
-frgn_accumulate/close_bet/overnight_drift/rsi2_dip은 같은 날 "자동매매는
-단타·스캘핑만" 결정으로 비활성화됐다(오버나이트 아이디어는 manual_recs 레인으로
-텔레그램 추천). donchian/orb/orb_scan/intraday_scan, 문헌 기반 신규 3종
-(orb_rvol/eod_reversal/open_reversal)을 포함한 나머지는 `enabled: false`(코드·
-원장은 남아 있다 — 측정 기준점 + 추후 복원용).
+overnight_drift/rsi2_dip는 오버나이트/다일 보유가 전략 정의이지만 소유자의
+"final form" 로스터(2026-09-06)에 없어 계속 `enabled: false`다(오버나이트
+아이디어는 manual_recs 레인으로 텔레그램 추천). donchian/orb/orb_scan/
+intraday_scan, 문헌 기반 신규 3종(orb_rvol/eod_reversal/open_reversal)을
+포함한 나머지는 `enabled: false`(코드·원장은 남아 있다 — 측정 기준점 +
+추후 복원용).
+
+**자본 배분(2026-09-06, capital_policy: fixed_dual)**: 각 전략은 시장마다
+참여 여부(`capital_fraction[market] > 0`)에 따라 완전히 분리된 고정 계좌를
+받는다 — KR 참여 전략 1,000만원, US 참여 전략 $10,000(브로커 실제 현금과
+무관, `risk.per_strategy_initial_krw`/`per_strategy_initial_usd`). 위 각
+전략 뒤의 `(KR x.x / US x.x)` 수치는 이제 사이징 크기가 아니라 "그 시장에
+계좌가 있는가" boolean 게이트일 뿐이다 — 실제 진입 크기는 `target_weight ×
+그 전략의 book`이다. `quant.apps.cli paper-epoch`가 전략별 장부/paper
+포트폴리오를 이 고정 자본으로 리셋한다(에폭 전환 시 1회).
 
 유니버스는 텔레그램 `/watch` + **자체 리포트**(2026-08-13 이 저장소로 흡수, 같은
 EC2에서 KR 08:00 / US 20:00 발행)의 자동 후보로 채워진다 — `own_brief.sh {KR|US}`

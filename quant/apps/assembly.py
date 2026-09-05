@@ -584,7 +584,15 @@ def build_kiwoom_us_route(cfg: dict, symbols: list[str], clock) -> SourceRoute |
         logger.warning("kiwoom_us 라우트 비활성 — 토큰 발급 실패: %s: %s", type(e).__name__, e)
         return None
 
-    source = KiwoomUSDataFeed(client, clock)
+    # 회로차단기 임계(2026-09-06 안정성 감사 P1-2): settings `datafeed.kiwoom_us_breaker`.
+    # 키가 없으면 코드 기본값(5회/60초 → 30분 개방)과 같다.
+    _brk = (cfg.get("datafeed") or {}).get("kiwoom_us_breaker") or {}
+    source = KiwoomUSDataFeed(
+        client, clock,
+        breaker_failure_threshold=int(_brk.get("failure_threshold", 5)),
+        breaker_window_seconds=float(_brk.get("window_seconds", 60)),
+        breaker_open_seconds=float(_brk.get("open_seconds", 1800)),
+    )
     logger.info("kiwoom_us 라우트 활성 — US 심볼=%s (Toss와 별도 rate limit 예산)", ", ".join(us_symbols))
     return SourceRoute(
         name="kiwoom_us",
@@ -1022,6 +1030,39 @@ def declared_initial_krw(
     return out
 
 
+def fixed_dual_books(
+    capital_fraction: dict[str, dict[str, float]],
+    active_strategy_ids: list[str],
+    per_strategy_initial_krw: float,
+    per_strategy_initial_usd: float,
+) -> tuple[dict[str, float], dict[str, float]]:
+    """`capital_policy: fixed_dual`(2026-09-06, 소유자 결정)의 전략별 시작 명목자본.
+
+    소유자 원문: "each strategy is its own account: 10,000,000 KRW for KR
+    strategies, $10,000 for US strategies; each account runs its own
+    quant/auto program". `declared`/`equal_split`과 달리 **브로커의 실제
+    현금과 무관하다** — 총현금을 조회해 나누는 게 아니라, 시장마다 참여하는
+    전략에게 고정액을 그대로 준다(반대로 `build_paper_runtime`이 이 합계에
+    맞춰 paper 지갑을 채운다 — 풀이 병목이 될 수 없게).
+
+    "이 시장에 참여하는가"의 판정은 `capital_fraction[market] > 0`이다 — 다른
+    정책과 같은 boolean 게이트(`RiskManagerImpl._capital_fraction_for`)를
+    재사용한다. 두 시장 모두 0인 전략은 어느 dict에도 없다(진입 자체가
+    차단돼 있어 장부가 필요없다 — declared_initial_krw와 같은 원칙). 두
+    시장 모두에 비중이 있는 전략은 **두 dict 모두에** 고정액 그대로 나타난다
+    (비중의 "크기"는 fixed_dual에서 쓰이지 않는다 — 시장 참여 여부만 본다).
+    """
+    krw: dict[str, float] = {}
+    usd: dict[str, float] = {}
+    for sid in active_strategy_ids:
+        frac = capital_fraction.get(sid) or {}
+        if float(frac.get("KR", 0.0)) > 0:
+            krw[sid] = per_strategy_initial_krw
+        if float(frac.get("US", 0.0)) > 0:
+            usd[sid] = per_strategy_initial_usd
+    return krw, usd
+
+
 def build_paper_runtime(settings: Settings) -> PaperRuntime:
     """paper 루프에 필요한 것을 전부 배선한다."""
     cfg = settings.raw
@@ -1165,6 +1206,11 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
     # 각 전략이 선언한 capital_fraction을 시장별 현금 풀에 곱한다
     # (`declared_initial_krw` docstring). equal_split이 capital_fraction을 사이징에서
     # 무의미하게 만들어 설정 파일이 사실과 다른 말을 하던 것을 끝낸다.
+    # fixed_dual(2026-09-06, 소유자 결정) — declared/equal_split과 달리 브로커의
+    # 실제 현금을 전혀 조회하지 않는다. 시장마다 참여하는 전략에게 통화별 고정액
+    # (`per_strategy_initial_krw`/`per_strategy_initial_usd`)을 그대로 준다 —
+    # "각 전략은 자기 계좌"(fixed_dual_books docstring). capital_fraction은 이
+    # 정책에서 시장 참여 boolean 게이트로만 쓰이고 사이징에는 쓰이지 않는다.
     capital_policy = str(risk_cfg.get("capital_policy", "fixed"))
     books: StrategyBooks | None = None
     if capital_mode == "per_strategy":
@@ -1227,6 +1273,49 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
                 per_strategy_initial_krw = (
                     sum(declared.values()) / len(declared) if declared else 0.0
                 )
+        elif capital_policy == "fixed_dual":
+            # 소유자 결정(2026-09-06) — "각 전략은 자기 계좌": KR 참여 전략마다
+            # `per_strategy_initial_krw`(기본 1,000만원), US 참여 전략마다
+            # `per_strategy_initial_usd`(기본 $10,000)를 브로커 실제 현금과
+            # 무관하게 고정 지급한다(`fixed_dual_books` docstring). 총현금
+            # 조회 자체가 필요 없어 equal_split/declared처럼 "모른다" 분기가
+            # 없다 — 항상 시딩한다.
+            #
+            # **capital_fraction은 fixed_dual에서 사이징에 쓰이지 않는다** —
+            # 시장 참여 여부(> 0)만 게이트로 쓰고, 실제 진입 크기는
+            # `target_weight × 그 전략의 book`이다(risk/manager.py
+            # `_approve_entry_per_strategy`, declared처럼 크기 정보를 읽지
+            # 않는다). capital_fraction의 "값"은 죽은 크기 정보로 남는다 —
+            # config/settings.yaml risk 블록 주석 참고.
+            # **이 함수는 paper 지갑(Portfolio.cash/cash_usd)을 이 합계로 맞추지
+            # 않는다** — 매 기동마다 불리므로 여기서 지갑을 강제로 맞추면 재시작
+            # 때마다 이미 쌓인 paper 손익이 사라진다. 지갑을 책들의 합(KRW 합/USD
+            # 합)으로 맞추는 것은 **에폭 전환 시점에 한 번**만 할 일이라
+            # `quant.apps.cli paper-epoch`(2026-09-06)의 책임이다 — 그래서 "풀이
+            # 병목이 될 수 없다"는 이 정책의 불변식은 여기가 아니라 그 명령이 지킨다.
+            per_strategy_initial_krw = float(risk_cfg.get("per_strategy_initial_krw", 10_000_000))
+            per_strategy_initial_usd = float(risk_cfg.get("per_strategy_initial_usd", 10_000))
+            krw_by_sid, usd_by_sid = fixed_dual_books(
+                capital_fraction, active_strategy_ids,
+                per_strategy_initial_krw, per_strategy_initial_usd,
+            )
+            books = StrategyBooks.load(books_path, initial_krw=0.0)
+            books.dual_currency = True
+            books.initial_by_strategy = krw_by_sid
+            books.initial_by_strategy_usd = usd_by_sid
+            skipped = [
+                sid for sid in active_strategy_ids
+                if sid not in krw_by_sid and sid not in usd_by_sid
+            ]
+            if skipped:
+                logger.info(
+                    "capital_policy fixed_dual: capital_fraction이 양 시장 모두 0인 전략은"
+                    " 장부를 만들지 않는다(어차피 진입이 차단된다): %s",
+                    ", ".join(sorted(skipped)),
+                )
+            active_strategy_ids = [
+                s for s in active_strategy_ids if s in krw_by_sid or s in usd_by_sid
+            ]
         else:
             per_strategy_initial_krw = float(risk_cfg.get("per_strategy_initial_krw", 10_000_000))
             books = StrategyBooks.load(books_path, initial_krw=per_strategy_initial_krw)
@@ -1245,6 +1334,24 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
                 " 선언 배분: %s (data/state/strategy_books.json)",
                 len(books.books) - seeded, seeded,
                 {sid: round(v) for sid, v in sorted(books.initial_by_strategy.items())},
+            )
+        elif seed_new_strategies and capital_policy == "fixed_dual":
+            # fixed_dual도 declared처럼 전략마다 시장 참여가 달라 "전략당 N원"이
+            # 성립하지 않는다 — 전략별 KR/US 장부를 한 줄로 남긴다(사용자 요청:
+            # "log a startup line listing each strategy's books").
+            books_table = {
+                sid: {
+                    "KRW": round(books.initial_by_strategy.get(sid, 0.0)),
+                    "USD": round(books.initial_by_strategy_usd.get(sid, 0.0)),
+                }
+                for sid in sorted(set(books.initial_by_strategy) | set(books.initial_by_strategy_usd))
+            }
+            logger.info(
+                "전략별 독립 명목계정 활성(fixed_dual) — 기존 장부 %d개 로드 + %d개 신규,"
+                " 전략별 책: %s (KRW 합 %.0f원 / USD 합 %.0f달러,"
+                " data/state/strategy_books.json)",
+                len(books.books) - seeded, seeded, books_table,
+                sum(books.initial_by_strategy.values()), sum(books.initial_by_strategy_usd.values()),
             )
         elif seed_new_strategies:
             logger.info(

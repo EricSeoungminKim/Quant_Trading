@@ -620,6 +620,78 @@ def test_declared_skips_seeding_when_cash_is_unknown(tmp_path, monkeypatch):
     assert runtime.books.books == {}, "총현금을 모르는데 신규 전략이 시딩됐다 — 0원 시작자본 사고"
 
 
+# ── capital_policy: fixed_dual (2026-09-06, 소유자 결정) ─────────────────────
+#
+# "each strategy is its own account: 10,000,000 KRW for KR strategies, $10,000
+# for US strategies" — declared/equal_split과 달리 브로커의 실제 현금을 전혀
+# 조회하지 않는다. 시장마다 참여하는 전략에게 고정액을 그대로 준다.
+
+def test_fixed_dual_books_gives_fixed_krw_to_kr_participants_only():
+    from quant.apps.assembly import fixed_dual_books
+
+    krw, usd = fixed_dual_books(
+        capital_fraction={
+            "kr_only": {"KR": 0.14, "US": 0.0},
+            "us_only": {"KR": 0.0, "US": 0.05},
+            "both": {"KR": 0.1, "US": 0.1},
+            "neither": {"KR": 0.0, "US": 0.0},
+        },
+        active_strategy_ids=["kr_only", "us_only", "both", "neither"],
+        per_strategy_initial_krw=10_000_000.0,
+        per_strategy_initial_usd=10_000.0,
+    )
+    assert krw == {"kr_only": 10_000_000.0, "both": 10_000_000.0}
+    assert usd == {"us_only": 10_000.0, "both": 10_000.0}
+    assert "neither" not in krw and "neither" not in usd
+
+
+def test_fixed_dual_books_ignores_the_size_of_capital_fraction():
+    """0.01과 0.5 둘 다 ">0"이면 똑같이 고정액 전액을 받는다 — 값의 크기는
+    fixed_dual에서 무의미하다(boolean 게이트일 뿐)."""
+    from quant.apps.assembly import fixed_dual_books
+
+    krw, _ = fixed_dual_books(
+        capital_fraction={"tiny": {"KR": 0.01, "US": 0.0}, "big": {"KR": 0.5, "US": 0.0}},
+        active_strategy_ids=["tiny", "big"],
+        per_strategy_initial_krw=10_000_000.0,
+        per_strategy_initial_usd=10_000.0,
+    )
+    assert krw == {"tiny": 10_000_000.0, "big": 10_000_000.0}
+
+
+def test_fixed_dual_seeds_each_strategy_with_its_market_specific_books(tmp_path, monkeypatch):
+    """조립 경로 회귀 — 실제 settings.yaml로 fixed_dual을 돌려 시장별 참여에
+    맞는 장부가 만들어지는지 확인한다. 총현금 조회가 전혀 필요 없다는 것도
+    같이 증명한다(START_CAPITAL_KRW를 세팅하지 않는다)."""
+    settings = load_settings(str(_SETTINGS_PATH))
+    monkeypatch.chdir(tmp_path)
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("TOSS_CLIENT_ID", "fake-client-id")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "fake-client-secret")
+
+    settings.raw.setdefault("risk", {})["capital_mode"] = "per_strategy"
+    settings.raw["risk"]["capital_policy"] = "fixed_dual"
+    runtime = build_paper_runtime(settings)
+
+    assert runtime.books is not None
+    assert runtime.books.dual_currency is True
+
+    # scalp_1m은 KR/US 양쪽에 비중이 있다 — 두 통화 장부를 모두 받는다.
+    assert runtime.books.books["scalp_1m"]["initial_krw"] == pytest.approx(10_000_000.0)
+    assert runtime.books.books["scalp_1m"]["initial_usd"] == pytest.approx(10_000.0)
+    assert runtime.books.books["scalp_1m"]["cash_krw"] == pytest.approx(10_000_000.0)
+    assert runtime.books.books["scalp_1m"]["cash_usd"] == pytest.approx(10_000.0)
+
+    # letf_pair_qqq는 US 전용(KR capital_fraction 0) — KR 장부가 없다.
+    assert runtime.books.books["letf_pair_qqq"]["initial_usd"] == pytest.approx(10_000.0)
+    assert runtime.books.books["letf_pair_qqq"]["initial_krw"] == pytest.approx(0.0)
+
+    # frgn_accumulate/news_accumulate는 KR 전용(US capital_fraction 0) — USD 장부가 없다.
+    for sid in ("frgn_accumulate", "news_accumulate"):
+        assert runtime.books.books[sid]["initial_krw"] == pytest.approx(10_000_000.0)
+        assert runtime.books.books[sid]["initial_usd"] == pytest.approx(0.0)
+
+
 # ── A/B 갈래 분할 (2026-09-03) ────────────────────────────────────────────────
 # 중심 주장: **두 갈래가 같은 종목을 절대 동시에 보지 않는다.** 겹치면 원장의
 # strategy_id 로 성적을 갈라 채점할 수 없고("어느 갈래가 벌었나"에 답이 없어진다),

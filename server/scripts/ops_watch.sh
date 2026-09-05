@@ -52,6 +52,42 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 . "$(dirname "$0")/lib/notify.sh"
 NOTIFY_LANE="ops"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
+# --- 0. 배포-저장소 드리프트 감지 (2026-09-06 안정성 감사 §10) ---
+# 이 감사에서 EC2 로그 문자열이 현재 로컬 working tree와 다르다는 사실을
+# 사람이 우연히 grep해서 발견했다 — "실행 중인 빌드가 실제로 어느 커밋인지"는
+# 자동으로 드러나야 할 사실이지, 감사관이 매번 문자열을 대조해서 알아낼
+# 일이 아니다. `server/scripts/deploy.sh`가 배포에 성공할 때마다
+# `data/state/last_deploy_sha.txt`에 그 시점의 `git rev-parse HEAD`를 남긴다
+# (deploy.sh 참고). 여기서는 그 기록과 **지금 실제로 checkout돼 있는 HEAD**를
+# 대조한다 — 둘이 다르면 deploy.sh를 거치지 않은 git 조작(수동 checkout/pull,
+# 디버깅 후 원복 누락 등)이 있었다는 뜻이다.
+#
+# 기록 파일이 아직 없으면(이 기능 도입 전 배포 상태) 판정을 보류한다 — "모른다"를
+# "이상 없음"으로 읽지 않는다는 이 스크립트의 원칙과 같지만, 스팸을 피하려고
+# 아래 메인 JSON 파이프라인(findings/dedup)과는 별개의 독립 경로로 처리한다 —
+# 같은 SHA로는 한 번만 알린다(DRIFT_STATE 파일).
+DEPLOY_SHA_FILE="data/state/last_deploy_sha.txt"
+CURRENT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "")"
+if [ -n "$CURRENT_SHA" ] && [ -f "$DEPLOY_SHA_FILE" ]; then
+  RECORDED_SHA="$(cat "$DEPLOY_SHA_FILE" 2>/dev/null || echo "")"
+  if [ -n "$RECORDED_SHA" ] && [ "$RECORDED_SHA" != "$CURRENT_SHA" ]; then
+    log "배포 드리프트: 마지막 deploy.sh 기록 SHA(${RECORDED_SHA}) != 현재 checkout(${CURRENT_SHA})"
+    DRIFT_STATE="data/state/ops_watch_deploy_drift_notified.txt"
+    if [ "$(cat "$DRIFT_STATE" 2>/dev/null || echo "")" != "$CURRENT_SHA" ]; then
+      if [ "${DRY_RUN:-0}" = "1" ]; then
+        echo "[DRY_RUN] 배포 드리프트 감지 — 알림 생략(DRY_RUN)"
+      elif notify_now "⚠️ 배포-저장소 드리프트 감지
+
+현재 checkout: ${CURRENT_SHA:0:12}
+마지막 deploy.sh 기록: ${RECORDED_SHA:0:12}
+
+deploy.sh를 거치지 않고 코드가 바뀐 것으로 보입니다(수동 git 조작 등). 의도한 변경이면 무시해도 됩니다 — 같은 SHA로는 다시 알리지 않습니다."; then
+        printf '%s' "$CURRENT_SHA" > "$DRIFT_STATE"
+      fi
+    fi
+  fi
+fi
+
 # --- 1. 감지 (결정론적) ---
 # 있어야 하는 타이머를 명시한다 — 유닛이 조용히 사라지는 것을 잡는다.
 # 필수 소스·시크릿을 명시한다. **비워두면 감시가 결측을 못 본다** — 2026-08-14 에

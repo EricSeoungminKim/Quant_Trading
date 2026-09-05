@@ -18,6 +18,14 @@
 환산해 누적하고(PaperBroker.place_order와 동일 패턴), 이후 환율이 움직여도 과거
 누적값은 바뀌지 않는다. `equity_krw()`만 "지금 이 순간"의 시세×환율로 평가한다.
 
+**`dual_currency`(2026-09-06, `capital_policy: fixed_dual`)**: 위 문단은
+dual_currency=False(fixed/equal_split/declared) 전용 계약이다. True면 `cash_usd`/
+`fees_usd`/`realized_pnl_usd`가 **환산 없이 달러 그대로** 누적되고, US 체결은
+`cash_krw`를 전혀 건드리지 않는다 — "각 전략은 시장마다 완전히 분리된 계좌"
+(소유자 결정 2026-09-06)를 장부 수준에서 강제한다. `equity_krw()`는 그래도 두
+지갑의 합(KRW + to_krw(USD))을 돌려준다 — 성과는 합쳐서 보되 지출 한도(현금
+게이트)는 `available_cash_krw_for_market`로 시장별로 분리해서 본다.
+
 파일 쓰기는 원자적이다(tmp write + rename) — `quant/trade/risk/manager.py`의
 `_save_day_state`와 같은 패턴.
 """
@@ -60,6 +68,19 @@ class StrategyBooks:
     # **영속화하지 않는다**: 매 기동에 정책이 다시 계산하고, 이미 만들어진 장부의
     # `book["initial_krw"]`는 생성 시점에 못박히므로(_ensure) 저장할 이유가 없다.
     initial_by_strategy: dict[str, float] = field(default_factory=dict)
+    # `initial_by_strategy`의 USD 짝(2026-09-06, `capital_policy: fixed_dual`) —
+    # 전략이 US 시장에서 받는 고정 달러 장부의 시작금. dual_currency=False(기본,
+    # fixed/equal_split/declared)에서는 전혀 읽히지 않는다 — 기존 동작 100% 보존.
+    initial_by_strategy_usd: dict[str, float] = field(default_factory=dict)
+    # 통화별 지갑 완전 분리(2026-09-06, `capital_policy: fixed_dual` 전용).
+    # False(기본)면 지금까지처럼 모든 체결이 `cash_krw` 하나(필요시 fx로 환산)로
+    # 모인다 — fixed/equal_split/declared의 동작을 한 글자도 바꾸지 않는다.
+    # True면 US 체결이 `cash_usd`(원화 환산 없이 달러 그대로)만 움직이고 KR
+    # 체결은 지금처럼 `cash_krw`만 움직인다 — "각 전략의 각 시장 지갑은 서로
+    # 절대 섞이지 않는다"(소유자 결정 2026-09-06 "each strategy is its own
+    # account")를 장부 수준에서 강제한다. **영속화하지 않는다** — 매 기동에
+    # capital_policy가 다시 정한다.
+    dual_currency: bool = False
 
     @classmethod
     def load(cls, path: "Path | str", initial_krw: float) -> "StrategyBooks":
@@ -107,18 +128,34 @@ class StrategyBooks:
         """
         book = self.books.get(strategy_id)
         if book is None:
-            # declared 정책은 전략마다 시작금이 다르다 — 선언이 있으면 그 값을,
-            # 없으면 지금까지처럼 컨테이너 스칼라를 쓴다.
+            # declared/fixed_dual 정책은 전략마다 시작금이 다르다 — 선언이 있으면
+            # 그 값을, 없으면 지금까지처럼 컨테이너 스칼라를 쓴다.
             initial = float(self.initial_by_strategy.get(strategy_id, self.initial_krw))
+            initial_usd = float(self.initial_by_strategy_usd.get(strategy_id, 0.0))
             book = {
                 "cash_krw": initial,
                 "initial_krw": initial,
                 "realized_pnl_krw": 0.0,
                 "fees_krw": 0.0,
+                # USD 필드(2026-09-06, fixed_dual) — dual_currency=False인 정책
+                # 아래서는 절대 건드리지 않아 항상 0.0으로 남는 죽은 필드다.
+                "cash_usd": initial_usd,
+                "initial_usd": initial_usd,
+                "realized_pnl_usd": 0.0,
+                "fees_usd": 0.0,
                 "positions": {},
                 "updated": _now_iso(),
             }
             self.books[strategy_id] = book
+        else:
+            # 하위호환(2026-09-06): USD 필드가 도입되기 전에 저장된 books.json을
+            # 불러오면 이 키들이 없다 — 이후 로직이 book["cash_usd"] 등을 안전하게
+            # 참조할 수 있도록 기본값 0.0을 채워 넣는다. 기존 KRW 필드는 절대
+            # 건드리지 않는다(값 보존).
+            book.setdefault("cash_usd", 0.0)
+            book.setdefault("initial_usd", 0.0)
+            book.setdefault("realized_pnl_usd", 0.0)
+            book.setdefault("fees_usd", 0.0)
         return book
 
     def seed(self, strategy_ids: "Iterable[str]") -> int:
@@ -137,18 +174,46 @@ class StrategyBooks:
 
     def available_cash_krw(self, strategy_id: str) -> float:
         """그 전략이 지금 쓸 수 있는 현금(KRW). 아직 등장한 적 없는 전략은
-        initial_krw 전액이 가용하다(첫 조회로 장부를 만든다)."""
+        initial_krw 전액이 가용하다(첫 조회로 장부를 만든다).
+
+        **fixed_dual(dual_currency=True)에서는 KR 지갑만 본다** — USD 지갑
+        (`cash_usd`)은 별개다. 시장을 구분해야 하는 호출부는
+        `available_cash_krw_for_market`을 쓸 것."""
         return float(self._ensure(strategy_id)["cash_krw"])
+
+    def available_cash_krw_for_market(
+        self, strategy_id: str, market: str, fx: FxProvider,
+    ) -> float:
+        """그 전략이 `market` 통화 지갑에서 지금 쓸 수 있는 현금(KRW 환산).
+
+        `capital_policy: fixed_dual`(dual_currency=True)에서는 시장별 지갑이
+        완전히 분리돼 있다 — KR 진입이 US 지갑을, US 진입이 KR 지갑을 잠식하면
+        "각 전략은 자기 계좌"라는 소유자 결정(2026-09-06)이 깨진다. 그 외 정책
+        (fixed/equal_split/declared)은 원래부터 단일 KRW 환산 풀(cash_krw)이라
+        market과 무관하게 그 값을 그대로 돌려준다 — 기존 동작 100% 보존.
+
+        risk/manager.py의 사이징 전체가 KRW 단위로 돌아가므로, USD 지갑도
+        여기서 KRW로 환산해 돌려준다(원본 `cash_usd`는 건드리지 않는다 — 이건
+        조회 시점 환산일 뿐이다)."""
+        book = self._ensure(strategy_id)
+        if self.dual_currency and market != "KR":
+            return to_krw(float(book.get("cash_usd", 0.0)), "US", fx)
+        return float(book["cash_krw"])
 
     def equity_krw(
         self, strategy_id: str, marks: "dict[str, float] | None", fx: FxProvider,
     ) -> float:
         """cash + 보유 포지션 평가액(KRW). `marks`(심볼→현지통화 현재가)에 없는
         종목은 avg_cost로 저하(degrade)한다 — risk/manager.py의 계좌 전체 equity
-        계산과 같은 원칙(시세 하나 끊겼다고 승인 전체가 막히면 안 된다)."""
+        계산과 같은 원칙(시세 하나 끊겼다고 승인 전체가 막히면 안 된다).
+
+        `cash_usd`(2026-09-06, fixed_dual)는 항상 더한다 — dual_currency=False
+        정책에서는 이 필드가 영원히 0.0이라(apply_fill이 건드리지 않는다) 더해도
+        기존 결과가 그대로 보존된다. 즉 전략의 equity는 **두 통화 장부의 합**이다
+        (KR 지갑 + US 지갑 KRW 환산) — "각자 계좌지만 성과는 합쳐서 본다"."""
         book = self._ensure(strategy_id)
         marks = marks or {}
-        total = float(book["cash_krw"])
+        total = float(book["cash_krw"]) + to_krw(float(book.get("cash_usd", 0.0)), "US", fx)
         for symbol, pos in book["positions"].items():
             qty = float(pos.get("qty", 0.0))
             if qty <= 0:
@@ -181,6 +246,11 @@ class StrategyBooks:
         positions = book["positions"]
         pos = positions.get(symbol)
         notional_local = qty * price
+        # fixed_dual(2026-09-06)의 US 체결만 달러 지갑을 직접 움직인다 — 환전
+        # 코드는 여기에도 없다(paper.py dual_currency와 같은 원칙). 그 외
+        # (dual_currency=False 전부, 또는 fixed_dual의 KR 체결)는 지금까지처럼
+        # cash_krw를 to_krw로 환산해 움직인다 — 동작 100% 보존.
+        use_usd = self.dual_currency and market == "US"
 
         if side is Side.BUY:
             if pos is None:
@@ -191,8 +261,12 @@ class StrategyBooks:
                 pos["avg_cost"] = (pos["avg_cost"] * pos["qty"] + notional_local) / new_qty
             pos["qty"] = new_qty
             pos["market"] = market
-            book["cash_krw"] -= to_krw(notional_local + fee, market, fx)
-            book["fees_krw"] += to_krw(fee, market, fx)
+            if use_usd:
+                book["cash_usd"] -= notional_local + fee
+                book["fees_usd"] += fee
+            else:
+                book["cash_krw"] -= to_krw(notional_local + fee, market, fx)
+                book["fees_krw"] += to_krw(fee, market, fx)
         else:
             if pos is None:
                 # 이 장부가 모르는 매도 — 정상 경로라면 risk.approve()가 브로커
@@ -211,8 +285,13 @@ class StrategyBooks:
             pos["qty"] = max(pos["qty"] - qty, 0.0)
             if pos["qty"] <= _QTY_EPSILON:
                 positions.pop(symbol, None)
-            book["cash_krw"] += to_krw(notional_local - fee, market, fx)
-            book["fees_krw"] += to_krw(fee, market, fx)
-            book["realized_pnl_krw"] += to_krw(realized_local, market, fx)
+            if use_usd:
+                book["cash_usd"] += notional_local - fee
+                book["fees_usd"] += fee
+                book["realized_pnl_usd"] += realized_local
+            else:
+                book["cash_krw"] += to_krw(notional_local - fee, market, fx)
+                book["fees_krw"] += to_krw(fee, market, fx)
+                book["realized_pnl_krw"] += to_krw(realized_local, market, fx)
 
         book["updated"] = _now_iso()

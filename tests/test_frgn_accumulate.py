@@ -248,6 +248,108 @@ def test_no_eod_flatten_or_stop_loss_management_loop():
     assert signals == []
 
 
+# ============================================================ 태그 이름 일반화 (2026-09-06)
+
+def test_custom_accumulate_tag_gates_buying_instead_of_frgn():
+    """`accumulate_tag`를 EVENT로 바꾸면 FRGN 태그는 더 이상 매수를 트리거하지
+    않고, EVENT 태그가 트리거한다(news_accumulate 레인의 실제 배선)."""
+    strat = FrgnAccumulateStrategy(
+        ["005930"], _params(accumulate_tag="EVENT"), tags_of={"005930": ["FRGN"]},
+    )
+    assert strat.on_cycle(_ctx({"005930": 70_000.0}, _after_eval())) == []
+
+    strat2 = FrgnAccumulateStrategy(
+        ["005930"], _params(accumulate_tag="EVENT"), tags_of={"005930": ["EVENT"]},
+    )
+    signals = strat2.on_cycle(_ctx({"005930": 70_000.0}, _after_eval()))
+    assert len(signals) == 1
+    assert signals[0].action == SignalAction.ENTER_LONG
+    assert "EVENT" in signals[0].reason
+
+
+def test_custom_exit_tag_gates_exit_instead_of_frgn_exit():
+    strat = FrgnAccumulateStrategy(
+        ["005930"], _params(exit_tag="EVENT_EXIT"), tags_of={"005930": ["EVENT_EXIT"]},
+    )
+    pos = _held(qty=10.0)
+    signals = strat.on_cycle(_ctx({"005930": 70_000.0}, _after_eval(), positions={"005930": pos}))
+    assert len(signals) == 1
+    assert signals[0].action == SignalAction.SCALE_OUT
+    assert "EVENT_EXIT" in signals[0].reason
+
+
+def test_default_tags_unchanged_when_params_omit_them():
+    """params에 accumulate_tag/exit_tag를 안 주면 frgn_accumulate는 지금까지와
+    똑같이 FRGN/FRGN_EXIT만 본다 — 이 일반화가 기존 동작을 바꾸지 않는다는
+    회귀 가드."""
+    strat = FrgnAccumulateStrategy(["005930"], _params(), tags_of=None)
+    assert strat.accumulate_tag == "FRGN"
+    assert strat.exit_tag == "FRGN_EXIT"
+
+
+# ============================================================ 태그 부재 기반 청산 (2026-09-06)
+
+def test_absent_exit_disabled_by_default_neutral_day_does_nothing():
+    """exit_when_tag_absent_days=0(기본)이면 중립일이 아무리 반복돼도 청산
+    신호가 없다 — frgn_accumulate의 기존 '잔여 관망' 동작 그대로."""
+    strat = FrgnAccumulateStrategy(["005930"], _params(), tags_of={"005930": []})
+    pos = _held(qty=10.0)
+    for day in (DAY1, DAY2, date(2026, 1, 7)):
+        signals = strat.on_cycle(_ctx({"005930": 70_000.0}, _after_eval(day=day), positions={"005930": pos}))
+        assert signals == []
+
+
+def test_absent_exit_sells_half_after_threshold_days_then_all_the_next():
+    """exit_when_tag_absent_days=2: 태그 없는 날이 이틀 연속이면 절반, 그
+    다음날도 부재가 이어지면 잔량 전량 청산 — news_accumulate가 EVENT_EXIT
+    생산자 없이도 청산할 수 있게 하는 메커니즘."""
+    strat = FrgnAccumulateStrategy(
+        ["005930"], _params(exit_when_tag_absent_days=2), tags_of={"005930": []},
+    )
+    pos = _held(qty=10.0)
+
+    day1 = strat.on_cycle(_ctx({"005930": 70_000.0}, _after_eval(day=DAY1), positions={"005930": pos}))
+    assert day1 == [], "1일 부재로는 아직 청산하지 않는다(문턱 2일 미만)"
+
+    day2 = strat.on_cycle(_ctx({"005930": 70_000.0}, _after_eval(day=DAY2), positions={"005930": pos}))
+    assert len(day2) == 1
+    assert day2[0].action == SignalAction.SCALE_OUT
+    assert day2[0].exit_fraction == pytest.approx(0.5)
+
+    day3 = strat.on_cycle(
+        _ctx({"005930": 70_000.0}, _after_eval(day=date(2026, 1, 7)), positions={"005930": pos}),
+    )
+    assert len(day3) == 1
+    assert day3[0].action == SignalAction.EXIT_LONG
+    assert day3[0].exit_fraction == 1.0
+
+
+def test_absent_streak_resets_when_accumulate_tag_reappears():
+    """부재 이틀째(문턱 직전) 매집 태그가 다시 뜨면 매수로 돌아가고, 카운터가
+    끊긴다 — 이후 다시 부재가 시작돼도 처음부터(1일째) 다시 센다."""
+    strat = FrgnAccumulateStrategy(
+        ["005930"], _params(exit_when_tag_absent_days=2), tags_of={"005930": []},
+    )
+    pos = _held(qty=10.0)
+
+    strat.on_cycle(_ctx({"005930": 70_000.0}, _after_eval(day=DAY1), positions={"005930": pos}))
+
+    strat.tags_of = {"005930": ["FRGN"]}
+    day2 = strat.on_cycle(_ctx({"005930": 70_000.0}, _after_eval(day=DAY2), positions={"005930": pos}))
+    assert len(day2) == 1 and day2[0].action == SignalAction.ENTER_LONG
+
+    strat.tags_of = {"005930": []}
+    day3 = strat.on_cycle(
+        _ctx({"005930": 70_000.0}, _after_eval(day=date(2026, 1, 7)), positions={"005930": pos}),
+    )
+    assert day3 == [], "재개 이후 부재 1일째 — 문턱(2일) 전이라 아직 청산 없음"
+
+
+def test_invalid_exit_when_tag_absent_days_raises():
+    with pytest.raises(ValueError):
+        FrgnAccumulateStrategy(["005930"], _params(exit_when_tag_absent_days=-1))
+
+
 # ============================================================ 생성자 검증
 
 def test_invalid_buy_qty_raises():

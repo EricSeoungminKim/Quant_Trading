@@ -270,3 +270,161 @@ def test_success_resets_consecutive_failure_count():
     # 쿨다운에 들어가지 않았으므로 다음 호출은 네트워크를 정상적으로 탄다.
     q = feed.quote("TQQQ")
     assert q is not None
+
+
+# ------------------------------------------------------- 전역 회로 차단기 (2026-09-06)
+# 안정성 감사 P1-2: EC2 5일 로그 실측 — kiwoom_us가 HTTP 429를 맞고 Toss로
+# 폴백한 횟수가 약 150,000회. 심볼별 쿨다운과 별개로, 짧은 시간 안에 연속
+# 실패가 몰리면(심볼과 무관하게) 그 자체로 API 전체가 막힌 상태로 보고
+# 라우트 전체를 일정 시간 완전히 건너뛴다.
+
+
+def test_breaker_opens_after_threshold_failures_within_window_across_symbols(monkeypatch):
+    """서로 다른 심볼에서 실패해도(심볼별 카운터는 낮게 유지되도록) 전역
+    누적이 임계에 도달하면 회로 차단기가 열린다."""
+    fake_now = {"t": 1_000.0}
+    monkeypatch.setattr(
+        "quant.adapters.brokers.kiwoom.us_datafeed.time.monotonic", lambda: fake_now["t"]
+    )
+    client = FakeGlobalClient(_ROWS)
+    feed = KiwoomUSDataFeed(
+        client, FakeClock(_NOW),
+        breaker_failure_threshold=3, breaker_window_seconds=60.0, breaker_open_seconds=1800.0,
+    )
+    err = KiwoomError(429, "rate limit exceeded")
+
+    assert feed.breaker_open is False
+    for i, sym in enumerate(["AAA", "BBB", "CCC"]):
+        client.fail_next = err
+        with pytest.raises(DataSourceError):
+            feed.quote(sym)
+        fake_now["t"] += 1.0  # 여전히 60초 윈도우 안
+
+    assert feed.breaker_open is True
+    assert len(client.calls) == 3  # 실패한 3회는 실제로 네트워크를 탔다
+
+    # 열려 있는 동안에는 완전히 새 심볼도 네트워크를 아예 타지 않는다.
+    with pytest.raises(DataSourceError):
+        feed.quote("DDD")
+    assert len(client.calls) == 3, "회로 차단기가 열렸는데 네트워크를 다시 탔다"
+
+
+def test_breaker_closes_after_open_seconds_elapse_and_allows_retry(monkeypatch):
+    fake_now = {"t": 1_000.0}
+    monkeypatch.setattr(
+        "quant.adapters.brokers.kiwoom.us_datafeed.time.monotonic", lambda: fake_now["t"]
+    )
+    client = FakeGlobalClient(_ROWS)
+    feed = KiwoomUSDataFeed(
+        client, FakeClock(_NOW),
+        breaker_failure_threshold=2, breaker_window_seconds=60.0, breaker_open_seconds=1800.0,
+    )
+    err = KiwoomError(429, "rate limit exceeded")
+
+    for sym in ["AAA", "BBB"]:
+        client.fail_next = err
+        with pytest.raises(DataSourceError):
+            feed.quote(sym)
+    assert feed.breaker_open is True
+
+    fake_now["t"] += 1800.1  # 개방 시간 경과
+    assert feed.breaker_open is False
+
+    q = feed.quote("CCC")  # 차단기가 닫혔으니 정상적으로 네트워크를 탄다
+    assert q is not None
+
+
+def test_breaker_does_not_open_when_failures_span_outside_window(monkeypatch):
+    """실패가 윈도우(60초) 밖으로 흩어져 있으면 전역 누적으로 잡히지 않는다 —
+    "연속"의 의미는 짧은 시간 안에 몰린 실패다."""
+    fake_now = {"t": 1_000.0}
+    monkeypatch.setattr(
+        "quant.adapters.brokers.kiwoom.us_datafeed.time.monotonic", lambda: fake_now["t"]
+    )
+    client = FakeGlobalClient(_ROWS)
+    feed = KiwoomUSDataFeed(
+        client, FakeClock(_NOW),
+        breaker_failure_threshold=3, breaker_window_seconds=60.0, breaker_open_seconds=1800.0,
+    )
+    err = KiwoomError(429, "rate limit exceeded")
+
+    for sym in ["AAA", "BBB", "CCC"]:
+        client.fail_next = err
+        with pytest.raises(DataSourceError):
+            feed.quote(sym)
+        fake_now["t"] += 61.0  # 매번 윈도우 밖으로 밀어냄
+
+    assert feed.breaker_open is False
+
+
+def test_breaker_failure_streak_resets_on_success(monkeypatch):
+    """성공이 하나라도 끼면 전역 실패 스트릭도 리셋된다 — 산발적 실패가 쌓여서
+    차단기로 이어지지 않는다(심볼별 쿨다운과 같은 원칙)."""
+    fake_now = {"t": 1_000.0}
+    monkeypatch.setattr(
+        "quant.adapters.brokers.kiwoom.us_datafeed.time.monotonic", lambda: fake_now["t"]
+    )
+    client = FakeGlobalClient(_ROWS)
+    feed = KiwoomUSDataFeed(
+        client, FakeClock(_NOW),
+        breaker_failure_threshold=2, breaker_window_seconds=60.0, breaker_open_seconds=1800.0,
+    )
+    err = KiwoomError(429, "rate limit exceeded")
+
+    client.fail_next = err
+    with pytest.raises(DataSourceError):
+        feed.quote("AAA")
+
+    assert feed.quote("BBB") is not None  # 성공 — 전역 스트릭 리셋
+
+    client.fail_next = err
+    with pytest.raises(DataSourceError):
+        feed.quote("CCC")  # 리셋됐으므로 이것만으로는 threshold(2) 미도달
+
+    assert feed.breaker_open is False
+
+
+def test_1903_permanent_exclusion_does_not_open_breaker(monkeypatch):
+    """1903(종목 정보 없음)은 API 장애가 아니다 — 아무리 반복돼도 전역
+    회로차단기를 열면 안 된다."""
+    fake_now = {"t": 1_000.0}
+    monkeypatch.setattr(
+        "quant.adapters.brokers.kiwoom.us_datafeed.time.monotonic", lambda: fake_now["t"]
+    )
+    client = FakeGlobalClient(_ROWS)
+    feed = KiwoomUSDataFeed(
+        client, FakeClock(_NOW),
+        breaker_failure_threshold=2, breaker_window_seconds=60.0, breaker_open_seconds=1800.0,
+    )
+    for sym in ["GLD", "CRM", "SLV"]:
+        client.fail_next = KiwoomError(1903, "종목 정보 없음")
+        with pytest.raises(DataSourceError):
+            feed.quote(sym)
+
+    assert feed.breaker_open is False
+
+
+def test_breaker_logs_once_on_open_and_once_on_close(monkeypatch, caplog):
+    fake_now = {"t": 1_000.0}
+    monkeypatch.setattr(
+        "quant.adapters.brokers.kiwoom.us_datafeed.time.monotonic", lambda: fake_now["t"]
+    )
+    client = FakeGlobalClient(_ROWS)
+    feed = KiwoomUSDataFeed(
+        client, FakeClock(_NOW),
+        breaker_failure_threshold=2, breaker_window_seconds=60.0, breaker_open_seconds=1800.0,
+    )
+    err = KiwoomError(429, "rate limit exceeded")
+
+    with caplog.at_level(logging.INFO):
+        for sym in ["AAA", "BBB"]:
+            client.fail_next = err
+            with pytest.raises(DataSourceError):
+                feed.quote(sym)
+        open_msgs = [r for r in caplog.records if "회로 차단기 열림" in r.getMessage()]
+        assert len(open_msgs) == 1
+
+        fake_now["t"] += 1800.1
+        feed.quote("CCC")  # 닫힘 판정은 다음 호출에서 일어난다
+        close_msgs = [r for r in caplog.records if "회로 차단기 닫힘" in r.getMessage()]
+        assert len(close_msgs) == 1

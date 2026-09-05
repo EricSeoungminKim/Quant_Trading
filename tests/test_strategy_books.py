@@ -212,3 +212,124 @@ def test_seed_does_not_touch_existing_books(tmp_path):
     assert created == 1  # b 만 새로 생긴다
     assert books.books["a"]["cash_krw"] == pytest.approx(cash_before)
     assert books.books["a"]["positions"]["005930"]["qty"] == pytest.approx(10.0)
+
+
+# ============================================== capital_policy: fixed_dual (2026-09-06)
+
+def _dual_books(tmp_path, initial_by_krw=None, initial_by_usd=None) -> StrategyBooks:
+    books = StrategyBooks.load(tmp_path / "strategy_books.json", initial_krw=0.0)
+    books.dual_currency = True
+    books.initial_by_strategy = dict(initial_by_krw or {})
+    books.initial_by_strategy_usd = dict(initial_by_usd or {})
+    return books
+
+
+def test_dual_currency_seeds_krw_and_usd_independently(tmp_path):
+    """양 시장 모두 계좌가 있는 전략은 두 화폐 필드를 각자 시작금으로 받는다."""
+    books = _dual_books(tmp_path, {"scalp_1m": 10_000_000.0}, {"scalp_1m": 10_000.0})
+    book = books.books.setdefault("scalp_1m", books._ensure("scalp_1m"))
+    assert book["cash_krw"] == pytest.approx(10_000_000.0)
+    assert book["cash_usd"] == pytest.approx(10_000.0)
+    assert book["initial_krw"] == pytest.approx(10_000_000.0)
+    assert book["initial_usd"] == pytest.approx(10_000.0)
+
+
+def test_dual_currency_us_only_strategy_has_zero_krw_book(tmp_path):
+    """KR 참여가 없는 전략(예: letf_pair_qqq)은 cash_krw가 0으로 남는다 —
+    KR 지갑 자체가 없다는 뜻이지, 잔고가 부족하다는 뜻이 아니다."""
+    books = _dual_books(tmp_path, {}, {"letf_pair_qqq": 10_000.0})
+    book = books._ensure("letf_pair_qqq")
+    assert book["cash_krw"] == pytest.approx(0.0)
+    assert book["cash_usd"] == pytest.approx(10_000.0)
+
+
+def test_dual_currency_us_fill_moves_usd_wallet_only_no_fx_conversion(tmp_path):
+    """dual_currency=True에서 US 체결은 cash_usd만 달러 그대로 움직이고
+    cash_krw는 건드리지 않는다 — 환전 코드가 없다는 것의 직접 증거."""
+    books = _dual_books(tmp_path, {"scalp_1m": 10_000_000.0}, {"scalp_1m": 10_000.0})
+    fx = FixedFxProvider(FX_RATE)
+    books.apply_fill("scalp_1m", "TQQQ", Side.BUY, 10.0, 70.0, 1.0, "US", fx)
+
+    book = books.books["scalp_1m"]
+    assert book["cash_usd"] == pytest.approx(10_000.0 - 10 * 70.0 - 1.0)
+    assert book["cash_krw"] == pytest.approx(10_000_000.0), "US 체결이 KRW 지갑을 건드렸다"
+    assert book["fees_usd"] == pytest.approx(1.0)
+    assert book["fees_krw"] == pytest.approx(0.0)
+
+
+def test_dual_currency_kr_fill_moves_krw_wallet_only(tmp_path):
+    books = _dual_books(tmp_path, {"scalp_1m": 10_000_000.0}, {"scalp_1m": 10_000.0})
+    fx = FixedFxProvider(FX_RATE)
+    books.apply_fill("scalp_1m", "005930", Side.BUY, 10.0, 70_000.0, 100.0, "KR", fx)
+
+    book = books.books["scalp_1m"]
+    assert book["cash_krw"] == pytest.approx(10_000_000.0 - 10 * 70_000.0 - 100.0)
+    assert book["cash_usd"] == pytest.approx(10_000.0), "KR 체결이 USD 지갑을 건드렸다"
+
+
+def test_dual_currency_realized_pnl_tracked_in_native_currency(tmp_path):
+    books = _dual_books(tmp_path, {}, {"gap_fade": 10_000.0})
+    fx = FixedFxProvider(FX_RATE)
+    books.apply_fill("gap_fade", "TQQQ", Side.BUY, 10.0, 70.0, 0.0, "US", fx)
+    books.apply_fill("gap_fade", "TQQQ", Side.SELL, 10.0, 75.0, 0.0, "US", fx)
+
+    book = books.books["gap_fade"]
+    assert book["realized_pnl_usd"] == pytest.approx(50.0)
+    assert book["realized_pnl_krw"] == pytest.approx(0.0)
+
+
+def test_available_cash_krw_for_market_returns_native_wallet_converted(tmp_path):
+    """fixed_dual: 시장별 지갑만 KRW로 환산해 돌려준다 — 다른 시장 지갑은
+    절대 섞이지 않는다(risk/manager.py 현금 게이트가 이 값을 그대로 쓴다)."""
+    books = _dual_books(tmp_path, {"scalp_1m": 10_000_000.0}, {"scalp_1m": 10_000.0})
+    fx = FixedFxProvider(FX_RATE)
+
+    assert books.available_cash_krw_for_market("scalp_1m", "KR", fx) == pytest.approx(10_000_000.0)
+    assert books.available_cash_krw_for_market("scalp_1m", "US", fx) == pytest.approx(10_000.0 * FX_RATE)
+
+    # US 지갑을 다 써도 KR 지갑은 전혀 줄지 않는다.
+    books.apply_fill("scalp_1m", "TQQQ", Side.BUY, 140.0, 70.0, 20.0, "US", fx)  # ~9,820 USD 소진
+    assert books.available_cash_krw_for_market("scalp_1m", "KR", fx) == pytest.approx(10_000_000.0)
+
+
+def test_available_cash_krw_for_market_matches_available_cash_krw_when_not_dual(tmp_path):
+    """dual_currency=False(fixed/equal_split/declared)에서는 market 인자와
+    무관하게 기존 available_cash_krw와 완전히 같은 값 — 동작 불변."""
+    books = _books(tmp_path)  # dual_currency 기본값 False
+    fx = FixedFxProvider(FX_RATE)
+    books.apply_fill("s", "TQQQ", Side.BUY, 1.0, 10.0, 0.0, "US", fx)
+
+    expected = books.available_cash_krw("s")
+    assert books.available_cash_krw_for_market("s", "KR", fx) == pytest.approx(expected)
+    assert books.available_cash_krw_for_market("s", "US", fx) == pytest.approx(expected)
+
+
+def test_equity_krw_sums_both_wallets_under_dual_currency(tmp_path):
+    """equity는 두 통화 장부의 합(성과는 합쳐서 본다) — 현금 게이트만 분리된다."""
+    books = _dual_books(tmp_path, {"scalp_1m": 10_000_000.0}, {"scalp_1m": 10_000.0})
+    fx = FixedFxProvider(FX_RATE)
+    equity = books.equity_krw("scalp_1m", {}, fx)
+    assert equity == pytest.approx(10_000_000.0 + 10_000.0 * FX_RATE)
+
+
+def test_loading_a_pre_dual_currency_books_file_backfills_usd_fields(tmp_path):
+    """구버전 books.json(달러 필드 없음)을 fixed_dual로 불러와도 크래시하지
+    않고 0.0으로 채워진다 — 하위호환 로딩."""
+    path = tmp_path / "strategy_books.json"
+    path.write_text(json.dumps({
+        "version": 1, "initial_krw": 10_000_000.0,
+        "books": {
+            "scalp_1m": {
+                "cash_krw": 9_500_000.0, "initial_krw": 10_000_000.0,
+                "realized_pnl_krw": -500_000.0, "fees_krw": 1000.0,
+                "positions": {}, "updated": "2026-09-01T00:00:00+00:00",
+            },
+        },
+    }), encoding="utf-8")
+
+    books = StrategyBooks.load(path, initial_krw=10_000_000.0)
+    books.dual_currency = True
+    book = books._ensure("scalp_1m")
+    assert book["cash_usd"] == pytest.approx(0.0)
+    assert book["initial_usd"] == pytest.approx(0.0)
+    assert book["cash_krw"] == pytest.approx(9_500_000.0), "기존 KRW 값은 보존돼야 한다"

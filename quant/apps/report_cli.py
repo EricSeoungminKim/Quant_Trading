@@ -61,8 +61,9 @@ from quant.report.collect.intraday import (
     _theme_change_pct, _visible_intraday,
 )
 from quant.report.collect.ledger import (
-    _load_flow_rows, _record_agent_interpret_selections, _record_intraday_selections,
-    _record_midterm_selections, _record_selections, _should_record_ledger,
+    _load_flow_rows, _record_agent_interpret_selections, _record_close_report_claims,
+    _record_intraday_selections, _record_midterm_selections, _record_selections,
+    _should_record_ledger,
 )
 from quant.report.collect.midterm import (
     _MIDTERM_PRODUCER, _MIDTERM_PRODUCER_CLOSE, _apply_midterm_prose,
@@ -261,6 +262,8 @@ def _emit_close(snap, root: Path, out_root: Path, snap_root: Path) -> None:
             else None
         ),
     }
+
+    _record_close_report_claims(close_payload, root)
 
     intraday_display = _visible_intraday(intraday_view)
 
@@ -539,6 +542,10 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         name_map=research_code_to_name,
         sector_daily=sector_daily,
         channel_digest=channel_digest,
+        # 리포트 정확도(소유자 지시 priority-1 §2) — 위에서 payload 에 이미
+        # 얹혔다(core._derive). 같은 값을 렌더 모델에도 실어야 report.html.j2
+        # 가 표시한다(index_outlook/holiday_synthesis 와 같은 관례).
+        report_accuracy=payload.get("report_accuracy"),
     )
     hp, jp, cp = write_open_report(model, snap, out_root)
     print(f"HTML   {hp}\n엔진   {jp}\n후보   {cp}")
@@ -604,6 +611,113 @@ def _run_uswrap(session: date, root: Path, snap_root: Path, out_root: Path) -> N
         print(f"  국내 연결: {kr_line}")
 
 
+def cmd_accuracy(a: argparse.Namespace) -> int:
+    """`report accuracy --since --until` — 만기된 리포트 청구를 채점한다
+    (2026-09-06, 소유자 지시 priority-1). `quant.control.report_accuracy`(순수
+    함수)에 가격만 채워 넘긴다 — 시세 조회는 `fetch_symbol_quotes`(이미
+    outcomes.py 백필이 쓰는 그 함수, 야후 무인증) 재사용. 새 시세 어댑터를
+    만들지 않는다."""
+    import json as _json
+
+    from quant.analyze.entities import load_market_map
+    from quant.collect.sources.market import fetch_symbol_quotes
+    from quant.control import report_accuracy
+    from quant.control.outcomes import to_yahoo_us_symbol
+
+    root = Path(a.root)
+    _, out_root, cache_dir, _ = _paths(root)
+    claims_path = root / "data" / "ledger" / "report_claims.jsonl"
+    if not claims_path.exists():
+        print("리포트 청구 원장이 없습니다 (data/ledger/report_claims.jsonl) — "
+              "먼저 리포트를 빌드해야 합니다", file=sys.stderr)
+        return 1
+
+    claims = []
+    with claims_path.open(encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                row = _json.loads(line)
+            except ValueError:
+                continue
+            d = row.get("date") or ""
+            if a.since <= d <= a.until:
+                claims.append(row)
+    if not claims:
+        print(f"{a.since}~{a.until} 구간에 채점할 청구가 없습니다")
+        return 0
+
+    try:
+        market_map = load_market_map(cache_dir)
+    except Exception:  # noqa: BLE001 — KIND 캐시가 없어도 .KS 폴백으로 계속한다
+        market_map = {}
+
+    def yahoo_of(market: str, symbol: str) -> str:
+        if market == "US":
+            return to_yahoo_us_symbol(symbol)
+        return market_map.get(symbol) or f"{symbol}.KS"
+
+    markets_present = sorted({c.get("market") for c in claims if c.get("market")})
+    index_yahoo = {m: yahoo_of(m, report_accuracy.INDEX_SYMBOL[m]) for m in markets_present
+                   if m in report_accuracy.INDEX_SYMBOL}
+
+    reverse_map: dict[str, tuple[str, str]] = {}
+    for c in claims:
+        market = c.get("market")
+        if not market:
+            continue
+        for cand in c.get("candidates") or []:
+            sym = cand.get("symbol")
+            if not sym:
+                continue
+            y = yahoo_of(market, sym)
+            reverse_map[y] = (market, sym)
+
+    yahoo_syms = sorted(set(index_yahoo.values()) | set(reverse_map))
+    quotes = fetch_symbol_quotes(yahoo_syms)
+
+    calendar_by_market: dict[str, list[str]] = {}
+    index_lookup: dict[tuple[str, str], float] = {}
+    for market, y in index_yahoo.items():
+        ohlcv = (quotes.get(y) or {}).get("ohlcv")
+        if ohlcv is None:
+            calendar_by_market[market] = []
+            continue
+        dates = [ts.date().isoformat() for ts in ohlcv.index]
+        calendar_by_market[market] = dates
+        for d, close in zip(dates, ohlcv["close"].tolist()):
+            index_lookup[(market, d)] = float(close)
+
+    price_lookup: dict[tuple[str, str, str], tuple] = {}
+    for y, (market, symbol) in reverse_map.items():
+        ohlcv = (quotes.get(y) or {}).get("ohlcv")
+        if ohlcv is None:
+            continue
+        for ts, row in ohlcv.iterrows():
+            d = ts.date().isoformat()
+            price_lookup[(market, symbol, d)] = (float(row["open"]), float(row["close"]))
+
+    as_of = date.today().isoformat()
+    card = report_accuracy.build_scorecard(claims, calendar_by_market, index_lookup,
+                                           price_lookup, as_of=as_of)
+
+    acc_path = root / "data" / "ledger" / "report_accuracy.jsonl"
+    acc_path.parent.mkdir(parents=True, exist_ok=True)
+    with acc_path.open("a", encoding="utf-8") as f:
+        f.write(_json.dumps({"since": a.since, "until": a.until, **card}, ensure_ascii=False) + "\n")
+
+    md = report_accuracy.render_markdown(card)
+    scorecard_dir = out_root / "accuracy"
+    scorecard_dir.mkdir(parents=True, exist_ok=True)
+    md_path = scorecard_dir / f"{as_of}.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    print(md)
+    print(f"저장: {acc_path} · {md_path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="report")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -631,9 +745,21 @@ def main(argv: list[str] | None = None) -> int:
     su = sub.add_parser("uswrap")
     su.add_argument("--date", default=date.today().isoformat())
     su.add_argument("--root", default=".")
+    # accuracy(2026-09-06, 소유자 지시 priority-1) — 리포트 정확도 감사. KR/US
+    # 양쪽 청구를 한 번에 채점한다(다른 서브커맨드처럼 --market 으로 쪼개지
+    # 않는다 — 방향콜/후보 표본이 시장별로 나뉘면 n<20 로 굳는 구간이 늘 뿐이다).
+    sa = sub.add_parser("accuracy")
+    sa.add_argument("--since", default=(date.today() - timedelta(days=30)).isoformat())
+    sa.add_argument("--until", default=date.today().isoformat())
+    sa.add_argument("--root", default=".")
     a = p.parse_args(argv)
-    session = date.fromisoformat(a.date)
+    # accuracy 는 --date 가 없다(--since/--until 구간) — 다른 서브커맨드처럼
+    # 무조건 date.fromisoformat(a.date) 를 부르면 여기서 AttributeError 로 죽는다.
+    session = date.fromisoformat(a.date) if hasattr(a, "date") else None
     session_kind = getattr(a, "session", "open")
+
+    if a.cmd == "accuracy":
+        return cmd_accuracy(a)
 
     if a.cmd == "uswrap":
         root = Path(a.root)

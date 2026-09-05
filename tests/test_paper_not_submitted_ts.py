@@ -33,7 +33,7 @@ class _Feed:
 def _broker(price: float | None = 100.0, positions: dict | None = None) -> PaperBroker:
     return PaperBroker(
         data=_Feed(price),
-        portfolio=Portfolio(cash=10_000_000.0, positions=positions or {}),
+        portfolio=Portfolio(cash=10_000_000.0, positions=positions or {}, state_path=None),
     )
 
 

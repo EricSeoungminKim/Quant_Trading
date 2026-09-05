@@ -142,6 +142,91 @@ def seeding_boundary_ts(trades: list[dict]) -> datetime | None:
     return best
 
 
+# `quant.apps.cli.cmd_paper_epoch`(2026-09-06)가 페이퍼 계정 시대 리셋 경계에
+# 남기는 마커 — `SEEDING_LIQUIDATION_MARKER`의 세 번째 자매 마커다. 저 둘은
+# "모의→실계좌 이식"의 경계인 반면, 이건 "모의 계정 자체를 초기 자본으로
+# 다시 시작한다"는 경계다(소유자 결정: capital_policy: fixed_dual 전환 —
+# "the website restarts every strategy from the same start point"). 실제
+# 매매 판단이 아니므로 `round_trips`/집계에서 뺀다 — 이식 마커와 같은 대우.
+PAPER_EPOCH_MARKER = "페이퍼 에폭 리셋"
+
+
+def is_paper_epoch_marker(trade: dict) -> bool:
+    """이 행이 `cmd_paper_epoch`가 남긴 에폭 경계 마커인가."""
+    return PAPER_EPOCH_MARKER in str(trade.get("reason") or "")
+
+
+def paper_epoch_ts(trades: "list[dict] | None" = None) -> datetime | None:
+    """가장 최근 페이퍼 에폭 리셋 경계 시각 = 에폭 마커 행들의 **최대 ts**.
+
+    마커가 없으면 None. `seeding_boundary_ts`와 정의가 같다(최대 ts) — 에폭을
+    여러 번 돌리면(예: 다음 달 또 리셋) 항상 **가장 최근** 리셋이 경계다.
+
+    `trades`를 생략하면(None) `load_trades()`(기본 경로 `data/state/trades.jsonl`)로
+    직접 읽는다 — `round_trips(trades)`처럼 이미 들고 있는 목록을 순수하게
+    재사용하는 호출부와, `quant/control/performance.py`처럼 원장 경로만 알고
+    별도로 읽지 않는 호출부를 둘 다 지원한다."""
+    if trades is None:
+        trades = load_trades()
+    best: datetime | None = None
+    for t in trades:
+        if not is_paper_epoch_marker(t):
+            continue
+        try:
+            ts = datetime.fromisoformat(str(t.get("ts")))
+        except ValueError:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if best is None or ts > best:
+            best = ts
+    return best
+
+
+def _latest_reset_boundary_ts(trades: list[dict]) -> datetime | None:
+    """이 원장에서 트립 재구성을 시작할 경계 — `seeding_boundary_ts`와
+    `paper_epoch_ts` 둘 다 경계 후보이고, **더 나중(최대) 시각이 이긴다**
+    (2026-09-06). 페이퍼 에폭 리셋 이후 실계좌 이식 경계보다 앞선 잔여 lot이
+    남을 이유가 없고, 반대로 에폭 이전에 이식이 있었다면 이식 경계가 여전히
+    유효해야 한다 — 항상 "가장 최근에 일어난 리셋"이 사실상의 시작점이다."""
+    candidates = [ts for ts in (seeding_boundary_ts(trades), paper_epoch_ts(trades)) if ts is not None]
+    return max(candidates) if candidates else None
+
+
+DEFAULT_BOOKS_PATH = Path("data/state/strategy_books.json")
+
+
+def strategy_start_capital(
+    strategy_id: str, books_path: "Path | str" = DEFAULT_BOOKS_PATH,
+) -> dict[str, float]:
+    """그 전략의 시작 명목자본을 통화별로 반환한다: `{"KRW": ..., "USD": ...}`.
+
+    `quant/trade/risk/books.py`의 `strategy_books.json`을 **파일로만** 읽는다 —
+    `quant/control/`은 `quant/trade/`를 임포트할 수 없으므로(루트 CLAUDE.md
+    아키텍처 불변식, `tests/test_architecture.py`가 강제) 코드 의존 대신 안정된
+    JSON 스키마에 의존한다. 장부가 없거나(전략이 아직 한 번도 시딩/체결되지
+    않음) 파일 자체가 없거나 손상됐으면 둘 다 0.0 — "모른다"를 큰 숫자로
+    위장하지 않는다.
+
+    `capital_policy: fixed_dual`이 아닌 장부(구버전 books.json)에는 `initial_usd`
+    키가 없다 — 그때는 USD가 0.0으로 떨어진다(books.py `_ensure`의 하위호환
+    기본값과 같은 계약). 성과 집계(quant/control/performance.py)가 이 값을 그
+    전략의 시작 자산으로 쓴다(2026-09-06, capital_policy: fixed_dual 도입에
+    맞춰 통화별 시작금을 노출)."""
+    p = Path(books_path)
+    if not p.exists():
+        return {"KRW": 0.0, "USD": 0.0}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {"KRW": 0.0, "USD": 0.0}
+    book = (data.get("books") or {}).get(strategy_id) or {}
+    return {
+        "KRW": float(book.get("initial_krw", 0.0)),
+        "USD": float(book.get("initial_usd", 0.0)),
+    }
+
+
 class TradeLedgerSink:
     """EventSink 래퍼 — 체결을 JSONL 원장에 추가 기록한다."""
 
@@ -312,8 +397,18 @@ def round_trips(trades: list[dict]) -> list[dict]:
     "원장 재구성 -N vs 포트폴리오 0"으로 오탐했다). 이 행 자체는 실제 매수가
     아니므로(원가가 실현손익을 만들지 않는다) 정리 매도와 같은 대우로 아래
     루프에서 걸러 트립 재료로 쓰지 않는다.
+
+    ## 페이퍼 에폭 리셋도 같은 부류의 경계다 (2026-09-06)
+
+    `cmd_paper_epoch`(capital_policy: fixed_dual 전환)가 남기는
+    `PAPER_EPOCH_MARKER` 도 시대 경계다 — 이식 경계와 같은 이유로, 이 시각
+    이전에 열려 있던 lot 은 전부 버린다(에폭 리셋이 포트폴리오/장부를 초기
+    자본으로 되돌렸으니 그 이전 미종결 포지션은 이 시대에 존재하지 않는다).
+    `_latest_reset_boundary_ts`가 이식 경계와 에폭 경계 중 **더 나중** 시각을
+    고른다 — 둘 다 있으면 가장 최근 리셋이 실질적인 시작점이다. 마커 행
+    자체(qty=0, 실제 체결이 아님)도 이식 마커와 같은 대우로 트립 재료에서 뺀다.
     """
-    boundary_ts = seeding_boundary_ts(trades)
+    boundary_ts = _latest_reset_boundary_ts(trades)
 
     def _ts(row: dict) -> datetime | None:
         try:
@@ -324,7 +419,7 @@ def round_trips(trades: list[dict]) -> list[dict]:
 
     by_key: dict[tuple[str, str], list[dict]] = {}
     for t in sorted(trades, key=lambda x: str(x.get("ts", ""))):
-        if is_seeding_liquidation(t) or is_seeding_carry(t):
+        if is_seeding_liquidation(t) or is_seeding_carry(t) or is_paper_epoch_marker(t):
             continue  # 프로그램의 매매 판단이 아니다 — 트립 재료가 아니다
         by_key.setdefault((str(t.get("strategy_id", "?")), str(t["symbol"])), []).append(t)
 

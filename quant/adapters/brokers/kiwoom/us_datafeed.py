@@ -46,6 +46,18 @@ _ERR_CODE_UNSUPPORTED_SYMBOL = 1903
 _DEFAULT_FAILURE_THRESHOLD = 3
 _DEFAULT_COOLDOWN_SECONDS = 600.0
 
+# 회로 차단기(2026-09-06 안정성 감사 P1-2) 기본값 — EC2 5일 로그 실측: kiwoom_us가
+# HTTP 429를 맞고 Toss로 폴백한 횟수가 약 150,000회(하루 3만 회 수준)였다. 위
+# per-symbol 쿨다운은 "이 심볼"만 쉬게 하지만, 429는 심볼과 무관하게 API 전체가
+# 막힌 상태를 뜻하는 경우가 많다 — 그런데도 매 심볼·매 사이클 네트워크를 계속
+# 때려 429를 유발하고 그 왕복+백오프 비용이 사이클 지연에 그대로 보태진다(P1-2
+# 슬로우 사이클과 상관). 여기는 **심볼과 무관한 전역** 회로차단기다: 60초
+# 이내에 연속 5회 실패하면 30분 동안 이 라우트 전체를 완전히 건너뛴다(네트워크를
+# 아예 타지 않는다) — MarketDataService가 즉시 다음 라우트(toss)로 넘어간다.
+_DEFAULT_BREAKER_FAILURE_THRESHOLD = 5
+_DEFAULT_BREAKER_WINDOW_SECONDS = 60.0
+_DEFAULT_BREAKER_OPEN_SECONDS = 1800.0  # 30분
+
 # 해외증권 글로벌 키는 2026-08-12 기준 실전 서버(api.kiwoom.com)에서만 검증됐다 —
 # 모의서버(mockapi) 지원 여부는 [미확인].
 KIWOOM_GLOBAL_BASE_URL = "https://api.kiwoom.com"
@@ -137,6 +149,9 @@ class KiwoomUSDataFeed:
         exchange: str = "ND",
         failure_threshold: int = _DEFAULT_FAILURE_THRESHOLD,
         cooldown_seconds: float = _DEFAULT_COOLDOWN_SECONDS,
+        breaker_failure_threshold: int = _DEFAULT_BREAKER_FAILURE_THRESHOLD,
+        breaker_window_seconds: float = _DEFAULT_BREAKER_WINDOW_SECONDS,
+        breaker_open_seconds: float = _DEFAULT_BREAKER_OPEN_SECONDS,
     ) -> None:
         self._client = client
         self._clock = clock
@@ -146,6 +161,12 @@ class KiwoomUSDataFeed:
         self._permanently_excluded: set[str] = set()
         self._consecutive_failures: dict[str, int] = {}
         self._cooldown_until: dict[str, float] = {}  # symbol -> time.monotonic() 만료 시각
+        # 전역 회로 차단기 상태(위 상수 블록 주석 참고) — 심볼별 상태와 완전히 별개다.
+        self._breaker_failure_threshold = breaker_failure_threshold
+        self._breaker_window_seconds = breaker_window_seconds
+        self._breaker_open_seconds = breaker_open_seconds
+        self._breaker_failure_times: list[float] = []  # 최근 실패 시각(monotonic), window 안만 유지
+        self._breaker_open_until: float | None = None  # None = 닫힘(정상)
 
     def quote(self, symbol: str) -> Quote | None:
         if is_kr_symbol(symbol):
@@ -167,6 +188,7 @@ class KiwoomUSDataFeed:
         return resample_1m(df1m, _interval_minutes(interval)).tail(n)
 
     def _fetch(self, symbol: str) -> pd.DataFrame:
+        self._raise_if_breaker_open()
         self._raise_if_on_cooldown(symbol)
         try:
             rows = self._client.usa_chart_1m(symbol, exchange=self._exchange)
@@ -177,6 +199,42 @@ class KiwoomUSDataFeed:
             raise DataSourceError(f"kiwoom_us {symbol} 조회 실패: {type(e).__name__}: {e}") from e
         self._record_success(symbol)
         return _rows_to_frame(rows)
+
+    # ---------------------------------------------------------- 회로 차단기
+    @property
+    def breaker_open(self) -> bool:
+        """전역 회로 차단기가 지금 열려 있는가(테스트/관측용으로 노출)."""
+        return self._breaker_open_until is not None and time.monotonic() < self._breaker_open_until
+
+    def _raise_if_breaker_open(self) -> None:
+        """네트워크를 타기 전에 먼저 걸러낸다 — 열려 있으면 심볼과 무관하게
+        이 라우트 전체를 즉시 실패시켜 MarketDataService가 바로 다음 라우트
+        (toss)로 넘어가게 한다(네트워크를 아예 안 타므로 429를 유발하지도 않는다)."""
+        if self._breaker_open_until is None:
+            return
+        remaining = self._breaker_open_until - time.monotonic()
+        if remaining > 0:
+            raise DataSourceError(f"kiwoom_us: 회로 차단기 열림(남은 {remaining:.0f}초) — 라우트 스킵")
+        self._breaker_open_until = None
+        self._breaker_failure_times = []
+        logger.info("kiwoom_us: 회로 차단기 닫힘 — 정상 라우팅 재개")
+
+    def _record_breaker_failure(self) -> None:
+        if self._breaker_open_until is not None:
+            return  # 이미 열려 있음 — 다시 집계/재오픈할 필요 없다
+        now = time.monotonic()
+        cutoff = now - self._breaker_window_seconds
+        self._breaker_failure_times = [t for t in self._breaker_failure_times if t >= cutoff]
+        self._breaker_failure_times.append(now)
+        if len(self._breaker_failure_times) >= self._breaker_failure_threshold:
+            self._breaker_open_until = now + self._breaker_open_seconds
+            self._breaker_failure_times = []
+            logger.error(
+                "kiwoom_us: %.0f초 이내 연속 %d회 실패 — 회로 차단기 열림, %.0f초 동안 "
+                "라우트 전체 스킵",
+                self._breaker_window_seconds, self._breaker_failure_threshold,
+                self._breaker_open_seconds,
+            )
 
     # ------------------------------------------------------------ 실패 쿨다운
     def _raise_if_on_cooldown(self, symbol: str) -> None:
@@ -197,6 +255,9 @@ class KiwoomUSDataFeed:
     def _record_success(self, symbol: str) -> None:
         self._consecutive_failures.pop(symbol, None)
         self._cooldown_until.pop(symbol, None)
+        # 성공은 전역 회로차단기의 "연속 실패" 스트릭도 끊는다 — 산발적 실패가
+        # 쌓여서 차단기로 이어지지 않는다(심볼별 쿨다운의 성공-리셋과 같은 원칙).
+        self._breaker_failure_times = []
 
     def _record_failure(self, symbol: str, exc: Exception) -> None:
         code = getattr(exc, "code", None) if isinstance(exc, KiwoomError) else None
@@ -208,6 +269,9 @@ class KiwoomUSDataFeed:
                     symbol, _ERR_CODE_UNSUPPORTED_SYMBOL,
                 )
             self._consecutive_failures.pop(symbol, None)
+            # 1903(종목 정보 없음)은 API 장애가 아니라 그 심볼이 이 라우트가 다루지
+            # 않는 상품이라는 뜻이다 — 전역 회로차단기(429 등 진짜 장애 대상)를
+            # 오픈시키면 안 된다.
             return
         count = self._consecutive_failures.get(symbol, 0) + 1
         if count >= self._failure_threshold:
@@ -220,6 +284,7 @@ class KiwoomUSDataFeed:
             )
         else:
             self._consecutive_failures[symbol] = count
+        self._record_breaker_failure()
 
     def _completed_1m(self, symbol: str) -> pd.DataFrame:
         """완성봉만 반환한다(look-ahead 금지 — domain/interfaces.py 계약). usa06010은

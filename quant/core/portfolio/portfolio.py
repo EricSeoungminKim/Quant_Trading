@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -72,6 +73,15 @@ class Portfolio:
         return total
 
     def save(self) -> None:
+        """`data/state/portfolio.json`을 원자적으로 갱신한다: 임시 파일에 쓰고
+        `fsync`으로 커널 버퍼가 아니라 디스크에 실제로 닿았음을 확인한 뒤
+        `rename`한다(2026-09-06 안정성 감사 disk-full 항목 — write+fsync+rename).
+        `rename`은 POSIX에서 원자적이라 읽는 쪽은 항상 완전한 이전 버전이나
+        완전한 새 버전만 본다(쓰다 만 반쪽짜리를 절대 보지 않는다). `fsync`이
+        없으면 `rename`이 성공해도 프로세스가 그 직후 죽거나(디스크 풀,
+        커널 패닉 등) 전원이 나가면 새 내용이 실제로는 디스크에 없을 수 있다
+        — 실패는 그대로 위로 전파한다(호출부인 `PaperBroker.place_order`가
+        이 실패를 감지해 이번 주문의 메모리 변경을 롤백한다)."""
         if self.state_path is None:
             return  # 영속화 비활성 (백테스트)
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,7 +100,10 @@ class Portfolio:
             },
         }
         tmp = self.state_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        with tmp.open("w", encoding="utf-8") as f:
+            f.write(json.dumps(data, indent=2, ensure_ascii=False))
+            f.flush()
+            os.fsync(f.fileno())
         tmp.replace(self.state_path)
 
     @classmethod

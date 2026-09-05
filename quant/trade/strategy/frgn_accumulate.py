@@ -78,6 +78,41 @@ manager.py` `_approve_entry_per_strategy`/`approve` 참고).
 오버나이트 보유가 이 전략의 정의 자체다(적립). 가격 기반 손절도 없다 —
 태그 기반 판단만으로 진입/청산한다(사용자 시나리오에 가격 기반 손절이
 명시되지 않았고, 스펙 방침대로 추가 규칙을 발명하지 않는다).
+
+## 태그 이름 일반화 (2026-09-06, `news_accumulate` 레인)
+
+`accumulate_tag`/`exit_tag` params(기본값 각각 `"FRGN"`/`"FRGN_EXIT"` —
+모듈 상수 `_FRGN_TAG`/`_FRGN_EXIT_TAG`와 동일)로 이 클래스가 보는 태그
+이름을 바꿀 수 있다. **`frgn_accumulate` 자체의 동작은 한 글자도 바뀌지
+않는다** — 기본값이 기존 상수와 같으므로 params에서 아무 것도 지정하지
+않으면 지금까지와 동일하게 FRGN/FRGN_EXIT만 본다.
+
+이 일반화의 목적은 같은 "태그 기반 일 1회 적립+분할청산" 판단을 **다른
+태그 체계**에 재사용하는 것이다 — `config/settings.yaml`의 `news_accumulate`
+블록(`class: frgn_accumulate`)이 `accumulate_tag: EVENT` / `exit_tag:
+EVENT_EXIT`로 뉴스 촉매(EVENT) 태그가 붙은 종목을 적립 매수 대상으로 삼는다
+(외국인 수급 대신 뉴스 촉매를 본다는 것만 다르고, 판단 로직·쿨다운·오버나이트
+방침은 전부 동일).
+
+## 태그 부재 기반 청산 (2026-09-06, `exit_when_tag_absent_days`)
+
+`EVENT_EXIT`를 실제로 붙이는 생산자가 아직 없다(오늘 기준 — `EVENT`는
+`quant/analyze/watch_scorer.py`가 채점하지만 그 이탈 판정은 없다). 그래서
+`exit_tag` 태그만으로는 `news_accumulate`가 절대 청산하지 못하는 채로 굳는다
+(이탈 신호가 영원히 오지 않으므로). `exit_when_tag_absent_days`(기본 0=비활성,
+`frgn_accumulate`는 건드리지 않는다)를 양수로 주면 **매집 태그(`accumulate_tag`)
+가 그만큼 연속 평가일 동안 부재**(이탈 태그도 매집 태그도 없는 "중립" 상태가
+계속됨)했을 때 `exit_tag` 메커니즘과 **똑같은 절반→전량** 사다리로 청산한다
+(1일차: `exit_fraction_first` 비율만큼 SCALE_OUT, 연속 2일차: 잔량 EXIT_LONG).
+연속 카운터는 `exit_tag`의 것과 **별개**(`_absent_streak`)라 두 메커니즘이
+동시에 살아 있어도(둘 다 실제로 태그가 오는 설정이라면) 서로의 카운트를
+어지럽히지 않는다. 매집 태그가 다시 뜨면(재매수) 부재 카운터도 리셋된다
+(재개 분기가 `_exit_streak`와 함께 끊는다).
+
+**Pure 구현(`FrgnAccumulatePureStrategy`)은 이 확장을 받지 않는다** — 이
+클래스(레거시)만 대상이다. Pure는 `config/settings.yaml`에 아직 배선되지
+않은 이관 파일럿이라(클래스 docstring 참고) 이 기능이 필요해지는 시점에
+같이 이관하면 된다.
 """
 from __future__ import annotations
 
@@ -110,14 +145,26 @@ class FrgnAccumulateStrategy:
         self.buy_qty: float = params.get("buy_qty", 1)
         self.eval_after_minutes_after_open: int = params.get("eval_after_minutes_after_open", 60)
         self.exit_fraction_first: float = params.get("exit_fraction_first", 0.5)
+        # 태그 이름 일반화(2026-09-06, 모듈 docstring "태그 이름 일반화" 절) —
+        # 기본값이 모듈 상수와 같아 params에 없으면 frgn_accumulate 동작 불변.
+        self.accumulate_tag: str = str(params.get("accumulate_tag", _FRGN_TAG))
+        self.exit_tag: str = str(params.get("exit_tag", _FRGN_EXIT_TAG))
+        # 태그 부재 기반 청산(2026-09-06, 모듈 docstring "태그 부재 기반 청산" 절).
+        # 0 = 비활성(기본, frgn_accumulate는 이 분기를 절대 타지 않는다).
+        self.exit_when_tag_absent_days: int = int(params.get("exit_when_tag_absent_days", 0))
 
         if self.buy_qty <= 0 or self.buy_qty != int(self.buy_qty):
             raise ValueError("buy_qty는 양의 정수여야 합니다.")
         if not 0 < self.exit_fraction_first < 1:
             raise ValueError("exit_fraction_first는 0과 1 사이여야 합니다.")
+        if self.exit_when_tag_absent_days < 0:
+            raise ValueError("exit_when_tag_absent_days는 0 이상이어야 합니다.")
 
         self._evaluated_date: dict[str, dtdate] = {}
         self._exit_streak: dict[str, int] = {}
+        # 태그 부재 연속 카운터(exit_tag 스트릭과 별개) — exit_when_tag_absent_days
+        # 가 0이면 절대 읽거나 쓰지 않는다(모듈 docstring 참고).
+        self._absent_streak: dict[str, int] = {}
         self.last_reject: dict[str, str] = {}
 
     # ------------------------------------------------------------------ 사이클
@@ -155,19 +202,28 @@ class FrgnAccumulateStrategy:
             pos = positions.get(symbol)
             held_qty = pos.lot_qty(self.id) if pos is not None else 0.0
 
-            if _FRGN_EXIT_TAG in tags:
+            if self.exit_tag in tags:
+                self._absent_streak[symbol] = 0  # 명시적 이탈 태그 — 부재 카운터 무의미
                 signal = self._check_exit_for(symbol, held_qty)
                 if signal is not None:
                     signals.append(signal)
-            elif _FRGN_TAG in tags:
-                # 매수 재개 — 이전 이탈 연속 카운터를 끊는다.
+            elif self.accumulate_tag in tags:
+                # 매수 재개 — 이전 이탈/부재 연속 카운터를 끊는다.
                 self._exit_streak[symbol] = 0
+                self._absent_streak[symbol] = 0
                 signal = self._check_buy_for(symbol, ctx)
                 if signal is not None:
                     signals.append(signal)
             else:
-                # 중립 — 매수도 이탈도 아님. 보유 유지("잔여 관망"), 연속 카운터만 끊는다.
+                # 중립 — 매수도 이탈도 아님. 보유 유지("잔여 관망"), 이탈 연속
+                # 카운터는 끊는다. exit_when_tag_absent_days(2026-09-06, 모듈
+                # docstring "태그 부재 기반 청산" 절)가 0(기본, frgn_accumulate)
+                # 이면 이 분기는 절대 타지 않는다 — 기존 동작 100% 보존.
                 self._exit_streak[symbol] = 0
+                if self.exit_when_tag_absent_days > 0:
+                    signal = self._check_absent_exit_for(symbol, held_qty)
+                    if signal is not None:
+                        signals.append(signal)
         return signals
 
     # ------------------------------------------------------------------ 매수
@@ -188,31 +244,78 @@ class FrgnAccumulateStrategy:
             action=SignalAction.ENTER_LONG,
             target_weight=0.0,
             target_qty=self.buy_qty,
-            reason=f"외국인 적립 매수(FRGN): {symbol} {self.buy_qty:g}주 @ {price:,.0f}",
+            reason=f"적립 매수({self.accumulate_tag}): {symbol} {self.buy_qty:g}주 @ {price:,.0f}",
         )
 
     # ------------------------------------------------------------------ 청산
 
-    def _check_exit_for(self, symbol: str, held_qty: float) -> Signal | None:
+    def _staged_exit(
+        self, symbol: str, held_qty: float, streak_map: dict[str, int], label: str,
+    ) -> Signal | None:
+        """1일차 절반(`exit_fraction_first`)→연속 2일차 전량 사다리 — `exit_tag`
+        기반 명시적 이탈과 `exit_when_tag_absent_days` 기반 부재 이탈이 공유하는
+        로직(모듈 docstring "태그 부재 기반 청산" 절). `streak_map`은 호출부가
+        `self._exit_streak`/`self._absent_streak` 중 자기 몫만 넘긴다 — 두
+        메커니즘의 연속 카운트는 서로 섞이지 않는다."""
         if held_qty <= 0:
-            self._exit_streak[symbol] = 0  # 보유가 없으면 연속 카운터도 의미 없음
+            streak_map[symbol] = 0  # 보유가 없으면 연속 카운터도 의미 없음
             return None
-        streak = self._exit_streak.get(symbol, 0)
+        streak = streak_map.get(symbol, 0)
         if streak == 0:
-            self._exit_streak[symbol] = 1
+            streak_map[symbol] = 1
             return Signal(
                 strategy_id=self.id, symbol=symbol, action=SignalAction.SCALE_OUT,
                 target_weight=0.0, exit_fraction=self.exit_fraction_first,
                 reason=(
-                    f"외국인 이탈(FRGN_EXIT) 1일차: {symbol} 보유 "
+                    f"{label} 1일차: {symbol} 보유 "
                     f"{self.exit_fraction_first * 100:.0f}% 청산"
                 ),
             )
-        self._exit_streak[symbol] = 0
+        streak_map[symbol] = 0
         return Signal(
             strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
             target_weight=0.0, exit_fraction=1.0,
-            reason=f"외국인 이탈(FRGN_EXIT) 연속 2일차: {symbol} 잔량 전량 청산",
+            reason=f"{label} 연속 2일차: {symbol} 잔량 전량 청산",
+        )
+
+    def _check_exit_for(self, symbol: str, held_qty: float) -> Signal | None:
+        return self._staged_exit(symbol, held_qty, self._exit_streak, f"이탈({self.exit_tag})")
+
+    def _check_absent_exit_for(self, symbol: str, held_qty: float) -> Signal | None:
+        """`accumulate_tag`가 `exit_when_tag_absent_days`일 연속 부재했을 때만
+        발동한다 — `_staged_exit`(exit_tag 전용, 태그가 뜨는 순간 바로 사다리에
+        들어간다)와 달리 이건 **문턱에 닿기 전까지 관망하는 대기 구간**이 있어
+        streak_map을 그대로 공유할 수 없다(연속 부재일수 자체와 "사다리 몇
+        단계인가"가 서로 다른 축이다). 그래서 별도로 쓴다:
+
+        - 부재 일수가 문턱 **미만**이면 카운트만 하고 관망(신호 없음).
+        - 문턱에 **정확히** 닿은 그날 절반 청산(1차).
+        - 그 이후(문턱+1일째부터) 계속 부재면 잔량 전량 청산 — 청산 후에는
+          held_qty가 0이 되어 다음 평가부터 카운터가 자연히 리셋된다."""
+        if held_qty <= 0:
+            self._absent_streak[symbol] = 0  # 보유가 없으면 부재 카운터도 의미 없음
+            return None
+        threshold = self.exit_when_tag_absent_days
+        days = self._absent_streak.get(symbol, 0) + 1
+        self._absent_streak[symbol] = days
+        if days < threshold:
+            return None  # 아직 문턱 전 — 관망
+        if days == threshold:
+            return Signal(
+                strategy_id=self.id, symbol=symbol, action=SignalAction.SCALE_OUT,
+                target_weight=0.0, exit_fraction=self.exit_fraction_first,
+                reason=(
+                    f"매집 태그({self.accumulate_tag}) {threshold}일 부재: {symbol} 보유 "
+                    f"{self.exit_fraction_first * 100:.0f}% 청산"
+                ),
+            )
+        return Signal(
+            strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
+            target_weight=0.0, exit_fraction=1.0,
+            reason=(
+                f"매집 태그({self.accumulate_tag}) {threshold}일 부재 이후: "
+                f"{symbol} 잔량 전량 청산"
+            ),
         )
 
 
@@ -316,6 +419,13 @@ class FrgnAccumulatePureStrategy:
         self.buy_qty = self._legacy.buy_qty
         self.eval_after_minutes_after_open = self._legacy.eval_after_minutes_after_open
         self.exit_fraction_first = self._legacy.exit_fraction_first
+        # 태그 이름 일반화(2026-09-06) — 레거시와 동일 기본값. `exit_when_tag_absent_days`
+        # 는 여기서는 미러링하지 않는다 — Pure는 아직 이관 파일럿(config/settings.yaml에
+        # 배선 전)이라 그 확장까지 옮기는 건 이 워커 범위 밖이다(모듈 docstring
+        # "태그 부재 기반 청산" 절 마지막 문단). 기본값 0(비활성)에서는 두 구현의
+        # 신호 출력이 항상 동일하다.
+        self.accumulate_tag = self._legacy.accumulate_tag
+        self.exit_tag = self._legacy.exit_tag
 
     # ------------------------------------------------------------------ 계약
 
@@ -373,11 +483,11 @@ class FrgnAccumulatePureStrategy:
             lot = snap.lots.get(symbol)
             held_qty = float(lot.get("qty", 0.0)) if lot else 0.0
 
-            if _FRGN_EXIT_TAG in tags:
+            if self.exit_tag in tags:
                 signal = self._check_exit_for(symbol, held_qty, exit_streak)
                 if signal is not None:
                     signals.append(signal)
-            elif _FRGN_TAG in tags:
+            elif self.accumulate_tag in tags:
                 # 매수 재개 — 이전 이탈 연속 카운터를 끊는다.
                 exit_streak[symbol] = 0
                 signal = self._check_buy_for(symbol, snap)
@@ -399,7 +509,7 @@ class FrgnAccumulatePureStrategy:
             action=SignalAction.ENTER_LONG,
             target_weight=0.0,
             target_qty=self.buy_qty,
-            reason=f"외국인 적립 매수(FRGN): {symbol} {self.buy_qty:g}주 @ {price:,.0f}",
+            reason=f"적립 매수({self.accumulate_tag}): {symbol} {self.buy_qty:g}주 @ {price:,.0f}",
         )
 
     def _check_exit_for(
@@ -415,7 +525,7 @@ class FrgnAccumulatePureStrategy:
                 strategy_id=self.id, symbol=symbol, action=SignalAction.SCALE_OUT,
                 target_weight=0.0, exit_fraction=self.exit_fraction_first,
                 reason=(
-                    f"외국인 이탈(FRGN_EXIT) 1일차: {symbol} 보유 "
+                    f"이탈({self.exit_tag}) 1일차: {symbol} 보유 "
                     f"{self.exit_fraction_first * 100:.0f}% 청산"
                 ),
             )
@@ -423,7 +533,7 @@ class FrgnAccumulatePureStrategy:
         return Signal(
             strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
             target_weight=0.0, exit_fraction=1.0,
-            reason=f"외국인 이탈(FRGN_EXIT) 연속 2일차: {symbol} 잔량 전량 청산",
+            reason=f"이탈({self.exit_tag}) 연속 2일차: {symbol} 잔량 전량 청산",
         )
 
 

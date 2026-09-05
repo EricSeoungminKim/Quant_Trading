@@ -57,6 +57,15 @@ def _format_summary(payload: dict) -> str:
     if line:
         lines.append(line)
 
+    # 리포트 정확도(2026-09-06 소유자 지시 priority-1 §2) — 표본이 아직
+    # min_n 미만이면(`measured=False`) 이 짧은 발행 알림에는 "정확도
+    # 미측정" 줄을 넣지 않는다(노이즈) — 그 문구는 리포트 본문/브리핑의
+    # 방향콜 라벨 옆에서 이미 보인다. `report_accuracy` 키 자체가 없으면
+    # (호출부 하위호환) 당연히 아무것도 안 붙는다.
+    acc = payload.get("report_accuracy") or {}
+    if acc.get("measured") and acc.get("telegram_line"):
+        lines.append(str(acc["telegram_line"]))
+
     return "\n".join(lines)
 
 

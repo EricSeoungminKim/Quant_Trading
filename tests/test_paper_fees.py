@@ -33,7 +33,7 @@ class _Feed:
 def _broker(**kw):
     return PaperBroker(
         data=_Feed(10000.0),
-        portfolio=Portfolio(cash=10_000_000.0, positions={}),
+        portfolio=Portfolio(cash=10_000_000.0, positions={}, state_path=None),
         fee_bps={"KR": 1.5, "US": 10},
         market_of={"005930": "KR", "069500": "KR", "TQQQ": "US"},
         kr_stock_sell_tax_bps=15,
@@ -128,7 +128,7 @@ _US_KW = dict(
 
 def _us_broker(cash: float = 10_000_000.0, price: float = 100.0) -> PaperBroker:
     return PaperBroker(
-        data=_Feed(price), portfolio=Portfolio(cash=cash, positions={}), **_US_KW,
+        data=_Feed(price), portfolio=Portfolio(cash=cash, positions={}, state_path=None), **_US_KW,
     )
 
 
@@ -187,7 +187,7 @@ def test_us_order_just_over_10_usd_pays_commission():
 def test_kr_market_unaffected_by_us_sec_fee_and_commission_waiver():
     """US 전용 규칙(SEC Fee, $10 면제)이 KR 심볼에 새면 안 된다."""
     broker = PaperBroker(
-        data=_Feed(5.0), portfolio=Portfolio(cash=10_000_000.0, positions={}),
+        data=_Feed(5.0), portfolio=Portfolio(cash=10_000_000.0, positions={}, state_path=None),
         fee_bps={"US": 10, "KR": 1.5}, market_of={"069500": "KR"},
         us_sec_fee_bps=0.206, us_sec_fee_min_usd=0.01, us_free_commission_notional_usd=10.0,
     )
@@ -207,7 +207,7 @@ _TAF_KW = dict(_US_KW, us_taf_per_share=0.000166, us_taf_cap_usd=8.30)
 
 def _taf_broker(price: float = 100.0) -> PaperBroker:
     return PaperBroker(
-        data=_Feed(price), portfolio=Portfolio(cash=100_000_000.0, positions={}), **_TAF_KW,
+        data=_Feed(price), portfolio=Portfolio(cash=100_000_000.0, positions={}, state_path=None), **_TAF_KW,
     )
 
 

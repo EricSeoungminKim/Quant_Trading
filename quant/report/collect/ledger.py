@@ -170,6 +170,70 @@ def _record_selections(payload: dict, root: Path) -> None:
         print(f"선정 원장 {added}건 추가 (후보 {len(candidates)}개 / 전체 {len(rows)}종목)")
     except Exception as e:  # noqa: BLE001
         print(f"선정 원장 기록 건너뜀: {type(e).__name__}: {e}", file=sys.stderr)
+        return
+    _record_report_claims(payload, candidates, root)
+
+
+def _append_report_claim(row: dict, path: Path) -> bool:
+    """(date, market, session) 자연키로 중복을 막는다 — 같은 날 리포트를 두 번
+    빌드해도 청구가 중복 기록되지 않는다(selections.append와 같은 이유). 하루
+    2건(KR/US) x 세션 2개 남짓이라 매번 전체를 읽어 중복을 검사해도 비용이
+    무시할 만하다(selections.jsonl처럼 인덱스가 필요한 규모가 아니다)."""
+    import json as _json
+
+    key = (row.get("date"), row.get("market"), row.get("session"))
+    if path.exists():
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    existing = _json.loads(line)
+                except ValueError:
+                    continue
+                if (existing.get("date"), existing.get("market"),
+                        existing.get("session")) == key:
+                    return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(_json.dumps(row, ensure_ascii=False) + "\n")
+    return True
+
+
+def _record_report_claims(payload: dict, candidate_symbols: set, root: Path) -> None:
+    """오전판 방향콜/후보 청구를 남긴다(2026-09-06, 소유자 지시 priority-1 —
+    리포트 정확도 감사).`quant.control.report_accuracy`(순수 채점 함수)가
+    나중에 `report accuracy` CLI(2026-09-06)에서 이 원장을 읽어 실현치와
+    대조한다. 실패해도 리포트를 막지 않는다 — selections 원장과 같은 관례."""
+    try:
+        from quant.control import report_accuracy
+
+        claim = report_accuracy.extract_open_claims(payload, candidate_symbols)
+        if claim is None:
+            return
+        path = root / "data" / "ledger" / "report_claims.jsonl"
+        if _append_report_claim(claim, path):
+            print(f"리포트 청구 원장 기록 (오전, 후보 {len(claim['candidates'])}건)")
+    except Exception as e:  # noqa: BLE001
+        print(f"리포트 청구 원장 기록 건너뜀: {type(e).__name__}: {e}", file=sys.stderr)
+
+
+def _record_close_report_claims(payload: dict, root: Path) -> None:
+    """마감판(close_bet_view) 청구를 남긴다 — `_record_report_claims`(오전)와
+    같은 목적, 마감판은 시장 방향콜을 새로 내지 않으므로 `direction`은 항상
+    None(`report_accuracy.extract_close_claims` 계약). 마감판은 LLM-free
+    계약이고 이 추출도 결정론적이라 그 계약을 건드리지 않는다."""
+    try:
+        from quant.control import report_accuracy
+
+        claim = report_accuracy.extract_close_claims(payload)
+        if claim is None:
+            return
+        path = root / "data" / "ledger" / "report_claims.jsonl"
+        if _append_report_claim(claim, path):
+            print(f"리포트 청구 원장 기록 (마감, 후보 {len(claim['candidates'])}건)")
+    except Exception as e:  # noqa: BLE001
+        print(f"리포트 청구 원장 기록 건너뜀: {type(e).__name__}: {e}", file=sys.stderr)
 
 
 def _record_watch_join_selections(

@@ -11,6 +11,8 @@ slippage_bps는 config(execution.slippage_bps)에서 오며, 체결가에 항상
 """
 from __future__ import annotations
 
+import copy
+import logging
 from datetime import datetime, timezone
 
 from quant.core.fx import FixedFxProvider, FxProvider
@@ -20,6 +22,8 @@ from quant.core.models import (
     Fill, OpenOrder, Order, OrderState, Position, Side, market_of_symbol,
 )
 from quant.core.portfolio.portfolio import Portfolio, to_krw
+
+logger = logging.getLogger(__name__)
 
 
 class PaperBroker:
@@ -164,6 +168,19 @@ class PaperBroker:
         market = self.market_of.get(order.symbol) or market_of_symbol(order.symbol)
         pos = self.portfolio.positions.get(order.symbol)
 
+        # 2026-09-06 안정성 감사(disk-full/portfolio-save 발산) — 아래 BUY/SELL
+        # 분기는 포지션/현금을 **메모리에서 먼저** 갱신하고 맨 끝에 한 번만
+        # `self.portfolio.save()`한다. 저장이 실패하면(디스크 풀 등) 이 메모리
+        # 변경을 되돌리지 않으면 "존재하지만 원장(trades.jsonl)에는 없는" 유령
+        # 변경이 남아, 나중에 다른 주문의 성공한 save()가 그 유령까지 함께
+        # 디스크에 박아 넣는다 — 포트폴리오와 거래 원장이 조용히 어긋난다.
+        # 그래서 변경 전 상태를 스냅샷해 두고, save() 실패 시 정확히 이 주문이
+        # 만든 변경만 롤백한다(deepcopy: Position.meta의 lots까지 값으로 복사).
+        _pos_existed = pos is not None
+        _pos_snapshot = copy.deepcopy(pos) if pos is not None else None
+        _cash_snapshot = self.portfolio.cash
+        _cash_usd_snapshot = self.portfolio.cash_usd
+
         realized_pnl = 0.0
         if order.side is Side.BUY:
             qty = order.qty
@@ -266,7 +283,23 @@ class PaperBroker:
                 pos.opened_at = None
                 pos.meta = {}  # lots를 포함해 전량 초기화
 
-        self.portfolio.save()
+        try:
+            self.portfolio.save()
+        except Exception as e:
+            # 롤백: 이번 주문이 만든 메모리 변경을 전부 되돌린다 — 원 예외
+            # 타입(OSError 등)을 그대로 재전파해 호출부(quant/trade/loop.py
+            # `_execute_signal`)가 기존처럼 "주문 실행 실패" 알림을 낸다.
+            self.portfolio.cash = _cash_snapshot
+            self.portfolio.cash_usd = _cash_usd_snapshot
+            if _pos_existed:
+                self.portfolio.positions[order.symbol] = _pos_snapshot
+            else:
+                self.portfolio.positions.pop(order.symbol, None)
+            logger.error(
+                "포트폴리오 저장 실패 — 주문을 롤백함 %s %s qty=%s: %s: %s",
+                order.symbol, order.side.value, qty, type(e).__name__, e,
+            )
+            raise
         fill = Fill(
             symbol=order.symbol,
             side=order.side,

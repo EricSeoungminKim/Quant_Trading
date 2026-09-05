@@ -2676,12 +2676,20 @@ def cmd_publish_performance(args: argparse.Namespace) -> None:
     입력은 거래 원장(`trades.jsonl`) 하나 + `execution` 설정 비용 상수뿐 —
     종목/포지션/계좌 잔고 절대값은 출력에 없다. 계산 로직은 순수 함수
     `quant.control.performance.build_performance_payload`에 있다(이 함수는
-    파일 I/O만 한다)."""
+    파일 I/O만 한다).
+
+    쓰기 전에 `quant.control.performance_contract.validate_payload`로 게시
+    게이트를 통과해야 한다(2026-09-06, 오너 요구사항 — 공개 사이트가 유실되거나
+    틀린 데이터를 보여주면 안 된다). `--out`에 이미 있는 파일을 "직전 발행본"
+    으로 넘겨 체결 수 역행(데이터 유실)까지 함께 본다. 오류가 하나라도 있으면
+    **파일을 쓰지 않고** 비정상 종료 — 경고는 막지 않고 출력만 한다."""
     import json as _json
+    import sys
     from pathlib import Path
 
     from quant.control.ledger import load_trades
     from quant.control.performance import build_performance_payload
+    from quant.control.performance_contract import validate_payload
 
     trades = load_trades(ledger_state_path())
     settings = load_settings()
@@ -2694,18 +2702,82 @@ def cmd_publish_performance(args: argparse.Namespace) -> None:
         _json.loads(snapshot_path.read_text(encoding="utf-8")) if snapshot_path.exists() else None
     )
 
+    # 리포트 정확도 스코어카드(2026-09-06, 소유자 지시 priority-1) — `report
+    # accuracy` CLI가 쓴 마지막 행. 없으면(아직 한 번도 안 돔) None 그대로
+    # 넘긴다 — build_performance_payload가 빈 서브트리로 폴백한다.
+    accuracy_path = ledger_state_path().parent.parent / "ledger" / "report_accuracy.jsonl"
+    report_accuracy_latest = None
+    if accuracy_path.exists():
+        try:
+            *_, last_line = accuracy_path.read_text(encoding="utf-8").splitlines()
+            report_accuracy_latest = _json.loads(last_line)
+        except (OSError, ValueError):
+            report_accuracy_latest = None
+
     payload = build_performance_payload(
         trades, settings.execution, real_account_snapshot=real_account_snapshot,
         # `strategies[].enabled`(지금 켜져 있나)를 JSON 에 싣기 위해 설정 블록을
         # 넘긴다 — 파라미터·종목은 안 나간다(공개 안전 규칙, performance.py 참고).
         strategies_cfg=settings.strategies,
+        report_accuracy_latest=report_accuracy_latest,
     )
 
     out_path = Path(args.out)
+    previous_payload = None
+    if out_path.exists():
+        try:
+            previous_payload = _json.loads(out_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            previous_payload = None  # 이전 파일이 깨져 있어도 이번 발행 자체를 막지 않는다
+
+    findings = validate_payload(payload, previous=previous_payload, strategies_cfg=settings.strategies)
+    errors = [f for f in findings if f.severity == "error"]
+    for f in findings:
+        if f.severity == "warn":
+            print(f"[검증 경고] {f.path}: {f.message}")
+    if errors:
+        for f in errors:
+            print(f"[검증 오류] {f.path}: {f.message}", file=sys.stderr)
+        print(f"성과 JSON 검증 실패 — 오류 {len(errors)}건, 파일을 쓰지 않음", file=sys.stderr)
+        raise SystemExit(1)
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"성과 JSON 기록: {out_path} (체결 {payload['period']['total_fills']}건, "
           f"거래일 {payload['period']['sessions']}일, 전략 {len(payload['strategies'])}개)")
+
+
+def cmd_validate_performance(args: argparse.Namespace) -> None:
+    """공개 성과 JSON 게시 게이트를 파일 두 개(`--payload`, 선택 `--previous`)에
+    대해 돌려 결과를 stdout에 한 줄씩 찍는다 — `<severity>|<path>|<message>`
+    (호출부가 `|`로 잘라 읽기 쉽게).
+
+    `cmd_publish_performance`는 이 검증을 이미 자체적으로 돌리지만, 이 서브
+    커맨드는 **그 이후 단계**(`server/scripts/publish_portfolio.sh`가 공개
+    저장소로 push하기 직전, EC2에 이미 쓰인 파일 vs 사이트에 이미 올라간
+    파일)에서 셸 스크립트가 그대로 재사용할 수 있게 별도로 노출한 것이다.
+    오류가 하나라도 있으면 종료코드 1 — push를 막을 신호로 쓴다."""
+    import json as _json
+    from pathlib import Path
+
+    from quant.control.performance_contract import validate_payload
+
+    payload = _json.loads(Path(args.payload).read_text(encoding="utf-8"))
+    previous = None
+    if args.previous:
+        prev_path = Path(args.previous)
+        if prev_path.exists():
+            try:
+                previous = _json.loads(prev_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                previous = None  # 직전 파일이 없거나 깨져 있으면 그 대조만 건너뛴다
+
+    settings = load_settings()
+    findings = validate_payload(payload, previous=previous, strategies_cfg=settings.strategies)
+    findings.sort(key=lambda f: 0 if f.severity == "error" else 1)
+    for f in findings:
+        print(f"{f.severity}|{f.path}|{f.message}")
+    raise SystemExit(1 if any(f.severity == "error" for f in findings) else 0)
 
 
 def cmd_backup(args: argparse.Namespace) -> None:
@@ -3016,6 +3088,213 @@ def cmd_seed_carry(args: argparse.Namespace) -> None:
         def on_order(self, state) -> None: ...
 
     TradeLedgerSink(_NullSink(), path=ledger_state_path()).on_fill(fill)
+
+
+def _engine_looks_active(root) -> tuple[bool, str]:
+    """`quant.apps.cli paper` 루프가 지금 돌고 있는 것으로 보이는지 판정한다.
+
+    `cmd_paper_epoch`가 돌고 있는 엔진과 동시에 books.json/portfolio.json을
+    건드리면 `cmd_seed_real`이 우려하던 것과 같은 레이스 컨디션이 난다(루프가
+    사이클마다 같은 파일을 읽고/쓰는 도중 여기서 덮어쓰면 상태가 섞인다).
+
+    두 신호를 본다:
+    1. **하트비트 파일 최신성** — 크로스플랫폼으로 항상 확인 가능한 신호.
+       `quant/trade/loop.py`가 사이클마다(성공/실패 무관) 갱신하는
+       `data/state/heartbeat.json`이 최근(10분 이내)이면 엔진이 실제로 돌고
+       있다는 강한 증거다.
+    2. **`systemctl is-active quant-engine`** — EC2 배포 환경(systemd)에서만
+       쓸 수 있는 보조 신호. `systemctl` 자체가 없는 환경(Mac 등)에서는 이
+       신호를 건너뛰고 경고만 남긴다(사용자 지시: "on the Mac just warn").
+
+    반환값은 (활성으로 보이는가, 판정 사유 요약)."""
+    import json as _json
+    import shutil
+    import subprocess
+    import time
+    from pathlib import Path
+
+    reasons: list[str] = []
+    active = False
+
+    hb_path = Path(root) / "data" / "state" / "heartbeat.json"
+    if hb_path.exists():
+        try:
+            hb = _json.loads(hb_path.read_text(encoding="utf-8"))
+            ts = hb.get("ts")
+            if isinstance(ts, (int, float)):
+                age_sec = time.time() - float(ts)
+                if age_sec < 600:
+                    active = True
+                    reasons.append(f"heartbeat.json이 {age_sec:.0f}초 전 갱신됨(활성 판정)")
+                else:
+                    reasons.append(f"heartbeat.json이 {age_sec:.0f}초 전(오래됨, 비활성 판정)")
+        except (ValueError, OSError) as e:
+            reasons.append(f"heartbeat.json 읽기 실패({e}) — 이 신호는 건너뜀")
+    else:
+        reasons.append("heartbeat.json 없음 — 이 신호는 건너뜀")
+
+    if shutil.which("systemctl"):
+        try:
+            r = subprocess.run(
+                ["systemctl", "is-active", "quant-engine"],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+            state = r.stdout.strip()
+            if state == "active":
+                active = True
+            reasons.append(f"systemctl is-active quant-engine = {state or '(빈 응답)'}")
+        except (OSError, subprocess.SubprocessError) as e:
+            reasons.append(f"systemctl 조회 실패({e}) — 이 신호는 건너뜀")
+    else:
+        reasons.append("systemctl 없음(Mac 등) — 이 신호는 건너뜀, 경고만")
+
+    return active, "; ".join(reasons)
+
+
+def cmd_paper_epoch(args: argparse.Namespace) -> None:
+    """페이퍼 계정 **시대 리셋**(2026-09-06, 소유자 결정) — `capital_policy:
+    fixed_dual` 전환에 맞춰 전략별 장부와 paper 포트폴리오를 초기 자본으로
+    다시 시작한다.
+
+    소유자 원문: "each strategy is its own account: 10,000,000 KRW for KR
+    strategies, $10,000 for US strategies ... the website restarts every
+    strategy from the same start point and accumulates fresh data."
+
+    **엔진(quant.apps.cli paper)이 꺼져 있을 때만 실행할 것** — `cmd_seed_real`과
+    같은 이유로 이 도구는 경합을 스스로 막지 않는다(`_engine_looks_active`가
+    감지하면 `--force` 없이는 거부한다).
+
+    수행 순서(--dry-run이면 3부터는 건너뛰고 미리보기만 출력):
+    1. `config/settings.yaml`의 `risk.capital_policy`가 `fixed_dual`인지 확인
+       (아니면 거부 — 이 명령은 그 정책 전용이다).
+    2. 활성 전략마다 시장 참여 여부(`capital_fraction[market] > 0`)를 판정해
+       KR/US 고정 시작금(`fixed_dual_books`, `quant/apps/assembly.py`와 동일
+       로직)을 계산한다.
+    3. `data/state/strategy_books.json`/`portfolio.json`을 `.pre-epoch-<시각>`
+       으로 백업(복사, 원본은 이어서 덮어씀 — `cmd_seed_real`과 같은 관례).
+    4. 새 `StrategyBooks`를 그 시작금으로 시딩해 저장한다(**이전 장부는
+       버린다** — 성적 이력이 아니라 새 시작점이 목적).
+    5. paper 포트폴리오를 시작금 합계(KRW 합/USD 합)만 있는 현금 전용 상태로
+       리셋한다 — **포지션은 옮기지 않는다**(2026-09-01 실계좌 이식 보유는
+       Private Banker가 실계좌를 별도로 계속 읽으므로 여기서 안 옮겨도
+       무방하다).
+    6. `data/state/trades.jsonl`에 `PAPER_EPOCH_MARKER` 행을 `--at` 시각으로
+       추가한다 — `quant.control.ledger.round_trips`/`paper_epoch_ts`가 이
+       마커를 시대 경계로 써서 이전 미종결 lot을 버린다.
+    """
+    import json as _json
+    import time as _time
+    from datetime import datetime, timezone
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.apps.assembly import fixed_dual_books, validated_capital_fractions
+    from quant.apps.config import load_settings
+    from quant.control.ledger import PAPER_EPOCH_MARKER, TradeLedgerSink
+    from quant.core.models import Fill, Side
+    from quant.core.portfolio.portfolio import Portfolio
+    from quant.trade.risk.books import StrategyBooks
+
+    ts = datetime.fromisoformat(args.at)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+
+    root = REPO_ROOT
+    state_dir = root / "data" / "state"
+
+    settings = load_settings()
+    cfg = settings.raw
+    risk_cfg = cfg.get("risk", {}) or {}
+    capital_policy = str(risk_cfg.get("capital_policy", "fixed"))
+    if capital_policy != "fixed_dual":
+        raise SystemExit(
+            f"paper-epoch는 capital_policy: fixed_dual 전용이다(지금 설정: {capital_policy!r}) — "
+            "config/settings.yaml의 risk.capital_policy를 fixed_dual로 바꾼 뒤 다시 실행할 것"
+        )
+
+    per_strategy_initial_krw = float(risk_cfg.get("per_strategy_initial_krw", 10_000_000))
+    per_strategy_initial_usd = float(risk_cfg.get("per_strategy_initial_usd", 10_000))
+    active_strategy_ids = [
+        sid for sid, s in (cfg.get("strategies", {}) or {}).items()
+        if isinstance(s, dict) and s.get("enabled")
+    ]
+    capital_fraction = validated_capital_fractions(cfg)
+    krw_by_sid, usd_by_sid = fixed_dual_books(
+        capital_fraction, active_strategy_ids, per_strategy_initial_krw, per_strategy_initial_usd,
+    )
+
+    active, why = _engine_looks_active(root)
+    if active and not args.force:
+        raise SystemExit(
+            f"엔진이 활성으로 보인다({why}) — 먼저 정지하거나(예: systemctl stop quant-engine) "
+            "--force로 강행할 것(레이스 컨디션 위험을 감수)"
+        )
+    if active and args.force:
+        logging.getLogger(__name__).warning(
+            "엔진 활성 신호(%s)를 무시하고 --force로 강행: 레이스 컨디션 위험", why,
+        )
+
+    books_table = {
+        sid: {"KRW": krw_by_sid.get(sid, 0.0), "USD": usd_by_sid.get(sid, 0.0)}
+        for sid in sorted(set(krw_by_sid) | set(usd_by_sid))
+    }
+    result = {
+        "dry_run": bool(args.dry_run),
+        "at": ts.isoformat(),
+        "capital_policy": capital_policy,
+        "per_strategy_initial_krw": per_strategy_initial_krw,
+        "per_strategy_initial_usd": per_strategy_initial_usd,
+        "krw_wallet_total": sum(krw_by_sid.values()),
+        "usd_wallet_total": sum(usd_by_sid.values()),
+        "books": books_table,
+        "engine_active_check": why,
+    }
+
+    if args.dry_run:
+        print(_json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
+    books_path = state_dir / "strategy_books.json"
+    portfolio_path = state_dir / "portfolio.json"
+    ledger_path = state_dir / "trades.jsonl"
+
+    stamp = _time.strftime("%Y%m%d-%H%M%S")
+    archived: list[str] = []
+    for p in (books_path, portfolio_path):
+        if p.exists():
+            bak = p.with_name(f"{p.name}.pre-epoch-{stamp}")
+            bak.write_bytes(p.read_bytes())
+            archived.append(str(bak))
+
+    books = StrategyBooks.load(books_path, initial_krw=0.0)
+    books.books = {}  # 에폭 이전 장부는 전부 버린다 — 새 시작점이지 이어달리기가 아니다.
+    books.dual_currency = True
+    books.initial_by_strategy = krw_by_sid
+    books.initial_by_strategy_usd = usd_by_sid
+    books.seed(sorted(set(krw_by_sid) | set(usd_by_sid)))
+    books.save()
+
+    portfolio = Portfolio(
+        cash=sum(krw_by_sid.values()), cash_usd=sum(usd_by_sid.values()),
+        state_path=portfolio_path,
+    )
+    portfolio.save()
+
+    class _NullSink:
+        def on_signal(self, signal) -> None: ...
+        def on_fill(self, fill) -> None: ...
+        def on_order(self, state) -> None: ...
+
+    marker = Fill(
+        symbol="_EPOCH_", side=Side.BUY, qty=0.0, price=0.0, ts=ts,
+        strategy_id="epoch", fee=0.0,
+        reason=f"{PAPER_EPOCH_MARKER} — capital_policy=fixed_dual, at {ts.isoformat()}",
+        realized_pnl=0.0,
+    )
+    TradeLedgerSink(_NullSink(), path=ledger_path).on_fill(marker)
+
+    result["archived"] = archived
+    result["written"] = True
+    print(_json.dumps(result, ensure_ascii=False, indent=2))
 
 
 def cmd_health(args: argparse.Namespace) -> None:
@@ -6189,6 +6468,17 @@ def main() -> None:
     p_publish_perf.add_argument("--out", required=True, help="출력 JSON 경로")
     p_publish_perf.set_defaults(func=cmd_publish_performance)
 
+    p_validate_perf = sub.add_parser(
+        "validate-performance",
+        help="공개 성과 JSON 게시 전 검증 (구조·정합성·데이터 유실 감지, 종료코드 1=오류 있음)",
+    )
+    p_validate_perf.add_argument("--payload", required=True, help="검증할 성과 JSON 경로")
+    p_validate_perf.add_argument(
+        "--previous", default=None,
+        help="직전 발행본 JSON 경로 (선택 — 체결 수 역행/데이터 유실 검사용)",
+    )
+    p_validate_perf.set_defaults(func=cmd_validate_performance)
+
     p_seed_real = sub.add_parser(
         "seed-real",
         help="실계좌 스냅샷을 모의(paper) 상태로 이식 (일회성 제어 도구 — 반드시 엔진 정지 중에 실행)",
@@ -6220,6 +6510,27 @@ def main() -> None:
         "--dry-run", action="store_true", help="파일을 쓰지 않고 행만 미리 본다",
     )
     p_seed_carry.set_defaults(func=cmd_seed_carry)
+
+    p_paper_epoch = sub.add_parser(
+        "paper-epoch",
+        help=(
+            "페이퍼 계정 시대 리셋 — 전략별 장부/포트폴리오를 초기 자본으로 재시작"
+            " (capital_policy: fixed_dual 전용, 2026-09-06 소유자 결정)"
+        ),
+    )
+    p_paper_epoch.add_argument(
+        "--at", required=True,
+        help="에폭 경계 시각 (ISO 8601, 예: 2026-09-07T00:00:00+09:00)",
+    )
+    p_paper_epoch.add_argument(
+        "--dry-run", action="store_true",
+        help="파일을 쓰지 않고 생성될 책(전략별 KRW/USD 시작금)만 미리 본다",
+    )
+    p_paper_epoch.add_argument(
+        "--force", action="store_true",
+        help="엔진이 활성으로 보여도 강행한다(레이스 컨디션 위험을 감수)",
+    )
+    p_paper_epoch.set_defaults(func=cmd_paper_epoch)
 
     p_health = sub.add_parser(
         "health",

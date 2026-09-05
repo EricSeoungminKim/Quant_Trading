@@ -250,6 +250,27 @@ def test_brief_has_score_stance_and_evidence():
     assert "http://x/KR_report.html" in t
 
 
+def test_brief_shows_direction_accuracy_when_report_accuracy_present():
+    """2026-09-06 소유자 지시 priority-1 §2 — payload에 report_accuracy가
+    있으면 방향 판정 실측 정확도 한 줄이 스탠스 헤더 바로 아래 붙는다."""
+    p = _kr_payload(report_accuracy={
+        "stance_line": "방향 판정 정확도(최근 n=27, D+3): 26% — 참고용",
+    })
+    t = brief_text(p, "KR")
+    assert "방향 판정 정확도(최근 n=27, D+3): 26% — 참고용" in t
+    # 헤더 바로 다음 줄이어야 한다 — 스탠스 본문(line)보다 먼저.
+    lines = t.splitlines()
+    header_idx = next(i for i, l in enumerate(lines) if "종합" in l and "점/100점" in l)
+    assert lines[header_idx + 1] == "방향 판정 정확도(최근 n=27, D+3): 26% — 참고용"
+
+
+def test_brief_without_report_accuracy_key_is_unchanged():
+    """report_accuracy 키가 아예 없으면(옛 엔진 JSON·기존 픽스처) 줄 자체가
+    안 붙는다 — 하위호환."""
+    t = brief_text(_kr_payload(), "KR")
+    assert "정확도" not in t
+
+
 def test_every_number_carries_a_unit():
     """단위 없는 숫자는 신뢰할 수 없다(2026-08-12 사용자 원칙)."""
     t = brief_text(_kr_payload(), "KR")

@@ -56,19 +56,28 @@ echo "[deploy] 서버 반영: $QT_SSH_HOST"
 # 비로그인 ssh 셸에는 uv가 PATH에 없다 (server/CLAUDE.md 불변식 — 2026-08-10
 # 'uv: command not found'로 재시작이 조용히 스킵된 실측). 절대경로로 호출한다.
 if [ "${NO_RESTART:-0}" = "1" ]; then
-  ssh "$QT_SSH_HOST" "cd $REPO_DIR && git pull --ff-only && ~/.local/bin/uv sync && crontab server/crontab.txt"
+  ssh "$QT_SSH_HOST" "cd $REPO_DIR && git pull --ff-only && ~/.local/bin/uv sync && crontab server/crontab.txt \
+    && mkdir -p data/state && git rev-parse HEAD > data/state/last_deploy_sha.txt"
   echo "[deploy] NO_RESTART=1 — 엔진 무접촉 완료."
   exit 0
 fi
 if [ "${FORCE:-0}" = "1" ]; then
   ssh "$QT_SSH_HOST" "cd $REPO_DIR && echo \"[deploy] FORCE 장중 배포 \$(date '+%F %T')\" >> data/deploy.log"
 fi
+# 2026-09-06 안정성 감사 §10(배포-저장소 드리프트) — 이 스크립트가 마지막으로
+# 반영에 성공한 커밋을 data/state/last_deploy_sha.txt에 남긴다. server/scripts/
+# ops_watch.sh가 매시 이 값과 실제 checkout(HEAD)을 대조해, deploy.sh를 거치지
+# 않은 git 조작(수동 checkout/pull 등으로 실행 중인 빌드가 로컬 작업트리와
+# 갈라진 상태)을 자동으로 잡는다 — 이 감사에서 "EC2 로그 문자열이 현재 로컬
+# working tree와 다르다"를 우연히 발견한 것과 같은 부류의 사실을 다음부터는
+# 사람이 grep하지 않아도 드러나게 한다.
 ssh "$QT_SSH_HOST" "cd $REPO_DIR && git pull --ff-only && ~/.local/bin/uv sync \
   && crontab server/crontab.txt \
   && sudo systemctl restart quant-engine tg-bridge \
   && systemctl is-active quant-engine tg-bridge \
   && (journalctl -u quant-engine --since '40 sec ago' --no-pager | grep -m1 '엔진 조립 완료' \
       || { echo '⚠️ 조립 완료 로그 미확인'; exit 1; }) \
+  && mkdir -p data/state && git rev-parse HEAD > data/state/last_deploy_sha.txt \
   && echo \"[deploy] 완료 \$(date '+%F %T')\" >> data/deploy.log"
 
 echo "[deploy] 완료."

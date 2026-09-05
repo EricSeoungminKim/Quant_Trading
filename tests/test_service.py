@@ -563,6 +563,88 @@ def test_recovery_from_total_failure_logs_one_warning(monkeypatch, caplog):
     assert "only" in recovery[0].message
 
 
+# ------------------------------------------------ 프리페치 (2026-09-06 안정성 감사 P1-2b)
+
+
+def test_prefetch_warms_the_bar_cache_for_each_symbol_and_need():
+    """prefetch()가 부른 (symbol, interval)은 다음 history() 호출에서 캐시
+    히트가 돼야 한다 — 실제로 정상 캐시 경로(_store_bars)를 탄다는 뜻이다."""
+    src = FakeSource(history_df=_bars("2024-06-03T09:00", 50, freq="1min"))
+    svc = MarketDataService(
+        routes=[SourceRoute(name="s", source=src, capabilities=frozenset({Capability.BARS}))],
+        clock=FakeClock(datetime(2024, 6, 3, 10, 0, tzinfo=timezone.utc)),
+    )
+
+    warmed = svc.prefetch(["AAA", "BBB"], [("1m", 10)])
+
+    assert warmed == 2
+    assert len(src.history_calls) == 2
+    svc.history("AAA", "1m", 10)  # 캐시 히트 — 소스가 다시 불리지 않는다
+    assert len(src.history_calls) == 2
+
+
+def test_prefetch_respects_time_budget_and_stops_early(monkeypatch):
+    """time_budget_seconds를 넘기면 남은 (symbol, interval) 조합은 건너뛴다 —
+    프리페치 자체가 새로운 무제한 지연을 만들면 안 된다."""
+    src = FakeSource(history_df=_bars("2024-06-03T09:00", 50, freq="1min"))
+    svc = MarketDataService(
+        routes=[SourceRoute(name="s", source=src, capabilities=frozenset({Capability.BARS}))],
+        clock=FakeClock(datetime(2024, 6, 3, 10, 0, tzinfo=timezone.utc)),
+    )
+    fake_now = {"t": 0.0}
+    monkeypatch.setattr(time, "monotonic", lambda: fake_now["t"])
+
+    def _advancing_history(symbol, interval, n):
+        fake_now["t"] += 100.0  # 매 호출마다 예산을 훌쩍 넘기게 시계를 밀어버린다
+        return src._history_df
+
+    monkeypatch.setattr(src, "history", _advancing_history)
+
+    warmed = svc.prefetch(["A", "B", "C"], [("1m", 10)], time_budget_seconds=50.0)
+
+    assert warmed == 1  # 첫 호출 이후 예산 초과 — 나머지는 건너뜀
+
+
+def test_prefetch_failure_for_one_symbol_does_not_stop_the_rest():
+    """한 심볼의 프리페치가 실패해도(예: 아직 지원 안 하는 신규 상장) 나머지
+    심볼은 계속 데운다 — 프리페치는 최선 노력이지 전부-아니면-전무가 아니다."""
+    class _FlakySource:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def quote(self, symbol):
+            return None
+
+        def history(self, symbol, interval, n):
+            self.calls.append(symbol)
+            if symbol == "BAD":
+                raise RuntimeError("아직 지원 안 하는 심볼")
+            return _bars("2024-06-03T09:00", 20, freq="1min")
+
+    src = _FlakySource()
+    svc = MarketDataService(
+        routes=[SourceRoute(name="s", source=src, capabilities=frozenset({Capability.BARS}))],
+        clock=FakeClock(datetime(2024, 6, 3, 10, 0, tzinfo=timezone.utc)),
+    )
+
+    warmed = svc.prefetch(["GOOD", "BAD"], [("1m", 10)])
+
+    assert warmed == 1  # GOOD만 성공
+    assert src.calls == ["GOOD", "BAD"]  # BAD도 시도는 했다
+
+
+def test_prefetch_with_no_symbols_or_needs_is_a_harmless_noop():
+    src = FakeSource(history_df=_bars("2024-06-03T09:00", 10, freq="1min"))
+    svc = MarketDataService(
+        routes=[SourceRoute(name="s", source=src, capabilities=frozenset({Capability.BARS}))],
+        clock=FakeClock(datetime(2024, 6, 3, 10, 0, tzinfo=timezone.utc)),
+    )
+
+    assert svc.prefetch([], [("1m", 10)]) == 0
+    assert svc.prefetch(["AAA"], []) == 0
+    assert src.history_calls == []
+
+
 def test_fallback_saved_route_never_needs_a_recovery_warning(monkeypatch, caplog):
     """폴백이 계속 대신 응답해준 라우트는 애초에 WARNING을 낸 적이 없으므로,
     나중에 그 라우트가 직접 성공해도 '회복' 알림이 뜨지 않는다(WARNING을 낸
