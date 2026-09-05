@@ -47,6 +47,13 @@ KR 일봉 2016~2026 실측(3,263종목)에서 상한가(+29.5%) 다음날 매수
 중) ENTER_LONG/SCALE_IN을 막는다(`_prev_limit_up_blocked`) — 청산은 영향 없음.
 일봉 조회 실패는 차단 아님(위 회로차단기와 같은 원칙): 데이터 장애가 거래 정지로
 번지면 안 된다.
+
+**단일 종목 레버리지 ETF 최소 자산**(`risk.single_stock_leveraged`, 2026-09-05
+소유자 결정 — Toss 제약): TSLL/NVDL 등 단일 종목 3배 ETF는 계좌 자산이
+`min_equity_krw`(기본 3천만원) 이상이어야 매매 가능하다 — 지수/섹터 LETF
+(TQQQ/SQQQ/SOXL/SOXS 등)는 이 제약이 없다. Toss `stock_info`에 레버리지 여부
+필드가 없어 설정된 종목 목록으로 대신 판정한다. 문턱 미달이면
+ENTER_LONG/SCALE_IN을 막는다 — 청산은 영향 없음(이 파일의 공통 원칙).
 """
 from __future__ import annotations
 
@@ -347,6 +354,19 @@ class RiskManagerImpl:
         # {symbol: 거래일} — 같은 심볼의 데이터 누락 로그를 하루 1회로 줄인다
         # (사이클마다 재조회되므로 dedup 없으면 로그가 도배된다).
         self._prev_limit_up_warned_today: dict[str, str] = {}
+        # 단일 종목 레버리지 ETF 진입 최소 자산(2026-09-05, 소유자 결정 — Toss
+        # 제약: 지수/섹터 LETF(TQQQ/SQQQ/SOXL/SOXS/UPRO/SPXU/TNA/TZA)는 무제한이지만
+        # 단일 종목 LETF(TSLL/NVDL 등)는 계좌 자산이 3천만원 이상이어야 매매 가능.
+        # Toss stock_info에 레버리지 여부 필드가 없어 설정 목록 + 문턱으로 대신한다
+        # (scratchpad/letf_spec.md). ENTER_LONG/SCALE_IN만 차단 — 청산은 절대
+        # 막지 않는다(이 파일의 공통 원칙, `_ENTRY_ACTIONS`).
+        ssl_cfg = risk_cfg.get("single_stock_leveraged", {}) or {}
+        self.single_stock_leveraged_symbols: set[str] = {
+            str(s).upper() for s in (ssl_cfg.get("symbols") or [])
+        }
+        self.single_stock_leveraged_min_equity_krw: float = float(
+            ssl_cfg.get("min_equity_krw", 30_000_000)
+        )
         # 기본값은 기존 동작(capital_fraction) — 설정에 없으면 결과가 바뀌지 않는다.
         self.sizing_mode = str(risk_cfg.get("sizing_mode", "capital_fraction"))
         # 전략별 독립 명목계정(2026-08-19). 기본값 "shared" — 설정에 명시하지 않으면
@@ -1221,6 +1241,18 @@ class RiskManagerImpl:
         if signal.action in _ENTRY_ACTIONS and self._prev_limit_up_blocked(
             signal, ctx, market, price,
         ):
+            return None
+
+        if (
+            signal.action in _ENTRY_ACTIONS
+            and signal.symbol.upper() in self.single_stock_leveraged_symbols
+            and equity < self.single_stock_leveraged_min_equity_krw
+        ):
+            self._block(
+                f"단일 종목 레버리지 ETF 진입 차단: 계좌 자산 {equity:,.0f}원 < "
+                f"최소 {self.single_stock_leveraged_min_equity_krw:,.0f}원 "
+                f"(Toss 요건, {signal.symbol}) — 청산은 계속 허용된다."
+            )
             return None
 
         if signal.action in _ENTRY_ACTIONS and self._pending_entry_qty is not None:

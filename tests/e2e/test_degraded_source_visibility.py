@@ -126,7 +126,7 @@ def test_primary_source_failure_stays_visible_through_a_real_trading_cycle(
     ctx = Context(clock=clock, data=data, broker=broker)
     capture = _CapturingSink()
 
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("DEBUG"):
         run_cycle([strategy], ctx, risk, MultiSink([capture]))
 
     # 1차 소스가 죽었어도 거래는 정상적으로 계속된다(가용성 — 폴백이 실제로 동작함).
@@ -137,14 +137,19 @@ def test_primary_source_failure_stays_visible_through_a_real_trading_cycle(
     # 그러나 그 사실이 조용히 묻히면 안 된다 — health/로그 2중으로 확인한다.
     health = data.health()
     # degraded는 2026-08-12부터 "끝내 데이터를 못 받았다"는 뜻이다. 여기서는 폴백이
-    # 성공해 체결까지 났으므로 False가 맞다 — 가시성은 아래 소스별 상태·
-    # 경고 로그가 담당한다(이 테스트의 원래 의도는 '조용히 묻히지 않는가'이고,
-    # 그 의도는 그대로 유지된다). 폴백 성공을 장애로 집계하던 옛 정의는 US 세션
-    # 내내 오보를 냈다.
+    # 성공해 체결까지 났으므로 False가 맞다 — 가시성은 아래 소스별 상태가 담당한다
+    # (이 테스트의 원래 의도는 '조용히 묻히지 않는가'이고, 그 의도는 그대로
+    # 유지된다). 폴백 성공을 장애로 집계하던 옛 정의는 US 세션 내내 오보를 냈다.
+    #
+    # 로그 수준은 D5/D6(2026-09-05)로 WARNING에서 DEBUG로 낮아졌다 — 폴백이
+    # 결국 성공했으므로(설계대로 동작) 이제 WARNING이 아니라 DEBUG로만 남는다
+    # (4일 146,451줄의 대부분이 이 패턴의 WARNING 스팸이었다). 기록 자체는
+    # 여전히 남으므로 사후 조회는 가능하다.
     assert health.degraded is False
     assert health.sources["toss"].healthy is False
     assert health.sources["history"].healthy is True
-    assert any("toss" in rec.message for rec in caplog.records)
+    assert any("toss" in rec.message for rec in caplog.records if rec.levelname == "DEBUG")
+    assert not any("toss" in rec.message for rec in caplog.records if rec.levelname == "WARNING")
 
 
 def test_when_primary_is_healthy_it_is_not_falsely_reported_degraded(make_breakout_bars):

@@ -105,6 +105,22 @@ def is_seeding_liquidation(trade: dict) -> bool:
     return SEEDING_LIQUIDATION_MARKER in str(trade.get("reason") or "")
 
 
+# `cmd_seed_real`이 **유지 종목**(예: 005930)의 이월 수량에 남기는 합성 buy 마커
+# (2026-09-05, D3). `SEEDING_LIQUIDATION_MARKER`의 자매 마커다 — 저쪽은 "이 행은
+# 프로그램 매매가 아니다"(정리 매도)를 뜻하고, 이건 "이 행은 실제 매수가 아니라
+# 이관 시점에 이미 갖고 있던 실보유를 원장에 반영하기 위한 장부상 기록"을 뜻한다.
+# 이 행이 없으면 `positions_from_trades`가 유지 종목의 시작 잔량을 0으로 재구성해
+# 그 뒤 매도만큼 영구히 "원장 재구성 -N vs 포트폴리오 0"으로 오탐한다(실측: 005930).
+SEEDING_CARRY_MARKER = "실계좌 이식 이월"
+
+
+def is_seeding_carry(trade: dict) -> bool:
+    """이 체결이 실계좌 이식 시 유지 보유분의 이월 기록(합성 buy)인가.
+
+    `is_seeding_liquidation`과 같은 판별 방식(reason 마커)이다."""
+    return SEEDING_CARRY_MARKER in str(trade.get("reason") or "")
+
+
 def seeding_boundary_ts(trades: list[dict]) -> datetime | None:
     """paper→real_seeded 경계 시각 = 이식 정리 매도 행들의 **최대 ts**.
 
@@ -289,10 +305,13 @@ def round_trips(trades: list[dict]) -> list[dict]:
     아니다). 경계 이후 재고 없는 매도는 아무것도 열지도 닫지도 않고 건너뛴다
     — 경계를 가로질러 짝지우지 않는다. 이식 정리 매도 행 자체도 집계에서 뺀다.
 
-    **이월 보유(2026-09-01 이식의 005930 6주)는 원장에 이관 행이 없다** —
-    `cmd_seed_real`이 남긴 7행은 전부 정리 *매도*고 이월분에 대한 행은 없다.
-    따라서 이 함수는 그 보유에 대해 라운드트립을 만들 수 없다(원가를 모른다).
-    그 손익은 세션 손익(`session_pnl_summary`)에만 나타난다.
+    **이월 보유(2026-09-01 이식의 005930 6주)는 이제 원장에 합성 buy 행이 남는다**
+    (`SEEDING_CARRY_MARKER`, 2026-09-05 D3 수리) — `cmd_seed_real`이 유지 종목마다
+    이 행을 남겨야 `quant.control.health.positions_from_trades`가 실제 이월
+    수량에서 재구성을 시작한다(이 행이 없던 원장은 유지 종목의 매도만큼 영구히
+    "원장 재구성 -N vs 포트폴리오 0"으로 오탐했다). 이 행 자체는 실제 매수가
+    아니므로(원가가 실현손익을 만들지 않는다) 정리 매도와 같은 대우로 아래
+    루프에서 걸러 트립 재료로 쓰지 않는다.
     """
     boundary_ts = seeding_boundary_ts(trades)
 
@@ -305,7 +324,7 @@ def round_trips(trades: list[dict]) -> list[dict]:
 
     by_key: dict[tuple[str, str], list[dict]] = {}
     for t in sorted(trades, key=lambda x: str(x.get("ts", ""))):
-        if is_seeding_liquidation(t):
+        if is_seeding_liquidation(t) or is_seeding_carry(t):
             continue  # 프로그램의 매매 판단이 아니다 — 트립 재료가 아니다
         by_key.setdefault((str(t.get("strategy_id", "?")), str(t["symbol"])), []).append(t)
 

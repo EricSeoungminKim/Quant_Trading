@@ -1282,6 +1282,82 @@ strategies:
       eod_exit_min: 3
       target_weight: 0.5
       min_stop_bp: 40 # VWAP 기준 손절은 원래 넓다 — 이 게이트가 걸리면 그날은 추세일이 아니다
+  # ── 레버리지 ETF 페어 전환(2026-09-05, Family F1 — scratchpad/letf_spec.md) ──
+  # 지수/섹터 3배 ETF 페어를 신호 심볼의 EMA/VWAP 추세 방향으로 갈아탄다. 독립
+  # 백테스터(quant-backtest 저장소)가 **같은 규칙을 별도로 구현**해 거래 단위로
+  # 교차검증한다(스펙 "Cross-check protocol") — 그 결과(walk-forward OOS·deflated
+  # Sharpe·비용 2배 생존)가 나오기 전까지 두 블록 다 `enabled: false`,
+  # `capital_fraction` 양 시장 0(자본 배정은 게이트 통과 후 소유자가 정한다).
+  letf_pair_qqq:
+    class: letf_pair
+    enabled: false
+    symbols: [] # 전략이 params의 signal/long/short 3개로 내부 구성(전략이 무시)
+    capital_fraction:
+      KR: 0.0
+      US: 0.0 # 게이트 통과 전 — 위 헤더 주석 참고
+    validation:
+      status: burn_in
+    params: &letf_pair_params
+      # F1 스펙 기본값(scratchpad/letf_spec.md "Defaults") 그대로 — 튜닝 없음.
+      bar_interval_minutes: 15 # DECLARE(리스크 쿨다운 봉 간격용) — interval_minutes(M)와 같아야 한다(생성자가 대조)
+      interval_minutes: 15
+      n_fast: 8
+      n_slow: 21
+      n_atr: 14
+      k_min: 0.25
+      stop_atr_mult: 1.5
+      trail_atr_mult: 0 # 0 = 비활성(기본)
+      # 손절/익절 규칙 확장(2026-09-05, 소유자 청산 규칙). 전부 기본값(atr 모드,
+      # 사다리 꺼짐)이라 이 블록만 봐서는 동작이 하나도 안 바뀐다 — 켜려면 아래
+      # 값들을 명시적으로 고칠 것(letf_pair.py 모듈 docstring "익절 사다리" 절).
+      stop_mode: atr # atr(기본, stop_atr_mult 산식) | pct(stop_pct 고정 비율)
+      stop_pct: 0.03 # stop_mode: pct일 때만 쓰인다
+      tp1_pct: 0 # 0 = 비활성. 예: 0.03(1단계 +3%에서 부분 익절)
+      tp1_fraction: 0.5 # 1단계에서 청산할 비중
+      tp2_pct: 0 # 0 = 비활성. 예: 0.05(2단계 +5%에서 잔량 전량 익절)
+      tp_atr_mult: 0 # 0 = 비활성. tp1_pct 대신 ATR 스케일로 사다리를 정의(둘은 동시 설정 불가)
+      # tp_floor_exit: 선언하지 않음 — 사다리가 켜지면 코드가 자동으로 true로
+      # 기본값을 바꾼다(letf_pair.py 생성자 `_ladder_active` 참고). 명시적으로
+      # 끄고 싶을 때만 여기 `false`를 추가할 것.
+      tp_floor_to_entry: false # 1단계 체결 후 손절선을 진입가로 올릴지
+      min_stop_bp: 40
+      warmup_min: 30
+      no_entry_min: 30
+      eod_exit_min: 5
+      cooldown_bars: 2
+      # 리스크 층의 손절 후 쿨다운(risk.cooldown_bars_after_stop 전역 4봉 = 15m×4 = 60분)이
+      # 전략의 cooldown_bars(2봉)보다 길면 엔진이 재진입을 막아 백테스터(qb/letf)와
+      # 거래 단위 대조가 어긋난다 — 같은 값으로 선언해 두 층을 일치시킨다.
+      cooldown_bars_after_stop: 2
+      max_entries_per_day: 3
+      switch: true
+      exit_on_neutral: false
+      day_filter: false
+      gap_min: 0.005
+      or_atr_min: 0.8
+      overnight: false # true 변형은 연구용(스펙 "overnight=true variant") — 기본 배포는 항상 false
+      target_weight: 0.5
+      signal_symbol: "QQQ"
+      long_symbol: "TQQQ"
+      short_symbol: "SQQQ"
+  letf_pair_sox:
+    # SOXX → SOXL/SOXS 병행 갈래 — 규칙은 letf_pair_qqq와 완전히 동일(params
+    # 앵커 공유 + signal/long/short만 YAML 병합 키로 override), 유니버스(반도체
+    # 섹터)만 다르다. `_cat` A/B 갈래와 달리 이건 서로 다른 신호 심볼을 매매하는
+    # 별개의 레인이다(같은 종목을 놓고 갈리는 A/B가 아니다).
+    class: letf_pair
+    enabled: false
+    symbols: []
+    capital_fraction:
+      KR: 0.0
+      US: 0.0
+    validation:
+      status: burn_in
+    params:
+      <<: *letf_pair_params
+      signal_symbol: "SOXX"
+      long_symbol: "SOXL"
+      short_symbol: "SOXS"
 
 risk:
   # 확장 세션 허용 목록 (2026-08-18, 사용자 결정: 프리마켓 직접 진입 찬성).
@@ -1475,6 +1551,20 @@ risk:
     threshold_pct: 29.5
     markets: [KR]
     lookback_sessions: 1 # 지금은 "직전 1세션"만 판정 — 조회할 일봉 개수(n=lookback+2)만 조절
+  # 단일 종목 레버리지 ETF 최소 자산(2026-09-05, 소유자 결정 — Toss 제약,
+  # scratchpad/letf_spec.md). 지수/섹터 LETF(TQQQ/SQQQ/SOXL/SOXS/UPRO/SPXU/
+  # TNA/TZA 등)는 이 목록에 없으므로 무제한이다. Toss stock_info에 레버리지
+  # 여부 필드가 없어 목록 + 문턱으로 대신 판정한다(risk/manager.py
+  # `single_stock_leveraged_symbols`). ENTER_LONG/SCALE_IN만 차단, 청산은
+  # 절대 막지 않는다.
+  single_stock_leveraged:
+    min_equity_krw: 30000000
+    symbols:
+      [
+        TSLL, TSLQ, NVDL, NVDD, NVDX, AAPU, AAPD, AMZU, AMZD, MSFU, MSFD,
+        GGLL, GGLS, METU, METD, CONL, CONI, TSLZ, TSLT, NVD, TSLS, AMDL,
+        AMDS, MSTU, MSTZ, COIG, PLTU, PLTD, SMCX, SMCZ, MUU, MUD, AVL, AVS,
+      ]
 
 execution:
   broker: toss # toss | kiwoom

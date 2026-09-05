@@ -120,12 +120,48 @@ def test_trades_ledger_gets_seven_new_rows_with_transfer_reason_marker(tmp_path,
     ledger_path = tmp_path / "data" / "state" / "trades.jsonl"
     assert ledger_path.exists()
     rows = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
-    assert len(rows) == 7
-    for row in rows:
+    sell_rows = [r for r in rows if r["symbol"] != "005930"]
+    assert len(sell_rows) == 7
+    for row in sell_rows:
         assert row["side"] == "sell"
         assert row["strategy_id"] == "legacy"
         assert "실계좌 이식 정리" in row["reason"]
         assert row["symbol"] != "005930"
+
+
+def test_005930_gets_a_carry_over_row_so_ledger_reconstruction_starts_from_real_qty(
+    tmp_path, monkeypatch, capsys,
+):
+    """D3: 유지 종목(005930)은 정리매도가 없으니 원장 행이 하나도 안 남아, 이관
+    이후 이 종목을 조금이라도 팔면 quant.control.health.positions_from_trades가
+    시작 잔량을 0으로 재구성해 영구히 오탐이 났다(실측). 캐리오버 합성 buy
+    행이 원장에 정확히 하나 남아야 한다."""
+    result = _run(monkeypatch, tmp_path, capsys, dry_run=False)
+
+    ledger_path = tmp_path / "data" / "state" / "trades.jsonl"
+    rows = [json.loads(line) for line in ledger_path.read_text(encoding="utf-8").splitlines()]
+    carry_rows = [r for r in rows if r["symbol"] == "005930"]
+    assert len(carry_rows) == 1
+    carry = carry_rows[0]
+    assert carry["side"] == "buy"
+    assert carry["qty"] == 6.0
+    assert carry["price"] == pytest.approx(263416.666666)
+    assert carry["strategy_id"] == "seed"
+    assert "실계좌 이식 이월" in carry["reason"]
+
+    # cmd_seed_real이 stdout에 찍는 결과에도 그대로 드러나야 한다(수동 점검용).
+    assert result["carry_row_recorded"]["symbol"] == "005930"
+    assert result["carry_row_recorded"]["qty"] == 6.0
+
+
+def test_dry_run_does_not_report_a_carry_row_write(tmp_path, monkeypatch, capsys):
+    """dry-run은 아무 파일도 쓰지 않는다 — 캐리 행도 예외가 아니다."""
+    result = _run(monkeypatch, tmp_path, capsys, dry_run=True)
+
+    state = tmp_path / "data" / "state"
+    assert not (state / "trades.jsonl").exists()
+    # 미리보기 자체는 여전히 계산돼 나와야 한다.
+    assert result["carry_row_recorded"]["symbol"] == "005930"
 
 
 def test_005930_position_carries_frgn_accumulate_lot(tmp_path, monkeypatch, capsys):

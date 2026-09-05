@@ -28,6 +28,7 @@ from quant.trade.strategy.orb_rvol import OrbRvolShell
 from quant.trade.strategy.eod_reversal import EodReversalShell
 from quant.trade.strategy.open_reversal import OpenReversalShell
 from quant.trade.strategy.trend_day import TrendDayShell
+from quant.trade.strategy.letf_pair import LetfPairShell
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,12 @@ STRATEGY_REGISTRY = {
     # 못했다**(US 400종목 실측: 상승 국면 총 +3.2bp < 왕복 25.2bp) — 모듈
     # docstring "실측 결과를 먼저 밝힌다" 절. 등록만 하고 `enabled: false`.
     "trend_day": TrendDayShell,
+    # 레버리지 ETF 페어 전환(2026-09-05, scratchpad/letf_spec.md Family F1) —
+    # 지수/섹터 3배 ETF 페어(TQQQ/SQQQ, SOXL/SOXS)를 신호 심볼(QQQ/SOXX)의 추세
+    # 방향으로 갈아탄다. 독립 백테스터(quant-backtest)와 교차검증 중이라
+    # `letf_pair_qqq`/`letf_pair_sox` 둘 다 `enabled: false`, `validation.status:
+    # burn_in` — walk-forward 결과가 나오기 전까지는 켜지 않는다.
+    "letf_pair": LetfPairShell,
 }
 
 

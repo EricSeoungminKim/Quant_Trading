@@ -615,6 +615,49 @@ def _exit_open_reversal(p):
     )
 
 
+def _entry_letf_pair(p):
+    return _join(
+        _clause(
+            "{U}의 {iv}분봉에서 EMA{nf}가 EMA{ns} 위 + 종가가 세션 VWAP 위 + "
+            "|strength|(EMA 격차를 ATR{na}로 나눈 값)가 {km} 이상이면 {L} 매수, "
+            "반대 조건이면 {S} 매수(롱 온리 계좌라 하락 신호는 인버스 ETF 매수로 표현)",
+            "On {U}'s {iv}-minute bars, buys {L} when EMA{nf} is above EMA{ns}, "
+            "price is above the session VWAP, and |strength| (the EMA gap divided "
+            "by ATR{na}) is at least {km}; the opposite condition buys {S} instead "
+            "(a long-only account expresses downside as an inverse-ETF buy)",
+            U=_p(p, "signal_symbol"), L=_p(p, "long_symbol"), S=_p(p, "short_symbol"),
+            iv=_p(p, "interval_minutes"), nf=_p(p, "n_fast"), ns=_p(p, "n_slow"),
+            na=_p(p, "n_atr"), km=_p(p, "k_min"),
+        ),
+        _clause(
+            "개장 {wu}분 이후 ~ 마감 {ne}분 전까지만 진입, 하루 최대 {me}건",
+            "Only enters between {wu} minutes after open and {ne} minutes before "
+            "close, capped at {me} entries per day",
+            wu=_p(p, "warmup_min"), ne=_p(p, "no_entry_min"), me=_p(p, "max_entries_per_day"),
+        ),
+    )
+
+
+def _exit_letf_pair(p):
+    return _join(
+        _clause(
+            "손절 = 진입가 x (1 − 3 x {sam} x ATR{na}/종가) — 기초지수 ATR을 3배로 "
+            "환산, 손절폭 하한 {smb}bp",
+            "Stop = entry x (1 − 3 x {sam} x ATR{na}/close) — the underlying's ATR "
+            "scaled 3x for the leveraged ETF; stop distance floored at {smb}bp",
+            sam=_p(p, "stop_atr_mult"), na=_p(p, "n_atr"), smb=_p(p, "min_stop_bp"),
+        ),
+        _clause(
+            "반대 방향 신호가 뜨면 청산(`switch` 설정 시 반대 ETF로 같은 사이클에 "
+            "즉시 전환), 마감 {ee}분 전 전량 청산(오버나잇 금지)",
+            "Exits on a signal reversal (switches into the opposite ETF in the same "
+            "cycle when `switch` is on), flattens entirely {ee} minutes before close "
+            "(no overnight holding)",
+            ee=_p(p, "eod_exit_min"),
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # 전략별 정적 콘텐츠(가설·근거) + 위 진입/청산 빌더 결합.
 # ---------------------------------------------------------------------------
@@ -834,6 +877,34 @@ _SPECS: dict[str, dict] = {
         "entry": _entry_open_reversal, "exit": _exit_open_reversal,
         "evidence_ko": "burn_in, enabled: false — KR 1년 분봉(40종목) 게이트 NO_GO(2026-09-04): OOS 324왕복 기대값 −21.9bp(비용 2배 −34.3bp), 최악 폴드 −42.6bp. 전일 낙폭 종목의 시가 매수는 KR 개별주에서 비용을 못 넘었다. 국내 문헌의 반전 근거는 월간·주간 지평선이라 1일 지평선에는 직접 적용되지 않는다는 점도 확인.",
         "evidence_en": "burn_in, enabled: false — KR 1-year minute-bar gate (40 names) NO_GO on 2026-09-04: 324 OOS round trips, expectancy −21.9bp (−34.3bp at 2× cost), worst fold −42.6bp. Buying prior-day losers at the open did not clear cost on KR single names; the Korean reversal literature is monthly/weekly-horizon and does not transfer to a 1-day horizon.",
+        "refs": [],
+    },
+    # 레버리지 ETF 페어 전환(2026-09-05, scratchpad/letf_spec.md Family F1) —
+    # STRATEGY_REGISTRY 등록 id는 "letf_pair" 하나(클래스 공유)지만 실제
+    # settings.yaml/원장 id는 signal_symbol별로 둘(letf_pair_qqq/letf_pair_sox)
+    # 이라 base_strategy_id가 벗기지 않는다(`_cat`/`_pure`가 아니다) — 그래서 두
+    # id를 각각 등록한다. **"letf_pair"(등록 키 그 자체)는 의도적으로 여기 없다**
+    # — 실제 배선(원장/공개 사이트)에 나타나는 id가 아니라 순수한 클래스 레지스트리
+    # 키일 뿐이라, 없는 파라미터를 지어내느니 일반 fallback(문서 없음)으로 떨어지는
+    # 쪽이 정직하다(`test_strategy_help.py`가 25개 id 완전성을 검증하는데, 24→25는
+    # 이 "letf_pair" 자체가 늘려주고, 진짜 콘텐츠는 letf_pair_qqq/letf_pair_sox
+    # 둘에 담는다).
+    "letf_pair_qqq": {
+        "category": "intraday",
+        "theory_ko": "지수 3배 ETF는 기초지수의 방향을 그대로 증폭하므로, 짧은/긴 EMA 격차(ATR로 정규화)와 세션 VWAP 위치가 동시에 임계값을 넘는 '추세 구간'에서만 올라타면 방향성 수익을 포착한다는 가설(Family F1). 독립 백테스터(quant-backtest 저장소)가 같은 규칙을 별도 구현해 거래 단위로 교차검증한다.",
+        "theory_en": "Hypothesis that a 3x index ETF amplifies its underlying's direction, so entering only when the ATR-normalized fast/slow EMA gap and session-VWAP position both clear a threshold ('trend regime') captures directional edge (Family F1). An independent backtester (the quant-backtest repo) implements the same rule separately for trade-by-trade cross-validation.",
+        "entry": _entry_letf_pair, "exit": _exit_letf_pair,
+        "evidence_ko": "walk-forward 결과 대기, 미검증 — 원장 표본 0, enabled: false, capital_fraction KR/US 모두 0. 독립 백테스터의 walk-forward(24개월 훈련/6개월 테스트)·deflated Sharpe·비용 2배 생존 검증을 통과해야 번인 후보가 된다.",
+        "evidence_en": "walk-forward results pending, unvalidated — zero ledger samples, enabled: false, capital_fraction is 0 in both KR and US. Requires the independent backtester's walk-forward (24-month train / 6-month test), deflated-Sharpe, and 2x-cost survival checks before becoming a burn-in candidate.",
+        "refs": [],
+    },
+    "letf_pair_sox": {
+        "category": "intraday",
+        "theory_ko": "letf_pair_qqq와 같은 규칙(Family F1)을 반도체 섹터 지수(SOXX)와 그 3배 ETF(SOXL/SOXS)에 적용한 병행 갈래 — 유니버스만 다르고 규칙은 완전히 동일하다.",
+        "theory_en": "The same rule as letf_pair_qqq (Family F1) applied to the semiconductor sector index (SOXX) and its 3x ETFs (SOXL/SOXS) — a parallel lane with an identical rule set, differing only in universe.",
+        "entry": _entry_letf_pair, "exit": _exit_letf_pair,
+        "evidence_ko": "walk-forward 결과 대기, 미검증 — 원장 표본 0, enabled: false, capital_fraction KR/US 모두 0. 독립 백테스터의 walk-forward(24개월 훈련/6개월 테스트)·deflated Sharpe·비용 2배 생존 검증을 통과해야 번인 후보가 된다.",
+        "evidence_en": "walk-forward results pending, unvalidated — zero ledger samples, enabled: false, capital_fraction is 0 in both KR and US. Requires the independent backtester's walk-forward (24-month train / 6-month test), deflated-Sharpe, and 2x-cost survival checks before becoming a burn-in candidate.",
         "refs": [],
     },
 }

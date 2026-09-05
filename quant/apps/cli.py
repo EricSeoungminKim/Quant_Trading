@@ -2380,6 +2380,13 @@ def cmd_manual_recs(args: argparse.Namespace) -> None:
         print("--market {KR|US} 가 필요하다 (--scorecard 가 아니면)", file=sys.stderr)
         raise SystemExit(2)
 
+    # market_pulse와 같은 이유(그 커맨드 주석 참고, D4 2026-09-05 수리) — 크론은
+    # systemd EnvironmentFile을 안 거치므로, 여기서 명시적으로 .env.local을 읽어
+    # os.environ에 채워야 아래 KR 분기의 build_toss_client()가 TOSS_CLIENT_ID를
+    # 찾는다. 이게 없으면 매번 MissingCredentials로 실패해 로컬 일봉 없는 KR
+    # 후보가 전부 조용히 드롭됐다(실측 2026-09-04: 12종목).
+    load_settings()
+
     from zoneinfo import ZoneInfo
 
     tz = ZoneInfo("Asia/Seoul") if args.market == "KR" else ZoneInfo("America/New_York")
@@ -2797,15 +2804,17 @@ def cmd_seed_real(args: argparse.Namespace) -> None:
     from quant.adapters.env import REPO_ROOT
     from quant.adapters.execution.paper import PaperBroker
     from quant.apps.config import load_settings
-    from quant.control.ledger import TradeLedgerSink
+    from quant.control.ledger import SEEDING_CARRY_MARKER, TradeLedgerSink
     from quant.core.fx import FixedFxProvider
-    from quant.core.models import Order, Position, Quote, Side, market_of_symbol
+    from quant.core.models import Fill, Order, Position, Quote, Side, market_of_symbol
     from quant.core.portfolio.portfolio import Portfolio
 
     KEEP_SYMBOL = "005930"
     KEEP_STRATEGY = "frgn_accumulate"
     LEGACY_STRATEGY = "legacy"
+    CARRY_STRATEGY = "seed"
     REASON = "실계좌 이식 정리 — 소유자 지시 2026-09-01: 005930만 보유 유지, 나머지 정리"
+    CARRY_REASON = f"{SEEDING_CARRY_MARKER} — 소유자 지시 2026-09-01: {KEEP_SYMBOL} 이월 보유"
 
     snapshot_path = Path(args.snapshot)
     snapshot = _json.loads(snapshot_path.read_text(encoding="utf-8"))
@@ -2916,6 +2925,26 @@ def cmd_seed_real(args: argparse.Namespace) -> None:
             "fee": state.fill.fee if state.fill else None,
         })
 
+    # 유지 종목(KEEP_SYMBOL)의 이월 수량 — 실제 매수가 아니라 이관 시점에 이미
+    # 갖고 있던 실보유를 원장에 반영하는 합성 buy 행이다(D3, 2026-09-05 수리).
+    # 이 행이 없으면 quant.control.health.positions_from_trades가 이 종목의
+    # 시작 잔량을 0으로 재구성해, 그 뒤 매도만큼 영구히 "원장 재구성 -N vs
+    # 포트폴리오 0"으로 오탐한다(실측: 005930). round_trips()는 SEEDING_CARRY_
+    # MARKER를 보고 이 행을 트립 재료에서 뺀다(실제 매수가 아니므로 원가/손익이
+    # 없다) — 정리 매도(SEEDING_LIQUIDATION_MARKER)와 같은 대우.
+    keep = holdings[KEEP_SYMBOL]
+    carry_fill = Fill(
+        symbol=KEEP_SYMBOL, side=Side.BUY, qty=float(keep["qty"]), price=float(keep["avg_cost"]),
+        ts=now, strategy_id=CARRY_STRATEGY, fee=0.0, reason=CARRY_REASON, realized_pnl=0.0,
+    )
+    if ledger is not None:
+        ledger.on_fill(carry_fill)
+    carry_row_recorded = {
+        "symbol": carry_fill.symbol, "side": carry_fill.side.value, "qty": carry_fill.qty,
+        "price": carry_fill.price, "ts": carry_fill.ts.isoformat(),
+        "strategy_id": carry_fill.strategy_id, "reason": carry_fill.reason,
+    }
+
     if not args.dry_run:
         portfolio.save()
 
@@ -2929,8 +2958,64 @@ def cmd_seed_real(args: argparse.Namespace) -> None:
             for sym, pos in portfolio.positions.items() if pos.qty > 0
         },
         "sell_fills_recorded": sell_fills,
+        "carry_row_recorded": carry_row_recorded,
     }
     print(_json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def cmd_seed_carry(args: argparse.Namespace) -> None:
+    """이월 보유(carry-over) 원장 행을 수동으로 남기는 **일회성 수리 도구**(D3,
+    2026-09-05). `cmd_seed_real`이 유지 종목의 이월 수량에 원장 행을 남기지
+    않아(이미 고쳐졌다 — 새 이식은 이제 이 행을 자동으로 남긴다) 이미 벌어진
+    과거 이식(2026-09-01)에 대해서만 사후 수리한다.
+
+    **멱등**이다 — 같은 (symbol, ts) 조합의 캐리 행이 원장에 이미 있으면 다시
+    쓰지 않고 거부한다(이 도구를 실수로 두 번 돌려도 원장이 두 배로 부풀지
+    않는다).
+    """
+    import json as _json
+    import sys
+    from datetime import datetime as _dt
+
+    from quant.control.ledger import (
+        SEEDING_CARRY_MARKER, TradeLedgerSink, is_seeding_carry, load_trades,
+    )
+    from quant.core.models import Fill, Side, market_of_symbol
+
+    ts = _dt.fromisoformat(args.at)
+
+    existing = load_trades(ledger_state_path())
+    for t in existing:
+        if (is_seeding_carry(t) and str(t.get("symbol")) == args.symbol
+                and str(t.get("ts")) == ts.isoformat()):
+            raise SystemExit(
+                f"{args.symbol}: 이 경계({ts.isoformat()})의 캐리 행이 이미 있다 — 다시 쓰지 않는다"
+            )
+
+    fill = Fill(
+        symbol=args.symbol, side=Side.BUY, qty=args.qty, price=args.price, ts=ts,
+        strategy_id="seed", fee=0.0,
+        reason=f"{SEEDING_CARRY_MARKER} — 수동 수리(quant.apps.cli seed-carry)",
+        realized_pnl=0.0,
+    )
+    row = {
+        "ts": fill.ts.isoformat(), "strategy_id": fill.strategy_id, "symbol": fill.symbol,
+        "side": fill.side.value, "qty": fill.qty, "price": fill.price, "fee": fill.fee,
+        "realized_pnl": fill.realized_pnl, "cash_after": None, "cash_after_usd": None,
+        "reason": fill.reason, "market": market_of_symbol(fill.symbol),
+    }
+    print(_json.dumps(row, ensure_ascii=False, indent=2))
+
+    if args.dry_run:
+        print("(dry-run — 원장에 쓰지 않음)", file=sys.stderr)
+        return
+
+    class _NullSink:
+        def on_signal(self, signal) -> None: ...
+        def on_fill(self, fill) -> None: ...
+        def on_order(self, state) -> None: ...
+
+    TradeLedgerSink(_NullSink(), path=ledger_state_path()).on_fill(fill)
 
 
 def cmd_health(args: argparse.Namespace) -> None:
@@ -5578,6 +5663,145 @@ def cmd_peek(args: argparse.Namespace) -> None:
     print(_json.dumps(out, ensure_ascii=False, indent=2))
 
 
+# ── 텔레그램 인텔리전스 다이제스트(2026-09-05, 소유자 요구 (4)) ────────────
+#
+# `data/state/tg_digest_last.json` 하나에 시장별 마지막 실행 시각을 키로
+# 남긴다(market_pulse_{market}.json 처럼 시장별 파일로 쪼개지 않는 이유:
+# 과제 지시가 "data/state/tg_digest_last.json per market" — 파일명은
+# 하나, 시장별로 구분해 담으라는 뜻으로 읽었다).
+
+def _tg_digest_load_last_run(path, market: str):
+    import json as _json
+
+    if not path.exists():
+        return None
+    try:
+        payload = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    at = (payload.get(market) or {}).get("at")
+    if not at:
+        return None
+    try:
+        return datetime.fromisoformat(at)
+    except ValueError:
+        return None
+
+
+def _tg_digest_save_last_run(path, market: str, at) -> None:
+    import json as _json
+
+    payload = {}
+    if path.exists():
+        try:
+            payload = _json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            payload = {}
+    payload[market] = {"at": at.isoformat()}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def cmd_tg_digest(args: argparse.Namespace) -> None:
+    """텔레그램 인텔리전스 다이제스트 — 정규장 중 30분마다 신규 텔레그램
+    메시지만 모아 KR/US 스탠스 힌트·관심종목 후보·방별 요약을 stdout에 낸다
+    (2026-09-05, 소유자 요구 (4)). 판단 로직은 `quant/analyze/tg_digest.py`
+    (순수 analyze 평면) — 이 명령은 주문을 내지 않고 선정 원장에도 쓰지
+    않는다. 후보는 flow-scan/market-pulse 와 같은 관례로 `CANDS: sym sym`
+    한 줄에 실어, `server/scripts/tg_digest.sh` 가 watch-score → watch-add
+    게이트 체인에 그대로 먹인다 — 새 메시지가 없으면(빈 창) 그 줄 자체가
+    없다.
+
+    `--since` 를 안 주면 `data/state/tg_digest_last.json`(시장별 키)의
+    마지막 실행 시각을 쓰고, 그것도 없으면(첫 실행) 30분 전으로 대체한다.
+    `--dry-run` 이면 마지막 실행 시각·스탠스 상태 파일을 갱신하지 않는다
+    (반복 실행해도 같은 창을 다시 읽는다 — 검증용).
+    """
+    import sys
+    from datetime import timedelta, timezone
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.analyze import tg_digest
+    from quant.analyze.entities import load_table, load_us_table
+    from quant.apps.assembly import MissingCredentials, build_toss_client
+    from quant.collect.sources.telegram_channels import load_window
+
+    load_settings()  # .env/.env.local — Toss 시세 조회 + narrator 키(크론은 EnvironmentFile을 안 거친다)
+
+    root = REPO_ROOT
+    ledger_path = root / "data" / "ledger" / "telegram_msgs.jsonl"
+    last_run_path = root / "data" / "state" / "tg_digest_last.json"
+
+    now = datetime.now(timezone.utc)
+    since = None
+    if args.since:
+        try:
+            since = datetime.fromisoformat(args.since.replace("Z", "+00:00"))
+            if since.tzinfo is None:
+                since = since.replace(tzinfo=timezone.utc)
+        except ValueError:
+            print(f"tg-digest: --since 파싱 실패({args.since}) — 마지막 실행 시각으로 대체", file=sys.stderr)
+    if since is None:
+        since = _tg_digest_load_last_run(last_run_path, args.market)
+    if since is None:
+        since = now - timedelta(minutes=30)
+
+    messages = load_window(ledger_path, since=since, until=now)
+
+    # 종목명 사전 — 캐시 실패(네트워크 없음 등)는 다이제스트를 막지 않는다,
+    # 후보·숫자 클레임만 비어 있는 채로 계속한다(entities 캐시 계층이 이미
+    # 하는 KIND→DART 폴백까지 실패했을 때의 마지막 안전망).
+    cache_dir = root / "data" / "cache"
+    try:
+        name_table = load_table(cache_dir) if args.market == "KR" else load_us_table(cache_dir)
+    except Exception as e:  # noqa: BLE001
+        print(f"tg-digest: 종목명 사전 로드 실패 — 후보 추출 생략 ({type(e).__name__}: {e})", file=sys.stderr)
+        name_table = []
+
+    client = None
+    try:
+        client = build_toss_client()
+    except MissingCredentials as e:
+        print(f"tg-digest: Toss 자격증명 없음 — 숫자 검증 없이 진행 ({e})", file=sys.stderr)
+
+    _quote_cache: dict[str, float | None] = {}
+
+    def _quote(symbol: str) -> float | None:
+        if symbol in _quote_cache:
+            return _quote_cache[symbol]
+        price = None
+        if client is not None:
+            try:
+                for row in client.prices([symbol]) or []:
+                    if isinstance(row, dict) and row.get("symbol") == symbol:
+                        p = row.get("price") or row.get("lastPrice") or row.get("close")
+                        if p is not None:
+                            price = float(p)
+                        break
+            except Exception as e:  # noqa: BLE001 — 시세 조회 실패 하나가 다이제스트를 막지 않는다
+                print(f"tg-digest: {symbol} 시세 조회 실패 — 미확인 ({type(e).__name__}: {e})", file=sys.stderr)
+        _quote_cache[symbol] = price
+        return price
+
+    llm_call = None if args.no_narrate else _narrate_call()
+    digest = tg_digest.build_digest(
+        messages, args.market, now, since=since, name_table=name_table,
+        quotes_lookup=_quote, llm_call=llm_call,
+    )
+
+    text = tg_digest.render_telegram(digest, report_url=_daily_report_url(args.market, now.date()))
+    print(text)
+    if digest.candidates:
+        print(f"CANDS: {' '.join(c.symbol for c in digest.candidates)}")
+
+    if args.dry_run:
+        print("(dry-run — 상태 파일 갱신 생략)", file=sys.stderr)
+        return
+
+    _tg_digest_save_last_run(last_run_path, args.market, now)
+    tg_digest.persist_stance(root / "data" / "state" / "tg_stance.json", digest)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="quant")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -5938,6 +6162,24 @@ def main() -> None:
     )
     p_seed_real.set_defaults(func=cmd_seed_real)
 
+    p_seed_carry = sub.add_parser(
+        "seed-carry",
+        help="이월 보유 캐리오버 원장 행을 수동으로 남긴다 (일회성 수리 도구, D3 — 멱등)",
+    )
+    p_seed_carry.add_argument("--symbol", required=True, help="이월 보유 종목코드")
+    p_seed_carry.add_argument("--qty", type=float, required=True, help="이월 수량")
+    p_seed_carry.add_argument(
+        "--price", type=float, required=True, help="이월 평균단가 (스냅샷 avg_cost)",
+    )
+    p_seed_carry.add_argument(
+        "--at", required=True,
+        help="이관 경계 시각 (ISO 8601, 예: 2026-09-01T23:01:00+09:00)",
+    )
+    p_seed_carry.add_argument(
+        "--dry-run", action="store_true", help="파일을 쓰지 않고 행만 미리 본다",
+    )
+    p_seed_carry.set_defaults(func=cmd_seed_carry)
+
     p_health = sub.add_parser(
         "health",
         help="운영 이상 점검 (JSON). 종료코드 0=정상 / 1=이상 / 2=모름.",
@@ -6215,6 +6457,19 @@ def main() -> None:
     p_peek.add_argument("--interval", default="5m", help="1m|5m|15m|1d (기본 5m)")
     p_peek.add_argument("--n", type=int, default=40, help=f"봉 개수 (상한 {_PEEK_MAX_N})")
     p_peek.set_defaults(func=cmd_peek)
+
+    p_tg_digest = sub.add_parser(
+        "tg-digest",
+        help="텔레그램 인텔리전스 다이제스트(2026-09-05) — 신규 채널 메시지로 KR/US 스탠스·관심종목 후보를 stdout에 낸다",
+    )
+    p_tg_digest.add_argument("--market", required=True, choices=["KR", "US"], help="KR 또는 US")
+    p_tg_digest.add_argument("--since", default=None,
+                              help="ISO8601 (기본: data/state/tg_digest_last.json의 마지막 실행 시각, 없으면 30분 전)")
+    p_tg_digest.add_argument("--dry-run", action="store_true",
+                              help="마지막 실행 시각·스탠스 상태 파일 갱신 없이 메시지만 stdout에 출력")
+    p_tg_digest.add_argument("--no-narrate", action="store_true",
+                              help="LLM 스탠스·방별 요약을 붙이지 않는다 — 결정론 다이제스트만")
+    p_tg_digest.set_defaults(func=cmd_tg_digest)
 
     args = parser.parse_args()
     args.func(args)

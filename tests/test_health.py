@@ -319,6 +319,58 @@ def test_ledger_portfolio_findings_still_alerts_on_genuine_post_boundary_mismatc
     assert "005930" in findings[0].detail
 
 
+# ── 캐리오버(이월 보유) 원장 행(2026-09-05 D3) ───────────────────────────────
+# `cmd_seed_real`이 유지 종목(005930)의 이월 수량에 원장 행을 남기지 않아
+# 그 종목만 영구히 "원장 재구성 -N vs 포트폴리오 0"으로 오탐했다(005930 실측).
+
+_CARRY_REASON = "실계좌 이식 이월 — 소유자 지시 2026-09-01: 005930 이월 보유"
+
+
+def test_positions_from_trades_includes_carry_row_even_at_boundary():
+    """캐리오버 합성 buy는 그 정의상 경계 시각 그 자체(또는 그 이전)에 찍힌다 —
+    일반 규칙(ts<=boundary면 제외)을 그대로 적용하면 이 행마저 걸러져 시작
+    잔량이 0으로 재구성된다. 캐리 행은 시각 필터를 건너뛰어야 한다."""
+    boundary = datetime(2026, 9, 1, 14, 1, 8, tzinfo=timezone.utc)
+    trades = [
+        {"symbol": "005930", "side": "buy", "qty": 6, "ts": boundary.isoformat(),
+         "reason": _CARRY_REASON, "strategy_id": "seed"},
+    ]
+    assert positions_from_trades(trades, boundary_ts=boundary) == {"005930": 6.0}
+
+
+def test_ledger_portfolio_findings_clears_005930_once_carry_row_present():
+    """실측 시나리오(D3): 정리매도 7건 + 005930 이월 buy가 전부 같은 순간(이관
+    시점)에 원장에 남는다 — 캐리오버 행이 경계와 같은 시각이어도 재구성에
+    포함돼야 그 뒤 매도가 실제 보유수량에서 이어진다."""
+    boundary_ts = "2026-09-01T14:01:08+00:00"
+    trades = [
+        {"symbol": "000500", "side": "sell", "qty": 7, "ts": boundary_ts,
+         "reason": _SEED_REASON},
+        {"symbol": "005930", "side": "buy", "qty": 6, "ts": boundary_ts,
+         "reason": _CARRY_REASON, "strategy_id": "seed"},
+        {"symbol": "005930", "side": "sell", "qty": 1, "ts": "2026-09-02T01:00:00+00:00"},
+    ]
+    portfolio = {"positions": {"005930": {"qty": 5.0}}}
+
+    assert ledger_portfolio_findings(trades, portfolio) == []
+
+
+def test_ledger_portfolio_findings_still_alerts_if_carry_row_missing():
+    """캐리오버 행이 없으면(D3 결함 그대로 재현) 여전히 오탐이 나야 한다 —
+    이 테스트가 회귀를 잡는다(캐리 행 도입 자체가 감지를 무디게 만들면 안 된다)."""
+    boundary_ts = "2026-09-01T14:01:08+00:00"
+    trades = [
+        {"symbol": "000500", "side": "sell", "qty": 7, "ts": boundary_ts,
+         "reason": _SEED_REASON},
+        {"symbol": "005930", "side": "sell", "qty": 1, "ts": "2026-09-02T01:00:00+00:00"},
+    ]
+    portfolio = {"positions": {"005930": {"qty": 5.0}}}
+
+    findings = ledger_portfolio_findings(trades, portfolio)
+    assert _levels(findings) == [ALERT]
+    assert "005930" in findings[0].detail
+
+
 # ── 반복 알림 억제(2026-09-04) ──────────────────────────────────────────────
 
 def test_dedupe_repeat_alerts_first_occurrence_passes():

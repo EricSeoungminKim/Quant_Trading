@@ -207,12 +207,14 @@ data-availability.md) 백테스트 표본이 없다 — paper 번인이 유일�
 """
 from __future__ import annotations
 
+import math
 from datetime import date as dtdate, datetime, time as dtime
 
 import pandas as pd
 
 from quant.core.ports import Context
 from quant.core.models import Position, Signal, SignalAction, market_of_symbol
+from quant.core.session import in_continuous_session
 from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
 from quant.trade.fmt import fmt_price
 from quant.trade.indicators import sma
@@ -1122,6 +1124,28 @@ class Scalp1mStrategy:
             if r > 0:
                 target = entry + self.partial_take_r * r
                 if price >= target:
+                    # 보유가 너무 적으면(전형적으로 1주) partial_fraction을 곱한
+                    # 수량이 1주 미만으로 내림된다 — risk 레이어(소수점 매도가
+                    # 안 되는 시장/시간대)가 매 사이클 "부분매도 수량 <1주"로
+                    # 거부하는데, partial_taken은 **체결 시에만** 세팅되므로
+                    # 거부된 신호는 다음 사이클에 그대로 재발화해 영원히 반복된다
+                    # (실측 2026-09-03: 096770, 22초간 60회). 쪼갤 수 없으면
+                    # 사다리의 의도(목표 R 도달 시 이익 실현)를 살리는 쪽은
+                    # "스킵"이 아니라 "전량 청산"이다 — 스킵하면 그 사이클의
+                    # 이익실현 기회 자체가 통째로 사라진다.
+                    lot_qty = pos.lot_qty(self.id) or float(pos.qty)
+                    fractional_ok = market == "US" and in_continuous_session(market, ctx.clock.now())
+                    if not fractional_ok and math.floor(lot_qty * self.partial_fraction) < 1:
+                        return Signal(
+                            strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
+                            target_weight=0.0, exit_fraction=1.0,
+                            reason=(
+                                f"절반 익절 전량 대체(+{self.partial_take_r:g}R, 보유 {lot_qty:g}주로 "
+                                f"분할 불가): entry={fmt_price(entry, symbol)} 목표={fmt_price(target, symbol)} "
+                                f"현재={fmt_price(price, symbol)}"
+                            ),
+                            state_update={"partial_taken": True},
+                        )
                     return Signal(
                         strategy_id=self.id, symbol=symbol, action=SignalAction.SCALE_OUT,
                         target_weight=0.0, exit_fraction=self.partial_fraction,
@@ -1666,6 +1690,27 @@ class Scalp1mPureStrategy:
                 target = entry + self.partial_take_r * r
                 if price >= target:
                     lot["partial_taken"] = True
+                    # 레거시 `_manage_position`과 동일한 이유(그쪽 주석 참고,
+                    # D7 2026-09-05): 보유가 너무 적으면(전형적으로 1주)
+                    # partial_fraction을 곱한 수량이 1주 미만으로 내림돼 risk
+                    # 레이어가 매 사이클 거부를 반복한다. 여기 `lot`(=open_[symbol])은
+                    # entry/stop/session/partial_taken만 들고 있는 이 전략의
+                    # **자체 부기**(Position.meta에 안 쓴다, 클래스 docstring)라
+                    # qty가 없다 — 실제 보유수량은 `snap.lots`(=Position.meta[
+                    # "lots"][id]를 그대로 복사한 것, shell.py)에서 읽는다.
+                    lot_qty = float(snap.lots.get(symbol, {}).get("qty", 0.0))
+                    fractional_ok = market == "US" and in_continuous_session(market, snap.now)
+                    if not fractional_ok and math.floor(lot_qty * self.partial_fraction) < 1:
+                        return Signal(
+                            strategy_id=self.id, symbol=symbol, action=SignalAction.EXIT_LONG,
+                            target_weight=0.0, exit_fraction=1.0,
+                            reason=(
+                                f"절반 익절 전량 대체(+{self.partial_take_r:g}R, 보유 {lot_qty:g}주로 "
+                                f"분할 불가): entry={fmt_price(entry, symbol)} 목표={fmt_price(target, symbol)} "
+                                f"현재={fmt_price(price, symbol)}"
+                            ),
+                            state_update={"partial_taken": True},
+                        )
                     return Signal(
                         strategy_id=self.id, symbol=symbol, action=SignalAction.SCALE_OUT,
                         target_weight=0.0, exit_fraction=self.partial_fraction,

@@ -167,6 +167,11 @@ ALLOWED_KILL_SWITCH: dict[str, int] = {
     "strategies.open_reversal.enabled": 5,
     # 15분봉 추세일 지속(2026-09-04) — 같은 이유로 미리 등재한다.
     "strategies.trend_day.enabled": 5,
+    # 레버리지 ETF 페어 전환(2026-09-05) — 같은 이유로 미리 등재한다. 설정 id가
+    # 둘(letf_pair_qqq/letf_pair_sox, 같은 클래스의 다른 signal_symbol)이라
+    # `_cat`처럼 접미사로 벗겨지지 않는다 — 둘 다 직접 등재한다.
+    "strategies.letf_pair_qqq.enabled": 5,
+    "strategies.letf_pair_sox.enabled": 5,
     # strategies.scalp_1m.enabled — 의도적으로 뺐다(보호 목록, 위 설명).
     # strategies.scalp_1m_cat.enabled — 같은 이유로 뺐다(2026-09-03): `_cat` 은
     # 같은 클래스의 다른 유니버스 갈래라 보호를 **상속**한다. 한쪽만 자동으로

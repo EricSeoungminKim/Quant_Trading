@@ -133,6 +133,37 @@ def test_verify_catches_truncated_member(tmp_path: Path):
     assert any("줄" in p for p in problems)  # 줄 수 불일치를 이름으로 말한다
 
 
+def test_create_is_immune_to_concurrent_growth_during_archiving(tmp_path: Path, monkeypatch):
+    """D1: spread_sample.sh 처럼 백업 도중 계속 append 되는 파일이 있어도 매니페스트와
+    tar 내용이 어긋나면 안 된다 — 파일마다 딱 한 번만 읽어 그 바이트에서 매니페스트와
+    tar 엔트리를 같이 파생해야 한다(예전엔 따로 두 번 읽어 그 사이 커진 만큼
+    verify()가 거짓 실패를 냈다, 실측: 매일 03:30 "🚨 백업 실패")."""
+    _seed(tmp_path)
+    target = tmp_path / "data" / "ledger" / "selections-2026-08.jsonl"
+    original_read_bytes = Path.read_bytes
+    call_count = {"n": 0}
+
+    def _read_then_grow(self: Path):
+        data = original_read_bytes(self)
+        if self == target:
+            call_count["n"] += 1
+            # 읽고 난 직후 다른 프로세스가 이 파일에 append한다고 흉내낸다.
+            with self.open("a", encoding="utf-8") as f:
+                f.write('{"symbol": "GROWN"}\n')
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", _read_then_grow)
+
+    out = tmp_path / "bundle.tar.gz"
+    stats = create(tmp_path, out)  # 예전 구현이면 여기서 RuntimeError(대조 실패)
+
+    assert verify(out) == []
+    assert call_count["n"] == 1, "대상 파일을 딱 한 번만 읽어야 한다"
+    # 담긴 내용은 읽은 시점(성장 전) 그대로 — 뒤늦게 자란 줄은 이 번들에 없다.
+    assert read_manifest(out)["ledger/selections-2026-08.jsonl"].lines == 1
+    assert target.read_text(encoding="utf-8").count("\n") == 2, "원본 파일 자체는 계속 자랐다"
+
+
 def test_verify_catches_missing_member(tmp_path: Path):
     _seed(tmp_path)
     out = tmp_path / "bundle.tar.gz"

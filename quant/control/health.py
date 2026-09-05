@@ -215,10 +215,19 @@ def positions_from_trades(trades: list[dict], boundary_ts: datetime | None = Non
     001450/007070/007340/GLDM/GOOGL 등, 452회 누적 10회/일).
 
     ts 를 못 읽는 행은 `boundary_ts` 가 있을 때 **보수적으로 제외**한다 —
-    경계 이전인지 알 수 없는 걸 이후로 단정하지 않는다."""
+    경계 이전인지 알 수 없는 걸 이후로 단정하지 않는다.
+
+    **캐리오버 행(`quant.control.ledger.SEEDING_CARRY_MARKER`, 2026-09-05 D3)은
+    이 시각 필터를 건너뛴다** — `cmd_seed_real`이 유지 종목(예: 005930)의 이월
+    수량에 남기는 합성 buy는 그 정의상 경계 시각 그 자체(또는 그 이전)에
+    찍힌다. 일반 규칙(`ts <= boundary_ts`면 제외)을 그대로 적용하면 이 행마저
+    걸러져 유지 종목의 시작 잔량이 다시 0으로 재구성되고, 그 뒤 매도만큼
+    영구히 "원장 재구성 -N vs 포트폴리오 0"으로 오탐한다(실측: 005930)."""
+    from quant.control.ledger import is_seeding_carry
+
     qty: dict[str, float] = {}
     for rec in trades:
-        if boundary_ts is not None:
+        if boundary_ts is not None and not is_seeding_carry(rec):
             ts: datetime | None
             try:
                 ts = datetime.fromisoformat(str(rec.get("ts")))

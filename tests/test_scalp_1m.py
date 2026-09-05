@@ -429,6 +429,71 @@ def test_partial_take_profit_does_not_refire_once_flagged():
     assert signals == []
 
 
+# ---------------------------------- D7: 1주 lot의 부분청산이 <1주로 내림될 때 ---
+# 실측(2026-09-03): scalp_1m 096770이 보유 1주 x 0.5 = 0.5주를 부분청산하려다
+# risk 레이어가 매 사이클 "부분매도 수량 <1주"로 거부했다. partial_taken은
+# 체결 시에만 세팅되므로 같은 신호가 22초간 60회 재발화했다. KR은 항상 정수
+# 매도만 허용되므로 소수점 매도 구제(US 연속세션)가 없다 — 전량 청산으로
+# 대체돼야 한다.
+
+def _kr_lot_position(symbol="096770", entry=100.0, stop=97.0, qty=1.0, *,
+                      session=DAY1.isoformat(), partial_taken=False):
+    return Position(symbol=symbol, qty=qty, avg_cost=entry, meta={
+        "lots": {"scalp_1m": {"qty": qty, "entry": entry, "stop": stop,
+                               "session": session, "partial_taken": partial_taken}},
+    })
+
+
+def _kr_now_within_window(minutes_after_open: float = 5.0, day=DAY1) -> datetime:
+    return datetime.combine(day, KR_OPEN, tzinfo=KST) + timedelta(minutes=minutes_after_open)
+
+
+def test_partial_take_profit_becomes_full_exit_when_1_share_lot_cannot_be_split():
+    """KR은 소수점 매도가 없다 — floor(1주 x 0.5)=0이면 부분청산 대신 전량
+    청산으로 대체해 반복 거부/재발화를 막는다."""
+    strat = Scalp1mStrategy(["096770"], _params(partial_take_r=1.5, partial_fraction=0.5))
+    pos = _kr_lot_position(qty=1.0, entry=100.0, stop=97.0)  # R=3.0 -> target=104.5
+    ctx = _ctx({"096770": 104.6}, _kr_now_within_window(5.0), positions={"096770": pos},
+               open_markets=frozenset({"KR"}))
+
+    signals = strat.on_cycle(ctx)
+
+    assert len(signals) == 1
+    sig = signals[0]
+    assert sig.action == SignalAction.EXIT_LONG
+    assert sig.exit_fraction == pytest.approx(1.0)
+    assert sig.state_update == {"partial_taken": True}
+    assert "분할 불가" in sig.reason
+
+
+def test_partial_take_profit_stays_scale_out_when_kr_lot_is_large_enough():
+    """보유가 충분히 크면(floor(qty*fraction)>=1) 기존 부분청산 그대로 — 회귀 방지."""
+    strat = Scalp1mStrategy(["096770"], _params(partial_take_r=1.5, partial_fraction=0.5))
+    pos = _kr_lot_position(qty=10.0, entry=100.0, stop=97.0)
+    ctx = _ctx({"096770": 104.6}, _kr_now_within_window(5.0), positions={"096770": pos},
+               open_markets=frozenset({"KR"}))
+
+    signals = strat.on_cycle(ctx)
+
+    assert len(signals) == 1
+    assert signals[0].action == SignalAction.SCALE_OUT
+    assert signals[0].exit_fraction == pytest.approx(0.5)
+
+
+def test_partial_take_profit_stays_scale_out_for_us_continuous_session_even_with_1_share():
+    """US 연속세션 중에는 소수점 매도가 허용되므로(2026-09-02 risk 레이어 규칙)
+    1주짜리 부분청산도 그대로 부분청산이다 — 전량 대체로 과잉 반응하지 않는다."""
+    strat = Scalp1mStrategy(["AAA"], _params(partial_take_r=1.5, partial_fraction=0.5))
+    pos = _lot_position(entry=100.0, stop=97.0)  # AAA, qty=10 in helper — 여기선 lot qty만 본다
+    # lot qty를 1로 좁혀 실제 <1주 시나리오를 재현한다.
+    pos.meta["lots"]["scalp_1m"]["qty"] = 1.0
+    signals = strat.on_cycle(_ctx({"AAA": 104.6}, _now_within_window(5.0), positions={"AAA": pos}))
+
+    assert len(signals) == 1
+    assert signals[0].action == SignalAction.SCALE_OUT
+    assert signals[0].exit_fraction == pytest.approx(0.5)
+
+
 # ============================================================ 잔량 트레일 — 60선 이탈
 
 def test_ma60_close_below_exits_full_remaining():

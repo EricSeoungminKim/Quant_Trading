@@ -88,22 +88,44 @@ def _entry(path: Path) -> Entry:
     )
 
 
+def _entry_from_bytes(data: bytes, suffix: str) -> Entry:
+    """`_entry`와 같은 계산을 **이미 메모리에 있는 바이트**에서 한다 — 디스크를
+    다시 열지 않는다. `create()`가 매니페스트와 tar 멤버를 같은 바이트에서
+    파생하는 데 쓴다(D1: 따로 두 번 읽으면 그 사이 파일이 커져도(예:
+    spread_sample.sh append) 매니페스트와 실제 담긴 내용이 어긋나 `verify()`가
+    거짓 실패를 낸다)."""
+    return Entry(
+        bytes=len(data),
+        sha256=hashlib.sha256(data).hexdigest(),
+        lines=(
+            sum(1 for line in data.decode("utf-8", "replace").splitlines() if line.strip())
+            if suffix == ".jsonl" else None
+        ),
+    )
+
+
 def _looks_secret(path: Path) -> bool:
     name = path.name.lower()
     return any(marker in name for marker in _SECRET_NAMES)
 
 
-def manifest(root: Path | str) -> dict[str, Entry]:
-    """`root/data/{state,ledger,news}` 의 모든 파일. 키는 `data/` 기준 상대경로."""
+def _discover_files(root: Path | str) -> list[tuple[str, Path]]:
+    """`root/data/{state,ledger,news}` 아래 모든 파일 경로(정렬됨). 키는 `data/`
+    기준 상대경로 — `manifest()`와 `create()`가 같은 목록 로직을 공유한다."""
     data = Path(root) / "data"
-    out: dict[str, Entry] = {}
+    out: list[tuple[str, Path]] = []
     for artifact in ARTIFACTS:
         base = data / artifact
         if not base.is_dir():
             continue
         for path in sorted(p for p in base.rglob("*") if p.is_file()):
-            out[str(path.relative_to(data))] = _entry(path)
+            out.append((str(path.relative_to(data)), path))
     return out
+
+
+def manifest(root: Path | str) -> dict[str, Entry]:
+    """`root/data/{state,ledger,news}` 의 모든 파일. 키는 `data/` 기준 상대경로."""
+    return {key: _entry(path) for key, path in _discover_files(root)}
 
 
 def _manifest_bytes(entries: dict[str, Entry]) -> bytes:
@@ -125,9 +147,21 @@ def create(root: Path | str, out: Path | str, extra: Sequence[Path] = ()) -> dic
         # 이름이 겹쳤다는 것 자체가 신호다(같은 초에 두 번 돌았다). 조용히 접미사를
         # 붙이면 왜 두 번 돌았는지 아무도 안 보게 된다.
         raise BundleExists(f"이미 있는 번들을 덮어쓰지 않는다: {out}")
-    entries = manifest(root)
 
-    members: list[tuple[str, Path]] = [(k, root / "data" / k) for k in entries]
+    # 매니페스트와 tar 멤버를 **같은 바이트**에서 파생한다(D1) — 예전엔
+    # manifest(root)로 한 번 읽고 tar.add(path)가 같은 파일을 독립적으로 다시
+    # 읽었다. 그 사이(수백ms~수초) spread_sample.sh 같은 크론이 append하면
+    # 매니페스트(구버전 크기/해시/줄수)와 tar 내용(신버전)이 어긋나 verify()가
+    # "번들을 만든 직후 대조가 실패했다"를 매일 냈다(실측: 백업 창 03:30 KST가
+    # US spread_sample.sh append 구간 00:00~04:59와 겹침). 파일마다 딱 한 번만
+    # 읽어, 그 바이트를 tar에 담고 그 바이트로 매니페스트 항목을 계산한다.
+    members: list[tuple[str, bytes]] = []
+    entries: dict[str, Entry] = {}
+    for key, path in _discover_files(root):
+        blob = path.read_bytes()
+        entries[key] = _entry_from_bytes(blob, Path(key).suffix)
+        members.append((key, blob))
+
     for path in extra:
         path = Path(path)
         if _looks_secret(path):
@@ -135,9 +169,10 @@ def create(root: Path | str, out: Path | str, extra: Sequence[Path] = ()) -> dic
                 f"시크릿으로 보이는 파일을 번들에 넣을 수 없다: {path.name} — "
                 "번들은 오프사이트로 나간다"
             )
+        blob = path.read_bytes()
         key = f"mysql/{path.name}"
-        entries[key] = _entry(path)
-        members.append((key, path))
+        entries[key] = _entry_from_bytes(blob, path.suffix)
+        members.append((key, blob))
 
     if not entries:
         # 파일을 만들기 **전에** 실패한다 — 반쯤 만든 번들이 최신 백업으로 보인다.
@@ -147,12 +182,14 @@ def create(root: Path | str, out: Path | str, extra: Sequence[Path] = ()) -> dic
 
     out.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(out, "w:gz") as tar:
-        for key, path in members:
-            tar.add(path, arcname=key)
-        blob = _manifest_bytes(entries)
+        for key, blob in members:
+            info = tarfile.TarInfo(key)
+            info.size = len(blob)
+            tar.addfile(info, io.BytesIO(blob))
+        manifest_blob = _manifest_bytes(entries)
         info = tarfile.TarInfo(MANIFEST_NAME)
-        info.size = len(blob)
-        tar.addfile(info, io.BytesIO(blob))
+        info.size = len(manifest_blob)
+        tar.addfile(info, io.BytesIO(manifest_blob))
 
     problems = verify(out)
     if problems:

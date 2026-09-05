@@ -43,6 +43,16 @@ _OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 # 1.8GB EC2에서 무인으로 며칠씩 돌기 때문에 "언젠가는 정리되겠지"가 통하지 않는다.
 _DEFAULT_BAR_CACHE_MAX_ENTRIES = 512
 
+# 라우트 실패 로그 스로틀(2026-09-05, D5/D6) — 4일간 146,451줄(WARNING 이상)의
+# 대부분이 키움 실시간(stale 틱)/미국(쿨다운) 라우트가 매 quote() 호출마다
+# "실패, 폴백 시도"를 WARNING으로 찍은 것이었는데, 두 경우 다 다음 라우트
+# (toss)가 정상 응답해 실제로는 데이터 손실이 아니었다(설계대로 동작한
+# 폴백). 규칙: 그 호출이 결국 다른 라우트로 서빙됐으면 항상 DEBUG(정상
+# 동작) — 끝내 아무 라우트도 못 살렸을 때(진짜 데이터 손실)만 (route,symbol)별
+# 첫 발생은 WARNING, 10분 안의 재발은 DEBUG로 눌러 담고, 그 라우트가 다시
+# 성공하면 WARNING 한 줄로 회복을 알린다.
+_FAILURE_WARN_INTERVAL_SECONDS = 600.0
+
 
 class Capability(str, Enum):
     QUOTE = "quote"
@@ -186,6 +196,12 @@ class MarketDataService:
         # 미룬다 — 콜드 페치 총량은 그대로지만 한 사이클에 몰리지 않게 편다.
         self._cold_fetch_budget_per_cycle = cold_fetch_budget_per_cycle
         self._cold_fetch_count = 0
+        # 실패 로그 스로틀 상태(D5/D6) — (route_name, symbol)별 마지막 WARNING
+        # 시각(monotonic)과 "진짜 데이터 손실"로 한 번이라도 WARNING을 찍은 적
+        # 있는지. time.monotonic()을 쓰는 이유는 quote 캐시 TTL과 같다 —
+        # self._clock은 백테스트에서 점프하므로 스로틀 판정에 쓸 수 없다.
+        self._route_last_warned: dict[tuple[str, str], float] = {}
+        self._route_was_failing: set[tuple[str, str]] = set()
 
     def quote(self, symbol: str) -> Quote | None:
         """한 사이클 안에서 같은 심볼을 여러 번 물어도 소스는 한 번만 친다.
@@ -213,21 +229,26 @@ class MarketDataService:
         return result
 
     def _quote_uncached(self, symbol: str) -> Quote | None:
+        pending: list[tuple[tuple[str, str], str]] = []
         for route in self._candidates(Capability.QUOTE, symbol):
             try:
                 result = route.source.quote(symbol)
             except Exception as e:
                 self._record_failure(route.name, e)
-                logger.warning(
-                    "MarketDataService: %s.quote(%s) 실패, 폴백 시도: %s: %s",
-                    route.name, symbol, type(e).__name__, e,
-                )
+                pending.append((
+                    (route.name, symbol),
+                    "MarketDataService: %s.quote(%s) 실패, 폴백 시도: %s: %s"
+                    % (route.name, symbol, type(e).__name__, e),
+                ))
                 continue
             self._record_success(route.name)
             self._last_unserved = False  # 폴백이었더라도 끝내 받았으면 정상이다
+            self._flush_route_failures(pending, fallback_succeeded=True)
+            self._log_route_recovery(route.name, symbol)
             return None if result is None else _normalize_quote(result)
         # 후보 소스를 전부 소진 — 이때만 데이터 손실이다.
         self._last_unserved = True
+        self._flush_route_failures(pending, fallback_succeeded=False)
         return None
 
     def history(self, symbol: str, interval: str, n: int) -> pd.DataFrame:
@@ -326,21 +347,26 @@ class MarketDataService:
         # 랭킹하지 못했다(전 종목, 전 회차). 형성 중일 수 있는 봉은 어느
         # interval이든 마지막 1개뿐이므로 여유분은 +1이면 충분하고, 마지막
         # tail(n)이 초과분을 잘라 장 마감 후에도 결과는 정확히 n개다.
+        pending: list[tuple[tuple[str, str], str]] = []
         for route in self._candidates(Capability.BARS, symbol, interval):
             self._bar_source_calls += 1
             try:
                 result = route.source.history(symbol, interval, n + 1)
             except Exception as e:
                 self._record_failure(route.name, e)
-                logger.warning(
-                    "MarketDataService: %s.history(%s,%s) 실패, 폴백 시도: %s: %s",
-                    route.name, symbol, interval, type(e).__name__, e,
-                )
+                pending.append((
+                    (route.name, symbol),
+                    "MarketDataService: %s.history(%s,%s) 실패, 폴백 시도: %s: %s"
+                    % (route.name, symbol, interval, type(e).__name__, e),
+                ))
                 continue
             self._record_success(route.name)
             self._last_unserved = False
+            self._flush_route_failures(pending, fallback_succeeded=True)
+            self._log_route_recovery(route.name, symbol)
             return _normalize_frame(result)
         self._last_unserved = True
+        self._flush_route_failures(pending, fallback_succeeded=False)
         return pd.DataFrame(columns=_OHLCV_COLUMNS)
 
     def health(self) -> ServiceHealth:
@@ -385,3 +411,41 @@ class MarketDataService:
         h.consecutive_failures = 0
         h.healthy = True
         h.last_error = None
+
+    def _flush_route_failures(
+        self, pending: list[tuple[tuple[str, str], str]], *, fallback_succeeded: bool,
+    ) -> None:
+        """이번 호출에서 모은 라우트 실패들을 로그로 낸다.
+
+        `fallback_succeeded=True`(다른 라우트가 결국 응답했다)면 항상 DEBUG —
+        설계대로 동작한 폴백은 소음이지 경고가 아니다. `False`(끝내 아무 라우트도
+        못 살렸다 — 진짜 데이터 손실)면 (route,symbol)별 스로틀을 적용한다:
+        첫 발생 또는 `_FAILURE_WARN_INTERVAL_SECONDS` 경과 후 재발만 WARNING,
+        그 사이 반복은 DEBUG.
+        """
+        if not pending:
+            return
+        if fallback_succeeded:
+            for _ident, message in pending:
+                logger.debug(message)
+            return
+        now = time.monotonic()
+        for ident, message in pending:
+            self._route_was_failing.add(ident)
+            last = self._route_last_warned.get(ident)
+            if last is None or (now - last) >= _FAILURE_WARN_INTERVAL_SECONDS:
+                self._route_last_warned[ident] = now
+                logger.warning(message)
+            else:
+                logger.debug(message)
+
+    def _log_route_recovery(self, route_name: str, symbol: str) -> None:
+        """그 (route, symbol)이 "진짜 데이터 손실" 스로틀 상태에서 회복됐으면
+        WARNING 한 줄로 알린다. 폴백이 계속 대신 응답해준 라우트(한 번도
+        `_route_was_failing`에 들지 않은 경우)는 애초에 경고를 낸 적이 없으므로
+        여기서도 조용하다."""
+        ident = (route_name, symbol)
+        if ident in self._route_was_failing:
+            self._route_was_failing.discard(ident)
+            self._route_last_warned.pop(ident, None)
+            logger.warning("MarketDataService: %s(%s) 정상 회복", route_name, symbol)

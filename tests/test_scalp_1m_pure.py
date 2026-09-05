@@ -222,8 +222,11 @@ def _seed_open(pure, symbol, entry=100.0, stop=97.0, *, session=DAY1.isoformat()
     것과 달리, pure는 그 정보를 **next_state로만** 들고 있으므로(클래스
     docstring "이 순수 버전은 Position.meta에 아무것도 쓰지 않는다") 관리
     시나리오를 단일 사이클에서 재현하려면 `Position.meta`가 아니라 여기를
-    채워야 한다. 심볼에 대응하는 `Position`은 qty>0이기만 하면 된다(shell이
-    `snap.lots`에 심볼을 채우는 유일한 조건 — 내용은 pure가 다시 읽지 않는다)."""
+    채워야 한다. 심볼에 대응하는 `Position`은 qty>0이면 대부분의 관리
+    시나리오에 충분하다 — 다만 부분 익절(D7, 2026-09-05)만은 예외로,
+    `Position.meta["lots"][id]["qty"]`(= `snap.lots[symbol]["qty"]`)를
+    <1주 분할 가능 여부 판정에 직접 읽으므로 그 시나리오는 qty도 맞춰
+    구성해야 한다(`_kr_lot_position` 참고)."""
     pure._state = {**pure._state, "open": {
         **pure._state.get("open", {}),
         symbol: {"entry": entry, "stop": stop, "session": session, "partial_taken": partial_taken},
@@ -575,6 +578,37 @@ def test_partial_take_profit_equivalence():
     assert _keys(sig_legacy) == _keys(sig_pure)
     assert len(sig_legacy) == 1 and sig_legacy[0].action == SignalAction.SCALE_OUT
     assert sig_legacy[0].state_update == {"partial_taken": True}
+
+
+def _kr_lot_position(strategy_id, entry=100.0, stop=97.0, qty=10.0, *, symbol=KR_SYMBOL,
+                      session=DAY1.isoformat(), partial_taken=False):
+    return Position(symbol=symbol, qty=qty, avg_cost=entry, meta={
+        "lots": {strategy_id: {"qty": qty, "entry": entry, "stop": stop,
+                                 "session": session, "partial_taken": partial_taken}},
+    })
+
+
+def test_partial_take_profit_becomes_full_exit_equivalence_when_1_share_lot():
+    """D7(2026-09-05): KR은 소수점 매도가 없다 — 1주 lot의 부분청산 신호는
+    두 구현 모두 전량청산으로 대체돼야 한다. 안 그러면 risk 레이어가 매
+    사이클 "부분매도 수량 <1주"로 거부하고, partial_taken이 체결 시에만
+    세팅되므로 같은 신호가 영원히 재발화한다(실측: 096770, 22초간 60회)."""
+    legacy, pure = _strats([KR_SYMBOL], _params(partial_take_r=1.5, partial_fraction=0.5), market="KR")
+    pos_legacy = _kr_lot_position(LEGACY_ID, entry=100.0, stop=97.0, qty=1.0)  # R=3 -> target=104.5
+    pos_pure = _kr_lot_position(PURE_ID, entry=100.0, stop=97.0, qty=1.0)
+    _seed_open(pure, KR_SYMBOL, entry=100.0, stop=97.0)
+    now = _kr_now(dtime(9, 5))
+
+    sig_legacy = legacy.on_cycle(_ctx({KR_SYMBOL: 104.6}, now, positions={KR_SYMBOL: pos_legacy},
+                                       open_markets=frozenset({"KR"})))
+    sig_pure = pure.on_cycle(_ctx({KR_SYMBOL: 104.6}, now, positions={KR_SYMBOL: pos_pure},
+                                   open_markets=frozenset({"KR"})))
+
+    assert _keys(sig_legacy) == _keys(sig_pure)
+    assert len(sig_legacy) == 1
+    assert sig_legacy[0].action == SignalAction.EXIT_LONG
+    assert sig_legacy[0].exit_fraction == pytest.approx(1.0)
+    assert "분할 불가" in sig_legacy[0].reason
 
 
 def test_breakeven_trail_exit_equivalence():

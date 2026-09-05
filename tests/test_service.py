@@ -114,12 +114,16 @@ def test_falls_back_when_primary_raises_and_records_degraded_state(caplog):
         clock=FakeClock(datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc)),
     )
 
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("DEBUG"):
         q = svc.quote("TQQQ")
 
     assert q is not None
     assert q.price == 99.0  # secondary로 폴백됨
-    assert any("primary" in rec.message for rec in caplog.records)  # 경고 로그 남음
+    # 폴백이 결국 성공했으므로(D5/D6, 2026-09-05) 로그는 WARNING이 아니라 DEBUG다
+    # — 설계대로 동작한 폴백은 소음이지 경고가 아니다. 그래도 기록 자체는 남는다.
+    debug_records = [r for r in caplog.records if r.levelname == "DEBUG"]
+    assert any("primary" in rec.message for rec in debug_records)
+    assert not any("primary" in rec.message for rec in caplog.records if rec.levelname == "WARNING")
 
     health = svc.health()
     # degraded는 2026-08-12부터 "끝내 못 받았다"는 뜻이다 — 폴백이 성공했으므로 False.
@@ -480,3 +484,107 @@ def test_reset_cycle_budget_is_harmless_without_budget_configured():
     svc.reset_cycle_budget()  # 예외 없이 통과해야 함
     out = svc.history("A", "15m", 3)
     assert not out.empty
+
+
+# ---------------------------------------------- 실패 로그 스로틀 (D5/D6, 2026-09-05)
+# 4일간 WARNING 이상 146,451줄의 대부분이 키움 실시간(stale 틱)/미국(쿨다운)
+# 라우트가 매 quote() 호출마다 "실패, 폴백 시도"를 WARNING으로 찍은 것이었는데,
+# 두 경우 다 다음 라우트(toss)가 정상 응답해 실제로는 데이터 손실이 아니었다.
+# 여기서는 fake clock(time.monotonic 몽키패치)으로 (route,symbol)별 스로틀
+# 상태머신만 고정한다 — stale 임계값이나 라우팅 자체는 건드리지 않는다.
+
+_THROTTLE_NOW = datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc)
+
+
+def test_total_failure_first_occurrence_warns_repeat_within_window_is_debug(monkeypatch, caplog):
+    """끝내 아무 라우트도 못 살렸을 때(진짜 데이터 손실)만 스로틀 대상이다 —
+    첫 발생은 WARNING, 10분 안의 재발은 DEBUG로 눌러 담는다."""
+    fake_now = {"t": 1000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: fake_now["t"])
+
+    only = FakeSource(quote_error=RuntimeError("down"))
+    svc = MarketDataService(
+        routes=[SourceRoute(name="only", source=only, capabilities=frozenset({Capability.QUOTE}))],
+        clock=FakeClock(_THROTTLE_NOW),
+    )
+
+    with caplog.at_level("DEBUG"):
+        svc.quote("TQQQ")  # 1차 — 첫 발생
+        fake_now["t"] += 60.0  # 1분 후(10분 미만)
+        svc.quote("TQQQ")  # 2차 — 스로틀 창 안
+
+    warn = [r for r in caplog.records if r.levelname == "WARNING"]
+    debug = [r for r in caplog.records if r.levelname == "DEBUG"]
+    assert len(warn) == 1
+    assert len(debug) == 1
+
+
+def test_total_failure_warns_again_after_ten_minutes_elapse(monkeypatch, caplog):
+    """10분(스로틀 창)이 지나 여전히 실패 중이면 재발도 다시 WARNING — 지속되는
+    장애를 DEBUG 뒤에 영원히 숨기지 않는다."""
+    fake_now = {"t": 1000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: fake_now["t"])
+
+    only = FakeSource(quote_error=RuntimeError("down"))
+    svc = MarketDataService(
+        routes=[SourceRoute(name="only", source=only, capabilities=frozenset({Capability.QUOTE}))],
+        clock=FakeClock(_THROTTLE_NOW),
+    )
+
+    with caplog.at_level("DEBUG"):
+        svc.quote("TQQQ")  # 첫 발생 — WARNING
+        fake_now["t"] += 601.0  # 10분(600초) 초과 경과
+        svc.quote("TQQQ")  # 재발 — 다시 WARNING
+
+    warn = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warn) == 2
+
+
+def test_recovery_from_total_failure_logs_one_warning(monkeypatch, caplog):
+    """그 라우트가 데이터 손실 상태에서 회복되면(다시 성공) WARNING 한 줄로
+    알린다 — 안 그러면 장애가 언제 끝났는지 로그만 보고는 알 수 없다."""
+    fake_now = {"t": 1000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: fake_now["t"])
+
+    flaky = FakeSource(quote_error=RuntimeError("down"))
+    svc = MarketDataService(
+        routes=[SourceRoute(name="only", source=flaky, capabilities=frozenset({Capability.QUOTE}))],
+        clock=FakeClock(_THROTTLE_NOW),
+    )
+
+    with caplog.at_level("DEBUG"):
+        svc.quote("TQQQ")  # 실패 — WARNING(첫 발생)
+        flaky._quote_error = None
+        flaky._quote_result = Quote(symbol="TQQQ", ts=_THROTTLE_NOW, price=1.0)
+        svc.quote("TQQQ")  # 회복
+
+    recovery = [r for r in caplog.records if "정상 회복" in r.message]
+    assert len(recovery) == 1
+    assert "only" in recovery[0].message
+
+
+def test_fallback_saved_route_never_needs_a_recovery_warning(monkeypatch, caplog):
+    """폴백이 계속 대신 응답해준 라우트는 애초에 WARNING을 낸 적이 없으므로,
+    나중에 그 라우트가 직접 성공해도 '회복' 알림이 뜨지 않는다(WARNING을 낸
+    적 없는 상태의 '회복'은 의미가 없다)."""
+    fake_now = {"t": 1000.0}
+    monkeypatch.setattr(time, "monotonic", lambda: fake_now["t"])
+
+    primary = FakeSource(quote_error=RuntimeError("down"))
+    secondary = FakeSource(quote_result=Quote(symbol="TQQQ", ts=_THROTTLE_NOW, price=99.0))
+    svc = MarketDataService(
+        routes=[
+            SourceRoute(name="primary", source=primary, capabilities=frozenset({Capability.QUOTE})),
+            SourceRoute(name="secondary", source=secondary, capabilities=frozenset({Capability.QUOTE})),
+        ],
+        clock=FakeClock(_THROTTLE_NOW),
+    )
+
+    with caplog.at_level("DEBUG"):
+        svc.quote("TQQQ")  # primary 실패하지만 secondary가 살려줌 — DEBUG만
+        primary._quote_error = None
+        primary._quote_result = Quote(symbol="TQQQ", ts=_THROTTLE_NOW, price=50.0)
+        svc.quote("TQQQ")  # primary가 이제 직접 성공
+
+    assert not any(r.levelname == "WARNING" for r in caplog.records)
+    assert not any("정상 회복" in r.message for r in caplog.records)

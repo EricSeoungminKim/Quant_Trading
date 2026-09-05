@@ -596,6 +596,27 @@ def test_round_trips_never_pairs_a_sell_across_the_transplant_boundary():
     assert round_trips(trades) == []
 
 
+_CARRY_REASON = "실계좌 이식 이월 — 소유자 지시 2026-09-01: 005930 이월 보유"
+
+
+def test_round_trips_ignores_carry_row_for_pnl():
+    """D3: `cmd_seed_real`이 유지 종목에 남기는 캐리오버 합성 buy
+    (`SEEDING_CARRY_MARKER`)는 실제 매수가 아니다 — 정리 매도와 같은 대우로
+    트립 재료에서 빠져야 한다. 안 빠지면 이월 buy가 그 뒤 매도와 짝지어져
+    '가짜 트립'(원가·손익 없는데 트립으로 집계됨)을 만든다."""
+    from quant.control.ledger import round_trips
+
+    carry = _row("005930", "BUY", 6.0, 263416.666666, "2026-09-01T14:01:08.315330+00:00",
+                  strategy="seed")
+    carry["reason"] = _CARRY_REASON
+    sell = _row("005930", "SELL", 6.0, 260000.0, "2026-09-02T01:00:00+00:00",
+                 pnl=-20500.0, fee=100.0, strategy="seed")
+
+    trips = round_trips([carry, sell])
+
+    assert trips == []  # 캐리 buy가 걸러지므로 매도와 짝지어 가짜 트립을 만들지 않는다
+
+
 def test_session_cash_delta_uses_usd_pool_for_us_market():
     """F3: US 체결은 KRW 풀을 안 건드린다 — 예전엔 "계좌 현금 변화 +0원"을 찍었다."""
     from quant.control.ledger import session_pnl_summary, session_pnl_text

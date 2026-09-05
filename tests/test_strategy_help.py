@@ -1,7 +1,7 @@
 """전략 설명 콘텐츠(`quant.control.strategy_help.build_strategy_help`) 테스트.
 
 이 스위트가 고정하는 것 (프롬프트 계약):
-- STRATEGY_REGISTRY의 순수함수 계약 껍질(`_pure`)이 아닌 전략 id 24개 전부
+- STRATEGY_REGISTRY의 순수함수 계약 껍질(`_pure`)이 아닌 전략 id 25개 전부
   `help`를 낸다 — KO/EN 모든 필드가 비어있지 않다.
 - `_cat`(A/B 촉매 갈래) id는 base와 다른 `entry_ko/en`을 내고(촉매 문구가
   붙는다), 실제 `config/settings.yaml`의 `universe_filter` 태그를 반영한다.
@@ -24,9 +24,19 @@ with open("config/settings.yaml", encoding="utf-8") as _f:
     _SETTINGS_STRATEGIES = yaml.safe_load(_f)["strategies"]
 
 # STRATEGY_REGISTRY 중 순수함수 계약 껍질(`_pure`)이 아닌 것 — 원장에 나타날 수
-# 있는 실제 전략 id 24개(2026-09-04 trend_day 추가로 23 → 24). `_pure` 껍질은
+# 있는 실제 전략 id 25개(2026-09-05 letf_pair 추가로 24 → 25). `_pure` 껍질은
 # `base_strategy_id`가 벗겨 기준 id로 조회하므로 별도 커버리지가 필요 없다
 # (이 파일의 test_pure_shell_id_inherits_base_help가 그 사실을 확인한다).
+#
+# **`letf_pair`는 특이 케이스다**(2026-09-05): 등록 키 하나(클래스 공유)로 두
+# 설정(letf_pair_qqq/letf_pair_sox)이 배선되는 첫 전략이라, 원장/공개 사이트에
+# 실제로 나타나는 id는 "letf_pair" 자신이 아니라 그 둘이다.
+# `quant.control.strategy_help._SPECS`는 그래서 "letf_pair" 자체에는 콘텐츠를
+# 두지 않고(없는 파라미터를 지어내지 않기 위해) letf_pair_qqq/letf_pair_sox
+# 둘에만 채운다 — "letf_pair"는 일반 fallback(문서 없음)으로 떨어진다(아래
+# test_every_registry_id_has_complete_bilingual_help는 구조적 완전성만
+# 요구하므로 fallback도 통과한다 — test_unknown_id_gets_generic_fallback_
+# without_crashing과 같은 경로).
 NON_PURE_IDS = sorted(
     sid for sid in STRATEGY_REGISTRY if not sid.endswith("_pure")
 )
@@ -39,8 +49,8 @@ _STR_FIELDS = (
 _CATEGORIES = {"intraday", "swing", "experimental"}
 
 
-def test_covers_all_24_non_pure_registry_ids():
-    assert len(NON_PURE_IDS) == 24, NON_PURE_IDS
+def test_covers_all_25_non_pure_registry_ids():
+    assert len(NON_PURE_IDS) == 25, NON_PURE_IDS
 
 
 def test_every_registry_id_has_complete_bilingual_help():

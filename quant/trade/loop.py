@@ -114,6 +114,13 @@ _STRATEGY_LABELS = {
     "open_reversal": "전일 패자 개장 매수",
     # 15분봉 추세일 지속(2026-09-04) — 등록만, 스크리닝 미통과로 비활성.
     "trend_day": "추세일 지속(15분봉)",
+    # 레버리지 ETF 페어 전환(2026-09-05, scratchpad/letf_spec.md Family F1) —
+    # STRATEGY_REGISTRY 등록 id는 "letf_pair" 하나지만 settings.yaml 설정 id(=
+    # 원장에 실제로 찍히는 strategy_id)는 signal_symbol별로 둘이다(letf_pair_qqq/
+    # letf_pair_sox) — `_cat`/`_pure`처럼 접미사 규약으로 벗겨지지 않으므로 둘 다
+    # 직접 등록한다. walk-forward 검증 전이라 등록만, `enabled: false`.
+    "letf_pair_qqq": "레버리지 ETF 페어 전환(QQQ, 15분봉)",
+    "letf_pair_sox": "레버리지 ETF 페어 전환(SOXX, 15분봉)",
 }
 
 
