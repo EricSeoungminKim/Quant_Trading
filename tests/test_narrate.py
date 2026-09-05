@@ -644,6 +644,76 @@ def test_narrate_discards_leaked_output_and_retries(monkeypatch):
     assert nar.narrate("요약해라") == "코스피는 상승 마감했다."
 
 
+# ── <think> 블록 스트립(2026-09-05 소유자 지시) ─────────────────────────────
+#
+# 예전엔 <think>...</think> 가 남아 있으면(영어 사고과정이 대부분이라
+# looks_like_reasoning_leak 이 거의 항상 걸린다) 답 전체를 폐기했다 — 소유자
+# 실측: KR 다이제스트 스탠스가 OpenRouter 3회 호출 중 3회 전부 이 이유로
+# 폐기됐다. 이제 블록만 제거하고 나머지를 검증한다.
+
+def test_strip_reasoning_block_removes_think_tag_leaves_korean_answer():
+    from quant.adapters.narrate import _strip_reasoning_block
+
+    text = ("<think>The user wants a Korean summary. Let me draft it.</think>"
+            "코스피는 상승 마감했다.")
+    assert _strip_reasoning_block(text) == "코스피는 상승 마감했다."
+
+
+def test_strip_reasoning_block_noop_without_think_tag():
+    from quant.adapters.narrate import _strip_reasoning_block
+
+    assert _strip_reasoning_block("코스피는 상승 마감했다.") == "코스피는 상승 마감했다."
+
+
+def test_strip_reasoning_block_handles_multiline_and_case_insensitive_tag():
+    from quant.adapters.narrate import _strip_reasoning_block
+
+    text = "<THINK>\nfirst I need to think\nabout this\n</THINK>중립 — 특이사항 없음."
+    assert _strip_reasoning_block(text) == "중립 — 특이사항 없음."
+
+
+def test_narrate_accepts_korean_answer_after_stripping_think_block():
+    """<think> 뒤 한국어 답이 정상이면(가드 통과) 폐기하지 않고 그대로 쓴다 —
+    예전 동작(블록 존재만으로 폐기)과 달라진 지점."""
+    from quant.adapters import narrate as N
+
+    body = {"choices": [{"message": {
+        "content": "<think>The user wants a stance. I will pick 방어.</think>"
+                   "방어 — 리스크 확대 우려로 보수적 접근이 적절하다.",
+    }}]}
+    nar = N.OpenRouterNarrator(api_key="k", poster=lambda *a, **k: body)
+    assert nar.narrate("스탠스를 판정해라") == "방어 — 리스크 확대 우려로 보수적 접근이 적절하다."
+
+
+def test_narrate_still_discards_when_content_is_entirely_reasoning_leak(monkeypatch):
+    """블록을 벗겨도(또는 애초에 <think> 태그가 없어도) 남은 내용 자체가
+    유출 신호면 여전히 폐기한다 — 가드 자체를 무력화하지 않는다."""
+    from quant.adapters import narrate as N
+
+    monkeypatch.setattr(N.time, "sleep", lambda *_: None)
+    nar = N.OpenRouterNarrator(
+        api_key="k",
+        poster=lambda *a, **k: {"choices": [{"message": {
+            "content": "The user wants me to write three paragraphs based on the data...",
+        }}]},
+    )
+    assert nar.narrate("요약해라") is None
+
+
+def test_narrate_returns_none_when_think_block_contains_entire_answer(monkeypatch):
+    """<think>...</think> 로 답 전체가 사고과정뿐이면(태그 밖에 아무것도 안
+    남으면) 빈 문자열 → 실패로 취급된다(narrate() 의 기존 "빈 문자열은 실패"
+    규칙을 그대로 탄다)."""
+    from quant.adapters import narrate as N
+
+    monkeypatch.setattr(N.time, "sleep", lambda *_: None)
+    body = {"choices": [{"message": {
+        "content": "<think>Let me think about this more.</think>",
+    }}]}
+    nar = N.OpenRouterNarrator(api_key="k", poster=lambda *a, **k: body)
+    assert nar.narrate("스탠스를 판정해라") is None
+
+
 # ── 품질 레인 (2026-08-18) ──────────────────────────────────────────────
 #
 # 사용자 A/B 실측(compare_narrators.html): OpenRouter 무료판은 Exec Summary

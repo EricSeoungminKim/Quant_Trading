@@ -85,6 +85,11 @@ class ReportModel:
     # 렌더가 "결측 — 섹터 데이터 없음"을 보인다. `None`이면 US 리포트 등
     # 애초에 해당 없음 — 섹션 자체를 생략한다(다른 KR 전용 필드와 같은 관례).
     sector_daily: dict | None = None
+    # 📡 채널 브리핑 종합(2026-09-05, 소유자 요구 (3)) — quant.analyze.
+    # tg_digest.Digest. quant.report.collect.tg_digest_section 이 리포트 뉴스
+    # 창(news_since_for)에 대해 계산한다. None이면(수집 실패 등) 섹션 생략 —
+    # 다른 `_build_*` 결과와 같은 관례.
+    channel_digest: object | None = None
 
 
 @dataclass
@@ -105,3 +110,7 @@ class CloseReportModel:
     usnews_headlines: list = field(default_factory=list)
     # 종가배팅 후보(2026-08-25) — close 전용, 결정론 채점 top-5.
     close_bet_view: list = field(default_factory=list)
+    # 📡 채널 브리핑 종합(2026-09-05) — ReportModel.channel_digest 와 같은 값.
+    # 마감판은 narrator=None 으로 호출돼 결정론 다이제스트만 담는다(마감판
+    # LLM-free 계약, `_emit_close` docstring).
+    channel_digest: object | None = None

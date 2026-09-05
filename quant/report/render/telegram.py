@@ -53,7 +53,28 @@ def _format_summary(payload: dict) -> str:
         )
         lines.append(f"상위: {names}")
 
+    line = _channel_digest_line(payload.get("channel_digest_summary"))
+    if line:
+        lines.append(line)
+
     return "\n".join(lines)
+
+
+def _channel_digest_line(summary: dict | None) -> str | None:
+    """📡 채널 브리핑 종합(2026-09-05) 발행 요약 4번째 줄 — `report_cli._emit`/
+    `_emit_close`가 engine.json에 남긴 `channel_digest_summary`(직렬화 요약,
+    Digest 객체 자체는 JSON이 아니다)를 한 줄로. 없으면(수집 실패·빈 창)
+    `None` — 기존 3줄 계약을 건드리지 않는다."""
+    if not summary:
+        return None
+    parts = []
+    if summary.get("stance"):
+        parts.append(summary["stance"])
+    if summary.get("candidates"):
+        parts.append(f"후보 {summary['candidates']}")
+    if summary.get("risk_items"):
+        parts.append(f"리스크 {summary['risk_items']}")
+    return f"채널 브리핑: {' · '.join(parts)}" if parts else None
 
 
 def _format_close_summary(payload: dict) -> str:
@@ -73,4 +94,7 @@ def _format_close_summary(payload: dict) -> str:
             f"{it.get('name') or it.get('symbol')}({it['score100']})" for it in top3
         )
         lines.append(f"상위: {names}")
+    line = _channel_digest_line(payload.get("channel_digest_summary"))
+    if line:
+        lines.append(line)
     return "\n".join(lines)

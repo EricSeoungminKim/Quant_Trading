@@ -10,6 +10,7 @@ from pathlib import Path
 
 from quant.collect.sources.telegram_channels import (
     CHANNELS,
+    _parse_messages_with_reason,
     append_ledger,
     channels_for,
     fetch_all,
@@ -23,10 +24,10 @@ _TAZASTOCK_FIXTURE = Path(__file__).parent / "report" / "fixtures" / "telegram_t
 _DISABLED_FIXTURE = Path(__file__).parent / "report" / "fixtures" / "telegram_preview_disabled.html"
 
 
-def test_channels_has_13_entries():
-    """2026-09-03(F8) — report_figure_by_offset 제거로 14 → 13(모듈 docstring
-    "실측 확인" 절 참고: 등록 후 3주 넘게 프리뷰가 영구히 꺼져 있었다)."""
-    assert len(CHANNELS) == 13
+def test_channels_has_8_entries():
+    """2026-09-05 — 소유자가 지정한 8개로 전량 교체(모듈 docstring "2026-09-05
+    재편" 절 참고)."""
+    assert len(CHANNELS) == 8
 
 
 def test_channels_entries_have_required_fields():
@@ -46,25 +47,29 @@ def test_channels_for_kr_includes_kr_and_both():
     kr = channels_for("KR")
     handles = {c["handle"] for c in kr}
     assert "pikachu_aje" in handles  # market: KR
-    assert "yieldnspread" in handles  # market: BOTH
-    assert "insidertracking" not in handles  # market: US only
+    assert "rafikiresearch" in handles  # market: BOTH
+    assert "Samsung_Global_AI_SW" in handles  # market: BOTH
+    assert "aetherjapanresearch" in handles  # market: BOTH
 
 
 def test_channels_for_us_includes_us_and_both():
     us = channels_for("US")
     handles = {c["handle"] for c in us}
-    assert "insidertracking" in handles  # market: US
     assert "rafikiresearch" in handles  # market: BOTH
+    assert "clawnewssummary" in handles  # market: BOTH
     assert "pikachu_aje" not in handles  # market: KR only
+    assert "hanwhastrategy" not in handles  # market: KR only
 
 
-def test_channels_has_usnews_tier_channels():
-    """서브프로젝트 W part 1(2026-08-17) — 시간당 US 뉴스 채널 2개."""
-    usnews = [c for c in CHANNELS if c["tier"] == "usnews"]
-    handles = {c["handle"] for c in usnews}
-    assert handles == {"walterbloomberg", "financialjuice"}
-    for entry in usnews:
-        assert entry["market"] == "US"
+def test_channels_has_no_usnews_or_usdigest_tier_channels():
+    """2026-09-05 채널 재편 — usnews/usdigest tier 채널(walterbloomberg/
+    financialjuice/insidertracking)은 새 8개 등록에 없다. `tier` 값 자체는
+    (하위호환을 위해) `test_channels_entries_have_required_fields`가 여전히
+    허용하지만, 지금은 아무 채널도 그 tier 를 쓰지 않는다 —
+    `quant/report/collect/telegram.py`의 `_usnews_titles`/`_usnews_headlines`가
+    이 상태에서 빈 리스트로 졸아드는지는 `tests/report/test_report_cli_midterm.py`
+    가 검증한다."""
+    assert [c for c in CHANNELS if c["tier"] in ("usnews", "usdigest")] == []
 
 
 def test_fetch_all_returns_entry_per_channel():
@@ -109,6 +114,64 @@ def test_fetch_all_records_reason_for_disabled_preview():
     assert result["pikachu_aje"]["messages"] == []
     assert result["pikachu_aje"]["error"] is not None
     assert "프리뷰" in result["pikachu_aje"]["error"]
+
+
+# --- text_not_supported (2026-09-05, clawnewssummary 실측) ----------------
+#
+# `report_figure_by_offset`(위 테스트)와는 다른 실패 모양이다 — 그쪽은
+# `tgme_channel_history` 섹션 자체가 없다("no preview"). 이쪽은 섹션도 있고
+# 메시지 wrap 도 있지만, 메시지 div 클래스가 `text_not_supported_wrap`이라
+# 본문 자체가 없다(실측: clawnewssummary, curl 3회 반복 20/20건 재현). 아래
+# HTML은 그 구조를 최소로 재현한 것 — 실제 채널의 개인정보를 담지 않는다.
+
+def _not_supported_wrap_html(msg_id: str) -> str:
+    return (
+        f'<div class="tgme_widget_message_wrap js-widget_message_wrap">'
+        f'<div class="tgme_widget_message text_not_supported_wrap js-widget_message" '
+        f'data-post="clawnewssummary/{msg_id}">'
+        f'<div class="message_media_not_supported_wrap">'
+        f'<div class="message_media_not_supported">'
+        f'<div class="message_media_not_supported_label">Please open Telegram to view this post</div>'
+        f'</div></div></div></div>'
+    )
+
+
+def _history_html(*wraps: str) -> str:
+    # `_history_section`은 `.//section[...]`(자손만) 을 찾는다 — 최상위
+    # 엘리먼트 자체를 <section>으로 만들면 lxml.fromstring이 그 <section>을
+    # 문서 루트로 잡아 자손 검색에서 스스로를 못 찾는다(실측). 실제 프리뷰
+    # HTML처럼 바깥에 컨테이너를 하나 더 둔다.
+    return f'<div class="wrap"><section class="tgme_channel_history">{"".join(wraps)}</section></div>'
+
+
+def test_parse_messages_all_text_not_supported_gives_explicit_reason():
+    html = _history_html(_not_supported_wrap_html("1"), _not_supported_wrap_html("2"))
+    messages, reason = _parse_messages_with_reason(html)
+    assert len(messages) == 2  # msg_id는 그대로 뽑힌다 — 메시지 자체가 없는 게 아니다
+    assert all(m["text"] == "" for m in messages)
+    assert reason is not None
+    assert "text_not_supported" in reason
+
+
+def test_parse_messages_all_text_not_supported_reason_differs_from_no_preview():
+    """"프리뷰 꺼짐"(섹션 없음)과 "본문 미지원"(섹션은 있음)은 다른 사유
+    문자열이어야 한다 — 둘 다 "프리뷰"라고만 하면 원인 구분이 안 된다."""
+    html = _history_html(_not_supported_wrap_html("1"))
+    _, reason = _parse_messages_with_reason(html)
+    assert "no preview" not in reason
+
+
+def test_parse_messages_mixed_supported_and_unsupported_is_not_flagged():
+    supported = (
+        '<div class="tgme_widget_message_wrap js-widget_message_wrap">'
+        '<div class="tgme_widget_message js-widget_message" data-post="tazastock/1">'
+        '<div class="tgme_widget_message_text">일반 메시지</div>'
+        '</div></div>'
+    )
+    html = _history_html(supported, _not_supported_wrap_html("2"))
+    messages, reason = _parse_messages_with_reason(html)
+    assert reason is None
+    assert len(messages) == 2
 
 
 def test_fetch_all_sleeps_between_every_channel():

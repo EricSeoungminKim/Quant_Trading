@@ -780,6 +780,24 @@ def summarize_usnews_headlines(usnews_headlines: list[dict] | None) -> str | Non
     return f"최신 {len(usnews_headlines)}건"
 
 
+def summarize_channel_digest(channel_digest) -> str | None:
+    """📡 채널 브리핑 종합(2026-09-05) 접힘 요약줄. `channel_digest`는
+    `quant.analyze.tg_digest.Digest`(또는 `None`, 수집 실패) — 종목 후보·
+    리스크 항목 건수만 뽑는다(다른 `summarize_*`와 같은 관례, 새 계산 없음)."""
+    if channel_digest is None or not getattr(channel_digest, "channel_entries", None):
+        return None
+    n_cand = len(channel_digest.candidates)
+    n_risk = len(channel_digest.risk_items)
+    parts = []
+    if channel_digest.stance:
+        parts.append(channel_digest.stance)
+    if n_cand:
+        parts.append(f"후보 {n_cand}종목")
+    if n_risk:
+        parts.append(f"리스크 {n_risk}건")
+    return " · ".join(parts) if parts else "새 메시지 있음"
+
+
 def summarize_top_movers(top_movers: dict | None) -> str | None:
     if not top_movers:
         return None
@@ -904,6 +922,7 @@ def render(
     symbol_payload: dict[str, dict] | None = None,
     money_flow: dict | None = None,
     sector_daily: dict | None = None,
+    channel_digest: object | None = None,
 ) -> str:
     from quant.analyze.indicators import describe
 
@@ -945,6 +964,7 @@ def render(
         "us_news_kr": summarize_us_news_kr_view(us_news_kr_view),
         "research_badges": summarize_research_badges(research_badges),
         "carried": summarize_carried_candidates(carried_candidates, carried_by_sector),
+        "channel_digest": summarize_channel_digest(channel_digest),
     }
     return _env().get_template("report.html.j2").render(
         snap=snap,
@@ -1082,6 +1102,10 @@ def render(
         # 위한 심볼별 machine_payload 조회. 없으면(호출부 하위호환) 트렌딩
         # 내역 없이 AI 점수 내역만 보인다.
         symbol_payload=symbol_payload or {},
+        # 📡 채널 브리핑 종합(2026-09-05, 소유자 요구 (3)) — quant.analyze.
+        # tg_digest.Digest 또는 None(수집 실패). 템플릿의 `{% if channel_digest %}`
+        # 가 섹션을 생략한다(us_kr_bridge 와 같은 관례).
+        channel_digest=channel_digest,
         # 오늘의 시황/오늘의 뉴스 흐름 불릿의 "관련 종목" 칩(2026-08-29 소유자
         # 피드백) — cont 에서 파생한 순수 조회(link_to_symbols), 새 데이터 아님.
         link_symbols=link_to_symbols(cont),
@@ -1112,7 +1136,7 @@ def write_html(
     agent_interpret_view=None, midterm_view=None, us_news_kr_view=None,
     usnews_headlines=None, us_kr_bridge=None, us_wrap=None,
     index_outlook=None, holiday_synthesis=None, symbol_payload=None,
-    money_flow=None, name_map=None, sector_daily=None,
+    money_flow=None, name_map=None, sector_daily=None, channel_digest=None,
 ) -> Path:
     path = _dated_dir(root, snap) / f"{snap.market}_report.html"
     path.write_text(
@@ -1133,7 +1157,7 @@ def write_html(
                us_kr_bridge=us_kr_bridge, us_wrap=us_wrap,
                index_outlook=index_outlook, holiday_synthesis=holiday_synthesis,
                symbol_payload=symbol_payload, money_flow=money_flow,
-               name_map=name_map, sector_daily=sector_daily),
+               name_map=name_map, sector_daily=sector_daily, channel_digest=channel_digest),
         encoding="utf-8",
     )
     return path
@@ -1185,6 +1209,7 @@ def render_close(
     usnews_headlines: list[dict] | None = None,
     telegram_view_us: list[dict] | None = None,
     close_bet_view: list[dict] | None = None,
+    channel_digest: object | None = None,
 ) -> str:
     market_name = {"KR": "한국", "US": "미국"}.get(snap.market, snap.market)
     return _env().get_template("close_report.html.j2").render(
@@ -1210,6 +1235,9 @@ def render_close(
         us_news_kr_view=us_news_kr_view or [],
         usnews_headlines=usnews_headlines or [],
         close_bet_view=close_bet_view or [],
+        # 📡 채널 브리핑 종합(2026-09-05) — 마감판은 narrator=None 으로 계산된
+        # 결정론 다이제스트(report_cli._emit_close 가 보장, LLM-free 계약).
+        channel_digest=channel_digest,
     )
 
 
@@ -1226,13 +1254,15 @@ def write_close_html(
     usnews_headlines: list[dict] | None = None,
     telegram_view_us: list[dict] | None = None,
     close_bet_view: list[dict] | None = None,
+    channel_digest: object | None = None,
 ) -> Path:
     path = _dated_dir(root, snap) / f"{snap.market}_close_report.html"
     path.write_text(
         render_close(snap, news_view, flow_view, ranking_view, intraday_view, telegram_view_kr,
                      agent_interpret_view, midterm_view=midterm_view,
                      us_news_kr_view=us_news_kr_view, usnews_headlines=usnews_headlines,
-                     telegram_view_us=telegram_view_us, close_bet_view=close_bet_view),
+                     telegram_view_us=telegram_view_us, close_bet_view=close_bet_view,
+                     channel_digest=channel_digest),
         encoding="utf-8",
     )
     return path

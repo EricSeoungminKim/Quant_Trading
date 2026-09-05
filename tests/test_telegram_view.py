@@ -200,13 +200,15 @@ def test_telegram_mentions_kr_same_symbol_multiple_channels_dedup_and_flags_sect
 
 
 def test_telegram_mentions_us_validates_against_known_tickers_only():
-    msgs = _msgs("insidertracking", ["AAPL surges as IT spending rises"])
+    # rafikiresearch: market "BOTH" — US 필터(channels_for("US"))에 걸린다
+    # (2026-09-05 채널 재편으로 insidertracking 은 더 이상 등록돼 있지 않다).
+    msgs = _msgs("rafikiresearch", ["AAPL surges as IT spending rises"])
     out = telegram_mentions(msgs, {"AAPL"}, "US")
     assert set(out.keys()) == {"AAPL"}  # "IT"는 화이트리스트 밖이라 무시된다
 
 
 def test_telegram_mentions_us_lowercase_ticker_ignored():
-    msgs = _msgs("insidertracking", ["aapl mentioned casually"])
+    msgs = _msgs("rafikiresearch", ["aapl mentioned casually"])
     out = telegram_mentions(msgs, {"AAPL"}, "US")
     assert out == {}
 

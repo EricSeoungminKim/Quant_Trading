@@ -5791,8 +5791,8 @@ def cmd_tg_digest(args: argparse.Namespace) -> None:
 
     text = tg_digest.render_telegram(digest, report_url=_daily_report_url(args.market, now.date()))
     print(text)
-    if digest.candidates:
-        print(f"CANDS: {' '.join(c.symbol for c in digest.candidates)}")
+    if digest.cands:
+        print(f"CANDS: {' '.join(digest.cands)}")
 
     if args.dry_run:
         print("(dry-run — 상태 파일 갱신 생략)", file=sys.stderr)

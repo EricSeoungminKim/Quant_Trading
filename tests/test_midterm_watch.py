@@ -49,20 +49,23 @@ def test_mention_counts_filters_by_lookback_window():
 
 
 def test_mention_counts_filters_by_market_channel():
-    # walterbloomberg 는 market=US 전용 채널 — KR 리포트가 보면 안 된다.
+    # pikachu_aje 는 market=KR 전용 채널 — US 리포트가 보면 안 된다(2026-09-05
+    # 채널 재편 이후 market=US 전용 채널이 없어 KR 전용 채널로 반대 방향을 검증).
     msgs = [
-        _row("walterbloomberg", "1", "삼성전자 강세"),
-        _row("walterbloomberg", "2", "삼성전자 추가 매수세"),
+        _row("pikachu_aje", "1", "AAPL surges on new chip demand"),
+        _row("pikachu_aje", "2", "AAPL extends gains"),
     ]
-    assert mention_counts("KR", msgs, KR_TABLE, now=NOW) == {}
+    assert mention_counts("US", msgs, {"AAPL"}, now=NOW) == {}
 
 
 def test_mention_counts_us_uses_ticker_whitelist():
+    # rafikiresearch: market "BOTH" — channels_for("US")에 걸린다(2026-09-05
+    # 채널 재편으로 walterbloomberg 는 더 이상 등록돼 있지 않다).
     msgs = [
-        _row("walterbloomberg", "1", "AAPL surges on new chip demand"),
-        _row("walterbloomberg", "2", "AAPL extends gains"),
-        _row("walterbloomberg", "3", "XYZQ unrelated ticker not in table"),
-        _row("walterbloomberg", "4", "XYZQ again"),
+        _row("rafikiresearch", "1", "AAPL surges on new chip demand"),
+        _row("rafikiresearch", "2", "AAPL extends gains"),
+        _row("rafikiresearch", "3", "XYZQ unrelated ticker not in table"),
+        _row("rafikiresearch", "4", "XYZQ again"),
     ]
     out = mention_counts("US", msgs, {"AAPL"}, now=NOW)
     assert set(out.keys()) == {"AAPL"}

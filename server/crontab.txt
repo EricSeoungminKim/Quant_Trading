@@ -75,6 +75,16 @@
 30 9 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/flow_scan.sh KR >> data/flow_scan.log 2>&1
 0,30 10-14 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/flow_scan.sh KR >> data/flow_scan.log 2>&1
 
+# 텔레그램 인텔리전스 다이제스트 KR(2026-09-05, 소유자 요구 (4)) — 정규장 중
+# 30분마다 신규 텔레그램 메시지만 모아 스탠스·관심종목 후보·방별 요약을 보내고,
+# 후보는 flow_scan.sh와 같은 게이트 체인(watch-score → watch-add)으로 편입한다.
+# telegram-collect.timer(*:00/30 + 최대 120초 지연)가 그 사이클 메시지를 원장에
+# 쌓은 다음에 돌아야 해서 :05/:35 — KR 정규장 09:00~15:30을 09:35~15:05로 덮는다
+# (09:05는 collector의 개장 직후 첫 수집과 너무 붙어 새 메시지가 거의 없다).
+35 9 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/tg_digest.sh KR >> data/tg_digest.log 2>&1
+5,35 10-14 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/tg_digest.sh KR >> data/tg_digest.log 2>&1
+5 15 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/tg_digest.sh KR >> data/tg_digest.log 2>&1
+
 # 호가 스프레드 실측 KR(2026-08-28 신규) — 스캘핑 비용 가정(slippage_bps 2.5,
 # "왕복 20bp")이 전부 추정치라 실측으로 바꾼다. 장중에만 의미가 있으므로 KR
 # 정규장(09:00~15:30) 시간대만, 10분 간격(부하 최소화 — MARKET_DATA 10 TPS 를
@@ -138,6 +148,17 @@
 # 겹치지 않는다.
 0,30 23 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/flow_scan.sh US >> data/flow_scan.log 2>&1
 0,30 0-4 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/flow_scan.sh US >> data/flow_scan.log 2>&1
+
+# 텔레그램 인텔리전스 다이제스트 US(2026-09-05, KR 항목과 같은 지시) —
+# telegram-collect.timer(*:00/30 + 최대 120초 지연) 다음에 돌아야 해서 :05/:35.
+# US 정규장 22:30(EDT)/23:30(EST) 개장 ~ 05:00/06:00 마감을 22:35~04:35(익일)로
+# 덮는다. 서머타임 무관 — 22:35는 EDT(22:30 개장) 기준으로도 이미 개장 후이고,
+# EST(23:30 개장)에는 개장 전 워밍업 다이제스트가 된다(own_brief.sh US 21:50의
+# 편입 데드라인 22:05 이후라 겹치지 않는다). 새벽 회차는 한국 달력 익일이라
+# 화~토(2-6, flow_scan.sh US와 같은 요일 규칙).
+35 22 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/tg_digest.sh US >> data/tg_digest.log 2>&1
+5,35 23 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/tg_digest.sh US >> data/tg_digest.log 2>&1
+5,35 0-4 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/tg_digest.sh US >> data/tg_digest.log 2>&1
 
 # 호가 스프레드 실측 US(2026-08-28, KR 항목과 같은 이유) — US 정규장 구간만
 # 10분 간격. 새벽 회차는 한국 달력 익일이라 화~토(2-6). **Toss 호가가 US 실

@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from typing import Callable
 
@@ -150,6 +151,23 @@ _LEAK_PREFIXES = ("the user", "i need", "i'll", "i will", "let me", "we need",
                   "okay,", "first,", "sure,", "looking at", "based on the")
 
 
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+
+
+def _strip_reasoning_block(text: str) -> str:
+    """추론 모델이 `<think>...</think>` 사고과정 블록을 `content` 안에 그대로
+    흘려보내는 경우(무료 nemotron 계열, 소유자 실측 2026-09-05: KR 다이제스트
+    스탠스 서술이 이 블록 때문에 매번 폐기됐다) 그 블록만 제거하고 나머지를
+    돌려준다. 블록이 통째로 최종 답을 차지하면(태그 안이 전부) 빈 문자열이
+    남는다 — 그건 `_narrate_once`의 "빈 문자열은 실패" 규칙이 그대로 처리한다.
+    별도 `reasoning` 필드(OpenRouter 일부 모델이 `message.reasoning`으로 따로
+    준다)는 애초에 `content`만 읽으므로 여기 섞이지 않는다 — 조용히 버려진다.
+    태그가 없으면 원문 그대로(비용 없음)."""
+    if "<think>" not in text.lower():
+        return text
+    return _THINK_BLOCK_RE.sub("", text).strip()
+
+
 def looks_like_reasoning_leak(text: str) -> bool:
     """한국어 서술이어야 할 출력이 영어 사고과정으로 시작하는가.
 
@@ -259,9 +277,15 @@ class OpenRouterNarrator:
             log.warning("OpenRouter 응답 형태가 예상과 다르다")
             return None
         text = (text or "").strip() or None
+        # <think> 블록만 제거하고 나머지는 검증한다(2026-09-05 소유자 지시) —
+        # 예전엔 유출 감지 즉시 전체 폐기라 블록 뒤에 멀쩡한 한국어 답이 와도
+        # 버려졌다(KR 다이제스트 스탠스 실측: 3회 중 3회 전부 이 이유로 폐기).
+        if text is not None and not self._json_mode:
+            text = _strip_reasoning_block(text) or None
         if text is not None and not self._json_mode and looks_like_reasoning_leak(text):
-            # 실패로 취급 → narrate() 의 재시도 1회를 그대로 탄다. 두 번째도
-            # 유출이면 None — 빈 섹션이 오염된 섹션보다 낫다.
+            # 블록을 벗기고도 여전히 유출 신호면(사고과정이 태그 없이 새거나
+            # 블록 밖에도 남은 경우) 실패로 취급 → narrate()의 재시도 1회를
+            # 그대로 탄다. 두 번째도 유출이면 None — 빈 섹션이 오염된 섹션보다 낫다.
             log.warning("OpenRouter 서술에 사고과정 유출 감지 — 폐기")
             return None
         return text

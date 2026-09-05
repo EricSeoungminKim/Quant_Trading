@@ -768,6 +768,63 @@ html{overflow-x:hidden}
 </div>
 {% endif %}
 
+{# ── 📡 채널 브리핑 종합(2026-09-05, 소유자 요구 (3)) — quant.analyze.tg_digest
+   가 텔레그램 8개 채널의 리포트 뉴스 창(직전 리포트~이번 리포트) 신규 메시지를
+   모아 스탠스·리스크·관심종목 후보·검증된 숫자만 뽑는다. 소유자가 리스크
+   브리핑 방(daegurr/hanwhastrategy 등)을 직접 읽지 않아도 되도록 이 섹션이
+   흡수한다 — "한눈 요약" 바로 아래에 둔 이유가 그것이다(부록처럼 접어두면
+   소유자가 여전히 방을 직접 열어봐야 한다). 원문 발췌는 아래 "텔레그램
+   인사이트"(부록)에 그대로 남아 있다. 마감판은 narrator=None(LLM-free 계약)
+   이라 스탠스/방별 요약이 없을 수 있다 — 그래도 후보·리스크·숫자 검증 표는
+   그대로 나온다(모듈 docstring 참고). 신규 메시지·명시적 결측 사유가 하나도
+   없으면(빈 창) 섹션 자체를 생략한다. #}
+{% if channel_digest and (channel_digest.has_content() or channel_digest.channel_notices) %}
+<section class="mod">
+  <h2>📡 채널 브리핑 종합<span class="sub">텔레그램 8개 채널 · 신규 메시지 요약</span>{% if tldr.channel_digest %}<span class="mod-tldr">{{ tldr.channel_digest }}</span>{% endif %}</h2>
+  {# 스탠스는 늘 보인다 — LLM 성공이면 실제 판정, 아니면 stance_display()가
+     "서술기 미가용 — 리스크 태그 …(자동 판정 안 함)"을 정직하게 대신한다
+     (소유자 지시 2026-09-05, 섹션을 생략하지 않는다). #}
+  <p class="idx-sub"><b>스탠스</b>: {{ channel_digest.stance_display() }}</p>
+  {% if channel_digest.room_summary %}
+  <p class="idx-sub">{{ channel_digest.room_summary }}</p>
+  {% endif %}
+  {% if channel_digest.candidates %}
+  <p class="idx-sub"><b>관심 후보</b></p>
+  {% for c in channel_digest.candidates[:8] %}
+  {% set reason = channel_digest.candidate_reasons.get(c.symbol) %}
+  <div class="sym">
+    <div><span class="sym-nm">{{ c.name or c.symbol }}</span><span class="sym-cd">{{ c.symbol }}</span></div>
+    <p class="idx-sub" style="grid-column:1/-1">{{ reason if reason else '언급 ' + c.message_count|string + '건: ' + c.channels|join('·') }}</p>
+  </div>
+  {% endfor %}
+  {% endif %}
+  {# 태그로 묶고 그룹당 채널명 한 번만(소유자 지시) — Digest.risk_groups()가
+     이 화면과 텔레그램 다이제스트 메시지가 공유하는 단일 구현이다. #}
+  {% if channel_digest.risk_items %}
+  <p class="idx-sub"><b>리스크 항목</b></p>
+  <ul>
+  {% for keyword, text in channel_digest.risk_groups() %}
+    <li class="idx-sub">[{{ keyword }}] {{ text }}</li>
+  {% endfor %}
+  </ul>
+  {% endif %}
+  {% if channel_digest.number_claims %}
+  <p class="idx-sub"><b>숫자 검증(채널 주장 — ✓ 표시만 우리 시세로 확인됨)</b></p>
+  <ul>
+  {% for n in channel_digest.number_claims %}
+    <li class="idx-sub">{{ n.symbol }} {{ n.value }} ({{ n.handle }}) — {{ n.status }}</li>
+  {% endfor %}
+  </ul>
+  {% else %}
+  <p class="idx-sub"><b>숫자 검증</b>: 검증 가능한 수치 주장 없음</p>
+  {% endif %}
+  {% if channel_digest.channel_notices %}
+  <p class="idx-sub">{% for handle, notice in channel_digest.channel_notices.items() %}{{ handle }}: {{ notice }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  {% endif %}
+  <p class="foot">채널 발 숫자·주장은 검증 전 참고용이다 — 우리가 확인한 것만 ✓다. 원문 발췌는 부록 "텔레그램 인사이트"에서 확인할 수 있다.</p>
+</section>
+{% endif %}
+
 {% if holiday_synthesis %}
 
 <div class="chapter-head" id="ch2"><span class="chapter-no">2</span><h2 class="chapter-title">휴장 기간 종합</h2></div>
@@ -1265,7 +1322,10 @@ html{overflow-x:hidden}
 </details>
 {% endif %}
 {# ── 🇺🇸 실시간 헤드라인(US 리포트 전용) ──
-   텔레그램 usnews tier 채널 최신 12건 — 별도 해석 없이 원문 그대로. #}
+   텔레그램 usnews tier 채널 최신 12건 — 별도 해석 없이 원문 그대로.
+   2026-09-05 채널 재편으로 usnews tier 채널(walterbloomberg/financialjuice)이
+   등록에서 빠져 usnews_headlines는 이제 항상 빈 리스트다 — 조용히 사라지는
+   대신 "채널 없음"을 명시한다("📡 채널 브리핑 종합"이 이제 이 역할을 한다). #}
 {% if usnews_headlines %}
 <details class="mod">
   <summary>🇺🇸 실시간 헤드라인<span class="sub">텔레그램 미국 뉴스 채널 · 최신 {{ usnews_headlines|length }}건</span>{% if tldr.usnews_headlines %}<span class="mod-tldr">{{ tldr.usnews_headlines }}</span>{% endif %}</summary>
@@ -1277,6 +1337,11 @@ html{overflow-x:hidden}
     </div>
   {% endfor %}
   </div>
+</details>
+{% else %}
+<details class="mod">
+  <summary>🇺🇸 실시간 헤드라인<span class="sub">텔레그램 미국 뉴스 채널</span></summary>
+  <p class="mkt-tab-empty">채널 없음 — 등록된 usnews tier 채널이 없다(아래 "📡 채널 브리핑 종합" 참고)</p>
 </details>
 {% endif %}
 <div class="grid">
@@ -1896,7 +1961,9 @@ html{overflow-x:hidden}
 {# ── 🇺🇸→🇰🇷 미국발 섹터 수혜주(KR 리포트 전용) ──
    텔레그램 usnews tier(walterbloomberg·financialjuice) 헤드라인을 GICS
    섹터로 분류(us_sector_map.classify_sector)해, 그 섹터에 연동되는 국내
-   수혜주(정적 큐레이션)에 같은 진입 등급을 매긴다. #}
+   수혜주(정적 큐레이션)에 같은 진입 등급을 매긴다.
+   2026-09-05 채널 재편으로 usnews tier 채널이 등록에서 빠져 us_news_kr_view는
+   이제 항상 빈 리스트다 — 조용히 사라지는 대신 "채널 없음"을 명시한다. #}
 {% if us_news_kr_view %}
 <details class="mod">
   <summary>🇺🇸→🇰🇷 미국발 섹터 수혜주<span class="sub">텔레그램 미국 헤드라인 · 섹터별 국내 수혜주</span>{% if tldr.us_news_kr %}<span class="mod-tldr">{{ tldr.us_news_kr }}</span>{% endif %}</summary>
@@ -1930,6 +1997,11 @@ html{overflow-x:hidden}
     수혜주 매핑은 정적 큐레이션(us_sector_map.KR_BENEFICIARIES)이다 — 특정
     시점의 투자 추천이 아니라 통상적으로 알려진 업종 대표주 매핑이다.
   </p>
+</details>
+{% else %}
+<details class="mod">
+  <summary>🇺🇸→🇰🇷 미국발 섹터 수혜주<span class="sub">텔레그램 미국 헤드라인 · 섹터별 국내 수혜주</span></summary>
+  <p class="mkt-tab-empty">채널 없음 — 등록된 usnews tier 채널이 없다(아래 "📡 채널 브리핑 종합" 참고)</p>
 </details>
 {% endif %}
 {# ── 뉴스 미노출 종목 증권사 리포트(H-2 Task 5 확장, P1 2026-08-19) ──

@@ -327,6 +327,53 @@ a{color:inherit}
 </section>
 {% endif %}
 
+{# ── 📡 채널 브리핑 종합(2026-09-05, 소유자 요구 (3)) ── report.html.j2 의
+   동일 섹션과 같은 데이터(quant.analyze.tg_digest.Digest) — 마감판은
+   narrator=None 으로 계산돼(report_cli._emit_close, LLM-free 계약) 스탠스·
+   방별 요약은 항상 비어 있고, 후보·리스크·숫자 검증 표만 나온다. #}
+{% if channel_digest and (channel_digest.has_content() or channel_digest.channel_notices) %}
+<section class="mod">
+  <h2>📡 채널 브리핑 종합<span class="sub">텔레그램 8개 채널 · 신규 메시지 요약</span></h2>
+  {# 마감판은 narrator=None 이라 stance_display()가 항상 "서술기 미가용 —
+     리스크 태그 …(자동 판정 안 함)"을 돌려준다 — 그래도 생략하지 않는다
+     (소유자 지시 2026-09-05, report.html.j2 의 동일 섹션과 같은 계약). #}
+  <p class="idx-sub"><b>스탠스</b>: {{ channel_digest.stance_display() }}</p>
+  {% if channel_digest.candidates %}
+  <p class="idx-sub"><b>관심 후보</b></p>
+  {% for c in channel_digest.candidates[:8] %}
+  <div class="sym">
+    <div><span class="sym-nm">{{ c.name or c.symbol }}</span><span class="sym-cd">{{ c.symbol }}</span></div>
+    <p class="idx-sub" style="grid-column:1/-1">언급 {{ c.message_count }}건: {{ c.channels|join('·') }}</p>
+  </div>
+  {% endfor %}
+  {% endif %}
+  {# 태그로 묶고 그룹당 채널명 한 번만(소유자 지시) — Digest.risk_groups()가
+     이 화면과 텔레그램 다이제스트 메시지가 공유하는 단일 구현이다. #}
+  {% if channel_digest.risk_items %}
+  <p class="idx-sub"><b>리스크 항목</b></p>
+  <ul>
+  {% for keyword, text in channel_digest.risk_groups() %}
+    <li class="idx-sub">[{{ keyword }}] {{ text }}</li>
+  {% endfor %}
+  </ul>
+  {% endif %}
+  {% if channel_digest.number_claims %}
+  <p class="idx-sub"><b>숫자 검증(채널 주장 — ✓ 표시만 우리 시세로 확인됨)</b></p>
+  <ul>
+  {% for n in channel_digest.number_claims %}
+    <li class="idx-sub">{{ n.symbol }} {{ n.value }} ({{ n.handle }}) — {{ n.status }}</li>
+  {% endfor %}
+  </ul>
+  {% else %}
+  <p class="idx-sub"><b>숫자 검증</b>: 검증 가능한 수치 주장 없음</p>
+  {% endif %}
+  {% if channel_digest.channel_notices %}
+  <p class="idx-sub">{% for handle, notice in channel_digest.channel_notices.items() %}{{ handle }}: {{ notice }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  {% endif %}
+  <p class="foot">채널 발 숫자·주장은 검증 전 참고용이다 — 우리가 확인한 것만 ✓다.</p>
+</section>
+{% endif %}
+
 {# ── ④ 텔레그램 인사이트(서브프로젝트 S part 2) ── 오후엔 장중 시황방
    (tazastock/mootda) 가치가 특히 크다는 사용자 지시로 마감판에도 싣는다.
    단 narrator 요약은 없다 — 이 템플릿은 완전 무LLM 계약(위 파일 docstring).
@@ -437,6 +484,9 @@ a{color:inherit}
 </section>
 {% endif %}
 
+{# 2026-09-05 채널 재편으로 usnews tier 채널(walterbloomberg/financialjuice)이
+   등록에서 빠져 us_news_kr_view는 이제 항상 빈 리스트다 — 조용히 사라지는
+   대신 "채널 없음"을 명시한다("📡 채널 브리핑 종합"이 이제 이 역할을 한다). #}
 {% if us_news_kr_view %}
 <section class="mod">
   <h2>🇺🇸→🇰🇷 미국발 섹터 수혜주<span class="sub">텔레그램 미국 헤드라인 · 섹터별 국내 수혜주</span></h2>
@@ -461,6 +511,11 @@ a{color:inherit}
   {% endfor %}
   <p class="foot">수혜주 매핑은 정적 큐레이션이다 — 특정 시점의 투자 추천이 아니다.</p>
 </section>
+{% else %}
+<section class="mod">
+  <h2>🇺🇸→🇰🇷 미국발 섹터 수혜주<span class="sub">텔레그램 미국 헤드라인 · 섹터별 국내 수혜주</span></h2>
+  <p class="idx-sub">채널 없음 — 등록된 usnews tier 채널이 없다.</p>
+</section>
 {% endif %}
 
 {% if usnews_headlines %}
@@ -469,6 +524,11 @@ a{color:inherit}
   {% for h in usnews_headlines %}
   <p class="idx-sub">{{ h.published_hhmm if h.published_hhmm else '시각 미상' }} — {{ h.text }}</p>
   {% endfor %}
+</section>
+{% else %}
+<section class="mod">
+  <h2>🇺🇸 실시간 헤드라인<span class="sub">텔레그램 미국 뉴스 채널</span></h2>
+  <p class="idx-sub">채널 없음 — 등록된 usnews tier 채널이 없다.</p>
 </section>
 {% endif %}
 

@@ -48,6 +48,7 @@ def write_open_report(model: ReportModel, snap: Snapshot, out_root: Path) -> tup
         index_outlook=model.index_outlook, holiday_synthesis=model.holiday_synthesis,
         symbol_payload=symbol_payload, money_flow=model.money_flow,
         name_map=model.name_map, sector_daily=model.sector_daily,
+        channel_digest=model.channel_digest,
     )
     jp = _render.write_machine(model.payload, snap, out_root)
     cp = _render.write_candidates(model.payload["auto_watch"], snap, out_root)
@@ -66,6 +67,7 @@ def write_close_report(model: CloseReportModel, snap: Snapshot, out_root: Path) 
         midterm_view=model.midterm_view, us_news_kr_view=model.us_news_kr_view,
         close_bet_view=model.close_bet_view,
         usnews_headlines=model.usnews_headlines,
+        channel_digest=model.channel_digest,
     )
     jp = _render.write_close_machine(model.payload, snap, out_root)
     return hp, jp

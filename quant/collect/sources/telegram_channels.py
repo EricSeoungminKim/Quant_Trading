@@ -1,86 +1,97 @@
-"""텔레그램 공개 채널 12방 — 웹 프리뷰 기반 브리핑 (2026-08-17, 사용자 지정, 서브프로젝트 S).
-
-`blog_brief.py`/`youtube_brief.py`와 같은 자리, 같은 실패 격리 계약이다. 텔레그램
-공개 채널은 `https://t.me/s/{handle}`에서 로그인 없이 웹 프리뷰(최근 메시지
-스냅샷)를 HTML로 내려준다 — 공식 API 가 아니라 웹 페이지 스크레이핑이므로
+"""텔레그램 공개 채널 8방 — 웹 프리뷰 기반 브리핑 (2026-09-05, 소유자 지정 재편, "텔레그램
+인텔리전스 레인" 착수). `blog_brief.py`/`youtube_brief.py`와 같은 자리, 같은 실패 격리
+계약이다. 텔레그램 공개 채널은 `https://t.me/s/{handle}`에서 로그인 없이 웹 프리뷰(최근
+메시지 스냅샷)를 HTML로 내려준다 — 공식 API 가 아니라 웹 페이지 스크레이핑이므로
 `quant/collect/`(스크래핑 허용 평면)에 둔다. 채널을 늘리거나 바꾸고 싶으면
 **`CHANNELS`만 바꾸면 된다.**
 
-## 실측 확인(2026-08-17, `curl -o /dev/null -w '%{http_code}' https://t.me/s/{handle}`
-+ `tgme_widget_message ` 블록 카운트, 채널당 0.5s 간격):
+## 2026-09-05 재편 — 소유자가 지정한 8개로 교체
 
-    insidertracking          200, 20건
-    pikachu_aje               200, 20건
-    pharmbiohana               200, 20건
-    aetherjapanresearch       200, 17건
-    yieldnspread               200, 20건
-    report_figure_by_offset  302 → https://t.me/report_figure_by_offset (앱 오픈
-                              페이지, `tgme_channel_history` 섹션 자체가 없다 —
-                              프리뷰가 꺼진 채널로 판단, 추측 아님)
-    gaoshoukorea                200, 19건
-    tazastock                  200, 20건
-    mootda                      200, 19건
-    harveyspecterMike        200, 18건
-    Samsung_Global_AI_SW     200, 19건
-    rafikiresearch              200, 20건
+소유자가 "리포트는 이 8개 공개 채널만 참조한다"고 범위를 명시 — 기존 13개(usnews/
+usdigest tier 포함, tazastock/pikachu_aje/Samsung_Global_AI_SW/rafikiresearch/
+aetherjapanresearch 5개만 겹침)를 전량 교체한다. `usnews`/`usdigest` tier는 이제
+아무 채널도 갖지 않는다(소비자는 `quant/report/collect/telegram.py` 모듈 docstring
+"2026-09-05 채널 재편" 절 참고 — 이미 빈 리스트로 정직하게 졸아드는 순수 함수들이라
+코드 변경 없이 그대로 둔다, 렌더 쪽만 "채널 없음" 명시 폴백을 추가했다).
 
-12개 중 11개가 실측으로 프리뷰를 서빙한다. `report_figure_by_offset`만 예외이었다
-— **2026-09-03(F8, 감사 #8) 재확인 후 `CHANNELS`에서 제거**: `curl -sL
-https://t.me/s/report_figure_by_offset`가 등록 시점과 똑같이 302 →
-`https://t.me/report_figure_by_offset`(og:title "리포트 갤러리" — 채널 자체는
-살아 있다, `tgme_channel_history` 섹션만 없음)로 3주 넘게 변함이 없었다. 일시적
-장애가 아니라 채널 소유자가 웹 프리뷰 자체를 꺼둔 영구 상태라 재시도로 회복될
-여지가 없고, `telegram-collect`(30분 주기 크론, `report_cli.py` "⚠ 오류 채널"
-경고)가 이 채널 하나 때문에 매 사이클 100% 확률로 경고를 냈다 — 등록을 유지해서
-얻는 정보가 없으므로 뺀다.
+## 실측 확인(2026-09-05, `curl -sL -o /dev/null -w '%{http_code}' https://t.me/s/{handle}`
++ `tgme_widget_message_wrap` 블록 카운트, 채널당 0.5s 간격 — `fetch_all` 그대로):
 
-파싱 픽스처(`tests/report/fixtures/telegram_tazastock.html`)는 위 실측 중
-tazastock 응답에서 실제 메시지 5건(75633~75637, 링크 없는 것/있는 것 섞음)을
-그대로 잘라 저장한 것이다 — 추측이 아니라 실제 HTML.
-`telegram_preview_disabled.html`은 (제거된) `report_figure_by_offset` 리다이렉트
+    tazastock              200, 20건
+    clawnewssummary         200, 20건 (아래 "clawnewssummary — 본문 미지원" 절 참고)
+    daegurr                 200, 18건
+    hanwhastrategy          200, 20건
+    pikachu_aje             200, 18건
+    aetherjapanresearch     200, 20건
+    rafikiresearch           200, 20건
+    Samsung_Global_AI_SW    200, 19건
+
+8개 전부 HTTP 200 + `tgme_channel_history` 섹션 존재(프리뷰 활성). 채널 성격은
+프리뷰의 `tgme_channel_info_header_title`/`description`과 실제 메시지 샘플로
+확인했다(추측 아님):
+
+    tazastock          "타점 읽어주는 여자(타자)" — 장중 시황·국내 시황 코멘터리.
+    clawnewssummary     표시명 "에테르의 AI뉴스"(핸들과 표시명이 다르다 — 채널
+                       리브랜딩, canonical URL은 그대로 /s/clawnewssummary).
+                       설명: "매 시각 정각즈음 최신뉴스 위주로 정리... AI를
+                       활용하여 업로드하는 특성상 환각 등의 증상이 발생할 수
+                       있으므로 반드시 원문을 확인하여 주세요" — 채널 스스로
+                       AI 환각 가능성을 경고하는 시간당 해외뉴스(블룸버그·
+                       로이터·NYT·AP·BBC·알자지라 취합) 요약 채널. 소유자 요구
+                       (2) "채널 숫자를 그대로 사실로 쓰지 않는다"와 정확히
+                       맞물리는 채널 — `tg_digest.py`가 이 채널 발 숫자를
+                       "채널 주장"으로만 표기하고 검증 없이 우리 판단으로
+                       쓰지 않는 이유가 여기 있다.
+    daegurr             "💯똥밭에 굴러도 주식판" — 국내 시황 + 경제 캘린더
+                       (예: "오늘의 캘린더 09.03, 총 33건 — ISM 비제조업,
+                       월러 연준 이사 연설") + 지정학/매크로 코멘터리. 소유자
+                       요구 (3)의 "리스크 브리핑 방"에 해당(매크로 이벤트·
+                       지정학 리스크 취합).
+    hanwhastrategy      "한화투자증권 리서치센터 투자전략팀" — 증권사 공식
+                       채널, 주식/채권/환율 마감 시황 3종을 매일 발행
+                       (예: "★ 주식 마감 시황 (9/4)- KOSPI 6,687.21pt
+                       +1.64%..."). 소유자 요구 (3)의 리스크 브리핑 방 —
+                       전략 코멘터리에 리스크 요인이 실린다.
+    pikachu_aje         전력 섹터(기존과 동일, 변경 없음).
+    aetherjapanresearch 일본·미국 리서치(기존과 동일, 변경 없음).
+    rafikiresearch      Global macro research(기존과 동일, 변경 없음).
+    Samsung_Global_AI_SW 삼성증권 이영진 — 글로벌 AI/SW(기존과 동일, 변경 없음).
+
+### clawnewssummary — 본문 미지원(text_not_supported), 등록은 유지
+
+`fetch_all`은 200 + 메시지 wrap 20건을 정상적으로 받아온다("프리뷰 꺼짐"이
+아니다 — `tgme_channel_history` 섹션이 있고 위젯도 있다). 하지만 메시지 20/20건
+전부가 `<div class="tgme_widget_message text_not_supported_wrap ...">`로 와서
+본문 자체가 없다(웹 위젯이 "Please open Telegram to view this post / VIEW IN
+TELEGRAM"만 보여준다 — 텔레그램 앱에서만 열람 가능한 형식으로 posting 중으로
+추정, 원인은 채널 쪽 설정이라 이쪽에서 재현·회피할 수 없다). curl 3회 반복
+재현, 20/20건 일관됨 — 일시적 장애가 아니라 이 채널의 지속 상태다.
+
+**등록은 유지한다** — 소유자가 8개를 명시했고, 채널 자체·프리뷰 자체는 살아
+있다(`report_figure_by_offset`처럼 프리뷰가 완전히 꺼진 것과는 다른 상태 —
+그 채널은 실제로 `CHANNELS`에서 제거됐었다, 아래 옛 이력 참고). 대신
+`_parse_messages_with_reason`이 "가져온 메시지 전부가 text_not_supported"를
+감지해 `fetch_all`이 `error`에 명시적 사유("미리보기 없음 — 메시지는 있으나
+본문이 웹 프리뷰 미지원 형식")를 남기게 고쳤다 — 빈 text 메시지 20개를
+정상 메시지처럼 조용히 돌려주지 않는다. `tg_digest.py`는 이 채널에서 실질
+콘텐츠를 못 뽑으므로 매 다이제스트에 "clawnewssummary: 미리보기 없음"으로
+정직하게 나타난다. 소유자에게 우회 경로(봇 포워딩 등)를 문의할 근거 자료가
+이 절이다.
+
+## 이전 등록(13개) 이력 — report_figure_by_offset 제거(2026-09-03, F8)
+
+2026-08-17 등록된 `report_figure_by_offset`은 3주 넘게 302 리다이렉트(프리뷰
+완전 비활성, `tgme_channel_history` 섹션 자체 없음)로 정지 상태였고 2026-09-03
+제거됐다 — clawnewssummary(위 절)와는 다른 상태였다(그쪽은 섹션 자체가 없어
+데이터를 아예 못 받았고, 이쪽은 메시지는 받지만 본문이 없다).
+
+파싱 픽스처(`tests/report/fixtures/telegram_tazastock.html`)는 2026-08-17 실측
+tazastock 응답에서 실제 메시지 5건을 그대로 잘라 저장한 것 — 추측이 아니라 실제
+HTML. `telegram_preview_disabled.html`은 옛 `report_figure_by_offset` 리다이렉트
 목적지를 그대로 저장한 것 — 채널 등록과 무관하게 "프리뷰 꺼짐" HTML 모양 자체를
 검증하는 데 계속 쓴다(`_parse_messages_with_reason`의 "no preview" 분기).
-
-## 시간당 US 뉴스 채널 실측(2026-08-17T13:30:24Z, 서브프로젝트 W part 1)
-
-사용자가 "1시간마다 뉴스 올리는 텔레그램 채널(미국 중심)"을 요청 — 아래 후보를
-`curl https://t.me/s/{handle}`로 실측(HTTP 200 + `tgme_widget_message_wrap` 개수
-+ 최근 20건의 `datetime` 타임스탬프 분포)했다:
-
-    walterbloomberg   200, 20건, 2026-08-17 12:05~13:25 (80분에 20건 — 4분당
-                      1건 수준). 사용자가 예시로 든 "DeItaone(Walter
-                      Bloomberg)"의 현재 핸들 — 메시지 서명이 `(@WalterBloomberg)`.
-                      매크로·중앙은행·지수 헤드라인.
-    financialjuice     200, 20건, 2026-08-17 12:30~13:25 (55분에 20건). 메시지
-                      끝에 `|FJ` 서명. 매크로·지정학·중앙은행 헤드라인.
-    zerohedgenews      200, 20건, 2026-08-17 00:07~13:20 (13시간에 20건 —
-                      시간당 수준이지만 위 둘보다 낮은 빈도). 미채택(2개면
-                      충분, 상위 2개만).
-    DeItaone           302 → 앱 오픈 페이지(프리뷰 비활성, `tgme_channel_history`
-                      섹션 없음) — 예전 핸들은 막혀 있다. `walterbloomberg`가
-                      실제 대체 핸들.
-    marketcurrents     200이지만 메시지 2건뿐, 최신이 2024-09-15 — 죽은 채널,
-                      제외.
-    WatcherGuru        200, 19건이지만 2026-08-12~08-17(5일)에 19건 — 시간당
-                      아님(하루 4건 수준), 제외.
-    breakingnewsalerts 200, 20건이지만 전부 2020-10 — 죽은 채널, 제외.
-    CNBC/financialtimes/ReutersBiz/FastFT/benzinga/StockMKTNewz/stocktwits/
-    YahooFinance/marketwatch/ForexLive 등          302(프리뷰 비활성) 또는
-                      접근 불가 — 제외.
-
-실측에서 2개 이상(walterbloomberg, financialjuice, zerohedgenews)이 시간당
-수준을 충족해 상위 2개(`walterbloomberg`, `financialjuice`)만 `tier: "usnews"`,
-`market: "US"`로 추가한다.
-
-## 사진 메시지(2026-08-17, 서브프로젝트 S part 3)
-
-`curl https://t.me/s/pikachu_aje` 재실측 — 20건 중 4건이 사진 메시지였다(캡션
-없는 것/있는 것 섞임). 프리뷰 HTML은 사진을 `<img>`가 아니라
-`<a class="tgme_widget_message_photo_wrap ..." style="...background-image:
-url('https://cdn5.telesco.pe/file/...')">`로 얹는다 — `_BG_IMAGE_RE`가 그 URL을
-뽑는다. 파싱 픽스처(`tests/report/fixtures/telegram_pikachu_photo.html`)는 이
-실측에서 메시지 3건(8213 텍스트만/8215 사진만/8221 사진+캡션)을 그대로 잘라
-저장한 것 — 추측이 아니라 실제 HTML.
+`telegram_pikachu_photo.html`(2026-08-17 실측, 서브프로젝트 S part 3)은 사진
+메시지 파싱(`_BG_IMAGE_RE`) 검증에 계속 쓴다.
 """
 from __future__ import annotations
 
@@ -97,34 +108,26 @@ from quant.adapters.http import client
 from quant.collect.sources.feeds import parse_published
 
 # 여기만 바꾸면 된다 — handle, 분류, market(KR|US|BOTH), tier(sector|macro|news).
+# 2026-09-05: 소유자가 지정한 8개로 전량 교체(모듈 docstring "2026-09-05 재편"
+# 절 참고) — usnews/usdigest tier는 이제 아무 채널도 없다(빈 필터 결과, 코드는
+# 그대로 둔다 — `quant/report/collect/telegram.py` 모듈 docstring 참고).
 CHANNELS: list[dict] = [
-    # tier "usdigest"(2026-08-21): 「미국 기업 섹터별 소식 정리」·「🌎 글로벌 뉴스
-    # 브리핑」을 한국어로 하루 한 번(KST 05시 전후) 보내는 **일일 다이제스트**다
-    # (원장 275건 실측). usnews tier(walterbloomberg/financialjuice)는 영문 시간당
-    # 헤드라인이라 성격이 다르므로 같은 tier 로 묶지 않는다 — 서사에는 넣고
-    # "실시간 헤드라인" 구획에는 넣지 않기 위한 구분이다.
-    {"handle": "insidertracking", "분류": "미국 주식·해외 뉴스", "market": "US", "tier": "usdigest"},
-    {"handle": "pikachu_aje", "분류": "전력 섹터", "market": "KR", "tier": "sector"},
-    {"handle": "pharmbiohana", "분류": "바이오·미용 섹터", "market": "KR", "tier": "sector"},
-    {"handle": "aetherjapanresearch", "분류": "해외 리포트·시황 인사이트", "market": "BOTH", "tier": "macro"},
-    {"handle": "yieldnspread", "분류": "채권·경제", "market": "BOTH", "tier": "macro"},
-    # report_figure_by_offset — 2026-09-03(F8) 제거. 등록 시점(2026-08-17)부터
-    # 계속 프리뷰가 꺼져 있었고(302, tgme_channel_history 없음) 3주 뒤 재확인해도
-    # 그대로였다 — 채널은 살아 있지만 웹 프리뷰 스크레이핑으로는 영구히 0건이라,
-    # telegram-collect 크론(30분 주기)이 이 채널 하나 때문에 매번 "⚠ 오류 채널"을
-    # 냈다. 모듈 docstring "실측 확인" 절 참고.
-    {"handle": "gaoshoukorea", "분류": "국내외 기업 실적·뉴스", "market": "BOTH", "tier": "news"},
     {"handle": "tazastock", "분류": "장중 시황·국내 시황", "market": "KR", "tier": "news"},
-    {"handle": "mootda", "분류": "국내 시황", "market": "KR", "tier": "news"},
-    {"handle": "harveyspecterMike", "분류": "매크로 분석", "market": "BOTH", "tier": "macro"},
-    {"handle": "Samsung_Global_AI_SW", "분류": "글로벌 AI/SW — 삼성 이영진", "market": "BOTH", "tier": "sector"},
+    # clawnewssummary — 표시명 "에테르의 AI뉴스", 시간당 해외뉴스 AI 요약(채널
+    # 스스로 환각 가능성을 경고한다 — 모듈 docstring "clawnewssummary" 절).
+    # 웹 프리뷰가 메시지 본문을 못 주는 상태(text_not_supported)라 실질적으로
+    # 매 수집마다 "미리보기 없음"으로 나타난다 — 등록은 소유자 지정대로 유지.
+    {"handle": "clawnewssummary", "분류": "해외뉴스 AI 요약(시간당)", "market": "BOTH", "tier": "news"},
+    # daegurr — "💯똥밭에 굴러도 주식판", 국내 시황 + 경제 캘린더 + 지정학
+    # 코멘터리. 소유자 요구 (3) 리스크 브리핑 방.
+    {"handle": "daegurr", "분류": "국내 시황·경제 캘린더·리스크 코멘터리", "market": "KR", "tier": "news"},
+    # hanwhastrategy — 한화투자증권 리서치센터 투자전략팀 공식 채널, 주식/채권/
+    # 환율 마감 시황 3종. 소유자 요구 (3) 리스크 브리핑 방.
+    {"handle": "hanwhastrategy", "분류": "증권사 전략·리스크 브리핑", "market": "KR", "tier": "macro"},
+    {"handle": "pikachu_aje", "분류": "전력 섹터", "market": "KR", "tier": "sector"},
+    {"handle": "aetherjapanresearch", "분류": "일본·미국 리서치", "market": "BOTH", "tier": "macro"},
     {"handle": "rafikiresearch", "분류": "매크로 종합", "market": "BOTH", "tier": "macro"},
-    # 시간당 US 뉴스(서브프로젝트 W part 1, 실측 2026-08-17T13:30:24Z — 위 docstring
-    # "시간당 US 뉴스 채널 실측" 절 참고). walterbloomberg = 사용자가 예시로 든
-    # "DeItaone" 의 현재 핸들(구 핸들은 302로 막혀 있다), 80분에 20건.
-    {"handle": "walterbloomberg", "분류": "미국 매크로·지수 헤드라인(구 DeItaone)", "market": "US", "tier": "usnews"},
-    # financialjuice — 55분에 20건, 매크로·지정학 헤드라인(`|FJ` 서명).
-    {"handle": "financialjuice", "분류": "미국 매크로·지정학 헤드라인", "market": "US", "tier": "usnews"},
+    {"handle": "Samsung_Global_AI_SW", "분류": "글로벌 AI/SW — 삼성 이영진", "market": "BOTH", "tier": "sector"},
 ]
 
 _PREVIEW_URL = "https://t.me/s/{handle}"
@@ -180,6 +183,15 @@ def _parse_messages_with_reason(html_text: str, limit: int = LIMIT) -> tuple[lis
         ".//div[contains(concat(' ', normalize-space(@class), ' '), ' tgme_widget_message_wrap ')]"
     )
     messages: list[dict] = []
+    # `text_not_supported`(2026-09-05, clawnewssummary 실측) — 웹 프리뷰가 아예
+    # 안 꺼졌는데도(`tgme_channel_history` 섹션 있음, 메시지 wrap 20개 있음)
+    # 메시지 div 자체가 `<div class="tgme_widget_message text_not_supported_wrap
+    # ...">`로 와서 본문이 없다("Please open Telegram to view this post" 안내만
+    # 있음) — 20/20건 재현(clawnewssummary, curl 3회 반복). "프리뷰 꺼짐"과 달리
+    # 채널 자체·프리뷰 자체는 살아 있어 `_history_section`만으로는 못 잡는다 —
+    # 아래에서 메시지 단위로 감지해, 가져온 메시지 전부가 이 상태면 명시적
+    # 사유를 남긴다(빈 text 메시지를 정상 메시지처럼 조용히 돌려주지 않는다).
+    unsupported_flags: list[bool] = []
     for wrap in wraps:
         msg_divs = wrap.xpath(
             ".//div[contains(concat(' ', normalize-space(@class), ' '), ' tgme_widget_message ')"
@@ -191,6 +203,7 @@ def _parse_messages_with_reason(html_text: str, limit: int = LIMIT) -> tuple[lis
         msg_id = data_post.rsplit("/", 1)[-1] if data_post else ""
         if not msg_id:
             continue
+        is_unsupported = "text_not_supported_wrap" in (msg_divs[0].get("class") or "")
 
         text_divs = wrap.xpath(
             ".//div[contains(concat(' ', normalize-space(@class), ' '), ' tgme_widget_message_text ')]"
@@ -221,9 +234,19 @@ def _parse_messages_with_reason(html_text: str, limit: int = LIMIT) -> tuple[lis
             "links": links,
             "images": images,
         })
+        unsupported_flags.append(is_unsupported)
 
     messages.reverse()  # DOM은 오래된 메시지부터 나온다 — 최신순으로 뒤집는다
-    return messages[:limit], None
+    unsupported_flags.reverse()
+    sliced = messages[:limit]
+    if sliced and all(unsupported_flags[: len(sliced)]) and not any(
+        m["text"] or m["images"] for m in sliced
+    ):
+        return sliced, (
+            "미리보기 없음 — 메시지는 있으나 본문이 웹 프리뷰 미지원 형식"
+            "(text_not_supported, 텔레그램 앱에서만 열람 가능)"
+        )
+    return sliced, None
 
 
 def fetch_all(getter=None, sleep=None) -> dict[str, dict]:

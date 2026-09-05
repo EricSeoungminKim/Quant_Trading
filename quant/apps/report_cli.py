@@ -88,6 +88,7 @@ from quant.report.collect.telegram import (
     _build_telegram_image_desc, _build_telegram_mentions, _build_telegram_prose,
     _usnews_headlines, _usnews_titles,
 )
+from quant.report.collect.tg_digest_section import _build_channel_digest_view
 from quant.report.collect.uswrap import build_us_wrap, gather_kr_wrap, load_latest_us_wrap, write_us_wrap
 
 
@@ -215,6 +216,10 @@ def _emit_close(snap, root: Path, out_root: Path, snap_root: Path) -> None:
     )
     usnews_headlines = _usnews_headlines(telegram_result) if snap.market == "US" else []
 
+    # 📡 채널 브리핑 종합(2026-09-05, 소유자 요구 (3)) — 마감판은 narrator=None
+    # 으로 불러 결정론 다이제스트만(마감판 LLM-free 계약, 이 함수 docstring).
+    channel_digest = _build_channel_digest_view(snap, root, snap_root, sym_quotes, narrator=None)
+
     # 종가배팅 후보(2026-08-25) — KR 전용. 토큰 체인: 이 뷰 → close_bet_tokens
     # (SYM:CLOSE) → own_brief 14:52 → watch-score → 태그 CLOSE_BET → 유니버스 롤
     # 14:53 → close_bet 진입 창 15:15~15:19(연속 거래 마지막 구간).
@@ -244,6 +249,17 @@ def _emit_close(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         "us_news_kr_map": us_news_kr_view,
         "usnews_headlines": usnews_headlines,
         "close_bet_view": close_bet_view,
+        # 📡 채널 브리핑 종합(2026-09-05) — ReportModel과 같은 직렬화 요약
+        # (Digest 객체 자체가 아니라 요약만 — engine.json은 json.dumps 대상).
+        "channel_digest_summary": (
+            {
+                "candidates": len(channel_digest.candidates),
+                "risk_items": len(channel_digest.risk_items),
+                "stance": channel_digest.stance,
+            }
+            if channel_digest is not None and (channel_digest.has_content() or channel_digest.channel_notices)
+            else None
+        ),
     }
 
     intraday_display = _visible_intraday(intraday_view)
@@ -254,6 +270,7 @@ def _emit_close(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         telegram_view_kr=telegram_view_kr, telegram_view_us=telegram_view_us,
         agent_interpret_view=agent_interpret_view, midterm_view=midterm_view,
         us_news_kr_view=us_news_kr_view, usnews_headlines=usnews_headlines,
+        channel_digest=channel_digest,
     )
     hp, jp = write_close_report(model, snap, out_root)
     print(f"HTML(마감) {hp}\n엔진(마감) {jp}")
@@ -423,6 +440,21 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         if snap.market == "KR" else []
     )
     usnews_headlines = _usnews_headlines(telegram_result) if snap.market == "US" else []
+    # 📡 채널 브리핑 종합(2026-09-05, 소유자 요구 (3)) — 품질 레인(quality_narrator)을
+    # 재사용해 스탠스·방별 요약까지 낸다(아침판만 — 마감판은 narrator=None).
+    channel_digest = _build_channel_digest_view(snap, root, snap_root, sym_quotes, narrator=quality_narrator)
+    # engine.json 에는 Digest 객체 그대로가 아니라 직렬화 가능한 요약만 싣는다
+    # (write_machine 이 json.dumps 로 그대로 찍는다 — dataclass 는 못 찍는다).
+    # 텔레그램 발행 요약(_format_summary)이 이 키를 읽어 4번째 줄을 만든다.
+    payload["channel_digest_summary"] = (
+        {
+            "candidates": len(channel_digest.candidates),
+            "risk_items": len(channel_digest.risk_items),
+            "stance": channel_digest.stance,
+        }
+        if channel_digest is not None and (channel_digest.has_content() or channel_digest.channel_notices)
+        else None
+    )
     payload["midterm_watch"] = midterm_view
     if snap.market == "KR":
         payload["us_news_kr_map"] = us_news_kr_view
@@ -506,6 +538,7 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         money_flow=money_flow_view,
         name_map=research_code_to_name,
         sector_daily=sector_daily,
+        channel_digest=channel_digest,
     )
     hp, jp, cp = write_open_report(model, snap, out_root)
     print(f"HTML   {hp}\n엔진   {jp}\n후보   {cp}")

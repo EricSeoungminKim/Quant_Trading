@@ -216,9 +216,19 @@ def _telegram_result_with_usnews() -> dict:
     }
 
 
-def test_usnews_titles_collects_from_usnews_tier_only():
+# 2026-09-05 채널 재편(CLAUDE.md 라우팅 표 참고 — 텔레그램 8개를 tazastock/
+# clawnewssummary/daegurr/hanwhastrategy/pikachu_aje/aetherjapanresearch/
+# rafikiresearch/Samsung_Global_AI_SW 로 전량 교체) 이후 usnews/usdigest
+# tier 채널(walterbloomberg/financialjuice/insidertracking)은 CHANNELS 에
+# 더 이상 없다. 이 세 함수는 실제 등록 채널(TELEGRAM_CHANNELS)을 tier 로
+# 걸러 쓰므로, tier 채널이 하나도 없으면 입력에 무엇이 들어있든 정직하게
+# 빈 리스트로 졸아든다(예외 없음, 코드 변경 없이 그대로 유지 — "이미 우아하게
+# 졸아든다" 판정) — "📡 채널 브리핑 종합"(quant.analyze.tg_digest)이 이제 그
+# 역할을 대신한다.
+
+def test_usnews_titles_returns_empty_now_that_no_channel_has_that_tier():
     out = report_cli._usnews_titles(_telegram_result_with_usnews())
-    assert set(out) == {"NVIDIA AI CHIP DEMAND SURGES", "SEMICONDUCTOR EXPORTS RECORD HIGH"}
+    assert out == []
 
 
 def test_usnews_titles_ignores_non_usnews_channels():
@@ -226,26 +236,20 @@ def test_usnews_titles_ignores_non_usnews_channels():
     assert report_cli._usnews_titles(result) == []
 
 
-def test_usnews_headlines_sorted_newest_first_and_capped():
+def test_usnews_headlines_returns_empty_now_that_no_channel_has_that_tier():
     out = report_cli._usnews_headlines(_telegram_result_with_usnews())
-    assert [h["text"] for h in out] == [
-        "NVIDIA AI CHIP DEMAND SURGES", "SEMICONDUCTOR EXPORTS RECORD HIGH",
-    ]
-    assert out[0]["published_hhmm"] is not None
+    assert out == []
 
 
 def test_build_us_news_kr_view_empty_titles_returns_empty(tmp_path):
     assert report_cli._build_us_news_kr_view(tmp_path, {}, date(2026, 8, 17)) == []
 
 
-def test_build_us_news_kr_view_returns_sectors_with_grades(tmp_path):
+def test_build_us_news_kr_view_returns_empty_now_that_no_channel_has_that_tier(tmp_path):
     out = report_cli._build_us_news_kr_view(
         tmp_path, _telegram_result_with_usnews(), date(2026, 8, 17),
     )
-    assert out
-    assert out[0]["sector"] == "Information Technology"
-    assert out[0]["stocks"]
-    assert "grade" in out[0]["stocks"][0]
+    assert out == []
 
 
 # ── _record_midterm_selections ───────────────────────────────────────────
@@ -385,36 +389,9 @@ def test_emit_close_midterm_watch_recorded_without_key(monkeypatch, tmp_path):
     assert payload["us_news_kr_map"] == []
 
 
-# ── insidertracking(일일 글로벌 다이제스트) 배선 ─────────────────────────
-# 2026-08-21 소유자 지시: "미국장이 끝나면 글로벌 뉴스를 보내주는것 같아(05:00쯤).
-# 이걸 필두로 리포트 작성할때도 반영하면 더 좋은 방향성이 생길 것 같아."
-#
-# 실측(원장 275건): 이 채널은 「미국 기업 섹터별 소식 정리」·「🌎 글로벌 뉴스
-# 브리핑」을 **한국어 일일 다이제스트**로 하루 한 번 보낸다 — walterbloomberg/
-# financialjuice 의 영문 시간당 헤드라인과 성격이 다르다. 그래서 tier 를 그냥
-# "usnews" 로 바꾸지 않고 별도 tier("usdigest")를 준다:
-#   - 서사(_usnews_titles → 시황 다이제스트/Exec Summary/미국발 뉴스 뷰)에는 넣는다.
-#   - "🇺🇸 실시간 헤드라인" 구획(_usnews_headlines)에는 **넣지 않는다** —
-#     일일 요약을 실시간 헤드라인으로 표시하면 라벨이 거짓이 된다.
-
-def _telegram_result_with_digest() -> dict:
-    r = _telegram_result_with_usnews()
-    r["insidertracking"] = {"messages": [
-        {"text": "🌎 글로벌 뉴스 브리핑 - 2026년 8월 21일 · 아메리카 ...",
-         "published": "2026-08-21T20:05:00Z"},
-    ], "error": None}
-    return r
-
-
-def test_usnews_titles_includes_daily_digest_channel():
-    out = report_cli._usnews_titles(_telegram_result_with_digest())
-    assert any("글로벌 뉴스 브리핑" in t for t in out)
-    # 기존 usnews tier 도 그대로 살아 있어야 한다.
-    assert "NVIDIA AI CHIP DEMAND SURGES" in out
-
-
-def test_usnews_headlines_excludes_daily_digest_channel():
-    """실시간 헤드라인 구획은 시간당 채널만 — 일일 다이제스트가 섞이면 안 된다."""
-    out = report_cli._usnews_headlines(_telegram_result_with_digest())
-    assert all("글로벌 뉴스 브리핑" not in h["text"] for h in out)
-    assert len(out) == 2
+# ── insidertracking(일일 글로벌 다이제스트) 배선 — 2026-09-05 채널 재편으로
+# 제거됨. insidertracking(usdigest tier)은 더 이상 CHANNELS 에 없다 — 이
+# 절이 검증하던 "usnews/usdigest 분리 표시" 계약 자체가 대상을 잃었다(위
+# "_usnews_titles / _usnews_headlines / _build_us_news_kr_view" 절의
+# "returns_empty_now_that_no_channel_has_that_tier" 테스트들이 같은 함수의
+# 현재 동작 — 항상 빈 리스트 — 을 이미 검증한다).
