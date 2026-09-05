@@ -650,3 +650,142 @@ def test_build_digest_non_price_magnitude_is_unverified_not_wrong():
     statuses = {c.value: c.status for c in digest.number_claims}
     assert statuses.get("71,000원") == "✓"
     assert statuses.get("4,500,000억") == "미확인"
+
+
+# ── 프로그램 스탠스(결정론, 소유자 결정 2026-09-05 — "유료 레인 불필요") ────
+
+
+def test_program_stance_display_renders_label_multiplier_and_reasons():
+    regime = {"label": "neutral", "risk_multiplier": 1.0,
+              "reasons": ["QQQ 20일선 대비 −0.01%", "5일 변동성 0.61배"]}
+    digest = build_digest([_row("tazastock", "1", "삼성전자 강세")], "KR", NOW, since=SINCE, regime=regime)
+    assert digest.program_stance_display() == (
+        "프로그램 스탠스: 중립(1.0x) — QQQ 20일선 대비 −0.01%, 5일 변동성 0.61배"
+    )
+
+
+def test_program_stance_display_maps_defensive_and_aggressive_labels():
+    d1 = build_digest([], "KR", NOW, since=SINCE,
+                       regime={"label": "defensive", "risk_multiplier": 0.5, "reasons": []})
+    d2 = build_digest([], "KR", NOW, since=SINCE,
+                       regime={"label": "aggressive", "risk_multiplier": 1.5, "reasons": []})
+    assert d1.program_stance_display().startswith("프로그램 스탠스: 방어(0.5x)")
+    assert d2.program_stance_display().startswith("프로그램 스탠스: 공격(1.5x)")
+
+
+def test_program_stance_display_appends_channel_risk_tag_counts():
+    messages = [
+        _row("daegurr", "1", "금리 인상 우려가 커지고 있다."),
+        _row("daegurr", "2", "지정학 리스크가 확대되고 있다."),
+    ]
+    regime = {"label": "neutral", "risk_multiplier": 1.0, "reasons": ["근거 문구"]}
+    digest = build_digest(messages, "KR", NOW, since=SINCE, regime=regime)
+    text = digest.program_stance_display()
+    assert "리스크 태그" in text
+    assert "금리 1" in text or "지정학 1" in text
+
+
+def test_program_stance_display_missing_regime_is_honest_about_it():
+    digest = build_digest([_row("tazastock", "1", "삼성전자 강세")], "KR", NOW, since=SINCE)
+    assert digest.program_stance_display() == "프로그램 스탠스: 판정 불가 (regime.json 없음)"
+
+
+def test_program_stance_display_ignores_regime_without_label():
+    digest = build_digest([], "KR", NOW, since=SINCE, regime={"risk_multiplier": 1.0, "reasons": []})
+    assert "판정 불가" in digest.program_stance_display()
+
+
+def test_render_telegram_shows_program_stance_line_before_llm_stance_line():
+    """(a) 결정론 프로그램 스탠스가 [스탠스] 섹션의 첫 줄, (b) LLM 스탠스(또는
+    미가용 대체문)가 둘째 줄 — 소유자 지시(2026-09-05): "결정론이 먼저"."""
+    regime = {"label": "neutral", "risk_multiplier": 1.0, "reasons": ["근거"]}
+    digest = build_digest([_row("daegurr", "1", "금리 인상 우려.")], "KR", NOW, since=SINCE, regime=regime)
+    text = render_telegram(digest)
+    stance_block = text.split("[스탠스]")[1].split("\n\n")[0]
+    prog_idx = stance_block.find("프로그램 스탠스")
+    llm_idx = stance_block.find("서술기 미가용")
+    assert prog_idx != -1 and llm_idx != -1
+    assert prog_idx < llm_idx
+
+
+# ── LLM 스탠스 마이크로프롬프트(선택, 모듈 docstring "LLM 스탠스" 절) ────────
+
+
+def _kr_messages_with_channel_entry():
+    return [_row("tazastock", "1", "오늘은 평온한 하루였다.")]
+
+
+def test_stance_llm_call_fills_stance_when_valid():
+    digest = build_digest(
+        _kr_messages_with_channel_entry(), "KR", NOW, since=SINCE,
+        stance_llm_call=lambda p: {"stance": "방어", "why": "리스크 확대"},
+    )
+    assert digest.stance == "방어"
+    assert digest.stance_why == "리스크 확대"
+    assert digest.stance_display() == "방어 — 리스크 확대"
+
+
+def test_stance_llm_call_receives_prompt_asking_for_json_only():
+    seen = {}
+
+    def _call(prompt):
+        seen["prompt"] = prompt
+        return {"stance": "중립", "why": "특이사항 없음"}
+
+    build_digest(_kr_messages_with_channel_entry(), "KR", NOW, since=SINCE, stance_llm_call=_call)
+    assert '"stance"' in seen["prompt"]
+    assert '"why"' in seen["prompt"]
+    assert "오늘은 평온한 하루였다" in seen["prompt"]
+
+
+def test_stance_llm_call_rejected_when_stance_value_not_in_enum():
+    """`stance_only`가 이미 엄격 검증하지만, 다른 콜러블이 주입돼도 방어한다
+    (모듈 원칙: 절반만 맞는 판정은 안 믿느니만 못하다)."""
+    digest = build_digest(
+        _kr_messages_with_channel_entry(), "KR", NOW, since=SINCE,
+        stance_llm_call=lambda p: {"stance": "공격적", "why": "x"},
+    )
+    assert digest.stance is None
+    assert "서술기 미가용" in digest.stance_display()
+
+
+def test_stance_llm_call_rejected_when_not_a_dict():
+    digest = build_digest(
+        _kr_messages_with_channel_entry(), "KR", NOW, since=SINCE,
+        stance_llm_call=lambda p: "방어 — 리스크 확대",
+    )
+    assert digest.stance is None
+
+
+def test_stance_llm_call_exception_falls_back_gracefully():
+    def _boom(p):
+        raise RuntimeError("OpenRouter 다운")
+
+    digest = build_digest(
+        _kr_messages_with_channel_entry(), "KR", NOW, since=SINCE, stance_llm_call=_boom,
+    )
+    assert digest.stance is None
+    assert digest.has_content() is True  # 결정론 부분은 그대로 살아 있다
+
+
+def test_stance_llm_call_not_invoked_when_no_channel_entries():
+    calls = []
+    build_digest([], "KR", NOW, since=SINCE, stance_llm_call=lambda p: calls.append(p) or None)
+    assert calls == []
+
+
+def test_stance_llm_call_skipped_when_llm_call_already_produced_a_stance():
+    """`llm_call`(큰 프롬프트, [STANCE] 마커)이 이미 유효한 스탠스를 만들었으면
+    `stance_llm_call`은 호출되지 않는다(중복 호출 방지, 하위호환)."""
+    reply = (
+        "[STANCE]\n방어 — 큰 프롬프트 판정\n"
+        "[SUMMARY]\n특이사항 없음, 조용, 관망, 대기.\n"
+    )
+    calls = []
+    digest = build_digest(
+        _kr_messages_with_channel_entry(), "KR", NOW, since=SINCE,
+        llm_call=lambda p: reply,
+        stance_llm_call=lambda p: calls.append(p) or {"stance": "공격", "why": "무시돼야 함"},
+    )
+    assert digest.stance == "방어"
+    assert calls == []

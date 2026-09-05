@@ -71,6 +71,32 @@ def test_collect_telegram_does_not_touch_news_store(tmp_path, monkeypatch):
     assert not (tmp_path / "data" / "news").exists()
 
 
+def test_collect_telegram_skips_content_less_rows(tmp_path, monkeypatch):
+    """텍스트도 이미지도 없는 행(clawnewssummary text_not_supported 등)은
+    원장에 안 남긴다 — 그대로 두면 나중에 오너가 봇으로 포워딩한 실제 본문이
+    append_ledger 의 dedup 에 가려 조용히 버려진다(2026-09-05 "포워딩 우회")."""
+    monkeypatch.setattr(
+        telegram_channels, "fetch_all",
+        lambda getter=None: {
+            "clawnewssummary": {"messages": [
+                {"msg_id": "1", "text": "", "published": "2026-09-02T00:00:00Z",
+                 "links": [], "images": []},
+            ], "error": "미리보기 없음"},
+            "tazastock": _msgs("tazastock", ["2"]),
+        },
+    )
+
+    rc = report_cli.main([
+        "collect", "--market", "KR", "--date", date(2026, 9, 2).isoformat(),
+        "--root", str(tmp_path), "--telegram",
+    ])
+
+    assert rc == 0
+    path = tmp_path / "data" / "ledger" / "telegram_msgs.jsonl"
+    rows = telegram_channels.load_ledger(path)
+    assert {(r["handle"], r["msg_id"]) for r in rows} == {("tazastock", "2")}
+
+
 def test_collect_telegram_prunes_old_rows(tmp_path, monkeypatch):
     from quant.collect.sources.telegram_channels import append_ledger
 

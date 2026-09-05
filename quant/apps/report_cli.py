@@ -672,6 +672,11 @@ def main(argv: list[str] | None = None) -> int:
         # 텔레그램 채널 누적 수집(telegram-collect@, 2026-09-03) — news-collect
         # 와 같은 30분 주기 패턴이되 대상이 채널 원장(`telegram_msgs.jsonl`)
         # 하나뿐이다(`--market` 무관, 위 argparse 주석 참고).
+        #
+        # 텍스트·이미지가 전혀 없는 행은 원장에 남기지 않는다(2026-09-05,
+        # `briefs._fetch_telegram_briefs` docstring "포워딩 우회" 절과 같은
+        # 이유) — 그대로 두면 나중에 오너가 봇으로 포워딩한 같은 msg_id 의
+        # 실제 본문이 append_ledger 의 dedup 에 가려 조용히 버려진다.
         from quant.collect.sources import telegram_channels
 
         root = Path(a.root)
@@ -681,6 +686,7 @@ def main(argv: list[str] | None = None) -> int:
             {"handle": handle, **msg}
             for handle, entry in result.items()
             for msg in entry.get("messages") or []
+            if msg.get("text") or msg.get("images")
         ]
         added = telegram_channels.append_ledger(rows, path)
         removed = telegram_channels.prune(path, session)

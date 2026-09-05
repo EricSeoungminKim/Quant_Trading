@@ -781,9 +781,12 @@ html{overflow-x:hidden}
 {% if channel_digest and (channel_digest.has_content() or channel_digest.channel_notices) %}
 <section class="mod">
   <h2>📡 채널 브리핑 종합<span class="sub">텔레그램 8개 채널 · 신규 메시지 요약</span>{% if tldr.channel_digest %}<span class="mod-tldr">{{ tldr.channel_digest }}</span>{% endif %}</h2>
-  {# 스탠스는 늘 보인다 — LLM 성공이면 실제 판정, 아니면 stance_display()가
-     "서술기 미가용 — 리스크 태그 …(자동 판정 안 함)"을 정직하게 대신한다
-     (소유자 지시 2026-09-05, 섹션을 생략하지 않는다). #}
+  {# 스탠스는 늘 보인다 — 결정론 프로그램 스탠스(program_stance_display(),
+     LLM 무관, 유료 레인 불필요 — 소유자 결정 2026-09-05)가 먼저, 그 아래
+     LLM 스탠스(선택 — 성공이면 실제 판정, 아니면 stance_display()가
+     "서술기 미가용 — 리스크 태그 …(자동 판정 안 함)"을 정직하게 대신한다)가
+     둘째 줄이다(섹션을 생략하지 않는다). #}
+  <p class="idx-sub">{{ channel_digest.program_stance_display() }}</p>
   <p class="idx-sub"><b>스탠스</b>: {{ channel_digest.stance_display() }}</p>
   {% if channel_digest.room_summary %}
   <p class="idx-sub">{{ channel_digest.room_summary }}</p>

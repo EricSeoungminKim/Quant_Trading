@@ -78,6 +78,113 @@ def test_merge_empty_inputs_returns_empty_dict():
     assert _merge_telegram_results({}, []) == {}
 
 
+# --- `preview: False` 채널 예외(2026-09-05, "포워딩 우회" 절) ---
+#
+# clawnewssummary 는 실제 CHANNELS 레지스트리에 preview:False 로 등록돼 있다
+# (tests/test_telegram_channels.py 가 그 사실 자체를 검증). 여기서는
+# `_merge_telegram_results`가 그 플래그를 실제로 어떻게 쓰는지 검증한다.
+
+
+def test_merge_prefers_ledger_content_over_empty_fresh_for_preview_false_channel():
+    """fresh(스크레이핑)는 text_not_supported 라 msg_id는 있지만 본문이 항상
+    비어 있다 — 오너가 봇으로 포워딩해 원장에 쌓인 실제 본문이 "fresh 우선"
+    규칙에 가려지면 안 된다."""
+    fresh = {"clawnewssummary": {
+        "messages": [{"msg_id": "1", "text": "", "published": "2026-09-05T00:00:00Z",
+                      "links": [], "images": []}],
+        "error": "미리보기 없음 — 메시지는 있으나 본문이 웹 프리뷰 미지원 형식",
+    }}
+    store_rows = [_store_row("clawnewssummary", "1", text="오너가 포워딩한 실제 본문")]
+
+    out = _merge_telegram_results(fresh, store_rows)
+
+    assert len(out["clawnewssummary"]["messages"]) == 1
+    assert out["clawnewssummary"]["messages"][0]["text"] == "오너가 포워딩한 실제 본문"
+
+
+def test_merge_clears_preview_error_when_ledger_has_real_content():
+    fresh = {"clawnewssummary": {
+        "messages": [{"msg_id": "1", "text": "", "published": "2026-09-05T00:00:00Z",
+                      "links": [], "images": []}],
+        "error": "미리보기 없음 — 메시지는 있으나 본문이 웹 프리뷰 미지원 형식",
+    }}
+    store_rows = [_store_row("clawnewssummary", "1", text="실제 본문")]
+
+    out = _merge_telegram_results(fresh, store_rows)
+
+    assert out["clawnewssummary"]["error"] is None
+
+
+def test_merge_keeps_preview_error_when_ledger_has_no_content_yet():
+    """아직 아무도 포워딩하지 않았으면(원장에 내용 없음) "미리보기 없음"
+    오류가 정직하게 그대로 남아야 한다."""
+    fresh = {"clawnewssummary": {
+        "messages": [{"msg_id": "1", "text": "", "published": "2026-09-05T00:00:00Z",
+                      "links": [], "images": []}],
+        "error": "미리보기 없음 — 메시지는 있으나 본문이 웹 프리뷰 미지원 형식",
+    }}
+
+    out = _merge_telegram_results(fresh, [])
+
+    assert out["clawnewssummary"]["error"] == "미리보기 없음 — 메시지는 있으나 본문이 웹 프리뷰 미지원 형식"
+
+
+def test_merge_normal_channel_unaffected_by_preview_false_exception():
+    """preview:False 가 아닌 채널(tazastock)은 기존 "fresh 우선" 규칙 그대로다."""
+    fresh = {"tazastock": {"messages": [_msg("1", text="신선한 버전")], "error": None}}
+    store_rows = [_store_row("tazastock", "1", text="저장된 버전")]
+
+    out = _merge_telegram_results(fresh, store_rows)
+
+    assert out["tazastock"]["messages"][0]["text"] == "신선한 버전"
+
+
+# --- 내용 없는 행은 원장에 남기지 않는다(2026-09-05, "포워딩 우회" 절) ---
+
+
+def test_fetch_telegram_briefs_does_not_persist_content_less_rows(tmp_path, monkeypatch):
+    """텍스트도 이미지도 없는 행(clawnewssummary text_not_supported 등)을
+    그대로 원장에 적으면 append_ledger 의 (handle,msg_id) dedup 이 그 자리를
+    선점해, 나중에 오너가 봇으로 포워딩한 실제 본문이 조용히 버려진다."""
+    from quant.collect.sources import telegram_channels
+
+    monkeypatch.setattr(
+        telegram_channels, "fetch_all",
+        lambda getter=None: {"clawnewssummary": {
+            "messages": [{"msg_id": "1", "text": "", "published": "2026-09-05T00:00:00Z",
+                          "links": [], "images": []}],
+            "error": "미리보기 없음",
+        }},
+    )
+    monkeypatch.setattr(telegram_channels, "load_window", lambda path, since, until=None: [])
+
+    _fetch_telegram_briefs(tmp_path)
+
+    path = tmp_path / "data" / "ledger" / "telegram_msgs.jsonl"
+    rows = telegram_channels.load_ledger(path) if path.exists() else []
+    assert rows == []
+
+
+def test_fetch_telegram_briefs_still_persists_rows_with_images_but_no_text(tmp_path, monkeypatch):
+    from quant.collect.sources import telegram_channels
+
+    monkeypatch.setattr(
+        telegram_channels, "fetch_all",
+        lambda getter=None: {"pikachu_aje": {
+            "messages": [{"msg_id": "1", "text": "", "published": "2026-09-05T00:00:00Z",
+                          "links": [], "images": ["https://cdn.example/x.jpg"]}],
+            "error": None,
+        }},
+    )
+    monkeypatch.setattr(telegram_channels, "load_window", lambda path, since, until=None: [])
+
+    _fetch_telegram_briefs(tmp_path)
+
+    path = tmp_path / "data" / "ledger" / "telegram_msgs.jsonl"
+    rows = telegram_channels.load_ledger(path)
+    assert [(r["handle"], r["msg_id"]) for r in rows] == [("pikachu_aje", "1")]
+
+
 # --- _telegram_default_window ---
 
 def test_default_window_is_start_of_kst_day():

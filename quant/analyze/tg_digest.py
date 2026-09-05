@@ -68,6 +68,33 @@ LLM 이 꺼져 있거나 실패하면(`stance is None`) `Digest.stance_display()
 소유자가 텔레그램에서 참고하는 조언일 뿐, 자동매매 사이징에 반영되지 않는다
 (`quant.analyze.market_pulse`와 같은 원칙 — "순수 참고용"). 이 스탠스의 예측력을
 재는 것은 후속 과제다(파일에 시계열로 쌓이므로 나중에 승률/상관 분석이 가능하다).
+
+## 프로그램 스탠스 — 유료 레인 없이도 항상 나온다(소유자 결정, 2026-09-05)
+
+소유자 질문 "유료 레인이 꼭 필요한가?"의 답은 "아니다"다. `Digest.
+program_stance_display()`는 **결정론**(LLM 무관)이다 — `regime`(호출부가
+`data/state/regime.json`에서 그 시장의 sub-dict를 읽어 주입, 이 모듈은 파일을
+읽지 않는다 — "네트워크·디스크 I/O 없음" 계약 유지)의 `label`/`risk_multiplier`/
+`reasons`를 그대로 문장으로 옮기고, 채널 리스크 태그 집계를 덧붙인다. `regime`이
+없으면(파일 없음/그 시장 상태 아직 없음) 정직하게 "판정 불가"라고 말한다 —
+`stance_display()`의 "서술기 미가용" 관례와 같다. `render_telegram`/리포트
+템플릿 둘 다 이 줄을 [스탠스] 섹션의 **첫 줄**로, 기존 `stance_display()`
+(LLM, 선택)를 그 아래 줄로 보여준다 — "결정론이 먼저, LLM은 있으면 덧붙이는
+것"(소유자 지시 그대로).
+
+## LLM 스탠스 — 스탠스 전용 마이크로프롬프트(2026-09-05)
+
+기존 `llm_call`(방별 요약·후보 이유까지 함께 묻는 큰 프롬프트, 아래 "계약"
+절)은 스탠스도 `[STANCE]` 마커로 같이 물었었지만, 실측(2026-09-05 EC2 KR
+다이제스트)으로 무료 추론 모델이 사고과정에 토큰을 다 써 스탠스 서술이
+거의 매번 폐기되는 게 확인됐다(`quant.adapters.narrate` 모듈독스트링 참고).
+`stance_llm_call`(선택, `프롬프트 -> {"stance","why"}|None`, 이미 엄격
+검증된 dict — 이 모듈은 파싱하지 않는다, `quant.adapters.narrate.stance_only`가
+담당)은 그 문제를 우회하는 **별도**의 작고 안정적인 경로다: 채널 메시지만
+근거로 스탠스 하나만 묻는다. `llm_call`이 이미 유효한 스탠스를 만들었으면
+그걸 그대로 쓰고(하위호환 — 기존 동작 유지), 없을 때만(=거의 항상)
+`stance_llm_call`이 보강한다 — 두 경로 모두 실패하면 `stance_display()`가
+"서술기 미가용"으로 정직하게 떨어진다.
 """
 from __future__ import annotations
 
@@ -110,6 +137,10 @@ RISK_KEYWORDS: tuple[str, ...] = (
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。])\s+|\n+")
 
 STANCES = ("방어", "중립", "공격")
+
+# regime.json 의 label(quant.trade.regime.models.RegimeState) → 한국어.
+# program_stance_display()가 쓴다.
+_REGIME_LABEL_KR = {"defensive": "방어", "neutral": "중립", "aggressive": "공격"}
 
 # ---------------------------------------------------------------------------
 # 후보 정밀도(소유자 요구, 2026-09-05) — US 약어 스톱리스트 + 가격 맥락 판정,
@@ -245,14 +276,40 @@ class Digest:
     room_summary: str | None = None
     candidate_reasons: dict[str, str] = field(default_factory=dict)
     llm_used: bool = False
+    # data/state/regime.json 의 그 시장 sub-dict({"label","risk_multiplier",
+    # "reasons",...}) — 호출부(CLI/report_cli)가 읽어 주입한다(모듈 docstring
+    # "프로그램 스탠스" 절, "네트워크·디스크 I/O 없음" 계약 유지). 없으면 None.
+    regime: dict | None = None
 
     def has_content(self) -> bool:
         return bool(self.channel_entries)
 
+    def program_stance_display(self) -> str:
+        """결정론 프로그램 스탠스 한 줄 — LLM 없이 항상 나온다(소유자 결정:
+        유료 레인 불필요, 모듈 docstring "프로그램 스탠스" 절). `regime`을
+        못 읽었으면(파일 없음/그 시장 상태 없음) 정직하게 "판정 불가"를
+        보여준다 — `stance_display()`의 "서술기 미가용" 관례와 같다."""
+        if not isinstance(self.regime, dict) or not self.regime.get("label"):
+            return "프로그램 스탠스: 판정 불가 (regime.json 없음)"
+        label_kr = _REGIME_LABEL_KR.get(self.regime["label"], self.regime["label"])
+        mult = self.regime.get("risk_multiplier")
+        mult_str = f"{float(mult):.1f}x" if isinstance(mult, (int, float)) else "?x"
+        reasons = self.regime.get("reasons") or []
+        reasons_str = ", ".join(str(r) for r in reasons) if reasons else "근거 없음"
+        line = f"프로그램 스탠스: {label_kr}({mult_str}) — {reasons_str}"
+        counts = Counter(r.keyword for r in self.risk_items)
+        if counts:
+            tag_line = "·".join(
+                f"{kw} {n}" for kw, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            )
+            line += f" · 리스크 태그 {tag_line}"
+        return line
+
     def stance_display(self) -> str:
-        """스탠스 한 줄 — LLM 성공이면 실제 판정, 실패/미가용이면 자동 판정을
+        """LLM 스탠스 한 줄 — 성공이면 실제 판정, 실패/미가용이면 자동 판정을
         하지 않았다는 사실 + 리스크 태그 집계만 정직하게 보여준다(섹션 자체를
-        생략하지 않는다, 소유자 지시 2026-09-05)."""
+        생략하지 않는다, 소유자 지시 2026-09-05). `program_stance_display()`
+        (결정론, 항상 나옴)와 짝을 이루는 **선택** 한 줄이다."""
         if self.stance:
             return f"{self.stance} — {self.stance_why}" if self.stance_why else self.stance
         counts = Counter(r.keyword for r in self.risk_items)
@@ -456,6 +513,8 @@ def build_digest(
     name_table: list[tuple[str, str]] | None = None,
     quotes_lookup: Callable[[str], float | None] | None = None,
     llm_call: Callable[[str], str | None] | None = None,
+    stance_llm_call: Callable[[str], dict | None] | None = None,
+    regime: dict | None = None,
 ) -> Digest:
     """`messages`(`telegram_channels.load_window`가 돌려주는, 최신순 원장 행
     리스트)에서 `market`(KR/US) 다이제스트를 만든다.
@@ -464,6 +523,12 @@ def build_digest(
     같은 `[(name, code), ...]` 형태 — 호출부가 캐시에서 읽어 주입한다(네트워크는
     이 함수 밖). 없으면(`None`/빈 리스트) 종목 후보·숫자 클레임은 비어 있는
     채로(리스크 키워드·채널별 원문은 그대로) 돌려준다 — 예외를 던지지 않는다.
+
+    `regime`은 `data/state/regime.json`의 그 시장 sub-dict(호출부가 읽어
+    주입, 모듈 docstring "프로그램 스탠스" 절) — `Digest.program_stance_display()`
+    가 쓴다. `stance_llm_call`(선택)은 `llm_call`과 별개의, 스탠스 전용
+    마이크로프롬프트 경로다(모듈 docstring "LLM 스탠스" 절) — `llm_call`이
+    이미 유효한 스탠스를 만들었으면 건너뛴다.
     """
     relevant = {c["handle"] for c in channels_for(market)}
     by_channel: dict[str, list[dict]] = {h: [] for h in relevant}
@@ -569,10 +634,17 @@ def build_digest(
         channel_entries=channel_entries, channel_notices=channel_notices,
         candidates=ranked_candidates, cands=cands,
         risk_items=risk_items, number_claims=number_claims,
+        regime=regime,
     )
 
     if llm_call is not None and channel_entries:
         digest = _apply_llm(digest, messages, llm_call)
+
+    # 스탠스 전용 마이크로프롬프트(모듈 docstring "LLM 스탠스" 절) — 위
+    # llm_call 이 이미 유효한 스탠스를 만들었으면 건너뛴다(중복 호출 방지,
+    # 하위호환: 기존에 [STANCE] 마커로 성공하던 호출부는 그대로 그 결과를 쓴다).
+    if stance_llm_call is not None and channel_entries and digest.stance is None:
+        digest = _apply_llm_stance(digest, stance_llm_call)
 
     return digest
 
@@ -676,9 +748,61 @@ def _apply_llm(digest: Digest, messages: list[dict], llm_call) -> Digest:
         market=digest.market, since=digest.since, until=digest.until,
         channel_entries=digest.channel_entries, channel_notices=digest.channel_notices,
         candidates=digest.candidates, cands=digest.cands, risk_items=digest.risk_items,
-        number_claims=digest.number_claims,
+        number_claims=digest.number_claims, regime=digest.regime,
         stance=parsed["stance"], stance_why=parsed["why"], room_summary=parsed["summary"],
         candidate_reasons=parsed["reasons"], llm_used=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 스탠스 전용 마이크로프롬프트(선택, 모듈 docstring "LLM 스탠스" 절) — `llm_call`
+# 의 [STANCE] 마커가 실패했을 때(실측: 거의 항상)만 이걸로 보강한다.
+# `stance_llm_call`은 이미 엄격 검증된 `{"stance","why"}` dict|None을 돌려주는
+# 계약이다(실제 OpenRouter 호출·재시도·모델 폴백은 `quant.adapters.narrate.
+# stance_only`가 담당 — 이 모듈은 프롬프트만 만들고 네트워크를 모른다).
+# ---------------------------------------------------------------------------
+
+
+def _stance_prompt(digest: Digest) -> str:
+    label = _MARKET_LABEL.get(digest.market, digest.market)
+    lines = [
+        f"다음은 텔레그램 공개 채널에서 수집한 {label} 시장 관련 최근 메시지다.",
+        "제시된 메시지 내용만 근거로 오늘의 시장 스탠스를 판단하라. 새 사실을",
+        "지어내지 말고, 숫자를 인용하지 마라.",
+        "",
+        "다음 JSON 객체 하나만 답하라(다른 텍스트·설명·마크다운 코드펜스 금지):",
+        '{"stance":"방어 또는 중립 또는 공격 중 하나","why":"60자 이내 이유"}',
+        "",
+        "[메시지]",
+    ]
+    for handle, entries in digest.channel_entries.items():
+        for e in entries:
+            lines.append(f"[{handle}] {e.snippet}")
+    return "\n".join(lines)
+
+
+def _apply_llm_stance(digest: Digest, stance_llm_call) -> Digest:
+    try:
+        result = stance_llm_call(_stance_prompt(digest))
+    except Exception:  # noqa: BLE001 — 스탠스 마이크로프롬프트 실패가 다이제스트를 막지 않는다
+        return digest
+    if not isinstance(result, dict):
+        return digest
+    stance = result.get("stance")
+    why = result.get("why")
+    # `stance_only`가 이미 이 두 조건을 검증하지만, 다른 콜러블이 주입될 수도
+    # 있으므로(테스트 등) 여기서도 한 번 더 확인한다 — "절반만 믿을 수 있는
+    # 판정은 안 믿느니만 못하다"(모듈 docstring 원칙).
+    if stance not in STANCES or not isinstance(why, str) or not why:
+        return digest
+    return Digest(
+        market=digest.market, since=digest.since, until=digest.until,
+        channel_entries=digest.channel_entries, channel_notices=digest.channel_notices,
+        candidates=digest.candidates, cands=digest.cands, risk_items=digest.risk_items,
+        number_claims=digest.number_claims, regime=digest.regime,
+        stance=stance, stance_why=why,
+        room_summary=digest.room_summary, candidate_reasons=digest.candidate_reasons,
+        llm_used=digest.llm_used,
     )
 
 
@@ -713,9 +837,12 @@ def render_telegram(digest: Digest, report_url: str | None = None) -> str:
 
     sections: list[str] = []
 
-    # 스탠스는 늘 보인다 — LLM 성공이면 실제 판정, 아니면 정직한 미가용
-    # 표시(리스크 태그 집계) — 소유자 지시, 섹션을 생략하지 않는다.
-    sections.append(f"{tgfmt.b('[스탠스]')}\n{tgfmt.esc(digest.stance_display())}")
+    # 스탠스는 늘 보인다 — 결정론 프로그램 스탠스(a, 항상 첫 줄, LLM 무관)가
+    # 먼저, 그 아래 LLM 스탠스(b, 선택 — 성공이면 실제 판정, 아니면 정직한
+    # 미가용 표시 + 리스크 태그 집계)가 둘째 줄이다(소유자 지시, 섹션을
+    # 생략하지 않는다, 2026-09-05 "유료 레인 불필요" 결정).
+    stance_lines = [digest.program_stance_display(), digest.stance_display()]
+    sections.append(f"{tgfmt.b('[스탠스]')}\n" + tgfmt.esc("\n".join(stance_lines)))
 
     if digest.room_summary:
         sections.append(f"{tgfmt.b('[방별 동향]')}\n{tgfmt.esc(digest.room_summary)}")

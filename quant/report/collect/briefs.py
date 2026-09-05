@@ -56,14 +56,30 @@ def _merge_telegram_results(fresh: dict, store_rows: list[dict]) -> dict:
     (handle, msg_id) 기준 중복 제거 — 같은 메시지가 양쪽에 있으면 `fresh`(방금
     받은 최신 파싱)를 우선한다. 채널별 메시지는 발행시각 내림차순으로 정렬한다
     — `build_telegram_view`가 앞 N개만 잘라 쓰므로(`ITEMS_PER_CHANNEL`) 순서가
-    그대로 결과에 반영된다."""
+    그대로 결과에 반영된다.
+
+    **`preview: False` 채널 예외**(2026-09-05, `telegram_channels.CHANNELS`
+    "포워딩 우회" 절 — clawnewssummary 등) — 이 채널의 `fresh` 메시지는
+    웹 프리뷰가 본문을 못 주는 상태(text_not_supported)라 msg_id만 있고
+    본문이 늘 비어 있다. 일반 규칙("fresh 우선")을 그대로 적용하면 나중에
+    오너가 봇으로 포워딩해 원장에 쌓인 **실제 본문**이 같은 msg_id의 빈
+    fresh 항목에 항상 가려진다 — 그래서 이 채널만 `fresh`를 버킷에 아예
+    넣지 않고 원장(`store_rows`)만으로 채운다. 원장에 실제 본문(text 또는
+    images)이 하나라도 있으면 "미리보기 없음" 오류 문구도 지운다 — 프리뷰가
+    아니라 포워딩으로 채워졌으니 리포트에서 "프리뷰 미제공" 안내가 남을
+    이유가 없다."""
     from quant.collect.sources.feeds import parse_published
+    from quant.collect.sources.telegram_channels import CHANNELS
+
+    no_preview_handles = {c["handle"] for c in CHANNELS if c.get("preview") is False}
 
     buckets: dict[str, dict[str, dict]] = {}
     errors: dict[str, str | None] = {}
     for handle, entry in fresh.items():
         errors[handle] = entry.get("error")
         bucket = buckets.setdefault(handle, {})
+        if handle in no_preview_handles:
+            continue  # fresh는 항상 빈 본문 — 아래 원장분만으로 채운다
         for msg in entry.get("messages") or []:
             msg_id = msg.get("msg_id")
             if msg_id:
@@ -84,6 +100,8 @@ def _merge_telegram_results(fresh: dict, store_rows: list[dict]) -> dict:
             "links": row.get("links") or [],
             "images": row.get("images") or [],
         }
+        if handle in no_preview_handles and (row.get("text") or row.get("images")):
+            errors[handle] = None
 
     out: dict[str, dict] = {}
     for handle, bucket in buckets.items():
@@ -111,7 +129,15 @@ def _fetch_telegram_briefs(root: Path, getter=None, since: datetime | None = Non
     빌드 시점엔 오전에 나온 메시지가 이미 그 20개 밖으로 밀려나 있을 수 있다
     (뉴스 RSS 와 같은 문제, `collector.py` 모듈 docstring 참고). 30분마다 도는
     `telegram-collect` 수집기(`report_cli collect --telegram`)가 쌓은 원장에서
-    `since`(생략 시 오늘 KST 자정) 이후분을 읽어 `fresh`와 합친다."""
+    `since`(생략 시 오늘 KST 자정) 이후분을 읽어 `fresh`와 합친다.
+
+    **내용 없는 행은 원장에 남기지 않는다**(2026-09-05, "포워딩 우회" 절) —
+    `preview: False` 채널(clawnewssummary 등)은 텍스트도 이미지도 없는 msg_id
+    만 스크레이핑된다. 이걸 그대로 원장에 적으면 `append_ledger`의 (handle,
+    msg_id) dedup 이 그 자리를 "이미 봤음"으로 선점해, **나중에 오너가 봇으로
+    포워딩한 같은 msg_id 의 실제 본문이 조용히 버려진다**(dedup 은 내용이
+    아니라 키 존재만 본다). 텍스트·이미지가 전혀 없는 행은 애초에 정보가
+    0이므로 저장할 이유도 없다 — 걸러서 그 슬롯을 미래의 포워딩에 비워둔다."""
     from quant.collect.sources import telegram_channels
 
     try:
@@ -125,6 +151,7 @@ def _fetch_telegram_briefs(root: Path, getter=None, since: datetime | None = Non
         {"handle": handle, **msg}
         for handle, entry in result.items()
         for msg in entry.get("messages") or []
+        if msg.get("text") or msg.get("images")
     ]
     try:
         added = telegram_channels.append_ledger(rows, path)

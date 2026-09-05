@@ -61,6 +61,14 @@ def test_channels_for_us_includes_us_and_both():
     assert "hanwhastrategy" not in handles  # market: KR only
 
 
+def test_clawnewssummary_is_flagged_preview_false():
+    """2026-09-05 "포워딩 우회" — 웹 프리뷰가 본문을 못 주는 채널(clawnewssummary,
+    text_not_supported)은 `preview: False`로 명시한다. `briefs._merge_telegram_results`
+    가 이 플래그를 보고 fresh(항상 빈 스크레이핑) 대신 원장(포워딩 적립분)을 쓴다."""
+    entry = next(c for c in CHANNELS if c["handle"] == "clawnewssummary")
+    assert entry.get("preview") is False
+
+
 def test_channels_has_no_usnews_or_usdigest_tier_channels():
     """2026-09-05 채널 재편 — usnews/usdigest tier 채널(walterbloomberg/
     financialjuice/insidertracking)은 새 8개 등록에 없다. `tier` 값 자체는

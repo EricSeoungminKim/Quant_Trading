@@ -117,7 +117,13 @@ CHANNELS: list[dict] = [
     # 스스로 환각 가능성을 경고한다 — 모듈 docstring "clawnewssummary" 절).
     # 웹 프리뷰가 메시지 본문을 못 주는 상태(text_not_supported)라 실질적으로
     # 매 수집마다 "미리보기 없음"으로 나타난다 — 등록은 소유자 지정대로 유지.
-    {"handle": "clawnewssummary", "분류": "해외뉴스 AI 요약(시간당)", "market": "BOTH", "tier": "news"},
+    # `preview: False`(2026-09-05, "포워딩 우회" 절) — 프리뷰가 본문을 못 주는
+    # 채널이라는 표시. 오너가 이 채널 게시물을 봇 채팅으로 직접 포워딩하면
+    # `server/scripts/tg_bridge.py`가 원장에 실제 본문을 적립하고,
+    # `quant/report/collect/briefs.py`의 `_merge_telegram_results`가 이 플래그를
+    # 보고 fresh(항상 빈 스크레이핑) 대신 원장분을 쓴다.
+    {"handle": "clawnewssummary", "분류": "해외뉴스 AI 요약(시간당)", "market": "BOTH", "tier": "news",
+     "preview": False},
     # daegurr — "💯똥밭에 굴러도 주식판", 국내 시황 + 경제 캘린더 + 지정학
     # 코멘터리. 소유자 요구 (3) 리스크 브리핑 방.
     {"handle": "daegurr", "분류": "국내 시황·경제 캘린더·리스크 코멘터리", "market": "KR", "tier": "news"},

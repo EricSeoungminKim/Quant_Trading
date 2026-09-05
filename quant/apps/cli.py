@@ -5702,6 +5702,44 @@ def _tg_digest_save_last_run(path, market: str, at) -> None:
     path.write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _tg_digest_load_regime(root, market: str) -> dict | None:
+    """`data/state/regime.json`에서 `market`(KR/US) sub-dict(label/risk_multiplier/
+    reasons)만 뽑는다 — `tg_digest.Digest.program_stance_display()`가 정직하게
+    "판정 불가"를 보여줄 수 있게 실패는 예외가 아니라 `None`이다. `quant.trade.
+    regime.provider._save_cache`가 쓰는 스키마 그대로 읽는다(최상위=US 하위호환,
+    `markets.{KR,US}`=현행)."""
+    import json as _json
+
+    path = root / "data" / "state" / "regime.json"
+    if not path.exists():
+        return None
+    try:
+        payload = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    state = (payload.get("markets") or {}).get(market)
+    if not isinstance(state, dict) and market == "US":
+        state = payload if "label" in payload else None
+    return state if isinstance(state, dict) else None
+
+
+def _tg_digest_stance_call():
+    """스탠스 전용 마이크로프롬프트 콜러블 — `_narrate_call`과 같은 게이트
+    (`OPS_NARRATOR=openrouter`일 때만) — `narrate.stance_only`는 OpenRouter
+    전용이라 다른 값(미설정/claude/none)이면 `None`을 돌려주고 시도하지 않는다.
+    반환은 이미 엄격 검증을 통과한 `{"stance","why"}` dict|None(`stance_only`
+    계약) — `tg_digest`는 그대로 받아 표시만 한다."""
+    if (os.environ.get("OPS_NARRATOR") or "").strip().lower() != "openrouter":
+        return None
+    from quant.adapters.env import get_key
+    from quant.adapters.narrate import stance_only
+
+    key = (os.environ.get("OPENROUTER_API_KEY") or "").strip() or (get_key("OPENROUTER_API_KEY") or "").strip()
+    if not key:
+        return None
+    return lambda prompt: stance_only(prompt, key)
+
+
 def cmd_tg_digest(args: argparse.Namespace) -> None:
     """텔레그램 인텔리전스 다이제스트 — 정규장 중 30분마다 신규 텔레그램
     메시지만 모아 KR/US 스탠스 힌트·관심종목 후보·방별 요약을 stdout에 낸다
@@ -5784,9 +5822,12 @@ def cmd_tg_digest(args: argparse.Namespace) -> None:
         return price
 
     llm_call = None if args.no_narrate else _narrate_call()
+    stance_llm_call = None if args.no_narrate else _tg_digest_stance_call()
+    regime = _tg_digest_load_regime(root, args.market)
     digest = tg_digest.build_digest(
         messages, args.market, now, since=since, name_table=name_table,
-        quotes_lookup=_quote, llm_call=llm_call,
+        quotes_lookup=_quote, llm_call=llm_call, stance_llm_call=stance_llm_call,
+        regime=regime,
     )
 
     text = tg_digest.render_telegram(digest, report_url=_daily_report_url(args.market, now.date()))

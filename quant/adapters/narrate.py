@@ -205,7 +205,8 @@ class OpenRouterNarrator:
 
     def __init__(self, api_key: str, model: str = DEFAULT_OPENROUTER_MODEL,
                  timeout: int = 60, poster=None, max_tokens: int = 1500,
-                 json_mode: bool = False):
+                 json_mode: bool = False, temperature: float = 0.2,
+                 reasoning_exclude: bool = False):
         self._key = api_key
         self._model = model
         self._timeout = timeout
@@ -216,6 +217,16 @@ class OpenRouterNarrator:
         # 오탐한다(2026-08-26 실 E2E에서 확인). 방어는 소비자의 엄격한 JSON
         # 파싱이 맡는다 — 쓰레기는 거기서 None(결근)이 된다.
         self._json_mode = json_mode
+        self._temperature = temperature
+        # `reasoning: {"exclude": true}` — 스탠스 마이크로프롬프트(2026-09-05,
+        # `stance_only`) 전용 옵션. **실측 주의**: 이 플래그는 모델이 별도
+        # `reasoning` 필드에 사고과정을 담는 경우 그 필드를 숨길 뿐, 사고과정을
+        # `content`에 직접 이어쓰는 모델(nemotron 계열 등)의 토큰 소비 자체는
+        # 막지 못한다 — 실측(2026-09-05, max_tokens=120)으로 여러 무료 모델이
+        # `reasoning_tokens`가 `max_tokens`를 넘겨 `content`가 통째로 `None`이
+        # 되는 것을 확인했다. 그래서 `stance_only`는 이 플래그를 켜되, 실패를
+        # 전제로 폴백 모델을 따로 둔다.
+        self._reasoning_exclude = reasoning_exclude
 
     @staticmethod
     def _httpx_poster(url: str, headers: dict, payload: dict, timeout: int) -> dict | None:
@@ -247,24 +258,31 @@ class OpenRouterNarrator:
         return text
 
     def _narrate_once(self, prompt: str) -> str | None:
+        payload = {
+            "model": self._model,
+            "messages": [{"role": "user", "content": prompt}],
+            # 기본값 1500인 이유: 서술은 짧아야 한다 — 텔레그램 한 통에 들어가고,
+            # 길면 사람이 안 읽는다(문자 수 상한은 narrator.py의
+            # NARRATION_MAX_CHARS=700이 문장 경계로 자른다). 다만 700 토큰은
+            # 한국어 3~6문장(≈600자)에 너무 빠듯했다 — 한글은 토큰당 표시
+            # 글자 수가 영어보다 작아, 답이 완성되기 전에 토큰이 바닥나 문장
+            # 중간에서 잘려 나갔다(실측, 2026-09-04 market-pulse: "...스프레"
+            # 처럼 단어 중간 절단). 파라미터화한 이유: **추론 모델은 최종 답
+            # 전에 "생각"에 토큰을 쓴다** — 기본 모델(nemotron-3-ultra)로 9K자
+            # deepdive 프롬프트를 돌리면 토큰이 생각 과정에서 전부 소진돼 최종
+            # 답이 잘리고 파싱 후보가 0건이 된다(실측 2026-08-15). 호출부가
+            # 프롬프트 성격에 맞게 올려 쓸 수 있어야 한다.
+            "max_tokens": self._max_tokens, "temperature": self._temperature,
+        }
+        if self._reasoning_exclude:
+            # 응답에 별도 `reasoning` 필드가 있는 모델은 그 필드를 숨긴다 —
+            # `content` 로의 사고과정 유출까지는 못 막는다(위 `__init__` 주석).
+            payload["reasoning"] = {"exclude": True}
         body = _quietly(
             self._poster,
             OPENROUTER_URL,
             {"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"},
-            {"model": self._model,
-             "messages": [{"role": "user", "content": prompt}],
-             # 기본값 1500인 이유: 서술은 짧아야 한다 — 텔레그램 한 통에 들어가고,
-             # 길면 사람이 안 읽는다(문자 수 상한은 narrator.py의
-             # NARRATION_MAX_CHARS=700이 문장 경계로 자른다). 다만 700 토큰은
-             # 한국어 3~6문장(≈600자)에 너무 빠듯했다 — 한글은 토큰당 표시
-             # 글자 수가 영어보다 작아, 답이 완성되기 전에 토큰이 바닥나 문장
-             # 중간에서 잘려 나갔다(실측, 2026-09-04 market-pulse: "...스프레"
-             # 처럼 단어 중간 절단). 파라미터화한 이유: **추론 모델은 최종 답
-             # 전에 "생각"에 토큰을 쓴다** — 기본 모델(nemotron-3-ultra)로 9K자
-             # deepdive 프롬프트를 돌리면 토큰이 생각 과정에서 전부 소진돼 최종
-             # 답이 잘리고 파싱 후보가 0건이 된다(실측 2026-08-15). 호출부가
-             # 프롬프트 성격에 맞게 올려 쓸 수 있어야 한다.
-             "max_tokens": self._max_tokens, "temperature": 0.2},
+            payload,
             self._timeout,
             what="OpenRouter",
         )
@@ -289,6 +307,81 @@ class OpenRouterNarrator:
             log.warning("OpenRouter 서술에 사고과정 유출 감지 — 폐기")
             return None
         return text
+
+
+# ---------------------------------------------------------------------------
+# 스탠스 전용 마이크로프롬프트(2026-09-05, tg_digest 소유자 요구 — "유료 레인이
+# 꼭 필요한가? 아니다") — `Narrator` 포트가 아니다(산문 한 줄이 아니라 엄격한
+# JSON 계약 `{"stance", "why"}`뿐이라 모양이 다르다, `describe_image`와 같은
+# 이유로 별도 함수).
+#
+# **실측(2026-09-05, max_tokens=120, reasoning.exclude=true)** — 기본 모델
+# (nemotron 계열)은 `reasoning_tokens`가 `max_tokens`를 그대로 다 먹거나
+# 넘겨(`content`에 사고과정을 직접 이어쓰는 구조라 exclude 플래그가 못 막는다)
+# `content`가 통째로 `None`이 된다. 후보 다수를 같은 조건으로 실측한 결과
+# `poolside/laguna-s-2.1:free`만 3/3 `reasoning_tokens=0`으로 엄격한 JSON
+# 계약을 그대로 통과했다(다른 후보 — google/gemma-4-31b-it:free 는 업스트림
+# 공유 풀 429, dots-studio/dots-3-note-preview:free·liquid/lfm-2.5-2.6b:free·
+# minimax/minimax-m2.7:free·nvidia/nemotron-3.5-lightning:free 는 전부
+# reasoning_tokens 로 예산 소진 또는 사고과정 유출). 그래서 기본 모델을
+# 1순위로 시도만 하고(성공하면 그대로 쓴다), 실패를 전제로 이 모델을
+# 폴백으로 둔다.
+STANCE_FALLBACK_MODEL = "poolside/laguna-s-2.1:free"
+STANCE_MAX_TOKENS = 120
+_STANCE_VALUES = ("방어", "중립", "공격")
+
+
+def _parse_stance_json(text: str | None) -> dict | None:
+    """엄격한 JSON 계약 — `{"stance": "방어"|"중립"|"공격", "why": <=60자 문자열}`
+    정확히 이 두 키만 허용한다. 다른 텍스트·마크다운 코드펜스·추가 키가
+    섞이거나 `stance` 값이 셋 중 하나가 아니면(예: "공격적") 통째로 거부한다
+    — "절반만 맞는 JSON은 안 믿느니만 못하다"(narrator.py verify_numbers와
+    같은 all-or-nothing 원칙)."""
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text.strip())
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict) or set(parsed.keys()) != {"stance", "why"}:
+        return None
+    stance = parsed.get("stance")
+    why = parsed.get("why")
+    if stance not in _STANCE_VALUES:
+        return None
+    if not isinstance(why, str) or not why.strip() or len(why) > 60:
+        return None
+    return {"stance": stance, "why": why}
+
+
+def stance_only(
+    prompt: str, api_key: str,
+    model: str = DEFAULT_OPENROUTER_MODEL, fallback_model: str = STANCE_FALLBACK_MODEL,
+    poster=None, timeout: int = 20,
+) -> dict | None:
+    """스탠스 전용 마이크로프롬프트 1회 판정 — `{"stance", "why"}` | `None`.
+
+    `model`(기본 모델)을 먼저 1회 시도하고, 엄격 검증에 실패하면(빈 응답,
+    사고과정으로 예산 소진, JSON 계약 불일치 등) `fallback_model`(실측으로
+    확인한 무추론 모델)로 1회 더 시도한다 — narrate()처럼 같은 모델을 두 번
+    재시도하지 않는다(다른 모델 두 개를 각 1회씩). 둘 다 실패하면 `None` —
+    LLM 스탠스는 선택 사항이다(`quant.analyze.tg_digest.Digest.
+    program_stance_display()`가 결정론 스탠스는 이 함수와 무관하게 항상
+    낸다). `max_tokens=120`·`temperature=0`·`reasoning.exclude=true` 고정.
+    """
+    t0 = time.monotonic()
+    for m in (model, fallback_model):
+        narrator = OpenRouterNarrator(
+            api_key, model=m, timeout=timeout, poster=poster,
+            max_tokens=STANCE_MAX_TOKENS, json_mode=True,
+            temperature=0, reasoning_exclude=True,
+        )
+        result = _parse_stance_json(narrator._narrate_once(prompt))
+        if result is not None:
+            _record_llm_call("stance", True, time.monotonic() - t0)
+            return result
+    _record_llm_call("stance", False, time.monotonic() - t0)
+    return None
 
 
 # 텔레그램 채널 사진 해석(서브프로젝트 S part 3, 2026-08-17) — `Narrator` 포트가

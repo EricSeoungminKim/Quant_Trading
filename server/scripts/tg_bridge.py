@@ -28,6 +28,7 @@ import yaml
 from quant.trade.control import TradingControl
 from quant.adapters.brokers.toss.client import TossClient
 from quant.core.models import market_of_symbol, trading_day
+from quant.collect.sources import telegram_channels
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 ENV_LOCAL = REPO_ROOT / ".env.local"
@@ -36,6 +37,10 @@ CONTROL_STATE_PATH = REPO_ROOT / "data" / "state" / "control.json"
 PORTFOLIO_STATE_PATH = REPO_ROOT / "data" / "state" / "portfolio.json"
 WATCHLIST_PATH = REPO_ROOT / "data" / "watchlist.yaml"
 LEDGER_PATH = REPO_ROOT / "data" / "state" / "trades.jsonl"
+# 텔레그램 채널 원장(2026-09-05, "포워딩 우회") — report_cli/briefs.py의
+# 스크레이핑 수집기와 같은 파일을 공유한다(`quant.collect.sources.
+# telegram_channels.append_ledger`가 (handle, msg_id) dedup을 보장).
+TELEGRAM_LEDGER_PATH = REPO_ROOT / "data" / "ledger" / "telegram_msgs.jsonl"
 KST = timezone(timedelta(hours=9))
 
 # 브리지 자체 표시용 — 엔진(loop.py)의 라벨과 같은 표기를 유지한다
@@ -170,6 +175,59 @@ def extract_text(update: dict) -> Optional[str]:
     return text if isinstance(text, str) and text.strip() else None
 
 
+# ---------------------------------------------------------------------------
+# 포워드된 채널 게시물(2026-09-05, "포워딩 우회") — 오너 결정: 웹 프리뷰가
+# 본문을 못 주는 채널(clawnewssummary, `quant/collect/sources/
+# telegram_channels.py` 모듈독스트링 "clawnewssummary" 절)은 오너가 폰에서
+# 직접 봇 채팅으로 포워딩한다. 포워드된 메시지는 명령으로도, 일반 대화로도
+# 처리하지 않는다 — process_update가 텍스트 추출보다 먼저 이걸 검사한다.
+# ---------------------------------------------------------------------------
+def _forward_channel_origin(message: dict) -> Optional[dict]:
+    """포워드된 **채널** 게시물이면 `{"username": str|None, "message_id": str,
+    "date": int|None}`, 아니면(포워드가 아니거나 채널이 아닌 다른 유형의
+    포워드 — 사용자/봇 등) `None`.
+
+    Bot API 신형(`message.forward_origin`, `type=="channel"`, 필드
+    `chat.username`/`message_id`/`date`)과 구형(`forward_from_chat`/
+    `forward_from_message_id`/`forward_date`)을 모두 본다 — 봇 API 버전에
+    무관하게 동작해야 한다. `username`이 없으면(비공개 채널 등) 매칭 자체가
+    불가능하므로 `username=None`으로 표시해 호출부가 조용히 무시하게 한다."""
+    origin = message.get("forward_origin")
+    if isinstance(origin, dict) and origin.get("type") == "channel":
+        message_id = origin.get("message_id")
+        if message_id is None:
+            return None
+        chat = origin.get("chat") or {}
+        return {
+            "username": chat.get("username"),
+            "message_id": str(message_id),
+            "date": origin.get("date"),
+        }
+
+    forward_chat = message.get("forward_from_chat")
+    if isinstance(forward_chat, dict) and forward_chat.get("type") == "channel":
+        message_id = message.get("forward_from_message_id")
+        if message_id is None:
+            return None
+        return {
+            "username": forward_chat.get("username"),
+            "message_id": str(message_id),
+            "date": message.get("forward_date"),
+        }
+
+    return None
+
+
+def _match_forward_channel_handle(username: str) -> Optional[str]:
+    """`username`(대소문자 무관)이 `telegram_channels.CHANNELS`에 등록된
+    핸들이면 그 정식 표기(등록된 대소문자 그대로)를, 아니면 `None`."""
+    lower = username.lower()
+    for c in telegram_channels.CHANNELS:
+        if c["handle"].lower() == lower:
+            return c["handle"]
+    return None
+
+
 def truncate_reply(text: str, limit: int = REPLY_MAX_CHARS) -> str:
     if len(text) <= limit:
         return text
@@ -298,6 +356,66 @@ def _watchlist_lock(path: Optional[Path] = None):
             yield
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+@contextmanager
+def _telegram_ledger_lock(path: Optional[Path] = None):
+    """텔레그램 원장(`telegram_msgs.jsonl`) 쓰기 잠금 — `_watchlist_lock`과
+    같은 이유. `report collect --telegram`(30분 주기)·`_fetch_telegram_briefs`
+    (리포트 빌드)·이 브리지(포워딩) 여럿이 같은 파일에 쓸 수 있어,
+    `append_ledger`의 dedup을 위한 read-then-append 구간을 배타로 감싼다."""
+    path = path or TELEGRAM_LEDGER_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(".lock")
+    with open(lock_path, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+def _handle_forwarded_channel_post(
+    tg, chat_id: int, message: dict, path: Optional[Path] = None,
+) -> None:
+    """포워드된 채널 게시물을 텔레그램 원장에 저장한다. 미등록 채널發 포워드,
+    또는 username을 알 수 없는 포워드는 조용히 무시한다(INFO 로그만 — 명령도
+    대화도 아니다). 저장 스키마는 `telegram_channels.append_ledger`가 쓰는
+    행 그대로다(`handle`/`msg_id`/`text`/`published`/`links`/`images`) —
+    `(handle, msg_id)` dedup이 재포워딩 중복을 막는다."""
+    origin = _forward_channel_origin(message)
+    if origin is None:
+        return
+    username = origin.get("username")
+    if not username:
+        log("포워드된 채널 게시물 — username 없음(비공개 채널 추정), 무시")
+        return
+    handle = _match_forward_channel_handle(username)
+    if handle is None:
+        log(f"포워드된 채널 미등록 — 무시: {username}")
+        return
+
+    msg_id = origin["message_id"]
+    date = origin.get("date")
+    published = (
+        datetime.fromtimestamp(date, tz=timezone.utc).isoformat() if date is not None else None
+    )
+    # 사진 메시지는 본문이 message.get("text")가 아니라 caption에 실린다 —
+    # 캡션 없는 사진 포워드는 빈 문자열(정보가 없다는 뜻 그대로).
+    text = message.get("text") or message.get("caption") or ""
+    row = {
+        "handle": handle,
+        "msg_id": msg_id,
+        "text": text,
+        "published": published,
+        "links": [],
+        "images": [],
+    }
+    ledger_path = path or TELEGRAM_LEDGER_PATH
+    with _telegram_ledger_lock(ledger_path):
+        added = telegram_channels.append_ledger([row], ledger_path)
+    log(f"포워드 채널 저장: {handle} msg_id={msg_id} added={added}")
+    tg.send_message(chat_id, f"📥 {handle} 저장 ({added})")
 
 
 def load_watchlist(path: Optional[Path] = None) -> list[dict]:
@@ -1063,6 +1181,14 @@ def process_update(
     if not is_allowed_chat(update, chat_id):
         uid = update.get("message", {}).get("chat", {}).get("id")
         log(f"허용되지 않은 chat_id 무시: {uid}")
+        return
+
+    message = update.get("message") or {}
+    # 포워드된 채널 게시물(2026-09-05, "포워딩 우회")은 텍스트 추출·명령
+    # 라우팅보다 먼저 처리하고 즉시 반환한다 — 명령으로도, 일반 대화로도
+    # 넘기지 않는다(`_handle_forwarded_channel_post` docstring).
+    if _forward_channel_origin(message) is not None:
+        _handle_forwarded_channel_post(tg, chat_id, message)
         return
 
     text = extract_text(update)

@@ -334,9 +334,12 @@ a{color:inherit}
 {% if channel_digest and (channel_digest.has_content() or channel_digest.channel_notices) %}
 <section class="mod">
   <h2>📡 채널 브리핑 종합<span class="sub">텔레그램 8개 채널 · 신규 메시지 요약</span></h2>
-  {# 마감판은 narrator=None 이라 stance_display()가 항상 "서술기 미가용 —
-     리스크 태그 …(자동 판정 안 함)"을 돌려준다 — 그래도 생략하지 않는다
-     (소유자 지시 2026-09-05, report.html.j2 의 동일 섹션과 같은 계약). #}
+  {# 결정론 프로그램 스탠스는 마감판에도 항상 나온다(LLM 무관, regime.json
+     만 읽는다). 마감판은 narrator=None 이라 아래 LLM 스탠스 줄은 항상
+     "서술기 미가용 — 리스크 태그 …(자동 판정 안 함)"을 돌려준다 — 그래도
+     생략하지 않는다(소유자 지시 2026-09-05, report.html.j2 의 동일 섹션과
+     같은 계약). #}
+  <p class="idx-sub">{{ channel_digest.program_stance_display() }}</p>
   <p class="idx-sub"><b>스탠스</b>: {{ channel_digest.stance_display() }}</p>
   {% if channel_digest.candidates %}
   <p class="idx-sub"><b>관심 후보</b></p>
