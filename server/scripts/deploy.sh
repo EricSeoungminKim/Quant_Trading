@@ -3,6 +3,7 @@
 # 사용법: QT_SSH_HOST=ubuntu@<ElasticIP> ./server/scripts/deploy.sh
 #   NO_RESTART=1  풀·동기화만(엔진 무접촉 — 장중에도 안전)
 #   FORCE=1       장중 강제(비상시에만 — 서버 data/deploy.log 에 남는다)
+#   조립 완료 확인은 최대 120초 대기(2026-09-06: 40초 창이 세 번 연속 정상 배포를 '미확인'으로 끝냈다)
 #
 # ## 장중 하드 가드 (2026-08-31)
 # 사람의 "지금 장중인가" 판단이 두 번 실패했다 — 8/28 14:54(KR 장중), 8/31
@@ -75,8 +76,9 @@ ssh "$QT_SSH_HOST" "cd $REPO_DIR && git pull --ff-only && ~/.local/bin/uv sync \
   && crontab server/crontab.txt \
   && sudo systemctl restart quant-engine tg-bridge \
   && systemctl is-active quant-engine tg-bridge \
-  && (journalctl -u quant-engine --since '40 sec ago' --no-pager | grep -m1 '엔진 조립 완료' \
-      || { echo '⚠️ 조립 완료 로그 미확인'; exit 1; }) \
+  && (for i in \$(seq 1 24); do journalctl -u quant-engine --since '3 min ago' --no-pager | grep -q '엔진 조립 완료' && break; sleep 5; done; \
+      journalctl -u quant-engine --since '3 min ago' --no-pager | grep -m1 '엔진 조립 완료' \
+      || { echo '⚠️ 조립 완료 로그 미확인(120초 대기)'; exit 1; }) \
   && mkdir -p data/state && git rev-parse HEAD > data/state/last_deploy_sha.txt \
   && echo \"[deploy] 완료 \$(date '+%F %T')\" >> data/deploy.log"
 
