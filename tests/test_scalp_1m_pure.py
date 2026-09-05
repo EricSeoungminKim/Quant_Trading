@@ -449,6 +449,44 @@ def test_entry_patterns_invalid_raises_for_pure_too():
         Scalp1mPureShell(["AAA"], _params(entry_patterns=[]))
 
 
+# ---------------- entry_patterns 시장별 매핑(dict 폼, 2026-09-05 소유자 위임 결정)
+# 근거는 scalp_1m.py 생성자 주석 참고 — 여기서는 레거시/순수 두 구현이 같은
+# 신호(또는 같은 무신호)를 내는지만 고정한다(test_scalp_1m.py의
+# test_entry_patterns_dict_form_resolves_per_market과 동일 시나리오).
+
+def test_entry_patterns_dict_form_resolves_per_market_equivalence():
+    """entry_patterns={KR: "B", US: "A,B"}이면 두 구현 모두 KR 심볼은 패턴 A를
+    건너뛰고 바로 B를 평가하며(이 봉은 MA60 워밍업 부족으로 B도 미충족 —
+    결국 무신호), US 심볼은 기존과 동일하게 패턴 A로 즉시 진입한다."""
+    patterns = {"KR": "B", "US": "A,B"}
+
+    legacy_kr, pure_kr = _strats(
+        [KR_SYMBOL], _params(entry_patterns=patterns, kr_entry_open_delay_min=0)
+    )
+    kr_bars = {KR_SYMBOL: _kr_pattern_a_bars()}
+    kr_now = _kr_now(KR_OPEN) + timedelta(minutes=1, seconds=30)
+    sig_legacy_kr = legacy_kr.on_cycle(
+        _ctx({KR_SYMBOL: 81300.0}, kr_now, bars=kr_bars, open_markets=frozenset({"KR"})))
+    sig_pure_kr = pure_kr.on_cycle(
+        _ctx({KR_SYMBOL: 81300.0}, kr_now, bars=kr_bars, open_markets=frozenset({"KR"})))
+    assert sig_legacy_kr == [] and sig_pure_kr == []
+    assert legacy_kr._pattern_a_used.get(KR_SYMBOL, False) is False
+    assert pure_kr._state.get("pattern_a_used", {}).get(KR_SYMBOL, False) is False
+
+    legacy_us, pure_us = _strats(["AAA"], _params(entry_patterns=patterns))
+    us_bars = {"AAA": _pattern_a_bars(surge=True)}
+    us_now = _now_within_window(3.0)
+    sig_legacy_us = legacy_us.on_cycle(_ctx({"AAA": 102.4}, us_now, bars=us_bars))
+    sig_pure_us = pure_us.on_cycle(_ctx({"AAA": 102.4}, us_now, bars=us_bars))
+    assert _keys(sig_legacy_us) == _keys(sig_pure_us)
+    assert len(sig_legacy_us) == 1 and "패턴A" in sig_legacy_us[0].reason
+
+
+def test_entry_patterns_dict_invalid_raises_for_pure_too():
+    with pytest.raises(ValueError):
+        Scalp1mPureShell(["AAA"], _params(entry_patterns={"KR": "C"}))
+
+
 def test_session_entry_cap_equivalence():
     legacy, pure = _strats(["AAA"], _params())
     legacy._pattern_a_used["AAA"] = True

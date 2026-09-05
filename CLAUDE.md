@@ -6,20 +6,23 @@
 
 ## 이 시스템은 무엇인가
 
-KR+US 정규장에서 12개 전략을 동시 운용하는 개인 자동매매 엔진이다 (2026-09-03
+KR+US 정규장에서 11개 전략을 동시 운용하는 개인 자동매매 엔진이다 (2026-09-03
 기준 EC2에서 paper 가동 중). 가동 목록의 진실은 config/settings.yaml `strategies:`
 의 `enabled` 이다 — 이 문단은 그 요약일 뿐이다:
 
 - **news_momentum** — 뉴스 EVENT 태그 종목 개장매수 후 사다리 청산, 롱 온리 (KR 0.1 / US 0.0)
 - **news_scalp** — EVENT_SCALP 태그 종목 개장 즉시 1분봉 진입 (KR 0.04 / US 0.0) —
   news_momentum과 "같은 유니버스·다른 진입 시점"을 재는 A/B 짝
-- **pullback_impulse** / **pullback_impulse_cat** — 5분봉 눌림목 임펄스 스캘프 (각 US 0.075)
+- **pullback_impulse** / **pullback_impulse_cat** — 5분봉 눌림목 임펄스 스캘프 (US 0.03 / 0.075,
+  2026-09-05 base 하한 축소 — 36트립 −20.8bp)
 - **mr_vwap_quiet** — 저거래량 종목 VWAP 평균회귀 스캘핑 (US 0.06)
 - **vol_breakout** / **vol_breakout_cat** — 전일 레인지 기반 변동성 돌파(Larry Williams),
   마감 직전 청산 (각 KR 0.07 / US 0.05)
-- **intraday_momentum** — 5분봉 일중 모멘텀 (US 0.09)
-- **gap_fade** — 갭하락 되돌림 매수, 롱 온리 (US 0.06)
-- **scalp_1m** / **scalp_1m_cat** — 1분봉 조기 진입 스캘프 (각 KR 0.075 / US 0.09)
+- ~~intraday_momentum~~ — 5분봉 일중 모멘텀. **2026-09-05 비활성**(원장 9트립 0승 −65bp,
+  같은 계열 10년 walk-forward 전부 음수 — 변경기록 참고)
+- **gap_fade** — 갭하락 되돌림 매수, 롱 온리 (US 0.03, 2026-09-05 하한 축소 — 9트립 −35bp)
+- **scalp_1m** / **scalp_1m_cat** — 1분봉 조기 진입 스캘프 (각 KR 0.03 / US 0.03, 2026-09-05
+  하한으로 축소 + KR 은 패턴B만 — 원장 149트립 −48.4bp)
 - **llm_trader** — LLM이 직접 판단하는 실험 레인 (KR 0.08 / US 0.0)
 
 `<id>_cat`(2026-09-03)은 파라미터가 아니라 유니버스(`universe_filter`)만 다른

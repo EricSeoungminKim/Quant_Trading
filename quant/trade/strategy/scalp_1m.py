@@ -262,6 +262,40 @@ _FULL_SESSION_MINUTES = 390
 # 실제 체결가가 아니다).
 _PREMARKET_DIRECT_ENTRY_MARKETS = frozenset({"US"})
 
+# entry_patterns 시장별 매핑에서 키가 없을 때의 기본값 — "미설정 시 동작 보존"
+# 원칙(둘 다 켜짐, 기존 스칼라 폼의 기본값과 동일).
+_DEFAULT_ENTRY_PATTERNS = frozenset({"A", "B"})
+
+
+def _parse_pattern_set(raw) -> frozenset[str]:
+    """entry_patterns 값 하나(문자열 "A,B" 또는 리스트 ["A","B"])를 대문자
+    집합으로 정규화한다 — 시장별 dict 폼의 각 값에도, 기존 스칼라 폼에도 쓴다."""
+    parts = raw.split(",") if isinstance(raw, str) else list(raw)
+    return frozenset(p.strip().upper() for p in parts if p.strip())
+
+
+def _parse_entry_patterns(raw) -> dict[str, frozenset[str]]:
+    """entry_patterns 파라미터 정규화 — 문자열("A,B")/리스트(["A","B"])는 기존과
+    동일하게 KR/US 공통 적용, `{KR: "B", US: "A,B"}` dict면 시장별로 다르게
+    적용한다(2026-09-05 소유자 위임 결정 — 생성자 주석 "진입 패턴 A/B 개별
+    온오프" 절 참고). dict에 없는 시장은 `_DEFAULT_ENTRY_PATTERNS`(둘 다 켜짐).
+    각 시장 집합은 비어있지 않고 {"A","B"}의 부분집합이어야 한다 — 아니면
+    ValueError."""
+    if isinstance(raw, dict):
+        by_market = {
+            market: _parse_pattern_set(raw[market]) if market in raw else _DEFAULT_ENTRY_PATTERNS
+            for market in ("KR", "US")
+        }
+    else:
+        shared = _parse_pattern_set(raw)
+        by_market = {"KR": shared, "US": shared}
+    for market, patterns in by_market.items():
+        if not patterns or not patterns <= {"A", "B"}:
+            raise ValueError(
+                f"entry_patterns[{market}]는 'A'/'B' 중 하나 이상만 담을 수 있고 최소 1개가 필요합니다."
+            )
+    return by_market
+
 
 class Scalp1mStrategy:
     def __init__(self, symbols: list[str], params: dict, market: str = "US", id: str = "scalp_1m"):
@@ -344,14 +378,24 @@ class Scalp1mStrategy:
         # -1.8bp(n=30)로 훨씬 낫다. 인샘플 관찰이므로 기본값(둘 다 켜짐 = 기존
         # 동작)은 바꾸지 않고, A/B 팔로 나눠(settings.yaml에서 entry_patterns 지정)
         # 실측으로 검증한다. 문자열("A", "B", "A,B")과 리스트(["A","B"]) 둘 다 받는다.
+        #
+        # **시장별 매핑(2026-09-05 소유자 위임 결정)**: 위 원장 151트립을 시장별로
+        # 쪼개면 KR 패턴A -86.8bp(n=58, 최악) vs KR 패턴B -1.8bp(n=30, 훨씬
+        # 낫다) — US는 혼재라 그대로 둔다. 시장마다 다르게 주고 싶으면
+        # `{KR: "B", US: "A,B"}` 같은 dict도 받는다 — 값은 위와 같은 문자열/
+        # 리스트, 키는 KR/US만, 매핑에 없는 시장은 기본값(둘 다 켜짐, 동작
+        # 보존)이다. 실제 판정은 `_patterns_for(market)`이 담당 — 체크사이트
+        # (`_check_entry_for`/`_observe_premarket`)는 심볼의 시장(이미
+        # `market_of_symbol`로 정해진 인자)으로 그 시장의 패턴 집합만 본다.
         _raw_entry_patterns = params.get("entry_patterns", ["A", "B"])
-        _pattern_parts = (
-            _raw_entry_patterns.split(",") if isinstance(_raw_entry_patterns, str)
-            else list(_raw_entry_patterns)
+        self._entry_patterns_by_market: dict[str, frozenset[str]] = _parse_entry_patterns(
+            _raw_entry_patterns
         )
-        self.entry_patterns: frozenset[str] = frozenset(
-            p.strip().upper() for p in _pattern_parts if p.strip()
-        )
+        # 하위호환 필드 — 스칼라(문자열/리스트) 폼이면 KR/US 집합이 같으므로
+        # 합집합이 기존 값과 100% 동일하다. dict 폼일 때는 "두 시장 중 하나라도
+        # 켜져 있는가"를 보이는 요약값(디버그/기존 코드 호환용)일 뿐, 실제 진입
+        # 판정에는 쓰이지 않는다.
+        self.entry_patterns: frozenset[str] = frozenset().union(*self._entry_patterns_by_market.values())
         self.pattern_a_enabled: bool = "A" in self.entry_patterns
         self.pattern_b_enabled: bool = "B" in self.entry_patterns
         # 분당 최소 거래대금 가드 — 프리마켓은 유동성이 얇아 1분봉 패턴 전제
@@ -428,8 +472,8 @@ class Scalp1mStrategy:
             raise ValueError("max_atr_ratio는 양수여야 합니다.")
         if self.kr_entry_open_delay_min < 0:
             raise ValueError("kr_entry_open_delay_min은 0(비활성) 이상이어야 합니다.")
-        if not self.entry_patterns or not self.entry_patterns <= {"A", "B"}:
-            raise ValueError("entry_patterns는 'A'/'B' 중 하나 이상만 담을 수 있고 최소 1개가 필요합니다.")
+        # entry_patterns 자체의 유효성(비어있지 않음, {"A","B"} 부분집합)은
+        # `_parse_entry_patterns`가 시장별로 이미 검증했다(위에서 raise 안 됐으면 통과).
 
         self._session_date: dict[str, dtdate] = {}
         self._pattern_a_used: dict[str, bool] = {}
@@ -463,6 +507,13 @@ class Scalp1mStrategy:
         if owner:
             return owner == self.id
         return pos.symbol in self.symbols
+
+    def _patterns_for(self, market: str) -> frozenset[str]:
+        """`market`("KR"/"US")에 적용할 패턴 집합 — entry_patterns가 dict 폼이면
+        시장별로 다르고, 스칼라 폼이면 두 시장이 같다(생성자 주석 참고). 체크
+        사이트는 호출부(on_cycle)가 이미 `market_of_symbol`로 정한 심볼별
+        `market`을 그대로 넘긴다."""
+        return self._entry_patterns_by_market.get(market, _DEFAULT_ENTRY_PATTERNS)
 
     def on_cycle(self, ctx: Context) -> list[Signal]:
         signals: list[Signal] = []
@@ -691,10 +742,13 @@ class Scalp1mStrategy:
             return None
 
         basis: tuple[str, float] | None = None
-        # entry_patterns가 A를 껐으면 A 슬롯이 소진된 것처럼 취급해 바로 B로
-        # 넘어간다(모듈 docstring 근거 주석) — 둘 다 켜진 기본값에선 이 조건이
-        # 항상 참이라 기존 분기와 100% 동일하다.
-        if self.pattern_a_enabled and not self._pattern_a_used.get(symbol, False):
+        # entry_patterns가 시장별로 A를 껐으면 A 슬롯이 소진된 것처럼 취급해
+        # 바로 B로 넘어간다(생성자 주석 "entry_patterns" 절) — 둘 다 켜진
+        # 기본값(또는 dict 미지정 시장)에선 이 조건이 항상 참이라 기존 분기와
+        # 100% 동일하다. `market`은 호출부(on_cycle)가 이미 `market_of_symbol`로
+        # 정한 이 심볼의 시장이다.
+        patterns = self._patterns_for(market)
+        if "A" in patterns and not self._pattern_a_used.get(symbol, False):
             # _premarket_confirmed는 _PREMARKET_WINDOWS에 등록된 시장의 심볼만
             # 채워진다(_observe_premarket) — market 분기 없이 조회해도 안전하다.
             p_pre = self._premarket_confirmed.get(symbol)
@@ -708,7 +762,7 @@ class Scalp1mStrategy:
                 basis = ("A", p1_l1[1])
             else:
                 self.last_reject[symbol] = "패턴A 미충족"
-        elif self.pattern_b_enabled and not self._pattern_b_used.get(symbol, False):
+        elif "B" in patterns and not self._pattern_b_used.get(symbol, False):
             ma_val = self._check_pattern_b(today_bars, bars)
             if ma_val is not None:
                 basis = ("B", ma_val)
@@ -974,7 +1028,7 @@ class Scalp1mStrategy:
                 "(08:30~09:00 동시호가는 09:00 에 일괄 체결). 체결될 수 없는 주문은 내지 않는다"
             )
             return None
-        if not self.pattern_a_enabled:
+        if "A" not in self._patterns_for(market):
             self.last_reject[symbol] = "패턴A 비활성(entry_patterns)"
             return None
         if not self.premarket_entry:
@@ -1251,6 +1305,9 @@ class Scalp1mPureStrategy:
         self.entry_patterns = self._legacy.entry_patterns
         self.pattern_a_enabled = self._legacy.pattern_a_enabled
         self.pattern_b_enabled = self._legacy.pattern_b_enabled
+        # 시장별 판정은 레거시 헬퍼를 그대로 재사용한다(클래스 docstring
+        # "왜 self._legacy" 절과 동일 이유 — 재구현하면 조용히 갈라질 위험).
+        self._patterns_for = self._legacy._patterns_for
         self.premarket_min_volume_krw = self._legacy.premarket_min_volume_krw
         self.premarket_min_volume_usd = self._legacy.premarket_min_volume_usd
         self.trend_gate_mode = self._legacy.trend_gate_mode
@@ -1462,8 +1519,11 @@ class Scalp1mPureStrategy:
 
         basis: tuple[str, float] | None = None
         # 레거시 `_check_entry_for`와 동일 분기(entry_patterns 근거는 그쪽
-        # 생성자 주석 참고) — 둘 다 켜진 기본값에선 기존 분기와 100% 동일하다.
-        if self.pattern_a_enabled and not pattern_a_used.get(symbol, False):
+        # 생성자 주석 참고) — 둘 다 켜진 기본값(또는 dict 미지정 시장)에선
+        # 기존 분기와 100% 동일하다. `market`은 호출부(decide)가 이미
+        # `market_of_symbol`로 정한 이 심볼의 시장이다.
+        patterns = self._patterns_for(market)
+        if "A" in patterns and not pattern_a_used.get(symbol, False):
             p_pre = premarket_confirmed.get(symbol)
             if p_pre is not None:
                 p1_l1 = Scalp1mStrategy._check_pattern_a_accelerated(today_bars, open_price, p_pre)
@@ -1471,7 +1531,7 @@ class Scalp1mPureStrategy:
                 p1_l1 = self._legacy._check_pattern_a(today_bars, bars, open_price)
             if p1_l1 is not None:
                 basis = ("A", p1_l1[1])
-        elif self.pattern_b_enabled and not pattern_b_used.get(symbol, False):
+        elif "B" in patterns and not pattern_b_used.get(symbol, False):
             ma_val = self._legacy._check_pattern_b(today_bars, bars)
             if ma_val is not None:
                 basis = ("B", ma_val)
@@ -1566,7 +1626,7 @@ class Scalp1mPureStrategy:
         # 레거시와 동일: 연속 호가창이 없는 시장(KR)은 구조적으로 진입 불가.
         if market not in _PREMARKET_DIRECT_ENTRY_MARKETS:
             return None
-        if not self.pattern_a_enabled:
+        if "A" not in self._patterns_for(market):
             return None
         if not self.premarket_entry:
             return None

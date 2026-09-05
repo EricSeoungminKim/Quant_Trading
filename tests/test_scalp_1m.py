@@ -659,6 +659,53 @@ def test_entry_patterns_unknown_value_raises():
         Scalp1mStrategy(["AAA"], _params(entry_patterns=["C"]))
 
 
+# ---------------- entry_patterns 시장별 매핑(dict 폼, 2026-09-05 소유자 위임 결정)
+#
+# 원장 151 트립(2026-08-18~09-04)을 시장별로 쪼개면 KR 패턴A -86.8bp(n=58,
+# 최악) vs KR 패턴B -1.8bp(n=30, 훨씬 낫다) — US는 혼재라 그대로(A+B) 둔다.
+# {KR: "B", US: "A,B"} 같은 dict를 받아 시장별로 다르게 적용한다.
+
+def test_entry_patterns_dict_missing_market_defaults_to_both():
+    """dict에 없는 시장은 기본값(둘 다 켜짐 — 동작 보존)."""
+    strat = Scalp1mStrategy(["AAA"], _params(entry_patterns={"KR": "B"}))
+    assert strat._patterns_for("KR") == frozenset({"B"})
+    assert strat._patterns_for("US") == frozenset({"A", "B"})
+
+
+def test_entry_patterns_dict_form_resolves_per_market():
+    """entry_patterns={KR: "B", US: "A,B"}이면 KR 심볼은 패턴 A를 건너뛰고
+    바로 B를 평가하고(이 봉 시퀀스는 MA60 워밍업이 60개 미만이라 B도 미충족
+    — 결국 무신호, "세션 진입 상한" 이 아니라 "패턴B 미충족"으로 거부되는
+    것이 A를 건너뛰었다는 증거), US 심볼은 기존과 동일하게 패턴 A로 즉시
+    진입한다 — 같은 인스턴스라도 시장별 분기가 서로를 오염시키지 않는다."""
+    patterns = {"KR": "B", "US": "A,B"}
+
+    kr_strat = Scalp1mStrategy([KR_SYMBOL], _params(entry_patterns=patterns, kr_entry_open_delay_min=0))
+    kr_bars = {KR_SYMBOL: _kr_pattern_a_bars()}
+    kr_now = _kr_now(KR_OPEN) + timedelta(minutes=1, seconds=30)
+    kr_signals = kr_strat.on_cycle(_kr_ctx({KR_SYMBOL: 81300.0}, kr_now, bars=kr_bars, kr_open=True))
+    assert kr_signals == []
+    assert kr_strat._pattern_a_used.get(KR_SYMBOL, False) is False
+    assert kr_strat.last_reject.get(KR_SYMBOL) == "패턴B 미충족"
+
+    us_strat = Scalp1mStrategy(["AAA"], _params(entry_patterns=patterns))
+    us_bars = {"AAA": _pattern_a_bars(surge=True)}
+    us_signals = us_strat.on_cycle(_ctx({"AAA": 102.4}, _now_within_window(3.0), bars=us_bars))
+    assert len(us_signals) == 1
+    assert us_signals[0].action == SignalAction.ENTER_LONG
+    assert "패턴A" in us_signals[0].reason
+
+
+def test_entry_patterns_dict_invalid_pattern_value_raises():
+    with pytest.raises(ValueError):
+        Scalp1mStrategy(["AAA"], _params(entry_patterns={"KR": "C"}))
+
+
+def test_entry_patterns_dict_empty_market_set_raises():
+    with pytest.raises(ValueError):
+        Scalp1mStrategy(["AAA"], _params(entry_patterns={"KR": []}))
+
+
 # ============================================================ 랏 소유권
 
 def test_does_not_manage_another_strategys_position():

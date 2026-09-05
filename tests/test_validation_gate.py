@@ -157,9 +157,11 @@ def test_production_settings_yaml_passes_the_gate_as_intended():
     kr_lanes = ("news_momentum", "news_scalp",
                 "scalp_1m", "scalp_1m_cat", "vol_breakout", "vol_breakout_cat",
                 "llm_trader")
+    # intraday_momentum 은 2026-09-05 비활성(소유자 위임 결정 — 원장 9트립 0승 −65bp,
+    # 같은 계열 10년 walk-forward 전부 음수; 변경기록 2026-09-05).
     us_lanes = ("scalp_1m", "scalp_1m_cat", "pullback_impulse", "pullback_impulse_cat",
                 "mr_vwap_quiet", "vol_breakout", "vol_breakout_cat",
-                "intraday_momentum", "gap_fade")
+                "gap_fade")
 
     active = [sid for sid, c in cfg["strategies"].items() if c.get("enabled", True)]
     for market, lanes in (("KR", kr_lanes), ("US", us_lanes)):

@@ -126,11 +126,13 @@ def test_enabled_in_real_config_now_that_tag_wiring_is_done():
     # 2026-09-03(같은 날 저녁, 소유자 결정 갱신) — 자동매매는 단타·스캘핑만:
     # close_bet/frgn_accumulate/overnight_drift/rsi2_dip 4종을 비활성화했다(전부
     # 오버나이트·다일 보유가 전략 정의라 새 방침과 충돌 — 코드는 보존, 오버나이트
-    # 아이디어는 manual_recs 레인으로 이동). 활성 12종.
+    # 아이디어는 manual_recs 레인으로 이동). 활성 11종 — intraday_momentum 은
+    # 2026-09-05 비활성(소유자 위임 결정: 원장 9트립 0승 −65bp + 같은 계열 10년
+    # walk-forward 전부 음수, 변경기록 2026-09-05).
     assert ids == {
         "news_momentum", "scalp_1m",
         "pullback_impulse", "mr_vwap_quiet",
-        "vol_breakout", "intraday_momentum", "gap_fade",
+        "vol_breakout", "gap_fade",
         "llm_trader", "news_scalp",
         "scalp_1m_cat", "pullback_impulse_cat", "vol_breakout_cat",
     }, "활성 전략 목록이 바뀌었다 — 늘리려면 소유자 결정 + 시행 횟수 재신고"
