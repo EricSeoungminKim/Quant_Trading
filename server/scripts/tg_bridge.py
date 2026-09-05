@@ -868,9 +868,19 @@ def _match_lane(token: str) -> Optional[str]:
     for lane_id in tglanes.LANES:
         if lane_id.lower() == tok.lower():
             return lane_id
+    norm = tok.replace(" ", "")
     for lane_id, (_, name) in tglanes.LANES.items():
         if name == tok:
             return lane_id
+    # 표시명의 일부만 쳐도 받는다 — "채널 인텔" 을 `/here 인텔` 로, "제어실" 을
+    # `/here 제어` 로. 2026-09-05 첫 바인딩에서 `/here 인텔` 이 "알 수 없는 레인"
+    # 이 됐다(표시명이 "채널 인텔"). 공백은 무시하고, 두 글자 이상만 부분 일치를
+    # 허용한다(한 글자는 오매칭 위험).
+    if len(norm) >= 2:
+        hits = [lane_id for lane_id, (_, name) in tglanes.LANES.items()
+                if norm in name.replace(" ", "")]
+        if len(hits) == 1:
+            return hits[0]
     return None
 
 
@@ -1384,6 +1394,10 @@ def process_update(
     # 온 메시지는 `message_thread_id`를 갖고, 레거시 단일 채팅(또는 슈퍼그룹의
     # General 토픽)에서 온 메시지는 없다(그때는 인자 없이 보내던 기존과 동일).
     thread_id = message.get("message_thread_id")
+    # 응답 대상 채팅 = 명령이 **온** 채팅(슈퍼그룹 토픽이면 그 슈퍼그룹, 레거시
+    # 1:1이면 그 방). 2026-09-05 첫 바인딩에서 함수 인자 `chat_id`(레거시 1:1)로
+    # 답장해 슈퍼그룹 토픽에는 아무 응답도 안 보였다(바인딩 자체는 됐다).
+    reply_chat_id = int(message.get("chat", {}).get("id") or chat_id)
 
     # 포워드된 채널 게시물(2026-09-05, "포워딩 우회")은 텍스트 추출·명령
     # 라우팅보다 먼저 처리하고 즉시 반환한다 — 명령으로도, 일반 대화로도
@@ -1391,7 +1405,7 @@ def process_update(
     # 토픽에서 포워딩해도(또는 레거시 채팅에서 해도) 위 chat_id 게이트를 이미
     # 통과했으므로 그대로 받는다 — 토픽별 추가 검사는 필요 없다.
     if _forward_channel_origin(message) is not None:
-        _handle_forwarded_channel_post(tg, chat_id, message)
+        _handle_forwarded_channel_post(tg, reply_chat_id, message)
         return
 
     text = extract_text(update)
@@ -1412,48 +1426,48 @@ def process_update(
         control_reply = handle_control_command(text, control, toss_client)
     except Exception as exc:  # noqa: BLE001 — 사용자 알림을 위한 좁은 캐치, 삼키지 않고 로그+응답
         log(f"제어 명령 처리 실패({text!r}): {exc}")
-        _notify_command_failure(tg, chat_id, _command_name(text), exc, thread_id)
+        _notify_command_failure(tg, reply_chat_id, _command_name(text), exc, thread_id)
         return
     if control_reply is not None:
-        tg.send_message(chat_id, control_reply, message_thread_id=thread_id)
+        tg.send_message(reply_chat_id, control_reply, message_thread_id=thread_id)
         return
 
     try:
         watchlist_reply = handle_watchlist_command(text, toss_client)
     except Exception as exc:  # noqa: BLE001 — 사용자 알림을 위한 좁은 캐치, 삼키지 않고 로그+응답
         log(f"관심종목 명령 처리 실패({text!r}): {exc}")
-        _notify_command_failure(tg, chat_id, _command_name(text), exc, thread_id)
+        _notify_command_failure(tg, reply_chat_id, _command_name(text), exc, thread_id)
         return
     if watchlist_reply is not None:
-        tg.send_message(chat_id, watchlist_reply, message_thread_id=thread_id)
+        tg.send_message(reply_chat_id, watchlist_reply, message_thread_id=thread_id)
         return
 
     try:
         lanes_reply = handle_lanes_command(text, message, lanes_path)
     except Exception as exc:  # noqa: BLE001 — 사용자 알림을 위한 좁은 캐치, 삼키지 않고 로그+응답
         log(f"레인 명령 처리 실패({text!r}): {exc}")
-        _notify_command_failure(tg, chat_id, _command_name(text), exc, thread_id)
+        _notify_command_failure(tg, reply_chat_id, _command_name(text), exc, thread_id)
         return
     if lanes_reply is not None:
-        tg.send_message(chat_id, lanes_reply, message_thread_id=thread_id)
+        tg.send_message(reply_chat_id, lanes_reply, message_thread_id=thread_id)
         return
 
     query_reply = handle_query_command(text, toss_client)
     if query_reply is not None:
-        tg.send_message(chat_id, query_reply, message_thread_id=thread_id)
+        tg.send_message(reply_chat_id, query_reply, message_thread_id=thread_id)
         return
 
     if not limiter.allow():
-        tg.send_message(chat_id, "잠시 후 다시 (분당 한도)", message_thread_id=thread_id)
+        tg.send_message(reply_chat_id, "잠시 후 다시 (분당 한도)", message_thread_id=thread_id)
         return
 
     tg.send_typing(chat_id)
     prompt = build_claude_prompt(text)
     ok, output = run_claude(prompt)
     if ok:
-        tg.send_message(chat_id, truncate_reply(output.strip() or "(빈 응답)"), message_thread_id=thread_id)
+        tg.send_message(reply_chat_id, truncate_reply(output.strip() or "(빈 응답)"), message_thread_id=thread_id)
     else:
-        tg.send_message(chat_id, f"처리 실패: {output}", message_thread_id=thread_id)
+        tg.send_message(reply_chat_id, f"처리 실패: {output}", message_thread_id=thread_id)
 
 
 def main() -> None:

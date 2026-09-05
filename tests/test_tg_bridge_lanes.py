@@ -305,6 +305,9 @@ def test_process_update_here_command_binds_and_replies_in_thread(tmp_path):
 
     assert len(tg.sent) == 1
     chat_id, text, thread_id = tg.sent[0]
+    # 응답은 명령이 온 슈퍼그룹으로 — 레거시 1:1(42)이 아니다(2026-09-05 실사고:
+    # 바인딩은 됐는데 토픽에 아무 응답이 안 보였다).
+    assert chat_id == -100999
     assert "매매" in text
     assert thread_id == 7
     assert tg_bridge.load_tg_lanes(lanes_path)["chat_id"] == -100999
@@ -380,3 +383,12 @@ def test_process_update_forwarded_post_replies_in_its_own_topic(monkeypatch, tmp
 
     assert len(tg.sent) == 1
     assert tg.sent[0][2] == 3
+
+
+def test_match_lane_accepts_partial_display_name():
+    # "채널 인텔" 을 `/here 인텔` 로, "제어실" 을 `/here 제어` 로 — 2026-09-05 실사고.
+    assert tg_bridge._match_lane("인텔") == "intel"
+    assert tg_bridge._match_lane("채널인텔") == "intel"
+    assert tg_bridge._match_lane("제어") == "control"
+    assert tg_bridge._match_lane("실") is None       # 한 글자는 거부
+    assert tg_bridge._match_lane("없는레인") is None
