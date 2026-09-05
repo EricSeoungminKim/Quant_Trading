@@ -35,6 +35,8 @@ import time
 from datetime import datetime
 from typing import Callable, NamedTuple
 
+from quant.core.models import market_of_symbol
+
 logger = logging.getLogger(__name__)
 
 # Toss MARKET_DATA 그룹의 상한은 10 TPS 인데, 그 버킷을 **엔진이 이미 쓰고 있다**
@@ -99,6 +101,10 @@ def spread_row(bids: object, asks: object, symbol: str, ts: str) -> dict | None:
     return {
         "ts": ts,
         "symbol": symbol,
+        # 시장 필드(2026-09-06 live-readiness §4) — 슬리피지 리포트
+        # (quant.control.slippage)가 시장별로 묶을 때 심볼 패턴을 다시
+        # 추론하지 않고 이 값을 그대로 쓴다.
+        "market": market_of_symbol(symbol),
         "bid": bid,
         "ask": ask,
         "spread_bp": (ask - bid) / mid * 10000,

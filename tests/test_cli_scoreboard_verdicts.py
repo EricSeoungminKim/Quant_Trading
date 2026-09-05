@@ -85,3 +85,94 @@ def argparse_namespace():
     import argparse
 
     return argparse.Namespace(days=None)
+
+
+# ---------------------------------------------------------------------------
+# "에폭 이후" 절 (2026-09-06 live-readiness §1)
+# ---------------------------------------------------------------------------
+
+def _write_ledger(tmp_path, rows: list[dict]) -> None:
+    ledger_dir = tmp_path / "data" / "state"
+    ledger_dir.mkdir(parents=True, exist_ok=True)
+    with (ledger_dir / "trades.jsonl").open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+
+
+def test_scoreboard_has_no_epoch_section_without_a_marker(tmp_path, monkeypatch, capsys):
+    """paper-epoch를 한 번도 안 돌린 원장은 기존과 동일하게 "누적 스코어보드"뿐이다."""
+    monkeypatch.setattr("quant.adapters.env.REPO_ROOT", tmp_path)
+    _write_ledger(tmp_path, [
+        {"ts": "2026-08-10T09:05:00+00:00", "strategy_id": "gap_fade", "symbol": "TQQQ",
+         "side": "BUY", "qty": 1, "price": 70.0, "fee": 0.0, "realized_pnl": None, "market": "US"},
+    ])
+    from quant.apps.cli import cmd_scoreboard
+
+    cmd_scoreboard(argparse_namespace())
+    out = capsys.readouterr().out
+    assert "에폭 이후" not in out
+    assert "📊 누적 스코어보드" in out
+    assert "📚 누적(역사)" not in out
+
+
+def test_scoreboard_prints_epoch_section_first_then_cumulative(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("quant.adapters.env.REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "quant.control.ledger.strategy_start_capital",
+        lambda sid, *a, **k: {"KRW": 0.0, "USD": 10_000.0} if sid == "gap_fade" else {"KRW": 0.0, "USD": 0.0},
+    )
+    _write_ledger(tmp_path, [
+        # 에폭 이전에 이미 닫힌 트립 — 누적(역사) 절에만 나와야 한다.
+        {"ts": "2026-08-10T09:05:00+00:00", "strategy_id": "gap_fade", "symbol": "TQQQ",
+         "side": "BUY", "qty": 1, "price": 70.0, "fee": 0.0, "realized_pnl": None, "market": "US"},
+        {"ts": "2026-08-10T10:05:00+00:00", "strategy_id": "gap_fade", "symbol": "TQQQ",
+         "side": "SELL", "qty": 1, "price": 71.0, "fee": 0.0, "realized_pnl": 100.0, "market": "US"},
+        {"ts": "2026-09-07T00:00:00+09:00", "strategy_id": "epoch", "symbol": "_EPOCH_",
+         "side": "buy", "qty": 0.0, "price": 0.0, "fee": 0.0, "realized_pnl": 0.0,
+         "reason": "페이퍼 에폭 리셋 — capital_policy=fixed_dual, at 2026-09-07T00:00:00+09:00",
+         "market": "US"},
+        # 에폭 이후 정상 왕복.
+        {"ts": "2026-09-08T02:00:00+00:00", "strategy_id": "gap_fade", "symbol": "TQQQ",
+         "side": "BUY", "qty": 5, "price": 60.0, "fee": 0.0, "realized_pnl": None, "market": "US"},
+        {"ts": "2026-09-08T03:00:00+00:00", "strategy_id": "gap_fade", "symbol": "TQQQ",
+         "side": "SELL", "qty": 5, "price": 62.0, "fee": 0.0, "realized_pnl": 500.0, "market": "US"},
+    ])
+    from quant.apps.cli import cmd_scoreboard
+
+    cmd_scoreboard(argparse_namespace())
+    out = capsys.readouterr().out
+
+    assert "🆕 에폭 이후 (2026-09-07~)" in out
+    assert "📚 누적(역사)" in out
+    # 에폭 이후 절이 누적(역사) 절보다 먼저 나와야 한다.
+    assert out.index("🆕 에폭 이후") < out.index("📚 누적(역사)")
+    # 에폭 이후 절엔 1건(종결 1건)만, 누적 절엔 에폭 이전 트립까지 포함해 2건.
+    assert "🆕 에폭 이후 (2026-09-07~) (종결 1건)" in out
+    assert "📚 누적(역사) (종결 2건)" in out
+    assert "수익률 +5.0% (시작 $10,000.00)" in out
+
+
+def test_scoreboard_days_flag_skips_the_epoch_section(tmp_path, monkeypatch, capsys):
+    """`--days`(주간 크론의 "최근 N일" 호출)는 에폭 이후 절을 건너뛴다 — 그
+    스코프가 이미 "최근"이라 중복되면 scoreboard_weekly.sh 텔레그램 본문만
+    두 배로 늘어난다."""
+    import argparse
+
+    monkeypatch.setattr("quant.adapters.env.REPO_ROOT", tmp_path)
+    _write_ledger(tmp_path, [
+        {"ts": "2026-09-07T00:00:00+09:00", "strategy_id": "epoch", "symbol": "_EPOCH_",
+         "side": "buy", "qty": 0.0, "price": 0.0, "fee": 0.0, "realized_pnl": 0.0,
+         "reason": "페이퍼 에폭 리셋 — capital_policy=fixed_dual, at 2026-09-07T00:00:00+09:00",
+         "market": "US"},
+        {"ts": "2026-09-08T02:00:00+00:00", "strategy_id": "gap_fade", "symbol": "TQQQ",
+         "side": "BUY", "qty": 5, "price": 60.0, "fee": 0.0, "realized_pnl": None, "market": "US"},
+        {"ts": "2026-09-08T03:00:00+00:00", "strategy_id": "gap_fade", "symbol": "TQQQ",
+         "side": "SELL", "qty": 5, "price": 62.0, "fee": 0.0, "realized_pnl": 500.0, "market": "US"},
+    ])
+    from quant.apps.cli import cmd_scoreboard
+
+    cmd_scoreboard(argparse.Namespace(days=7))
+    out = capsys.readouterr().out
+    assert "에폭 이후" not in out
+    assert "📚 누적(역사)" not in out
+    assert "최근 7일 스코어보드" in out

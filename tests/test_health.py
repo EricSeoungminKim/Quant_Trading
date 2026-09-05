@@ -518,20 +518,26 @@ def test_date_only_timestamp_is_parsed_as_midnight():
 
 # ── 백업 ─────────────────────────────────────────────────────────────────
 
+_FRESH_REHEARSAL = (NOW - timedelta(days=1)).isoformat()
+
+
 def test_recent_bundle_and_recent_pull_is_ok():
     assert backup_findings((NOW - timedelta(hours=9)).isoformat(),
-                           (NOW - timedelta(days=1)).isoformat(), NOW) == []
+                           (NOW - timedelta(days=1)).isoformat(), NOW,
+                           rehearsal_stamp=_FRESH_REHEARSAL) == []
 
 
 def test_old_bundle_is_alert():
     findings = backup_findings((NOW - timedelta(days=5)).isoformat(),
-                              (NOW - timedelta(days=1)).isoformat(), NOW)
+                              (NOW - timedelta(days=1)).isoformat(), NOW,
+                              rehearsal_stamp=_FRESH_REHEARSAL)
     assert _levels(findings) == [ALERT]
 
 
 def test_bundle_fresh_but_never_pulled_offsite_is_flagged():
     """번들만 최신이면 아직 **EC2 디스크 한 곳**이다 — 그게 원래 위험이었다."""
-    findings = backup_findings((NOW - timedelta(hours=2)).isoformat(), None, NOW)
+    findings = backup_findings((NOW - timedelta(hours=2)).isoformat(), None, NOW,
+                              rehearsal_stamp=_FRESH_REHEARSAL)
 
     assert _levels(findings) == [UNKNOWN]
     assert "한 곳" in findings[0].detail
@@ -539,8 +545,46 @@ def test_bundle_fresh_but_never_pulled_offsite_is_flagged():
 
 def test_stale_offsite_pull_is_alert():
     findings = backup_findings((NOW - timedelta(hours=2)).isoformat(),
-                              (NOW - timedelta(days=30)).isoformat(), NOW)
+                              (NOW - timedelta(days=30)).isoformat(), NOW,
+                              rehearsal_stamp=_FRESH_REHEARSAL)
     assert _levels(findings) == [ALERT]
+
+
+# ── 복원 리허설 (2026-09-06 live-readiness §3) ─────────────────────────────
+# "안 해본 백업은 백업이 아니다" — 번들·오프사이트 사본이 다 최신이어도 실제로
+# 복원되는지는 별도 질문이다(server/scripts/backup_restore_check.sh).
+
+def test_recent_rehearsal_adds_no_finding():
+    findings = backup_findings((NOW - timedelta(hours=9)).isoformat(),
+                              (NOW - timedelta(days=1)).isoformat(), NOW,
+                              rehearsal_stamp=(NOW - timedelta(days=10)).isoformat())
+    assert findings == []
+
+
+def test_missing_rehearsal_stamp_is_unknown_not_ok():
+    """리허설을 한 번도(성공적으로) 안 돌렸으면 "정상"이 아니라 "모른다"다 —
+    번들/오프사이트가 멀쩡해도 복원 가능 여부는 별개의 미확인 사실이다."""
+    findings = backup_findings((NOW - timedelta(hours=9)).isoformat(),
+                              (NOW - timedelta(days=1)).isoformat(), NOW,
+                              rehearsal_stamp=None)
+    assert _levels(findings) == [UNKNOWN]
+    assert "복원 리허설" in findings[0].detail
+
+
+def test_stale_rehearsal_is_alert():
+    findings = backup_findings((NOW - timedelta(hours=9)).isoformat(),
+                              (NOW - timedelta(days=1)).isoformat(), NOW,
+                              rehearsal_stamp=(NOW - timedelta(days=45)).isoformat())
+    assert _levels(findings) == [ALERT]
+    assert "45일" in findings[0].detail
+    assert "임계 40일" in findings[0].detail
+
+
+def test_rehearsal_at_exactly_the_threshold_is_not_yet_alert():
+    findings = backup_findings((NOW - timedelta(hours=9)).isoformat(),
+                              (NOW - timedelta(days=1)).isoformat(), NOW,
+                              rehearsal_stamp=(NOW - timedelta(days=40)).isoformat())
+    assert findings == []
 
 
 # ── 합산 ─────────────────────────────────────────────────────────────────

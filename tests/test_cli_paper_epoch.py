@@ -176,3 +176,78 @@ def test_stale_heartbeat_does_not_count_as_active(tmp_path, monkeypatch):
     cmd_paper_epoch(_args())  # force 없이도 통과해야 한다
 
     assert (state_dir / "trades.jsonl").exists()
+
+
+# ---------------------------------------------------------------------------
+# `_engine_looks_active` — systemctl vs 하트비트 우선순위 (2026-09-06
+# live-readiness §2). `systemctl is-active`가 조회 가능하면 하트비트보다
+# 권위 있다: 정지 직후엔 poll_seconds 이내라 하트비트가 항상 "최근"으로
+# 보이므로, 하트비트만 보면 방금 멈춘 엔진을 활성으로 오판한다.
+# ---------------------------------------------------------------------------
+
+def _fresh_heartbeat(state_dir):
+    import time
+
+    (state_dir / "heartbeat.json").write_text(
+        json.dumps({"ts": time.time()}), encoding="utf-8",
+    )
+
+
+class _FakeCompleted:
+    def __init__(self, stdout: str):
+        self.stdout = stdout
+
+
+def test_systemctl_inactive_overrides_a_fresh_heartbeat(tmp_path, monkeypatch):
+    """엔진을 막 멈췄다(systemctl stop) — 하트비트는 아직 최근이지만 systemctl은
+    inactive다. systemctl 조회가 가능하면 그쪽을 믿는다."""
+    from quant.apps.cli import _engine_looks_active
+
+    state_dir = _state_dir(tmp_path)
+    _fresh_heartbeat(state_dir)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None)
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: _FakeCompleted("inactive\n"))
+
+    active, why = _engine_looks_active(tmp_path)
+    assert active is False
+    assert "inactive" in why
+
+
+def test_systemctl_active_is_trusted_even_without_a_heartbeat_file(tmp_path, monkeypatch):
+    from quant.apps.cli import _engine_looks_active
+
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None)
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: _FakeCompleted("active\n"))
+
+    active, why = _engine_looks_active(tmp_path)  # heartbeat.json 자체가 없다
+    assert active is True
+    assert "active" in why
+
+
+def test_heartbeat_rule_still_applies_when_systemctl_is_unavailable(tmp_path, monkeypatch):
+    """Mac 등 systemctl이 없는 환경 — 기존 하트비트 규칙만 쓴다."""
+    from quant.apps.cli import _engine_looks_active
+
+    state_dir = _state_dir(tmp_path)
+    _fresh_heartbeat(state_dir)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    active, why = _engine_looks_active(tmp_path)
+    assert active is True
+    assert "systemctl 없음" in why
+
+
+def test_paper_epoch_proceeds_when_systemctl_says_inactive_despite_fresh_heartbeat(tmp_path, monkeypatch):
+    """`cmd_paper_epoch` 통합 — systemctl이 inactive라고 하면 하트비트가
+    최근이어도 --force 없이 통과해야 한다."""
+    monkeypatch.setattr("quant.adapters.env.REPO_ROOT", tmp_path)
+    from quant.apps.cli import cmd_paper_epoch
+
+    state_dir = _state_dir(tmp_path)
+    _fresh_heartbeat(state_dir)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl" if name == "systemctl" else None)
+    monkeypatch.setattr("subprocess.run", lambda *a, **k: _FakeCompleted("inactive\n"))
+
+    cmd_paper_epoch(_args())
+
+    assert (state_dir / "trades.jsonl").exists()

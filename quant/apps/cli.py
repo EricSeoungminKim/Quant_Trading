@@ -1012,21 +1012,50 @@ def cmd_scoreboard(args: argparse.Namespace) -> None:
     승률·payoff·거래당 bps가 자본 배분 판단의 근거다(2026-08-10 사용자 원칙).
     출력은 stdout — 주간 크론(server/scripts/scoreboard_weekly.sh)이 텔레그램으로 쏜다.
 
+    **"에폭 이후" 절이 먼저 나온다**(2026-09-06 live-readiness §1, `--days` 없는
+    기본 호출에서만). `cli paper-epoch`(capital_policy: fixed_dual 전환)로
+    전략별 독립 모의계좌를 리셋한 뒤로는 그 시점 이후 성적
+    (`ledger.round_trips_since_epoch`)이 지금 배분 판단에 실제로 쓰이는
+    숫자다 — 에폭 이전 이력이 섞인 "📚 누적(역사)" 절은 그 아래 참고용으로
+    남긴다. 에폭을 한 번도 안 돌렸으면(원장에 마커가 없으면) 이 절 자체가
+    없다. `--days`가 주어지면(주간 크론의 "최근 7일" 호출) 이 절을 건너뛴다 —
+    에폭 이후 스코프는 이미 그 자체로 "최근"이라 `--days` 절과 같은 내용이
+    중복돼 텔레그램 본문만 늘어난다(scoreboard_weekly.sh가 두 호출을 이어
+    붙인다).
+
     **3갈래 자동화(T) 승격 판정**(2026-08-17, spec §4) — 판정만 노출하고 자동
     승격은 하지 않는다(`quant.control.ledger`의 두 판정 함수 docstring 참고).
     스코어보드 표 자체(원장 raw trades 기준)와는 별도로, 갈래 A는 intraday_verify
     하네스 원장을, 갈래 B는 같은 raw trades를 재사용한다."""
     from pathlib import Path
+    from zoneinfo import ZoneInfo
 
     from quant.control.ledger import (
         ab_compare, ab_pairs_from_config, filter_recent,
-        frgn_accumulate_promotion_verdict, load_trades, round_trips, scoreboard_text,
+        frgn_accumulate_promotion_verdict, load_trades, paper_epoch_ts, round_trips,
+        round_trips_since_epoch, scoreboard_text, strategy_start_capital,
     )
 
     ledger_path = Path(args.ledger) if getattr(args, "ledger", None) else ledger_state_path()
     trades = load_trades(ledger_path)
+
+    # "에폭 이후" 절 — 에폭 마커가 없거나(paper-epoch 미실행) --days가 주어지면
+    # (이미 "최근" 스코프 요청이라 중복) 건너뛴다.
+    epoch_ts = None if args.days else paper_epoch_ts(trades)
+    if epoch_ts is not None:
+        epoch_trips = round_trips_since_epoch(trades)
+        epoch_date = epoch_ts.astimezone(ZoneInfo("Asia/Seoul")).date().isoformat()
+        start_capital_by_strategy = {
+            s: strategy_start_capital(s) for s in sorted({t["strategy"] for t in epoch_trips})
+        }
+        print(scoreboard_text(
+            epoch_trips, title=f"🆕 에폭 이후 ({epoch_date}~)",
+            start_capital_by_strategy=start_capital_by_strategy,
+        ))
+        print()
+
     trips = round_trips(trades)
-    title = "누적 스코어보드"
+    title = "📚 누적(역사)" if epoch_ts is not None else "누적 스코어보드"
     if args.days:
         trips = filter_recent(trips, args.days)
         title = f"최근 {args.days}일 스코어보드"
@@ -3097,14 +3126,16 @@ def _engine_looks_active(root) -> tuple[bool, str]:
     건드리면 `cmd_seed_real`이 우려하던 것과 같은 레이스 컨디션이 난다(루프가
     사이클마다 같은 파일을 읽고/쓰는 도중 여기서 덮어쓰면 상태가 섞인다).
 
-    두 신호를 본다:
-    1. **하트비트 파일 최신성** — 크로스플랫폼으로 항상 확인 가능한 신호.
-       `quant/trade/loop.py`가 사이클마다(성공/실패 무관) 갱신하는
-       `data/state/heartbeat.json`이 최근(10분 이내)이면 엔진이 실제로 돌고
-       있다는 강한 증거다.
-    2. **`systemctl is-active quant-engine`** — EC2 배포 환경(systemd)에서만
-       쓸 수 있는 보조 신호. `systemctl` 자체가 없는 환경(Mac 등)에서는 이
-       신호를 건너뛰고 경고만 남긴다(사용자 지시: "on the Mac just warn").
+    두 신호를 보되 **우선순위가 있다**(2026-09-06 live-readiness §2 수정):
+    1. **`systemctl is-active quant-engine`** — 조회에 성공하면 이 결과가
+       최종 판정이다. 정지 직후(`systemctl stop quant-engine`)엔 하트비트가
+       `poll_seconds` 이내라 여전히 "최근"으로 보이므로, 하트비트만 보면 방금
+       멈춘 엔진을 활성으로 오판한다 — systemd가 있는 배포 환경에선 그쪽이
+       더 권위 있는 신호다.
+    2. **하트비트 파일 최신성** — `systemctl`이 아예 없거나(Mac 등) 조회 자체가
+       실패했을 때만 쓰는 대체 신호. `quant/trade/loop.py`가 사이클마다
+       (성공/실패 무관) 갱신하는 `data/state/heartbeat.json`이 최근(10분
+       이내)이면 엔진이 실제로 돌고 있다는 근거로 삼는다.
 
     반환값은 (활성으로 보이는가, 판정 사유 요약)."""
     import json as _json
@@ -3114,7 +3145,7 @@ def _engine_looks_active(root) -> tuple[bool, str]:
     from pathlib import Path
 
     reasons: list[str] = []
-    active = False
+    heartbeat_active = False
 
     hb_path = Path(root) / "data" / "state" / "heartbeat.json"
     if hb_path.exists():
@@ -3124,7 +3155,7 @@ def _engine_looks_active(root) -> tuple[bool, str]:
             if isinstance(ts, (int, float)):
                 age_sec = time.time() - float(ts)
                 if age_sec < 600:
-                    active = True
+                    heartbeat_active = True
                     reasons.append(f"heartbeat.json이 {age_sec:.0f}초 전 갱신됨(활성 판정)")
                 else:
                     reasons.append(f"heartbeat.json이 {age_sec:.0f}초 전(오래됨, 비활성 판정)")
@@ -3140,15 +3171,17 @@ def _engine_looks_active(root) -> tuple[bool, str]:
                 capture_output=True, text=True, timeout=5, check=False,
             )
             state = r.stdout.strip()
-            if state == "active":
-                active = True
             reasons.append(f"systemctl is-active quant-engine = {state or '(빈 응답)'}")
+            # systemctl 조회가 성공하면 이 결과가 하트비트보다 권위 있다 — 정지
+            # 직후엔 하트비트가 항상 "최근"으로 보이므로 여기서 판정을 확정하고
+            # 반환한다(위에서 구한 heartbeat_active는 버린다).
+            return state == "active", "; ".join(reasons)
         except (OSError, subprocess.SubprocessError) as e:
-            reasons.append(f"systemctl 조회 실패({e}) — 이 신호는 건너뜀")
+            reasons.append(f"systemctl 조회 실패({e}) — 이 신호는 건너뜀, 하트비트로 판정")
     else:
-        reasons.append("systemctl 없음(Mac 등) — 이 신호는 건너뜀, 경고만")
+        reasons.append("systemctl 없음(Mac 등) — 이 신호는 건너뜀, 하트비트로 판정")
 
-    return active, "; ".join(reasons)
+    return heartbeat_active, "; ".join(reasons)
 
 
 def cmd_paper_epoch(args: argparse.Namespace) -> None:
@@ -3705,7 +3738,13 @@ def cmd_health(args: argparse.Namespace) -> None:
         bundle_stamp = datetime.fromtimestamp(
             bundles[-1].stat().st_mtime, tz=timezone.utc).isoformat()
     pull_raw = _read(root / "data" / "backups" / "LAST_PULL")
-    findings += H.backup_findings(bundle_stamp, pull_raw.strip() if pull_raw else None, now)
+    # 복원 리허설(2026-09-06 live-readiness §3) — backup_pull.sh의 LAST_PULL과
+    # 같은 계약: backup_restore_check.sh가 **성공**했을 때만 이 파일을 남긴다.
+    rehearsal_raw = _read(root / "data" / "backups" / "LAST_REHEARSAL")
+    findings += H.backup_findings(
+        bundle_stamp, pull_raw.strip() if pull_raw else None, now,
+        rehearsal_stamp=rehearsal_raw.strip() if rehearsal_raw else None,
+    )
 
     # LLM 호출 계측 — narrate()/chat_with_tools() (OpenRouter 무료 레인)가
     # 기록한 최근 24시간 실패율. kv 는 위에서 이미 만든 것을 재사용한다.
@@ -5791,6 +5830,14 @@ def cmd_spread_sample(args: argparse.Namespace) -> None:
             for s in strat_cfg.get("symbols") or []:
                 _add(s)
 
+    # --extra-symbols(2026-09-06 live-readiness §4) — --symbols/기본 목록과
+    # 무관하게 **항상** 추가한다. letf_pair_sox처럼 top-level `symbols:` 없이
+    # params.long_symbol/short_symbol만 쓰는 전략(SOXL/SOXS)은 위 기본 목록에
+    # 안 잡힌다 — spread_sample_us.sh가 이 플래그로 레버리지 페어 앵커
+    # (TQQQ/SQQQ/SOXL/SOXS)를 명시적으로 강제한다.
+    for s in args.extra_symbols or []:
+        _add(s)
+
     if args.market:
         symbols = [s for s in symbols if market_of_symbol(s) == args.market]
 
@@ -5867,6 +5914,45 @@ def cmd_spread_sample(args: argparse.Namespace) -> None:
     if failed:
         syms = sorted({s for s, _ in failed})
         print(f"조회 실패: {len(syms)}종목 {len(failed)}건 {syms} (사유 예: {failed[0][1]})")
+
+
+def cmd_slippage_report(args: argparse.Namespace) -> None:
+    """실측 슬리피지 리포트 (2026-09-06 live-readiness §4) — paper 체결
+    (`data/state/trades.jsonl`)과 스프레드 실측(`data/ledger/spread.jsonl`,
+    `spread_sample.sh`/`spread_sample_us.sh`가 10분마다 쌓는다)을 체결 시각
+    기준 ±5분 이내 최근접으로 이어 붙여, `execution.slippage_bps`(편도, 기본
+    2.5bp) 가정이 실측 대비 낙관인지 보수인지 market/strategy별로 판정한다.
+
+    계산 자체는 `quant.control.slippage`(순수 함수)에 있다 — 여기는 원장 읽기
+    + `--since` 필터 + 출력뿐."""
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from quant.adapters.env import REPO_ROOT
+    from quant.control.ledger import load_trades
+    from quant.control.slippage import load_spread_rows, slippage_report, slippage_report_text
+
+    root = Path(args.root) if args.root else REPO_ROOT
+    fills = load_trades(root / "data" / "state" / "trades.jsonl")
+
+    if args.since:
+        cutoff = datetime.fromisoformat(args.since)
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=timezone.utc)
+
+        def _ts(f: dict) -> datetime | None:
+            try:
+                d = datetime.fromisoformat(str(f.get("ts")))
+            except ValueError:
+                return None
+            return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+        fills = [f for f in fills if (ts := _ts(f)) is not None and ts >= cutoff]
+
+    spread_rows = load_spread_rows(root / "data" / "ledger" / "spread.jsonl")
+    assumed_one_way_bp = float(load_settings().execution.get("slippage_bps", 2.5))
+    rows = slippage_report(fills, spread_rows)
+    print(slippage_report_text(rows, assumed_one_way_bp))
 
 
 _PEEK_MAX_N = 200
@@ -6795,11 +6881,22 @@ def main() -> None:
                           help="심볼 시장 필터. 미지정이면 전부")
     p_spread.add_argument("--symbols", nargs="*", default=None,
                           help="기본: 워치리스트 + 전략 앵커 심볼")
+    p_spread.add_argument("--extra-symbols", nargs="*", default=None,
+                          help="--symbols/기본 목록과 무관하게 항상 추가(예: TQQQ SQQQ SOXL SOXS)")
     p_spread.add_argument("--rounds", type=int, default=1, help="반복 라운드 수 (심볼당 라운드당 1회 조회)")
     p_spread.add_argument("--interval-seconds", type=float, default=1.0,
                           help="호출 간 최소 간격(초). 0.2 미만은 5 TPS 상한으로 잘린다")
     p_spread.add_argument("--root", default=None)
     p_spread.set_defaults(func=cmd_spread_sample)
+
+    p_slippage = sub.add_parser(
+        "slippage-report",
+        help="실측 슬리피지 리포트 — paper 체결 + 스프레드 실측(spread.jsonl)을 이어 붙여 slippage_bps 가정 검증",
+    )
+    p_slippage.add_argument("--since", default=None,
+                            help="ISO8601. 이 시각 이후 체결만 (기본: 원장 전체)")
+    p_slippage.add_argument("--root", default=None)
+    p_slippage.set_defaults(func=cmd_slippage_report)
 
     p_peek = sub.add_parser(
         "peek",

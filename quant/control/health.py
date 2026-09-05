@@ -450,12 +450,23 @@ def ledger_findings(last_ts_by_name: dict[str, str | None], now: datetime,
 
 def backup_findings(bundle_stamp: str | None, pull_stamp: str | None, now: datetime,
                     max_bundle_age: timedelta = timedelta(days=2),
-                    max_pull_age: timedelta = timedelta(days=7)) -> list[Finding]:
+                    max_pull_age: timedelta = timedelta(days=7),
+                    rehearsal_stamp: str | None = None,
+                    max_rehearsal_age: timedelta = timedelta(days=40)) -> list[Finding]:
     """번들 생성 시각과 **오프사이트로 당겨간** 시각을 따로 본다.
 
     번들만 최신이면 아직 EC2 디스크 한 곳에 있는 것이고, 그게 원래 위험이었다.
     당겨가는 쪽이 Mac 이라 며칠 꺼져 있을 수 있어 임계를 넉넉히 잡되, 조용히 몇 주
     안 당겨오는 상태는 잡는다.
+
+    `rehearsal_stamp`(2026-09-06 live-readiness §3) — **안 해본 백업은 백업이
+    아니다.** 번들이 매일 쌓이고 오프사이트로도 잘 넘어가도, 그게 실제로
+    복원되는지는 다른 질문이다(`server/scripts/backup_restore_check.sh`가
+    실제로 풀어서 파싱하고 MySQL 덤프를 스크래치 DB에 적재해본다). 그 리허설이
+    **성공**했을 때만 스크립트가 `LAST_REHEARSAL`을 남긴다(`pull_stamp`와 같은
+    파일 계약, `backup_pull.sh`의 `LAST_PULL`과 동일 패턴) — 실패한 리허설로
+    "확인했다"는 착각을 남기지 않는다. 없으면(아직 한 번도 안 돌았거나 매번
+    실패) `unknown`, 40일 넘게 낡았으면(월 1회 크론 기준 한두 달 밀림) `alert`.
     """
     out: list[Finding] = []
     bundle_age = _age(bundle_stamp, now)
@@ -472,6 +483,14 @@ def backup_findings(bundle_stamp: str | None, pull_stamp: str | None, now: datet
         out.append(Finding("backup", ALERT,
                            f"오프사이트로 당겨간 지 {pull_age.days}일 됐다 (임계 {max_pull_age.days}일) — "
                            "지금 디스크가 죽으면 그만큼 잃는다"))
+    rehearsal_age = _age(rehearsal_stamp, now)
+    if rehearsal_age is None:
+        out.append(Finding("backup", UNKNOWN,
+                           "복원 리허설 성공 시각을 읽지 못했다 — 이 백업을 실제로 복원할 수 있는지 모른다"))
+    elif rehearsal_age > max_rehearsal_age:
+        out.append(Finding("backup", ALERT,
+                           f"마지막 복원 리허설 성공이 {rehearsal_age.days}일 됐다 "
+                           f"(임계 {max_rehearsal_age.days}일) — 안 해본 백업은 백업이 아니다"))
     return out
 
 

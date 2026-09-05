@@ -70,6 +70,15 @@ def test_spread_row_zero_volume_book_keeps_price_with_neutral_imbalance():
     assert row is not None and row["imbalance"] == 0.0
 
 
+def test_spread_row_tags_market_from_symbol():
+    """slippage.py가 시장별로 묶을 때 심볼 패턴을 다시 추론하지 않도록, 원장
+    행에 시장을 그대로 박아 둔다(2026-09-06 live-readiness §4)."""
+    us_row = spread_row([_lv(100.0, 1)], [_lv(100.1, 1)], "TQQQ", NOW.isoformat())
+    kr_row = spread_row([_lv(72000, 1)], [_lv(72100, 1)], "005930", NOW.isoformat())
+    assert us_row["market"] == "US"
+    assert kr_row["market"] == "KR"
+
+
 # ---------------------------------------------------------------- sample_spread
 
 

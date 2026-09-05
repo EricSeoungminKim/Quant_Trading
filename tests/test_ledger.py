@@ -948,3 +948,86 @@ def test_strategy_start_capital_returns_zeros_on_corrupted_file(tmp_path):
     p = tmp_path / "strategy_books.json"
     p.write_text("{not valid json", encoding="utf-8")
     assert strategy_start_capital("gap_fade", p) == {"KRW": 0.0, "USD": 0.0}
+
+
+# ===================================================================
+# round_trips_since_epoch (2026-09-06 live-readiness §1) — 스코어보드의
+# "에폭 이후" 절이 쓰는 스코프. `round_trips`는 경계 이전에 이미 닫힌 트립을
+# 누적 이력으로 그대로 남기므로(모듈 docstring), 에폭 이후만 뽑고 싶은
+# 호출부에는 안 맞는다 — `quant.control.performance._build_paper_epoch`와
+# 같은 스코핑 규칙(에폭 이후 체결만으로 다시 재구성)을 별도 함수로 노출한다.
+# ===================================================================
+
+def test_round_trips_since_epoch_returns_empty_without_a_marker():
+    from quant.control.ledger import round_trips_since_epoch
+
+    trades = [
+        _row("TQQQ", "BUY", 10, 50.0, "2026-08-20T01:00:00+00:00", strategy="gap_fade"),
+        _row("TQQQ", "SELL", 10, 55.0, "2026-08-20T02:00:00+00:00", pnl=50.0, strategy="gap_fade"),
+    ]
+    assert round_trips_since_epoch(trades) == []
+
+
+def test_round_trips_since_epoch_only_counts_trips_closed_after_the_boundary():
+    """`round_trips`는 에폭 이전에 이미 닫힌 트립도 누적 이력으로 남기지만,
+    이 함수는 에폭 **이후** 트립만 남긴다 — 두 함수가 같은 원장에서 다른
+    답을 내야 한다는 것 자체가 이 함수의 존재 이유다."""
+    from quant.control.ledger import round_trips, round_trips_since_epoch
+
+    trades = [
+        # 에폭 이전에 이미 닫힌 트립 — round_trips는 누적으로 남기지만
+        # round_trips_since_epoch는 빼야 한다.
+        _row("TQQQ", "BUY", 10, 50.0, "2026-08-20T01:00:00+00:00", strategy="gap_fade"),
+        _row("TQQQ", "SELL", 10, 55.0, "2026-08-20T02:00:00+00:00", pnl=50.0, strategy="gap_fade"),
+        _epoch_marker_row("2026-09-07T00:00:00+09:00"),
+        # 에폭 이후 정상 왕복.
+        _row("TQQQ", "BUY", 5, 60.0, "2026-09-08T02:00:00+00:00", strategy="gap_fade"),
+        _row("TQQQ", "SELL", 5, 62.0, "2026-09-08T03:00:00+00:00", pnl=10.0, strategy="gap_fade"),
+    ]
+    cumulative = round_trips(trades)
+    since_epoch = round_trips_since_epoch(trades)
+    assert len(cumulative) == 2, "누적 스코프는 에폭 이전 트립도 그대로 남긴다"
+    assert len(since_epoch) == 1
+    assert since_epoch[0]["pnl"] == pytest.approx(10.0)
+
+
+def test_round_trips_since_epoch_uses_the_latest_marker():
+    from quant.control.ledger import round_trips_since_epoch
+
+    trades = [
+        _epoch_marker_row("2026-09-07T00:00:00+09:00"),
+        _row("TQQQ", "BUY", 5, 60.0, "2026-09-07T05:00:00+00:00", strategy="gap_fade"),
+        _row("TQQQ", "SELL", 5, 61.0, "2026-09-07T06:00:00+00:00", pnl=5.0, strategy="gap_fade"),
+        # 재전환 — 더 나중 마커가 새 경계다. 위 트립은 이 시대의 것이 아니다.
+        _epoch_marker_row("2026-10-01T00:00:00+09:00"),
+        _row("TQQQ", "BUY", 2, 60.0, "2026-10-01T05:00:00+00:00", strategy="gap_fade"),
+        _row("TQQQ", "SELL", 2, 63.0, "2026-10-01T06:00:00+00:00", pnl=6.0, strategy="gap_fade"),
+    ]
+    since_epoch = round_trips_since_epoch(trades)
+    assert len(since_epoch) == 1
+    assert since_epoch[0]["pnl"] == pytest.approx(6.0)
+
+
+def test_scoreboard_text_adds_return_pct_when_start_capital_given():
+    """`start_capital_by_strategy`가 주어지면 시장별 손익 줄에 시작자본 대비
+    수익률이 붙는다 — 생략하면(기존 호출부) 이 줄 자체가 없다."""
+    trips = [_trip(strategy="gap_fade", market="US", pnl=500.0, notional=10_000.0)]
+
+    without = scoreboard_text(trips)
+    assert "수익률" not in without
+
+    with_capital = scoreboard_text(
+        trips, start_capital_by_strategy={"gap_fade": {"KRW": 0.0, "USD": 10_000.0}},
+    )
+    assert "수익률 +5.0% (시작 $10,000.00)" in with_capital
+
+
+def test_scoreboard_text_omits_return_pct_when_capital_is_zero():
+    """시작자본이 0(배정 안 된 시장)이면 나눗셈을 하지 않는다 — 지어낸 %를
+    보여주지 않는다."""
+    trips = [_trip(strategy="gap_fade", market="US", pnl=500.0, notional=10_000.0)]
+
+    out = scoreboard_text(
+        trips, start_capital_by_strategy={"gap_fade": {"KRW": 0.0, "USD": 0.0}},
+    )
+    assert "수익률" not in out

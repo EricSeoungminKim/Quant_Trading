@@ -164,8 +164,14 @@
 # 10분 간격. 새벽 회차는 한국 달력 익일이라 화~토(2-6). **Toss 호가가 US 실
 # 데이터를 주는지는 아직 미검증이다** — 빈 응답이면 CLI 요약이 "US 응답 없음"
 # 으로 드러내므로, 며칠치 data/spread.log 로 그 사실부터 확인할 것.
-*/10 23 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/spread_sample.sh US >> data/spread.log 2>&1
-*/10 0-4 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/spread_sample.sh US >> data/spread.log 2>&1
+#
+# 2026-09-06 live-readiness §4: spread_sample.sh US → spread_sample_us.sh 로
+# 교체 — 워치리스트 기본 목록만으로는 레버리지 페어 앵커(TQQQ/SQQQ/SOXL/SOXS)
+# 가 항상 잡히지 않는다(letf_pair_sox는 top-level symbols: 가 비어 있다,
+# spread_sample_us.sh 상단 주석 참고). `cli slippage-report`가 이 네 심볼의
+# 실측 스프레드에 의존하므로 명시적으로 강제한다.
+*/10 23 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/spread_sample_us.sh >> data/spread.log 2>&1
+*/10 0-4 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/spread_sample_us.sh >> data/spread.log 2>&1
 
 # 평일 20:10 KST — 신입사원 AI 트레이더(수습) US 토론. US 개장전 리포트(20:00)
 # 발행 직후 — 서류(선정 원장)가 그때 준비된다. 나머지는 08:20 KR 항목과 동일.
@@ -392,9 +398,21 @@
 # 문제(줄어듦·덤프 실패)가 있으면 종료코드 1 + 텔레그램.
 30 3 * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backup.sh >> data/backup.log 2>&1
 
-# 매주 일 04:00 KST — 복원 리허설. **안 해본 백업은 백업이 아니다.**
-# 종료코드 0=전부 확인 / 1=문제 / 2=부분 통과(확인 못 한 항목 있음).
-0 4 * * 0 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backup_restore_check.sh >> data/backup.log 2>&1
+# 매월 첫째 일요일 03:50 KST — 복원 리허설(2026-09-06 live-readiness §3, 이전
+# 매주 일 04:00에서 월 1회로 완화 — MySQL 스크래치 DB 적재까지 하는 무거운
+# 드릴이라 매주 돌릴 이유가 없다). **안 해본 백업은 백업이 아니다.**
+# 종료코드 0=전부 확인 / 1=문제 / 2=부분 통과(확인 못 한 항목 있음) — 셋 다
+# 스크립트 안에서 텔레그램(NOTIFY_LANE=ops)으로 보낸다(통과는 한 줄만).
+# 성공하면 data/backups/LAST_REHEARSAL을 남기고, ops_watch.sh(cli health →
+# backup_findings)가 이 파일이 40일 넘게 낡으면 경보한다.
+#
+# "첫째 일요일"은 표준 cron 문법에 없다 — day-of-month/day-of-week 두 필드를
+# 동시에 제한하면 cron은 **OR**로 매칭한다(예: "1-7 * 0"은 매달 1~7일 전부 +
+# 모든 일요일에 돈다, 원하는 "AND"가 아니다). 그래서 매주 일요일(`* * 0`)로
+# 걸어두고 그날이 그 달의 첫 7일 안인지는 셸에서 직접 확인한다(`date +%d`).
+# `%`는 crontab에서 개행으로 해석되므로 `\%`로 이스케이프해야 한다 — 안 하면
+# 이 줄 전체가 잘려나가 조용히 실행 안 되는 크론이 된다(실측 함정, 흔한 착오).
+50 3 * * 0 [ "$(date +\%d)" -le 7 ] && cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/backup_restore_check.sh >> data/backup.log 2>&1
 
 # 매시 05분 — 운영 감시. watchdog(5분)이 "엔진의 침묵"을 본다면 이쪽은 **엔진이 잘
 # 도는데 틀린 것**을 본다: 낡은 봉, 죽은 피드, 원장 불일치, 로그에 남은 시크릿,

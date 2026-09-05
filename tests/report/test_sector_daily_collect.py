@@ -160,3 +160,50 @@ def test_build_sector_daily_view_builds_and_persists_ledger(tmp_path):
     _build_sector_daily_view(tmp_path, "KR")
     lines_after = ledger_path.read_text(encoding="utf-8").splitlines()
     assert len(lines_before) == len(lines_after) == 1
+
+
+# --------------------------------------------------------------- us_sectors_raw
+# (전일 US 섹터 링크 참고 신호, 2026-09-06 — quant-backtest results/sector_link/
+# SUMMARY.md S1 근거)
+
+def test_build_sector_daily_view_without_us_sectors_persists_none_link(tmp_path):
+    """us_sectors_raw 생략(기존 호출부 하위호환) — us_link_ret/composite_score는
+    필드 자체는 있지만 값이 None/rank 기반이다."""
+    _seed_membership(tmp_path)
+    _write_jsonl(tmp_path / "data" / "ledger" / "fundamentals_naver.jsonl", [
+        {"date": "2026-09-02", "code": "005930", "value_traded": 500},
+    ])
+
+    view = _build_sector_daily_view(tmp_path, "KR")
+    row = view["sectors"][0]
+    assert row["us_link_ret"] is None
+    assert row["composite_score"] == 1.0  # 유일한 업종, rank=1, n=1 → base 1.0
+
+    ledger_path = tmp_path / "data" / "ledger" / "sector_daily.jsonl"
+    persisted = json.loads(ledger_path.read_text(encoding="utf-8").splitlines()[0])
+    assert persisted["us_link_ret"] is None
+    assert persisted["composite_score"] == 1.0
+
+
+def test_build_sector_daily_view_with_us_sectors_computes_and_persists_link(tmp_path):
+    """us_sectors_raw(리포트가 이미 읽은 `sectors` 소스, 새 수집 없음)를 넘기면
+    반도체와반도체장비(→GICS Information Technology)에 US 신호가 붙고,
+    sector_daily.jsonl에도 그대로 적재된다."""
+    _seed_membership(tmp_path)
+    _write_jsonl(tmp_path / "data" / "ledger" / "fundamentals_naver.jsonl", [
+        {"date": "2026-09-02", "code": "005930", "value_traded": 500},
+    ])
+    us_sectors_raw = [
+        {"ticker": "XLK", "name": "기술", "change_pct": 1.5},
+        {"ticker": "XLF", "name": "금융", "change_pct": -0.3},
+    ]
+
+    view = _build_sector_daily_view(tmp_path, "KR", us_sectors_raw)
+    row = view["sectors"][0]
+    assert row["us_link_ret"] == 0.015
+    assert row["us_link_gics_kr"] == "기술"
+
+    ledger_path = tmp_path / "data" / "ledger" / "sector_daily.jsonl"
+    persisted = json.loads(ledger_path.read_text(encoding="utf-8").splitlines()[0])
+    assert persisted["us_link_ret"] == 0.015
+    assert persisted["composite_score"] == row["composite_score"]

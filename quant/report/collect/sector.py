@@ -257,11 +257,21 @@ def _load_sector_daily_history(
     return [row for row in rows if row["date"] in recent_dates]
 
 
-def _build_sector_daily_view(root: Path, market: str) -> dict | None:
+def _build_sector_daily_view(
+    root: Path, market: str, us_sectors_raw: list[dict] | None = None,
+) -> dict | None:
     """일일 주도 섹터(§3, 2026-09-03 소유자 철학 지시 B). 거래대금 원장·업종
     멤버십 원장 어느 하나가 없으면 `None` — 호출부(report_cli)가 "결측 —
     섹터 데이터 없음"으로 렌더한다(§C). `market != "KR"`이면 호출부가 애초에
-    부르지 않는다(US는 naver 거래대금/frgn_flow 원장 자체가 없다)."""
+    부르지 않는다(US는 naver 거래대금/frgn_flow 원장 자체가 없다).
+
+    `us_sectors_raw`(선택, 2026-09-06) — 스냅샷 `sectors` 소스의
+    `data["sectors"]`(호출부가 `us_kr_bridge`에도 넘기는 바로 그 값, 새 수집
+    없음). 있으면 `quant.analyze.kr_sectors.us_sector_returns_from_source`로
+    변환해 각 업종 행에 `us_link_ret`/`us_link_gics_kr`/`composite_score`를
+    얹고 원장에도 같이 적재한다(quant.analyze.sector_daily.US_LINK_WEIGHT 근거
+    참고) — report_accuracy가 나중에 실측 uplift를 잴 수 있게."""
+    from quant.analyze.kr_sectors import us_sector_returns_from_source
     from quant.analyze.sector_daily import build_sector_daily_rows, rank_with_trend
 
     sector_members = _load_artifact(root / "data" / "ledger" / "sector_members.json") or {}
@@ -283,11 +293,17 @@ def _build_sector_daily_view(root: Path, market: str) -> dict | None:
         return None
 
     ledger_path = root / "data" / "ledger" / "sector_daily.jsonl"
+    # 5일 추이는 오늘 것을 적재하기 전에 읽는다(오늘 걸 적재해도 before_date
+    # 필터가 오늘 자신은 어차피 제외하지만, rank_with_trend가 us_link_ret 등을
+    # 얹은 *뒤에* 적재해야 그 필드들이 원장에 들어간다 — 아래에서 순서를
+    # 그렇게 맞춘다).
+    history_rows = _load_sector_daily_history(ledger_path, market, before_date=turnover_date, days=5)
+    us_sector_returns = us_sector_returns_from_source(us_sectors_raw)
+    ranked = rank_with_trend(today_rows, history_rows, us_sector_returns=us_sector_returns)
+
     try:
         _append_sector_daily(ledger_path, today_rows)
     except Exception as e:  # noqa: BLE001 — 원장 쓰기 실패가 리포트 표시를 막지 않는다
         print(f"주도 섹터 원장 쓰기 실패(표시는 계속): {type(e).__name__}: {e}", file=sys.stderr)
 
-    history_rows = _load_sector_daily_history(ledger_path, market, before_date=turnover_date, days=5)
-    ranked = rank_with_trend(today_rows, history_rows)
     return {"date": turnover_date, "sectors": ranked[:8]}

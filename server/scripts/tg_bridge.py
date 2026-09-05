@@ -1073,10 +1073,35 @@ def handle_balance(toss_client: TossClient) -> str:
 
 
 def handle_scoreboard() -> str:
+    """`/scoreboard` 응답 — `quant.apps.cli scoreboard`와 같은 "에폭 이후" 절을
+    먼저 보여준다(2026-09-06 live-readiness §1). 에폭 마커가 없으면(paper-epoch
+    미실행) 그 절 없이 기존과 동일한 누적 스코어보드만 나간다."""
     try:
-        from quant.control.ledger import load_trades, round_trips, scoreboard_text
-        trips = round_trips(load_trades(LEDGER_PATH))
-        return scoreboard_text(trips)
+        from zoneinfo import ZoneInfo
+
+        from quant.control.ledger import (
+            load_trades, paper_epoch_ts, round_trips, round_trips_since_epoch,
+            scoreboard_text, strategy_start_capital,
+        )
+        trades = load_trades(LEDGER_PATH)
+
+        epoch_ts = paper_epoch_ts(trades)
+        parts = []
+        if epoch_ts is not None:
+            epoch_trips = round_trips_since_epoch(trades)
+            epoch_date = epoch_ts.astimezone(ZoneInfo("Asia/Seoul")).date().isoformat()
+            start_capital_by_strategy = {
+                s: strategy_start_capital(s) for s in sorted({t["strategy"] for t in epoch_trips})
+            }
+            parts.append(scoreboard_text(
+                epoch_trips, title=f"🆕 에폭 이후 ({epoch_date}~)",
+                start_capital_by_strategy=start_capital_by_strategy,
+            ))
+
+        trips = round_trips(trades)
+        title = "📚 누적(역사)" if epoch_ts is not None else "누적 스코어보드"
+        parts.append(scoreboard_text(trips, title=title))
+        return "\n\n".join(parts)
     except Exception as exc:  # noqa: BLE001
         return f"스코어보드 생성 실패: {exc}"
 

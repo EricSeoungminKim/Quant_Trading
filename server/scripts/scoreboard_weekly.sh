@@ -35,3 +35,10 @@ notify_defer "scoreboard_weekly" "${FORENSICS:-거래 부검 생성 실패 — d
 # 자본 단위(변동성·샤프·MDD). 곡선 점이 5개 미만이면 "표본 부족"이 그대로 간다.
 PERF="$(timeout 60 .venv/bin/python -m quant.apps.cli performance 2>/dev/null)"
 notify_defer "scoreboard_weekly" "${PERF:-자본 곡선 성과 생성 실패}"
+
+# 실측 슬리피지(2026-09-06 live-readiness §4) — spread_sample.sh/
+# spread_sample_us.sh가 쌓아온 호가 스프레드 실측과 체결을 이어 붙여
+# slippage_bps(편도 2.5bp 가정)이 실측 대비 낙관인지 보수인지 본다. 표본이
+# 아직 없으면(스프레드 원장이 갓 생겼거나 매칭 안 됨) "표본 없음"이 그대로 간다.
+SLIPPAGE="$(timeout 60 .venv/bin/python -m quant.apps.cli slippage-report 2>/dev/null)"
+notify_defer "scoreboard_weekly" "${SLIPPAGE:-실측 슬리피지 리포트 생성 실패}"

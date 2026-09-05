@@ -13,8 +13,24 @@
 #
 # 3번은 스크래치 DB(`<DB>_restore_rehearsal`)를 만들고 끝나면 지운다. 권한이 없으면
 # **"확인 불가"로 보고한다** — "정상"으로 넘기지 않는다.
+#
+# 크론: 매월 첫째 일요일 03:50 KST(server/crontab.txt) — MySQL 스크래치 DB
+# 적재까지 포함하는 무거운 드릴이라 backup.sh(매일)만큼 자주 돌리지 않는다.
+# 성공(exit 0)하면 `data/backups/LAST_REHEARSAL`을 남긴다 — backup_pull.sh의
+# `LAST_PULL`과 같은 계약(성공 시각만 남기고, 실패했으면 갱신하지 않는다).
+# `quant.control.health.backup_findings`(ops_watch.sh가 매시 확인)가 이 파일이
+# 40일 넘게 낡으면 경보한다.
+#
+# 결과는 항상 텔레그램으로 보낸다(NOTIFY_LANE=ops) — 통과(exit 0)는 한 줄만,
+# 문제/부분통과(exit 1/2)는 위 로그 그대로.
 set -u
 cd "$(dirname "$0")/../.."
+
+_env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
+TG_TOKEN="$(_env TELEGRAM_BOT_TOKEN)"
+TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
+. "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="ops"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 PY=.venv/bin/python
 BUNDLE="${1:-}"
@@ -23,6 +39,7 @@ if [ -z "$BUNDLE" ]; then
 fi
 if [ -z "$BUNDLE" ] || [ ! -f "$BUNDLE" ]; then
   echo "리허설할 번들이 없다 (data/backups/quant-*.tar.gz)" >&2
+  notify_now "🚨 복원 리허설: 리허설할 번들이 없다(data/backups/quant-*.tar.gz) — backup.sh가 도는지 확인할 것"
   exit 2
 fi
 
@@ -154,11 +171,20 @@ fi
 
 if [ "$FAILED" -ne 0 ]; then
   say "=== 결과: 문제 있음 — 위 항목 확인 (이 백업으로 복원할 수 있다고 믿지 말 것) ==="
+  notify_now "🚨 복원 리허설 문제 있음 — $BUNDLE. data/backup.log 확인 (이 백업으로 복원할 수 있다고 믿지 말 것)"
   exit 1
 fi
 if [ "$UNKNOWN" -ne 0 ]; then
   say "=== 결과: 부분 통과 — 확인 못 한 항목이 있다. '리허설했다'고 기록하지 말 것 ==="
+  notify_now "❔ 복원 리허설 부분 통과 — $BUNDLE 일부 항목 확인 못 함. data/backup.log 확인 (LAST_REHEARSAL 갱신 안 함)"
   exit 2
 fi
 say "=== 결과: 리허설 통과 (전 항목 확인) ==="
+# 성공 시각만 남긴다(backup_pull.sh의 LAST_PULL과 동일 계약) — 실패/부분통과는
+# 갱신하지 않는다. quant.control.health.backup_findings가 이 파일이 40일
+# 넘게 낡으면 경보한다(ops_watch.sh).
+mkdir -p data/backups
+STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\n' "$STAMP" > data/backups/LAST_REHEARSAL
+notify_now "✅ 복원 리허설 통과 — $BUNDLE (전 항목 확인, LAST_REHEARSAL=$STAMP)"
 exit 0

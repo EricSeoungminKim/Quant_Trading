@@ -470,11 +470,50 @@ def round_trips(trades: list[dict]) -> list[dict]:
     return trips
 
 
+def round_trips_since_epoch(trades: list[dict]) -> list[dict]:
+    """`round_trips`와 다른 스코프 — 가장 최근 페이퍼 에폭 리셋 **이후** 체결로만
+    다시 왕복을 재구성한다 (2026-09-06 live-readiness §1, 스코어보드 "에폭 이후" 절).
+
+    `round_trips`는 경계 이전에 이미 닫힌 트립을 누적 이력으로 그대로 남긴다
+    (그 함수 docstring — "cur에 남은 것"만 버리고, 이미 닫혀 `trips`에 들어간
+    것은 안 건드린다). 그래서 "에폭 이후 성적만" 보고 싶은 호출부(스코어보드의
+    새 섹션)에는 안 맞는다.
+
+    `quant.control.performance._build_paper_epoch`(사이트 발행 경로)가 쓰는 것과
+    같은 스코핑 규칙이다: `paper_epoch_ts()`로 경계를 찾고, 경계 이후(>=) 체결만
+    (마커 행 제외) 추려 `round_trips`를 그 부분집합에 다시 돌린다 — 그러면
+    경계를 가로지르는 미종결 lot도, 경계 이전에 닫힌 트립도 재료에 아예 없다.
+
+    마커가 없으면(에폭을 한 번도 안 돌렸으면) 빈 리스트 — "에폭 이후"라는
+    개념 자체가 아직 없다."""
+    epoch_ts = paper_epoch_ts(trades)
+    if epoch_ts is None:
+        return []
+
+    def _ts(row: dict) -> datetime | None:
+        try:
+            d = datetime.fromisoformat(str(row.get("ts")))
+        except ValueError:
+            return None
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+    scoped = [
+        t for t in trades
+        if not is_paper_epoch_marker(t) and (ts := _ts(t)) is not None and ts >= epoch_ts
+    ]
+    return round_trips(scoped)
+
+
 def _fmt_amount(v: float, market: str) -> str:
     return f"{v:,.0f}원" if market == "KR" else f"${v:,.2f}"
 
 
-def _strategy_block(name: str, trips: list[dict]) -> list[str]:
+def _strategy_block(name: str, trips: list[dict], start_capital: dict | None = None) -> list[str]:
+    """`start_capital`(2026-09-06, 스코어보드 "에폭 이후" 절 전용) — 주어지면
+    시장별 손익 줄에 그 통화 시작자본 대비 누적 수익률을 덧붙인다
+    (`strategy_start_capital()`이 반환하는 `{"KRW":.., "USD":..}` 그대로). 생략
+    (기본 None)이면 기존 누적 스코어보드와 완전히 동일한 출력 — 이 파라미터
+    하나로 두 절이 이 함수를 공유한다."""
     known = [t for t in trips if t["pnl_known"]]
     unknown = len(trips) - len(known)
     if not known:
@@ -505,10 +544,16 @@ def _strategy_block(name: str, trips: list[dict]) -> list[str]:
     for market in ("KR", "US"):
         mt = [t for t in known if t["market"] == market]
         if mt:
-            lines.append(
-                f"  {market}: 손익 {_fmt_amount(sum(t['pnl'] for t in mt), market)}"
+            pnl_sum = sum(t["pnl"] for t in mt)
+            line = (
+                f"  {market}: 손익 {_fmt_amount(pnl_sum, market)}"
                 f" · 수수료 {_fmt_amount(sum(t['fees'] for t in mt), market)} ({len(mt)}건)"
             )
+            currency = "KRW" if market == "KR" else "USD"
+            cap = float((start_capital or {}).get(currency, 0.0))
+            if cap > 0:
+                line += f" · 수익률 {pnl_sum / cap * 100:+.1f}% (시작 {_fmt_amount(cap, market)})"
+            lines.append(line)
     for market, threshold in (("KR", DUST_NOTIONAL_KRW), ("US", DUST_NOTIONAL_USD)):
         dust = [t for t in known if t["market"] == market and t["notional"] < threshold]
         if dust:
@@ -520,13 +565,23 @@ def _strategy_block(name: str, trips: list[dict]) -> list[str]:
     return lines
 
 
-def scoreboard_text(trips: list[dict], title: str = "누적 스코어보드") -> str:
+def scoreboard_text(
+    trips: list[dict], title: str = "누적 스코어보드",
+    start_capital_by_strategy: dict[str, dict] | None = None,
+) -> str:
+    """`start_capital_by_strategy`(2026-09-06, "에폭 이후" 절 전용) — 주어지면
+    전략별 `strategy_start_capital()` 결과를 `_strategy_block`에 그대로 넘겨
+    시장별 손익 줄에 수익률을 덧붙인다. 생략(기본 None)이면 기존 누적
+    스코어보드와 완전히 동일한 출력이다."""
     if not trips:
         return f"📊 {title}: 종결된 트레이드가 아직 없음"
     lines = [f"📊 {title} (종결 {len(trips)}건)"]
     strategies = sorted({t["strategy"] for t in trips})
     for s in strategies:
-        lines += _strategy_block(s, [t for t in trips if t["strategy"] == s])
+        lines += _strategy_block(
+            s, [t for t in trips if t["strategy"] == s],
+            start_capital=(start_capital_by_strategy or {}).get(s),
+        )
     # 종목별 상/하위 3 (bps 기준, 손익 확정분만)
     known = [t for t in trips if t["pnl_known"]]
     by_symbol: dict[str, list[dict]] = {}

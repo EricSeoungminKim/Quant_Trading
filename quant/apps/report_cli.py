@@ -324,16 +324,19 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         from quant.analyze.us_kr_bridge import build_us_kr_bridge
         from quant.report.collect.news import _source_data
 
-        us_kr_bridge = build_us_kr_bridge(
-            (_source_data(snap, "sectors") or {}).get("sectors"), sector_members,
-        )
+        us_sectors_raw = (_source_data(snap, "sectors") or {}).get("sectors")
+        us_kr_bridge = build_us_kr_bridge(us_sectors_raw, sector_members)
         # 전일 마감 종합(wrap)은 위(_derive 전)에서 이미 로드했다 — 후보 합류와
         # 카드 표시가 같은 객체를 쓴다.
         # 주도 섹터(sector_daily, 2026-09-03 소유자 철학 지시 B) — 데이터가
         # 없으면(원장 초기 배포 등) {"missing": True}로 감싸 "결측" 카드를
         # 그리게 한다(§C, us_kr_bridge처럼 조용히 None으로 섹션을 지우면
         # "US 리포트라 해당 없음"과 "KR인데 오늘 데이터가 없음"이 구분 안 된다).
-        sector_daily = _build_sector_daily_view(root, snap.market) or {"missing": True}
+        # `us_sectors_raw`(위 us_kr_bridge와 같은 값, 새 수집 없음, 2026-09-06)를
+        # 같이 넘겨 US 섹터 링크 참고 신호(us_link_ret/composite_score)를 얹는다.
+        sector_daily = _build_sector_daily_view(
+            root, snap.market, us_sectors_raw,
+        ) or {"missing": True}
     else:
         sector_view, top_movers = [], {}
         foreign_view = None

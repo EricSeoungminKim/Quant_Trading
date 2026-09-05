@@ -4,7 +4,7 @@
 파일 I/O 없이 인자로만 판단한다(sector_view.py와 같은 원칙).
 """
 from quant.analyze.sector_daily import (
-    build_sector_daily_rows, rank_with_trend, scoring_context,
+    build_sector_daily_rows, composite_score, rank_with_trend, scoring_context,
 )
 
 
@@ -226,3 +226,108 @@ def test_scoring_context_negative_streak3_needs_at_least_3_days():
     ]
     ctx = scoring_context(ranked)
     assert ctx["negative_streak3"] == {"A"}
+
+
+# --------------------------------------------------------------- composite_score
+# (전일 US 섹터 링크 신호, 2026-09-06 — quant-backtest results/sector_link/
+# SUMMARY.md S1 근거. §sector_daily.US_LINK_WEIGHT 주석 참고.)
+
+def test_composite_score_weight_zero_ignores_us_link_ret():
+    """weight=0(기본값)이면 us_link_ret이 무엇이든(None 포함) 결과가 같다 —
+    재현성의 핵심 불변식."""
+    base = composite_score(1, 4, None, weight=0.0)
+    assert composite_score(1, 4, 0.05, weight=0.0) == base
+    assert composite_score(1, 4, -0.9, weight=0.0) == base
+
+
+def test_composite_score_matches_turnover_rank_ordering_at_weight_zero():
+    """weight=0일 때 composite_score로 정렬해도 rank(=거래대금) 순서와 같다."""
+    scores = {r: composite_score(r, 5, None) for r in range(1, 6)}
+    ranks_sorted_by_score = sorted(scores, key=lambda r: -scores[r])
+    assert ranks_sorted_by_score == [1, 2, 3, 4, 5]
+
+
+def test_composite_score_nonzero_weight_adds_us_link_contribution():
+    base = composite_score(2, 4, None, weight=0.5)
+    assert composite_score(2, 4, 0.1, weight=0.5) == base + 0.05
+    assert composite_score(2, 4, -0.1, weight=0.5) == base - 0.05
+
+
+def test_composite_score_top_rank_is_one_point_zero():
+    assert composite_score(1, 4, None, weight=0.0) == 1.0
+
+
+# --------------------------------------------------------------- rank_with_trend
+# us_sector_returns (전일 US 섹터 링크)
+
+def test_rank_with_trend_without_us_sector_returns_leaves_link_fields_none():
+    """기존 호출부 하위호환 — us_sector_returns 생략 시 전부 None, weight=0
+    이므로 composite_score는 rank만의 함수."""
+    today = build_sector_daily_rows(
+        "2026-09-06", "KR", _sector_members(),
+        turnover_by_symbol={"005930": 900, "005380": 100},
+        foreign_net_by_symbol={},
+    )
+    ranked = rank_with_trend(today, [])
+    semi = next(r for r in ranked if r["sector"] == "반도체와반도체장비")
+    assert semi["us_link_ret"] is None
+    assert semi["us_link_gics_kr"] is None
+    assert semi["composite_score"] == composite_score(semi["rank"], len(ranked), None)
+
+
+def test_rank_with_trend_attaches_us_link_ret_via_gics_mapping():
+    """반도체와반도체장비 → GICS Information Technology. us_sector_returns에
+    그 섹터 수익률이 있으면 행에 붙는다."""
+    today = build_sector_daily_rows(
+        "2026-09-06", "KR", _sector_members(),
+        turnover_by_symbol={"005930": 900, "005380": 100},
+        foreign_net_by_symbol={},
+    )
+    ranked = rank_with_trend(
+        today, [], us_sector_returns={"Information Technology": 0.02, "Financials": -0.01},
+    )
+    semi = next(r for r in ranked if r["sector"] == "반도체와반도체장비")
+    auto = next(r for r in ranked if r["sector"] == "자동차")
+    assert semi["us_link_ret"] == 0.02
+    assert semi["us_link_gics_kr"] == "기술"
+    # 자동차 → Consumer Discretionary, us_sector_returns에 없음 → None
+    assert auto["us_link_ret"] is None
+    assert auto["us_link_gics_kr"] is None
+
+
+def test_rank_with_trend_sector_with_no_gics_mapping_gets_none_link():
+    """kr_sectors.UPJONG_TO_GICS에 없는 업종명은 us_sector_returns가 있어도
+    None(있는 걸 지어내지 않는다)."""
+    members = {"존재하지않는업종": [{"code": "999999", "name": "테스트"}]}
+    today = build_sector_daily_rows(
+        "2026-09-06", "KR", members, turnover_by_symbol={"999999": 100},
+        foreign_net_by_symbol={},
+    )
+    ranked = rank_with_trend(
+        today, [], us_sector_returns={"Information Technology": 0.02},
+    )
+    assert ranked[0]["us_link_ret"] is None
+
+
+def test_rank_with_trend_composite_score_identical_regardless_of_us_sector_returns_at_default_weight():
+    """모듈 기본 weight(0)에서는 us_sector_returns를 넘기든 안 넘기든
+    composite_score가 완전히 같다 — 요구된 재현성 테스트."""
+    today_a = build_sector_daily_rows(
+        "2026-09-06", "KR", _sector_members(),
+        turnover_by_symbol={"005930": 900, "005380": 100, "051910": 50},
+        foreign_net_by_symbol={},
+    )
+    today_b = build_sector_daily_rows(
+        "2026-09-06", "KR", _sector_members(),
+        turnover_by_symbol={"005930": 900, "005380": 100, "051910": 50},
+        foreign_net_by_symbol={},
+    )
+    ranked_without = rank_with_trend(today_a, [])
+    ranked_with = rank_with_trend(
+        today_b, [],
+        us_sector_returns={"Information Technology": 0.05, "Consumer Discretionary": -0.03,
+                            "Materials": 0.01},
+    )
+    scores_without = {r["sector"]: r["composite_score"] for r in ranked_without}
+    scores_with = {r["sector"]: r["composite_score"] for r in ranked_with}
+    assert scores_without == scores_with

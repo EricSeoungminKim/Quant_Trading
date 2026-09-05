@@ -1603,7 +1603,7 @@ html{overflow-x:hidden}
   {% else %}
   <p class="idx-sub">{{ sector_daily.date }} 기준 거래대금 상위 {{ sector_daily.sectors|length }}개 업종</p>
   <table>
-    <tr><th>순위</th><th>업종</th><th>5일 추이</th><th class="num">외국인 순매수</th><th>대표 종목</th></tr>
+    <tr><th>순위</th><th>업종</th><th>5일 추이</th><th class="num">외국인 순매수</th><th>대표 종목</th><th>전일 US 연결<span class="sub">참고</span></th></tr>
     {% for s in sector_daily.sectors %}
     <tr>
       <td>{{ s.rank }}</td>
@@ -1613,9 +1613,23 @@ html{overflow-x:hidden}
         {% if s.foreign_net is not none %}{{ shares(s.foreign_net) }}{% else %}미확인{% endif %}
       </td>
       <td>{% for m in s.top_members[:3] %}<a class="sym-link" href="{{ sym_link(m.code) }}" target="_blank" rel="noopener">{{ m.name }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</td>
+      {% set us_ret = s.us_link_ret if s.us_link_ret is defined else none %}
+      <td class="num {{ 'up' if us_ret and us_ret > 0 else ('down' if us_ret and us_ret < 0 else '') }}">
+        {% if us_ret is not none %}전일 US {{ s.us_link_gics_kr }} {{ '%+.1f'|format(us_ret * 100) }}% → KR {{ s.sector }}{% else %}—{% endif %}
+      </td>
     </tr>
     {% endfor %}
   </table>
+  {% if sector_daily.sectors|selectattr('us_link_ret', 'defined')|selectattr('us_link_ret', 'ne', none)|list %}
+  <p class="foot">
+    <b>전일 US 연결은 참고 신호입니다</b> — 과거 데이터 검정 결과 전일 미국 섹터
+    ETF 종가 수익률의 순위가 다음날 같은 GICS 섹터 KR 초과수익률(vs KODEX200)
+    순위와 상관됩니다(Rank IC 평균 0.070, t=4.31, n=488거래일, 2024~2026년
+    전부 양의 상관). 다만 한국 개별주 매매비용 기준으로는 이 연결을 그대로
+    사고파는 전략이 수익성을 내지 못했습니다(왕복비용이 신호보다 큼) — 그래서
+    이 열은 실행 신호가 아니라 흐름 참고용입니다.
+  </p>
+  {% endif %}
   {% endif %}
 </details>
 {% endif %}

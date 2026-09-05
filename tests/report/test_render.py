@@ -2722,6 +2722,46 @@ def test_sector_daily_section_shows_missing_note_when_flagged():
     assert "결측 — 섹터 데이터 없음" in html
 
 
+# --------------------------------------------------------------- 전일 US 섹터 링크
+# (참고 신호, 2026-09-06 — quant-backtest results/sector_link/SUMMARY.md S1 근거)
+
+def _sector_daily_view_with_us_link():
+    return {
+        "date": "2026-09-02",
+        "sectors": [
+            {"rank": 1, "sector": "반도체와반도체장비", "trend": "↑", "foreign_net": 26000,
+             "us_link_ret": 0.012, "us_link_gics_kr": "기술", "composite_score": 1.0,
+             "top_members": [{"code": "005930", "name": "삼성전자"}]},
+            {"rank": 2, "sector": "자동차", "trend": "=", "foreign_net": -500,
+             "us_link_ret": None, "us_link_gics_kr": None, "composite_score": 0.5,
+             "top_members": [{"code": "005380", "name": "현대차"}]},
+        ],
+    }
+
+
+def test_sector_daily_section_shows_us_link_arrow_and_evidence_note():
+    html = render(_snap(), _cont(), sector_daily=_sector_daily_view_with_us_link())
+    section = html[html.index("주도 섹터"): html.index("주도 섹터") + 3000]
+    assert "전일 US 기술 +1.2% → KR 반도체와반도체장비" in section
+    assert "참고 신호" in section
+    assert "Rank IC" in section
+
+
+def test_sector_daily_section_us_link_row_without_signal_shows_dash():
+    html = render(_snap(), _cont(), sector_daily=_sector_daily_view_with_us_link())
+    section = html[html.index("주도 섹터"): html.index("주도 섹터") + 3000]
+    # 자동차 행은 us_link_ret이 None이라 화살표 대신 대시.
+    assert "→ KR 자동차" not in section
+
+
+def test_sector_daily_section_omits_us_link_note_when_no_row_has_signal():
+    """모든 행에 us_link_ret이 없으면(구버전 원장 등) 참고 신호 각주 자체를
+    생략한다 — 근거 없는 문구를 억지로 붙이지 않는다."""
+    html = render(_snap(), _cont(), sector_daily=_sector_daily_view())
+    section = html[html.index("주도 섹터"): html.index("주도 섹터") + 3000]
+    assert "참고 신호" not in section
+
+
 # --------------------------------------------------------------------------- 뉴스 흐름 수집창 헤더 (F5, 2026-09-03)
 
 

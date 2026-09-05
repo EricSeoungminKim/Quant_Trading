@@ -20,6 +20,14 @@
 - **섹터 픽**: 이 모듈은 다루지 않는다 — `sector_daily.jsonl`가 이미 있고
   2026-09-03에 도입돼 표본이 며칠 안 된다(감사 결과 n<20, 판단 불가). 표본이
   쌓이면 이 모듈에 같은 패턴(추출→채점)으로 추가한다.
+  TODO(2026-09-06): 그 채점을 추가할 때 `sector_daily.jsonl`의 `us_link_ret`
+  필드(전일 US 섹터 ETF 종가→종가 수익률, GICS 매핑을 통해 그 KR 업종에
+  연결된 값 — `quant.analyze.kr_sectors.us_sector_signal` 근거: Rank IC
+  mean=0.070, t=4.31, n=488)와 `composite_score` 필드(거래대금 순위 기반
+  점수 + `US_LINK_WEIGHT * us_link_ret`, weight 기본값 0)도 같이 추출해
+  "거래대금 순위만" vs "순위+US신호 결합"의 다음날 그 업종 KR 초과수익률
+  예측력을 비교한다 — `quant.analyze.sector_daily.US_LINK_WEIGHT`를 0이
+  아닌 값으로 올릴지는 이 비교 결과로 사람이 판단한다.
 - **"같은 유니버스에서 무작위 추출" 대조군**: 이 모듈은 다루지 않는다 —
   `report_claims.jsonl`은 후보만 남기고(전량 유니버스를 매일 복제하면
   `selections.jsonl`과 중복이라 유지비만 커진다) 무작위 대조군은 `selections.
