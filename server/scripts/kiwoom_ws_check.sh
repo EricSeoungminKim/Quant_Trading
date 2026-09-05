@@ -18,6 +18,7 @@ set -a; [ -f .env.local ] && . ./.env.local; set +a
 # 시세 인증·수신 여부라, 틀렸으면 그날 장 내내 시세가 느린 채로 매매한다.
 # (검증이 끝나면 이 크론 자체가 제거된다 — 파일 상단 절차 참고.)
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="ops"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 probe() {  # $1=라벨 $2=appkey $3=secret $4=rest_base $5=ws_url
   if [ -z "$2" ] || [ -z "$3" ]; then

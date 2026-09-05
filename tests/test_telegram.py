@@ -1,7 +1,9 @@
 """TelegramNotifier: disabled no-op, 4096자 truncation, circuit breaker."""
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -171,3 +173,78 @@ def test_html_parse_failure_then_plain_http_error_counts_as_failure():
         n.send("<b>깨진 태그")
     assert mock_post.call_count == 2
     assert n._consecutive_failures == 1
+
+
+# ── 레인(포럼 토픽) 라우팅 (2026-09-05) ────────────────────────────────────────
+# data/state/tg_lanes.json 매핑에 따라 message_thread_id 를 붙이거나(바인딩됨),
+# 레거시 chat_id 로 폴백하며 헤더를 붙인다(다른 레인이라도 이미 바인딩된 뒤).
+
+
+def _lanes_file(tmp_path: Path, mapping: dict | None) -> Path:
+    path = tmp_path / "tg_lanes.json"
+    if mapping is not None:
+        path.write_text(json.dumps(mapping), encoding="utf-8")
+    return path
+
+
+def test_send_without_lane_is_unchanged(tmp_path: Path):
+    """lane 을 안 주면 기존 동작 그대로 — message_thread_id 도, 헤더도 없다."""
+    n = TelegramNotifier("tkn", "chat", lanes_path=_lanes_file(tmp_path, {"chat_id": 111, "threads": {"trades": 42}}))
+    with patch("quant.adapters.notify.telegram.httpx.post", return_value=_ok_response()) as mock_post:
+        n.send("hello")
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload["chat_id"] == "chat"
+    assert payload["text"] == "hello"
+    assert "message_thread_id" not in payload
+
+
+def test_send_with_bound_lane_routes_to_thread_no_header(tmp_path: Path):
+    mapping = {"chat_id": 111, "threads": {"trades": 42}}
+    n = TelegramNotifier("tkn", "chat", lanes_path=_lanes_file(tmp_path, mapping))
+    with patch("quant.adapters.notify.telegram.httpx.post", return_value=_ok_response()) as mock_post:
+        n.send("체결 알림", lane="trades")
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload["chat_id"] == 111
+    assert payload["message_thread_id"] == 42
+    assert payload["text"] == "체결 알림"  # 토픽 안에서는 헤더를 붙이지 않는다
+
+
+def test_send_with_unbound_lane_falls_back_before_any_binding(tmp_path: Path):
+    """매핑 파일 자체가 없으면(마이그레이션 이전) 완전히 기존과 동일 — 헤더도 없다."""
+    n = TelegramNotifier("tkn", "chat", lanes_path=tmp_path / "missing.json")
+    with patch("quant.adapters.notify.telegram.httpx.post", return_value=_ok_response()) as mock_post:
+        n.send("체결 알림", lane="trades")
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload["chat_id"] == "chat"
+    assert "message_thread_id" not in payload
+    assert payload["text"] == "체결 알림"
+
+
+def test_send_with_unbound_lane_after_some_binding_gets_header(tmp_path: Path):
+    """"briefs"는 아직 안 묶였지만 "trades"는 묶여 있다 — 레거시로 떨어지는
+    briefs 메시지는 헤더로 자기가 누군지 밝혀야 한다(섞인 방)."""
+    mapping = {"chat_id": 111, "threads": {"trades": 42}}
+    n = TelegramNotifier("tkn", "chat", lanes_path=_lanes_file(tmp_path, mapping))
+    with patch("quant.adapters.notify.telegram.httpx.post", return_value=_ok_response()) as mock_post:
+        n.send("아침 브리핑", lane="briefs")
+    payload = mock_post.call_args.kwargs["json"]
+    assert payload["chat_id"] == "chat"
+    assert "message_thread_id" not in payload
+    assert payload["text"] == "📰 브리핑\n아침 브리핑"
+
+
+def test_send_lane_html_fallback_preserves_thread_id(tmp_path: Path):
+    """HTML 파싱 실패 → 평문 재시도에도 message_thread_id 는 그대로 남는다."""
+    mapping = {"chat_id": 111, "threads": {"ops": 7}}
+    n = TelegramNotifier("tkn", "chat", lanes_path=_lanes_file(tmp_path, mapping))
+    with patch(
+        "quant.adapters.notify.telegram.httpx.post",
+        side_effect=[_bad_request_response(), _ok_response()],
+    ) as mock_post:
+        n.send("<b>깨진 태그", lane="ops")
+    assert mock_post.call_count == 2
+    first_json = mock_post.call_args_list[0].kwargs["json"]
+    second_json = mock_post.call_args_list[1].kwargs["json"]
+    assert first_json["message_thread_id"] == 7
+    assert second_json["message_thread_id"] == 7
+    assert "parse_mode" not in second_json

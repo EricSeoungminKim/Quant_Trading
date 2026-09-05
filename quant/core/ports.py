@@ -157,9 +157,15 @@ class RiskManager(Protocol):
 
 @runtime_checkable
 class Notifier(Protocol):
-    """실패가 거래에 절대 영향을 주면 안 된다 — 모든 구현은 예외를 삼킨다."""
+    """실패가 거래에 절대 영향을 주면 안 된다 — 모든 구현은 예외를 삼킨다.
 
-    def send(self, text: str) -> None: ...
+    `lane`(2026-09-05, 텔레그램 포럼 토픽 레인 — `quant.core.tglanes`)은 선택
+    인자다: 기존 호출부(`send(text)`)는 그대로 동작한다(하위호환). 값을 주면
+    구현체가 그 레인(예: "trades"/"ops")으로 라우팅을 시도하되, 레인이 아직
+    바인딩 안 됐거나 구현체가 레인을 모르면 기존과 동일하게 단일 채팅으로
+    보낸다 — 실패해도 예외를 던지지 않는다(위 계약 그대로)."""
+
+    def send(self, text: str, lane: str | None = None) -> None: ...
 
 
 @runtime_checkable

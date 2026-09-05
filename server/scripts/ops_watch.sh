@@ -50,6 +50,7 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 # 지금 봐야 한다. notify_now 는 옛 tg() 처럼 **발송 성공 여부를 그대로 반환한다** —
 # 아래 `if notify_now ...` 의 상태 기록 계약이 그 반환값에 달려 있다.
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="ops"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 # --- 1. 감지 (결정론적) ---
 # 있어야 하는 타이머를 명시한다 — 유닛이 조용히 사라지는 것을 잡는다.

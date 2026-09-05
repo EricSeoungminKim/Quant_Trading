@@ -27,7 +27,7 @@ class _Tg:
         self.sent: list[tuple[int, str]] = []
         self._fail = fail_send
 
-    def send_message(self, chat_id: int, text: str) -> None:
+    def send_message(self, chat_id: int, text: str, message_thread_id=None) -> None:
         if self._fail:
             raise RuntimeError("telegram down")
         self.sent.append((chat_id, text))

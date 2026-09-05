@@ -69,7 +69,7 @@ class _Notifier:
     def __init__(self):
         self.messages: list[str] = []
 
-    def send(self, text: str) -> None:
+    def send(self, text: str, lane: str | None = None) -> None:
         self.messages.append(text)
 
 

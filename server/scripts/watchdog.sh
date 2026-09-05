@@ -24,6 +24,7 @@ set -a; [ -f .env.local ] && . ./.env.local; set +a
 # 죽거나 멈춘 것은 "지금 조치 안 하면 손해"의 원형이라 장중에도 즉시 나간다.
 # 회복 알림도 그 장애의 짝이므로 같이 즉시 — 미뤄서 보내면 의미가 없다.
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="ops"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 alerted() { [ -f "$STATE" ] && grep -qx "$1" "$STATE"; }
 mark()    { echo "$1" > "$STATE"; }
 clear_mark() {

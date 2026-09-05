@@ -161,12 +161,20 @@ def test_no_token_is_silent_success(gate, call, clock):
 def test_queue_line_shape(gate):
     gate.run('notify_defer "ops_judge" "판단 워치독"', **IN_HOURS)
     row = gate.queued()[0]
-    assert sorted(row) == ["level", "source", "text", "ts"]
+    assert sorted(row) == ["lane", "level", "source", "text", "ts"]
     assert row["source"] == "ops_judge"
     assert row["text"] == "판단 워치독"
     assert row["level"] == "defer"
+    assert row["lane"] == ""  # NOTIFY_LANE 미지정 — 기존 호출부와 동일
     # ts 는 KST 로컬 + 오프셋 (ISO 8601) — 마감 리포트가 그대로 찍는다.
     assert len(row["ts"]) == 24 and row["ts"][10] == "T"
+
+
+def test_queue_line_carries_notify_lane(gate):
+    """`NOTIFY_LANE`이 설정돼 있으면 그 값이 큐 줄에 그대로 남는다(2026-09-05) —
+    flush하는 쪽(daily_wrap.sh 등)이 나중에 레인별로 다시 보낼 수 있어야 한다."""
+    gate.run('notify_defer "ops_judge" "판단 워치독"', NOTIFY_LANE="ops", **IN_HOURS)
+    assert gate.queued()[0]["lane"] == "ops"
 
 
 def test_queue_survives_quotes_newlines_and_tabs(gate):
@@ -310,6 +318,80 @@ def test_html_rejected_falls_back_to_plain_text(gate, tmp_path):
     assert len(gate.sends()) == 2
     assert "parse_mode=HTML" in gate.sends()[0]
     assert "parse_mode=HTML" not in gate.sends()[1]
+
+
+# ── 레인 라우팅 (포럼 토픽, 2026-09-05) ────────────────────────────────────
+# quant/core/tglanes.py 의 판정을 셸에서 복제한다 — data/state/tg_lanes.json
+# 매핑에 따라 message_thread_id 를 붙이거나, 레거시 chat_id 로 폴백하며 헤더를
+# 붙인다.
+
+def _write_lanes_file(tmp_path: Path, mapping: dict) -> Path:
+    import json as _json
+    path = tmp_path / "tg_lanes.json"
+    path.write_text(_json.dumps(mapping), encoding="utf-8")
+    return path
+
+
+def test_notify_now_without_lane_is_unchanged(gate):
+    """NOTIFY_LANE 을 안 주면 기존과 완전히 동일 — thread_id 도 헤더도 없다."""
+    r = gate.run('notify_now "체결 알림"', **OFF_HOURS)
+    assert r.returncode == 0, r.stderr
+    sent = gate.sends()[0]
+    assert "message_thread_id" not in sent
+    assert "text=체결 알림" in sent  # 헤더 없이 원문 그대로
+
+
+def test_notify_now_with_bound_lane_appends_thread_id(gate, tmp_path):
+    lanes = _write_lanes_file(tmp_path, {"chat_id": 111, "threads": {"trades": 42}})
+    r = gate.run(
+        'notify_now "체결 알림"',
+        NOTIFY_LANE="trades", NOTIFY_LANES_FILE=str(lanes), **OFF_HOURS,
+    )
+    assert r.returncode == 0, r.stderr
+    sent = gate.sends()[0]
+    assert "chat_id=111" in sent
+    assert "message_thread_id=42" in sent
+
+
+def test_notify_now_with_unbound_lane_and_no_mapping_falls_back_silently(gate, tmp_path):
+    """매핑 파일 자체가 없으면(마이그레이션 이전) 레거시 chat_id 그대로, thread_id 없음."""
+    r = gate.run(
+        'notify_now "체결 알림"',
+        NOTIFY_LANE="trades", NOTIFY_LANES_FILE=str(tmp_path / "missing.json"), **OFF_HOURS,
+    )
+    assert r.returncode == 0, r.stderr
+    sent = gate.sends()[0]
+    assert "chat_id=12345" in sent  # gate 픽스처의 레거시 TELEGRAM_CHAT_ID
+    assert "message_thread_id" not in sent
+
+
+def test_notify_now_unbound_lane_after_other_binding_gets_header(gate, tmp_path):
+    """"ops"는 안 묶였지만 "trades"는 묶여 있다 — 레거시로 떨어지는 ops 메시지는
+    헤더로 자기 레인을 밝힌다(섞인 방)."""
+    lanes = _write_lanes_file(tmp_path, {"chat_id": 111, "threads": {"trades": 42}})
+    r = gate.run(
+        'notify_now "운영 경보"',
+        NOTIFY_LANE="ops", NOTIFY_LANES_FILE=str(lanes), **OFF_HOURS,
+    )
+    assert r.returncode == 0, r.stderr
+    sent = gate.sends()[0]
+    assert "chat_id=12345" in sent
+    assert "message_thread_id" not in sent
+    assert "text=🚨 운영" in sent  # "🚨 운영" 헤더가 앞에 붙는다
+
+
+def test_lane_header_matches_python_tglanes_registry():
+    """셸의 헤더 문구가 quant.core.tglanes.LANES 와 갈리면 레거시 채팅에서
+    보이는 헤더가 파이썬 어댑터 쪽과 달라진다 — 대조해서 잡는다."""
+    import subprocess as _sp
+    from quant.core import tglanes
+
+    for lane in tglanes.LANES:
+        r = _sp.run(
+            ["bash", "-c", f'. "{LIB}"\n_notify_lane_header "{lane}"'],
+            capture_output=True, text=True, check=True,
+        )
+        assert r.stdout == tglanes.header(lane), f"{lane}: 셸/파이썬 헤더 불일치"
 
 
 # ── 스크립트별 배선 — 분류표가 코드와 어긋나지 않게 ────────────────────────

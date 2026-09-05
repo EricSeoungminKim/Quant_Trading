@@ -28,6 +28,7 @@ import yaml
 from quant.trade.control import TradingControl
 from quant.adapters.brokers.toss.client import TossClient
 from quant.core.models import market_of_symbol, trading_day
+from quant.core import tglanes
 from quant.collect.sources import telegram_channels
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -41,6 +42,10 @@ LEDGER_PATH = REPO_ROOT / "data" / "state" / "trades.jsonl"
 # 스크레이핑 수집기와 같은 파일을 공유한다(`quant.collect.sources.
 # telegram_channels.append_ledger`가 (handle, msg_id) dedup을 보장).
 TELEGRAM_LEDGER_PATH = REPO_ROOT / "data" / "ledger" / "telegram_msgs.jsonl"
+# 텔레그램 포럼 토픽 레인 매핑(2026-09-05) — `/here`가 쓰고, 이 브리지와
+# `quant/adapters/notify/telegram.py`(엔진 알림)·`server/scripts/lib/notify.sh`
+# (크론 알림) 셋이 함께 읽는다. 판정 규칙은 `quant.core.tglanes`가 정의한다.
+TG_LANES_PATH = REPO_ROOT / "data" / "state" / "tg_lanes.json"
 KST = timezone(timedelta(hours=9))
 
 # 브리지 자체 표시용 — 엔진(loop.py)의 라벨과 같은 표기를 유지한다
@@ -161,12 +166,44 @@ class RateLimiter:
 # ---------------------------------------------------------------------------
 # 메시지 필터링 / 정리
 # ---------------------------------------------------------------------------
-def is_allowed_chat(update: dict, allowed_chat_id: int) -> bool:
+def is_allowed_chat(update: dict, allowed_chat_id: int, bound_chat_id: Optional[int] = None) -> bool:
+    """세 갈래 중 하나라도 맞으면 허용, 전부 아니면 거부한다.
+
+    1. **`chat.id == allowed_chat_id`** — 레거시. `.env.local`의
+       `TELEGRAM_BRIDGE_CHAT_ID`는 오너와의 **1:1 개인 채팅**으로 설정돼 있다.
+       텔레그램에서 개인 채팅의 chat_id는 상대방의 user id와 같으므로, 이
+       값은 "레거시 채팅"이면서 동시에 **오너 본인의 텔레그램 user id**이기도
+       하다 — 아래 3번 규칙이 성립하는 전제다(이 값이 그룹/채널로 바뀌면
+       3번은 더 이상 오너를 식별하지 못한다).
+    2. **`bound_chat_id is not None and chat.id == bound_chat_id`** —
+       `/here`로 바인딩된 슈퍼그룹의 chat_id(`data/state/tg_lanes.json`).
+       텔레그램 포럼 토픽은 같은 슈퍼그룹 chat_id 안의 스레드일 뿐이라, 이
+       한 번의 비교로 어느 토픽에서 왔든 걸러진다. **오너가 명시적으로 선택한
+       완화**: 바인딩된 뒤에는 그 슈퍼그룹의 멤버 누구든(발신자 무관) 명령을
+       칠 수 있다 — 크론 알림에 대한 답장이나 다른 식구의 조회처럼 "그 방에
+       있는 사람"을 신뢰하는 게 자연스러운 용례가 있어서다. 오너가 그 그룹에
+       자신만(또는 신뢰하는 사람만) 초대하는 한 실질적 위험은 낮다.
+    3. **`message.from.id == allowed_chat_id`** (2026-09-05) — 1번 전제를
+       이용한 부트스트랩 완화: **오너 본인이 보낸 메시지면 어느 채팅에서
+       왔든** 허용한다. 이게 있어야 `.env.local`을 건드리지 않고도, 오너가
+       방금 만든 새 슈퍼그룹의 새 토픽에서 곧바로 `/here 매매`를 쳐서 최초
+       바인딩을 한 번에 만들 수 있다(그 슈퍼그룹의 chat_id는 아직 1번에도
+       2번에도 없다). 같은 토픽에서 **다른 사람**이 같은 명령을 쳐도
+       `from.id`가 오너와 다르므로 통과하지 못한다 — 임의의 제3자가 이 봇을
+       자기 그룹에 초대해 `/here`만으로 스스로를 신뢰 대상에 끼워 넣을 수
+       없다(2번 규칙이 성립하려면 먼저 오너 본인이 `/here`로 바인딩해야
+       한다)."""
     message = update.get("message")
     if not message:
         return False
     chat = message.get("chat", {})
-    return chat.get("id") == allowed_chat_id
+    chat_id = chat.get("id")
+    if chat_id == allowed_chat_id:
+        return True
+    if bound_chat_id is not None and chat_id == bound_chat_id:
+        return True
+    sender = message.get("from") or {}
+    return sender.get("id") == allowed_chat_id
 
 
 def extract_text(update: dict) -> Optional[str]:
@@ -415,7 +452,10 @@ def _handle_forwarded_channel_post(
     with _telegram_ledger_lock(ledger_path):
         added = telegram_channels.append_ledger([row], ledger_path)
     log(f"포워드 채널 저장: {handle} msg_id={msg_id} added={added}")
-    tg.send_message(chat_id, f"📥 {handle} 저장 ({added})")
+    tg.send_message(
+        chat_id, f"📥 {handle} 저장 ({added})",
+        message_thread_id=message.get("message_thread_id"),
+    )
 
 
 def load_watchlist(path: Optional[Path] = None) -> list[dict]:
@@ -765,6 +805,144 @@ def handle_watchlist_reset(path: Optional[Path] = None, market: Optional[str] = 
 
 
 # ---------------------------------------------------------------------------
+# 텔레그램 포럼 토픽 레인 (2026-09-05) — `/here <레인>`으로 지금 이 토픽을
+# 고정 레인 하나에 묶는다(`제어실`/`매매`/`브리핑`/`채널 인텔`/`운영` — id는
+# `quant.core.tglanes.LANES`). `/here` 단독은 현재 바인딩 목록을, `/lanes`는
+# 레인별 용도 설명표를 보여준다. 매핑은 `data/state/tg_lanes.json`에
+# `{"chat_id": <int>, "threads": {<레인 id>: <thread_id>}, "bound_at": {...}}`
+# 형태로 쌓인다 — 관심종목 파일과 같은 flock 패턴(`_watchlist_lock` 참고)으로
+# 동시 쓰기를 막는다. 오너가 아직 한 번도 바인딩하지 않았으면(파일 없음) 모든
+# 레인이 레거시 단일 채팅으로 폴백한다(`quant.core.tglanes.resolve`) — 아무것도
+# 깨지지 않는다.
+# ---------------------------------------------------------------------------
+LANE_DESCRIPTIONS: dict[str, str] = {
+    "control": "브리지 명령 응답 (/status /balance /halt /flatten /watch …)",
+    "trades": "체결·강제청산 알림, 세션·전략 손익, 주간 스코어보드, 오늘의 전적",
+    "briefs": "아침/마감 리포트, own_brief 자동 편입, 승격 토론, 수동/스윙 추천, 마켓 펄스",
+    "intel": "채널 다이제스트(30분) — 오너가 직접 포워딩하는 채널 게시물도 여기로",
+    "ops": "워치독, 운영 감시, 백업, 배포 알림, 헬스, 사이클 실패 경보",
+}
+
+
+def load_tg_lanes(path: Optional[Path] = None) -> dict:
+    """`tg_lanes.json`을 읽는다. 없거나 깨졌으면 `{}` — 호출부(엔진 알림 등)가
+    그걸 "아직 아무것도 안 묶였다"로 취급해 레거시 채팅으로 폴백한다."""
+    path = path or TG_LANES_PATH
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_tg_lanes(mapping: dict, path: Optional[Path] = None) -> None:
+    path = path or TG_LANES_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+@contextmanager
+def _tg_lanes_lock(path: Optional[Path] = None):
+    """`_watchlist_lock`과 같은 이유 — read-modify-write 전체를 배타 잠금으로."""
+    path = path or TG_LANES_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(".lock")
+    with open(lock_path, "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+def _match_lane(token: str) -> Optional[str]:
+    """`token`(레인 id 영문, 대소문자 무관, 또는 한국어 표시명)을 레인 id로
+    정규화한다. 매칭 실패면 `None`."""
+    tok = token.strip()
+    if not tok:
+        return None
+    for lane_id in tglanes.LANES:
+        if lane_id.lower() == tok.lower():
+            return lane_id
+    for lane_id, (_, name) in tglanes.LANES.items():
+        if name == tok:
+            return lane_id
+    return None
+
+
+def _format_lane_bindings(mapping: dict) -> str:
+    threads = mapping.get("threads") or {}
+    chat_id = mapping.get("chat_id")
+    if not threads or chat_id is None:
+        return "🔗 바인딩된 레인 없음 — 토픽 안에서 /here <레인> 으로 등록하세요 (예: /here 매매)"
+    lines = [f"🔗 바인딩된 레인 (chat_id={chat_id})"]
+    for lane_id, (emoji, name) in tglanes.LANES.items():
+        thread_id = threads.get(lane_id)
+        status = f"topic {thread_id}" if thread_id is not None else "미바인딩"
+        lines.append(f"{emoji} {name} ({lane_id}) — {status}")
+    return "\n".join(lines)
+
+
+def format_lanes_table(path: Optional[Path] = None) -> str:
+    mapping = load_tg_lanes(path)
+    threads = mapping.get("threads") or {}
+    lines = ["📋 텔레그램 레인"]
+    for lane_id, (emoji, name) in tglanes.LANES.items():
+        mark = "✅" if lane_id in threads else "⬜"
+        lines.append(f"{mark} {emoji} {name} ({lane_id}) — {LANE_DESCRIPTIONS[lane_id]}")
+    return "\n".join(lines)
+
+
+def _handle_here_unlocked(arg: str, message: dict, path: Optional[Path] = None) -> str:
+    path = path or TG_LANES_PATH
+    mapping = load_tg_lanes(path)
+    if not arg.strip():
+        return _format_lane_bindings(mapping)
+    lane_id = _match_lane(arg)
+    if lane_id is None:
+        names = ", ".join(f"{name}({lid})" for lid, (_, name) in tglanes.LANES.items())
+        return f"❓ 알 수 없는 레인: {arg}\n사용 가능: {names}"
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
+    thread_id = message.get("message_thread_id")
+    if chat_id is None:
+        return "⚠️ chat_id를 확인할 수 없습니다"
+    if thread_id is None:
+        return (
+            "⚠️ 이 채팅은 포럼 토픽이 아닙니다 — 슈퍼그룹에서 포럼 토픽(Topics)을 켜고 "
+            "그 토픽 안에서 다시 시도하세요 (docs/runbooks/telegram-rooms.md)"
+        )
+    mapping["chat_id"] = chat_id
+    mapping.setdefault("threads", {})[lane_id] = thread_id
+    mapping.setdefault("bound_at", {})[lane_id] = datetime.now().isoformat(timespec="seconds")
+    save_tg_lanes(mapping, path)
+    emoji, name = tglanes.LANES[lane_id]
+    return f"✅ 이 토픽을 {emoji} {name} 레인으로 등록했습니다 (thread {thread_id})"
+
+
+def handle_here(arg: str, message: dict, path: Optional[Path] = None) -> str:
+    with _tg_lanes_lock(path):
+        return _handle_here_unlocked(arg, message, path)
+
+
+def handle_lanes_command(text: str, message: dict, path: Optional[Path] = None) -> Optional[str]:
+    """`/here`/`/lanes` 명령이면 응답 텍스트를, 아니면(일반 대화) `None`."""
+    stripped = text.strip()
+    lower = stripped.lower()
+    if lower in ("/lanes", "/레인"):
+        return format_lanes_table(path)
+    if lower == "/here":
+        return handle_here("", message, path)
+    if lower.startswith("/here "):
+        return handle_here(stripped[len("/here"):].strip(), message, path)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # 즉시 조회 명령 (/balance, /scoreboard, /help) — Claude 서브프로세스를 거치지 않고
 # 로컬 상태 + Toss 시세로 바로 응답한다 (2026-08-10 사용자 요청: "너가 어차피
 # 시세를 들고 있으니 내가 물으면 바로 알려달라").
@@ -1025,6 +1203,11 @@ HELP_TEXT = """📖 사용 가능한 명령어
 ⏰ 자동 초기화: 평일 08:30(한국) · 21:40(미국) — 각 시장 개장 전
    초기화 직후 자동 편입이 돌고, 그 뒤 직접 추가하시면 됩니다.
 
+🗂 텔레그램 포럼 토픽 레인
+/here <레인> — 지금 이 토픽을 레인 하나로 등록 (예: /here 매매)
+/here — 현재 바인딩 목록
+/lanes (/레인) — 레인별 용도 설명표
+
 그 외 일반 문장은 Claude가 답합니다 (수십 초 소요)."""
 
 
@@ -1129,10 +1312,13 @@ class TelegramClient:
         data = resp.json()
         return data.get("result", [])
 
-    def send_message(self, chat_id: int, text: str) -> None:
-        self.client.post(
-            f"{self.base}/sendMessage", data={"chat_id": chat_id, "text": text}
-        )
+    def send_message(
+        self, chat_id: int, text: str, message_thread_id: Optional[int] = None,
+    ) -> None:
+        data = {"chat_id": chat_id, "text": text}
+        if message_thread_id is not None:
+            data["message_thread_id"] = message_thread_id
+        self.client.post(f"{self.base}/sendMessage", data=data)
 
     def send_typing(self, chat_id: int) -> None:
         self.client.post(
@@ -1157,7 +1343,10 @@ def _command_name(text: str) -> str:
     return text.strip().split(None, 1)[0] if text.strip() else "명령"
 
 
-def _notify_command_failure(tg: TelegramClient, chat_id: int, command: str, exc: Exception) -> None:
+def _notify_command_failure(
+    tg: TelegramClient, chat_id: int, command: str, exc: Exception,
+    thread_id: Optional[int] = None,
+) -> None:
     """명령 처리 실패를 사용자에게 알린다. 발송 자체가 실패할 수 있으므로 감싼다
     (무한 재귀 방지 — 실패 알림의 실패까지 사용자에게 알리려 들지 않는다)."""
     try:
@@ -1165,6 +1354,7 @@ def _notify_command_failure(tg: TelegramClient, chat_id: int, command: str, exc:
             chat_id,
             f"⚠️ {command} 처리 실패({type(exc).__name__}) — 서버 로그 확인. "
             "상태가 불확실하니 /status 로 확인하세요.",
+            message_thread_id=thread_id,
         )
     except Exception as send_exc:  # noqa: BLE001 — 최후 방어선, 로그만 남기고 삼킨다
         log(f"실패 응답 발송도 실패({command}): {send_exc}")
@@ -1177,16 +1367,29 @@ def process_update(
     control: TradingControl,
     toss_client: TossClient,
     update: dict,
+    lanes_path: Optional[Path] = None,
 ) -> None:
-    if not is_allowed_chat(update, chat_id):
+    # 슈퍼그룹 게이트(2026-09-05) — 레거시 chat_id 또는 `/here`로 바인딩된
+    # 슈퍼그룹 chat_id 둘 중 하나면 통과(`is_allowed_chat` docstring의 보안
+    # 가정 참고). 포럼 토픽은 같은 슈퍼그룹 chat_id 안의 스레드일 뿐이라
+    # 토픽별로 따로 허용할 필요가 없다.
+    bound_chat_id = load_tg_lanes(lanes_path).get("chat_id")
+    if not is_allowed_chat(update, chat_id, bound_chat_id):
         uid = update.get("message", {}).get("chat", {}).get("id")
         log(f"허용되지 않은 chat_id 무시: {uid}")
         return
 
     message = update.get("message") or {}
+    # 명령 응답은 명령이 온 토픽으로 되돌아간다(2026-09-05) — 포럼 토픽 안에서
+    # 온 메시지는 `message_thread_id`를 갖고, 레거시 단일 채팅(또는 슈퍼그룹의
+    # General 토픽)에서 온 메시지는 없다(그때는 인자 없이 보내던 기존과 동일).
+    thread_id = message.get("message_thread_id")
+
     # 포워드된 채널 게시물(2026-09-05, "포워딩 우회")은 텍스트 추출·명령
     # 라우팅보다 먼저 처리하고 즉시 반환한다 — 명령으로도, 일반 대화로도
-    # 넘기지 않는다(`_handle_forwarded_channel_post` docstring).
+    # 넘기지 않는다(`_handle_forwarded_channel_post` docstring). 어느 바인딩된
+    # 토픽에서 포워딩해도(또는 레거시 채팅에서 해도) 위 chat_id 게이트를 이미
+    # 통과했으므로 그대로 받는다 — 토픽별 추가 검사는 필요 없다.
     if _forward_channel_origin(message) is not None:
         _handle_forwarded_channel_post(tg, chat_id, message)
         return
@@ -1195,10 +1398,11 @@ def process_update(
     if text is None:
         return
 
-    # 제어 명령/관심종목 명령은 분당 한도(RateLimiter)를 우회한다 — 클로드 호출
-    # 과금/부하를 막기 위한 한도이지, 즉시 반영돼야 하는 로컬 명령까지 묶으면 안 된다.
+    # 제어 명령/관심종목 명령/레인 명령은 분당 한도(RateLimiter)를 우회한다 —
+    # 클로드 호출 과금/부하를 막기 위한 한도이지, 즉시 반영돼야 하는 로컬
+    # 명령까지 묶으면 안 된다.
     #
-    # 아래 두 핸들러 호출은 개별적으로 try/except로 감싼다 — /halt /resume /flatten
+    # 아래 세 핸들러 호출은 개별적으로 try/except로 감싼다 — /halt /resume /flatten
     # (거래 제어)과 /watch /unwatch /watchlist-reset(파일 잠금·저장 I/O)에서 예외가
     # 나면 바깥 메인 루프의 광역 try/except(main())가 로그만 남기고 사용자는 완전한
     # 침묵을 받는 문제가 있었다(2026-08-26 감사 발견). 원 예외는 기존 로그 경로와
@@ -1208,38 +1412,48 @@ def process_update(
         control_reply = handle_control_command(text, control, toss_client)
     except Exception as exc:  # noqa: BLE001 — 사용자 알림을 위한 좁은 캐치, 삼키지 않고 로그+응답
         log(f"제어 명령 처리 실패({text!r}): {exc}")
-        _notify_command_failure(tg, chat_id, _command_name(text), exc)
+        _notify_command_failure(tg, chat_id, _command_name(text), exc, thread_id)
         return
     if control_reply is not None:
-        tg.send_message(chat_id, control_reply)
+        tg.send_message(chat_id, control_reply, message_thread_id=thread_id)
         return
 
     try:
         watchlist_reply = handle_watchlist_command(text, toss_client)
     except Exception as exc:  # noqa: BLE001 — 사용자 알림을 위한 좁은 캐치, 삼키지 않고 로그+응답
         log(f"관심종목 명령 처리 실패({text!r}): {exc}")
-        _notify_command_failure(tg, chat_id, _command_name(text), exc)
+        _notify_command_failure(tg, chat_id, _command_name(text), exc, thread_id)
         return
     if watchlist_reply is not None:
-        tg.send_message(chat_id, watchlist_reply)
+        tg.send_message(chat_id, watchlist_reply, message_thread_id=thread_id)
+        return
+
+    try:
+        lanes_reply = handle_lanes_command(text, message, lanes_path)
+    except Exception as exc:  # noqa: BLE001 — 사용자 알림을 위한 좁은 캐치, 삼키지 않고 로그+응답
+        log(f"레인 명령 처리 실패({text!r}): {exc}")
+        _notify_command_failure(tg, chat_id, _command_name(text), exc, thread_id)
+        return
+    if lanes_reply is not None:
+        tg.send_message(chat_id, lanes_reply, message_thread_id=thread_id)
         return
 
     query_reply = handle_query_command(text, toss_client)
     if query_reply is not None:
-        tg.send_message(chat_id, query_reply)
+        tg.send_message(chat_id, query_reply, message_thread_id=thread_id)
         return
 
     if not limiter.allow():
-        tg.send_message(chat_id, "잠시 후 다시 (분당 한도)")
+        tg.send_message(chat_id, "잠시 후 다시 (분당 한도)", message_thread_id=thread_id)
         return
 
     tg.send_typing(chat_id)
     prompt = build_claude_prompt(text)
     ok, output = run_claude(prompt)
     if ok:
-        tg.send_message(chat_id, truncate_reply(output.strip() or "(빈 응답)"))
+        tg.send_message(chat_id, truncate_reply(output.strip() or "(빈 응답)"), message_thread_id=thread_id)
     else:
-        tg.send_message(chat_id, f"처리 실패: {output}")
+        tg.send_message(chat_id, f"처리 실패: {output}", message_thread_id=thread_id)
 
 
 def main() -> None:

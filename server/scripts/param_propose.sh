@@ -17,6 +17,7 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 # 이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl 에 쌓여
 # 마감 HTML 리포트로만 간다.
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="briefs"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 if [ "$(date +%z)" != "+0900" ]; then
   echo "[$(date '+%F %T')] 호스트 TZ 가 KST 가 아님($(date +%z)) — 중단" >&2

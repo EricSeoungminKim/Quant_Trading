@@ -55,6 +55,7 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 # 않다. 이 크론은 항상 그 시장의 정규장 마감 직후에 돌게 설계돼 있어(위 크론
 # 시각 참고) 장외 판정에 걸려 즉시 발송된다. DRY_RUN에서는 찍기만 한다.
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="briefs"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 # TZ 가드 — 크론 시각(KR 15:40/US 마감 직후)은 호스트가 KST라는 전제다.
 if [ "$(date +%z)" != "+0900" ]; then

@@ -24,6 +24,7 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 # 알아야 하지만 급하지 않다. **장중이면 data/notify_queue.jsonl 로 미뤄져 마감
 # HTML 리포트로 나가고**, 장외면 지금처럼 즉시 발송된다.
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="briefs"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 if [ "$(date +%z)" != "+0900" ]; then
   echo "[$(date '+%F %T')] 호스트 TZ 가 KST 가 아님($(date +%z)) — 중단" >&2

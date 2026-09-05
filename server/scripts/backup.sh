@@ -32,6 +32,7 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 # 조용히 실패한 채로 며칠 지나면 복원할 때까지 아무도 모른다 — 그래서 즉시.
 # (성공은 원래 침묵이다. 여기서 나가는 건 전부 실패·경고다.)
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="ops"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 DUMP="$TMP/mysql-${STAMP}.sql.gz"

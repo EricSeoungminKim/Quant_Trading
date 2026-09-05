@@ -36,6 +36,7 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 # 편입·픽은 알아야 하지만 급하지 않다. **장중이면 data/notify_queue.jsonl 로
 # 미뤄져 마감 HTML 리포트로 나가고**, 장외면 지금처럼 즉시 발송된다.
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="briefs"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 # --- 1. 발굴 (결정론적 랭킹 스캔) ---
 FLOW_OUT="$(timeout 120 "$PY" -m quant.apps.cli flow-scan --market "$MARKET" 2>>"$LOG")"

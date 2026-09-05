@@ -33,6 +33,7 @@ mkdir -p data
 # notify_now (server/scripts/lib/notify.sh) — 주기 다이제스트는 정해진 시각에 바로
 # 도착해야 의미가 있다. notify_auto 는 장중이면 큐에 넣어 마감 wrap 때 보내므로 쓰지 않는다(2026-09-03 실측).
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="briefs"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 # TZ 가드 — 크론 시각(위 주석)은 호스트가 KST라는 전제다.
 if [ "$(date +%z)" != "+0900" ]; then

@@ -722,7 +722,7 @@ def cmd_report(args: argparse.Namespace) -> None:
     from quant.adapters.brokers.toss.client import TossClient
 
     class _ConsoleNotifier:
-        def send(self, text: str) -> None:
+        def send(self, text: str, lane: str | None = None) -> None:
             print(text)
 
     notifier = _ConsoleNotifier()

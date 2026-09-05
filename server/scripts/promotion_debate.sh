@@ -46,6 +46,7 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 # 알림은 notify_auto — 승격 토론 판정은 알아야 하지만 급하지 않다(own_brief.sh
 # 와 같은 게이트). 장중이면 마감 HTML 로 미뤄지고, 장외면 즉시 발송된다.
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="briefs"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 if [ "$(date +%z)" != "+0900" ]; then
   log "호스트 TZ 가 KST 가 아님($(date +%z)) — 중단"

@@ -48,6 +48,7 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 # 요약·정보성이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl
 # 에 쌓여 마감 HTML 리포트로만 간다.
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="ops"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 # TZ 가드 — run_report.sh/run_close_report.sh 와 같은 방어. 세션 경계·편입
 # 데드라인이 KST 전제라 타임존이 어긋나면 판단 자체가 무의미하다.

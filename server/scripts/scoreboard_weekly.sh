@@ -18,6 +18,7 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 # 요약·정보성이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl
 # 에 쌓여 마감 HTML 리포트로만 간다.
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="trades"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 WEEK="$(timeout 60 .venv/bin/python -m quant.apps.cli scoreboard --days 7 2>/dev/null)"
 ALL="$(timeout 60 .venv/bin/python -m quant.apps.cli scoreboard 2>/dev/null)"

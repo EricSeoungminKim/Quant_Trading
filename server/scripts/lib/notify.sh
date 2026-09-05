@@ -30,13 +30,32 @@
 # 미뤄진 것은 `data/notify_queue.jsonl` 에 append 되고, 마감 HTML 리포트가 이걸
 # 읽어 "문제 발견 및 개선" 절에 넣는다. 줄 형식(계약):
 #
-#   {"ts":"2026-08-28T10:03:11+0900","source":"backfill_1m","text":"...","level":"defer"}
+#   {"ts":"2026-08-28T10:03:11+0900","source":"backfill_1m","text":"...","level":"defer","lane":"ops"}
 #
 #   ts     발송 시도 시각. KST 로컬 + 오프셋(ISO 8601). 리포트가 그대로 찍는다.
 #   source 스크립트 basename(확장자 없음). 어디서 왔는지 — 절 안의 그룹 키.
 #   text   원문 그대로. **문구는 이 게이트가 손대지 않는다.**
 #   level  어느 문이 미뤘는지 — "defer"(항상 미룸) | "auto"(장중이라 미룸).
 #          "auto" 는 장외였다면 이미 나갔을 메시지라 리포트에서 위로 올릴 만하다.
+#   lane   호출 시점의 `NOTIFY_LANE`(2026-09-05, 아래 "레인 라우팅" 절) 그대로.
+#          빈 문자열이면 레인 미지정(기존 호출부) — 큐가 나중에 flush될 때
+#          "어느 레인 것이었는지"를 잃지 않기 위한 것뿐, 이 파일이 flush
+#          시점의 라우팅까지 책임지지는 않는다(그건 flush를 하는 스크립트,
+#          예: daily_wrap.sh가 자기 `NOTIFY_LANE`으로 보낸다).
+#
+# ## 레인 라우팅 (포럼 토픽, 2026-09-05)
+#
+# 오너가 텔레그램 슈퍼그룹에 포럼 토픽 5개(제어실/매매/브리핑/채널 인텔/운영)를
+# 만들고 브리지의 `/here <레인>`으로 바인딩하면(`docs/runbooks/telegram-rooms.md`),
+# 그 매핑이 `data/state/tg_lanes.json`에 쌓인다. 각 크론 스크립트가 자기 위치에서
+# `NOTIFY_LANE="<레인>"`을 설정해두면(위 세 함수가 이 값을 읽는다),
+# `notify_now`/`notify_auto`가 실제 발송하는 순간 그 레인의 토픽으로
+# `message_thread_id`를 붙여 보낸다. **레인이 아직 안 묶였으면(또는
+# `NOTIFY_LANE` 자체를 안 정했으면) 기존과 완전히 동일하게 레거시 단일 채팅으로
+# 간다** — 마이그레이션 전에는 아무것도 깨지지 않는다. 판정 규칙은
+# `quant/core/tglanes.py`와 정확히 같아야 한다(이 파일은 그 파이썬 모듈을
+# 임포트하지 않고 `python3 -c`로 JSON만 다시 읽는다 — 크론 환경에 `quant`
+# 패키지가 항상 임포트 가능하다고 보장할 수 없어서다).
 #
 # ## 장중 판정
 #
@@ -128,15 +147,21 @@ _notify_json_escape() {
 # 스크립트를 죽이지는 않는다** — 이 파일을 쓰는 크론 중 `set -e`를 켠 곳이
 # 없고(`set -u`뿐), 반환값을 무시하는 기존 호출부(`notify_auto ... || true`)도
 # 그대로 안전하다.
+#
+# `lane`(2026-09-05, 텔레그램 포럼 토픽 레인 — 아래 "레인 라우팅" 절)은 호출
+# 시점의 `NOTIFY_LANE` 값 그대로 줄에 남긴다(빈 문자열이면 레인 미지정) — 큐가
+# 나중에 마감 리포트로 flush될 때 "이 알림이 어느 레인 것이었는지"가 남아야
+# 한다.
 _notify_enqueue() {  # $1=source $2=text $3=level
   local f line rc
   f="${NOTIFY_QUEUE:-$_NOTIFY_ROOT/data/notify_queue.jsonl}"
   mkdir -p "$(dirname "$f")" 2>/dev/null || true
-  line="$(printf '{"ts":"%s","source":"%s","text":"%s","level":"%s"}' \
+  line="$(printf '{"ts":"%s","source":"%s","text":"%s","level":"%s","lane":"%s"}' \
     "$(date +%Y-%m-%dT%H:%M:%S%z)" \
     "$(_notify_json_escape "$1")" \
     "$(_notify_json_escape "$2")" \
-    "$(_notify_json_escape "$3")")"
+    "$(_notify_json_escape "$3")" \
+    "$(_notify_json_escape "${NOTIFY_LANE:-}")")"
   # 크론이 겹치면 3900자 메시지 두 개가 섞여 JSON 이 깨진다(append 원자성은
   # PIPE_BUF 까지만). flock 이 있으면 쓴다 — 없으면(맥) 그냥 append.
   if command -v flock >/dev/null 2>&1; then
@@ -149,6 +174,56 @@ _notify_enqueue() {  # $1=source $2=text $3=level
   return "$rc"
 }
 
+# ── 레인 라우팅(포럼 토픽, 2026-09-05) ──────────────────────────────────────
+#
+# `quant/core/tglanes.py`가 정의한 판정을 셸에서도 복제한다(같은 로직, 같은
+# 파일 — `data/state/tg_lanes.json`). 파이썬 패키지를 임포트하지 않고
+# `python3 -c`로 JSON만 파싱한다 — 크론 환경에서 `quant`가 항상 임포트 가능하다고
+# 보장할 수 없어서다(`.venv/bin/python`을 쓰지 않는 셸도 있다).
+#
+# 레인 헤더 문구는 `quant.core.tglanes.LANES`와 반드시 같아야 한다 —
+# `tests/test_notify_gate.py`가 둘을 대조한다.
+_notify_lane_header() {  # $1=lane
+  case "$1" in
+    control) printf '🎛 제어실' ;;
+    trades)  printf '📈 매매' ;;
+    briefs)  printf '📰 브리핑' ;;
+    intel)   printf '📡 채널 인텔' ;;
+    ops)     printf '🚨 운영' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# <lane> → "chat_id|thread_id|bound" 한 줄(구분자는 `|` — bash `read`가 IFS를
+# 공백류(tab/space/newline)로 두면 빈 필드를 삼켜버려 값이 밀린다: 실측으로
+# `IFS=$'\t' read` 가 "\t\t1"을 필드 3개가 아니라 1개("1")로 접어버렸다. `|`는
+# chat_id/thread_id 숫자값에 나올 수 없으니 안전하다). 매핑이 없거나 그 레인이
+# 아직 바인딩 안 됐으면 chat_id/thread_id 는 빈 문자열 — 호출부가 레거시 chat
+# 으로 폴백한다. `bound`는 "이 레인은 아니어도 매핑 파일 자체에 바인딩이 하나라도
+# 있는가"(1/0) — 레거시로 떨어지는 메시지에 헤더를 붙일지 판단하는 데 쓴다
+# (`quant.core.tglanes.is_bound`와 같은 규칙).
+_notify_lane_target() {  # $1=lane
+  local lane="$1" file
+  file="${NOTIFY_LANES_FILE:-$_NOTIFY_ROOT/data/state/tg_lanes.json}"
+  python3 -c '
+import json, sys
+lane, path = sys.argv[1], sys.argv[2]
+try:
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+except (OSError, ValueError):
+    data = {}
+chat_id = data.get("chat_id")
+threads = data.get("threads") or {}
+thread_id = threads.get(lane)
+bound = "1" if (chat_id is not None and threads) else "0"
+if chat_id is not None and thread_id is not None:
+    print(f"{chat_id}|{thread_id}|{bound}")
+else:
+    print(f"||{bound}")
+' "$lane" "$file" 2>/dev/null
+}
+
 # 실제 발송. 0=보냄(또는 토큰 없어 no-op), 1=발송 실패.
 #
 # **실패를 삼키지 않는다** — ops_watch.sh 가 `if tg ...; then mark; fi` 로 첫 알림
@@ -159,22 +234,46 @@ _notify_enqueue() {  # $1=source $2=text $3=level
 # quant.core.tgfmt 스타일 `<b>`/`<code>` 태그를 담은 텍스트를 넘기기 시작해서다.
 # 텔레그램이 태그를 거부하면(응답에 "ok":false) parse_mode 없이 **그 한 통만**
 # 평문으로 즉시 재시도한다 — 서식 버그로 알림 자체가 유실되면 안 된다.
+#
+# `NOTIFY_LANE`(2026-09-05)이 설정돼 있으면 `_notify_lane_target`으로 그 레인의
+# `(chat_id, thread_id)`를 찾는다 — 아직 안 묶였으면 기존과 동일하게 레거시
+# `chat_id`로 폴백하되, 매핑 파일에 **다른** 레인이라도 하나 바인딩돼 있으면
+# (`bound=1`) 그 레거시 채팅이 여러 레인이 섞이는 방이 되므로 한 줄 헤더를
+# 붙인다. `NOTIFY_LANE`이 비어 있으면(기존 호출부) 완전히 예전과 동일하다.
 _notify_send() {  # $1=text
-  local token chat resp
+  local token chat resp lane target t_chat t_thread t_bound chat_id thread_id text
   token="$(_notify_token)"
   chat="$(_notify_chat)"
   if [ -z "$token" ] || [ -z "$chat" ]; then
     return 0   # 조용한 no-op — 로컬/테스트 실행이 이것 때문에 죽지 않는다
   fi
+  text="$1"
+  lane="${NOTIFY_LANE:-}"
+  chat_id="$chat"
+  thread_id=""
+  if [ -n "$lane" ]; then
+    target="$(_notify_lane_target "$lane")"
+    IFS='|' read -r t_chat t_thread t_bound <<< "$target"
+    if [ -n "$t_chat" ] && [ -n "$t_thread" ]; then
+      chat_id="$t_chat"
+      thread_id="$t_thread"
+    elif [ "$t_bound" = "1" ]; then
+      text="$(_notify_lane_header "$lane")"$'\n'"$text"
+    fi
+  fi
   if [ "${DRY_RUN:-0}" = "1" ]; then
-    printf '[DRY_RUN][TG]\n%s\n' "$1"
+    printf '[DRY_RUN][TG]\n%s\n' "$text"
     return 0
   fi
+  local thread_args=()
+  if [ -n "$thread_id" ]; then
+    thread_args=(-d "message_thread_id=${thread_id}")
+  fi
   resp="$(curl -s -m 15 "${TELEGRAM_API_BASE:-https://api.telegram.org}/bot${token}/sendMessage" \
-    -d "chat_id=${chat}" -d "parse_mode=HTML" --data-urlencode "text=$1" 2>/dev/null)"
+    -d "chat_id=${chat_id}" "${thread_args[@]}" -d "parse_mode=HTML" --data-urlencode "text=$text" 2>/dev/null)"
   case "$resp" in *'"ok":true'*) return 0 ;; esac
   resp="$(curl -s -m 15 "${TELEGRAM_API_BASE:-https://api.telegram.org}/bot${token}/sendMessage" \
-    -d "chat_id=${chat}" --data-urlencode "text=$1" 2>/dev/null)"
+    -d "chat_id=${chat_id}" "${thread_args[@]}" --data-urlencode "text=$text" 2>/dev/null)"
   case "$resp" in *'"ok":true'*) return 0 ;; esac
   return 1
 }

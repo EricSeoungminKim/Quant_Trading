@@ -27,6 +27,7 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 # 요약·정보성이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl
 # 에 쌓여 마감 HTML 리포트로만 간다.
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="trades"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 # TZ 가드 — 크론 시각(KR 15:30/US 마감 직후)은 호스트가 KST라는 전제다. 세션
 # 경계 자체는 session-pnl 내부에서 시장별 현지시간대로 계산되므로 서머타임에

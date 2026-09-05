@@ -43,6 +43,7 @@ memlog_wrap "daily_wrap"
 # 실패하면 `--narration-only` 는 무출력이고, 여기서도 조용히 건너뛴다 — 문서+
 # 캡션 계약은 그대로다.
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="briefs"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 # TZ 가드 — 크론 시각(KR 16:55 / US 06:55)은 호스트가 KST 라는 전제다.
 # ai_trader.sh 와 같은 계약이되, 여기서는 **중단하지 않는다**: 요약 파일은
@@ -92,10 +93,36 @@ fi
 send() {
   # 성공 여부를 반환한다(ops_watch.sh 와 같은 계약) — 실패를 삼키면 재시도가
   # 사라진다. 텔레그램 응답의 "ok":true 로 판정.
+  #
+  # 레인 라우팅(2026-09-05) — 위 notify_now(narration)와 같은 레인으로 문서도
+  # 보낸다. sendDocument는 notify.sh의 _notify_send를 타지 않으므로(멀티파트
+  # 전송이라 별도 curl -F 호출) 여기서 같은 판정 헬퍼(_notify_lane_target/
+  # _notify_lane_header)를 직접 쓴다 — 아니면 서술 메시지는 토픽에 들어가고
+  # 문서는 레거시 채팅에 남는 사고가 난다.
+  local lane t_target t_chat t_thread t_bound chat_id thread_id caption
+  lane="${NOTIFY_LANE:-}"
+  chat_id="$TG_CHAT"
+  thread_id=""
+  caption="$CAPTION"
+  if [ -n "$lane" ]; then
+    t_target="$(_notify_lane_target "$lane")"
+    IFS='|' read -r t_chat t_thread t_bound <<< "$t_target"
+    if [ -n "$t_chat" ] && [ -n "$t_thread" ]; then
+      chat_id="$t_chat"
+      thread_id="$t_thread"
+    elif [ "$t_bound" = "1" ]; then
+      caption="$(_notify_lane_header "$lane") ${caption}"
+    fi
+  fi
+  local thread_args=()
+  if [ -n "$thread_id" ]; then
+    thread_args=(-F "message_thread_id=${thread_id}")
+  fi
   RESP="$(curl -s -m 60 "https://api.telegram.org/bot${TG_TOKEN}/sendDocument" \
-    -F "chat_id=${TG_CHAT}" \
+    -F "chat_id=${chat_id}" \
+    "${thread_args[@]}" \
     -F "document=@${FILE};type=text/html" \
-    -F "caption=${CAPTION}" 2>/dev/null)"
+    -F "caption=${caption}" 2>/dev/null)"
   case "$RESP" in *'"ok":true'*) return 0 ;; esac
   return 1
 }

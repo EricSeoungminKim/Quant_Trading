@@ -23,7 +23,7 @@ class RecordingTelegramClient:
         self.sent: list[tuple[int, str]] = []
         self.typed: list[int] = []
 
-    def send_message(self, chat_id: int, text: str) -> None:
+    def send_message(self, chat_id: int, text: str, message_thread_id=None) -> None:
         self.sent.append((chat_id, text))
 
     def send_typing(self, chat_id: int) -> None:

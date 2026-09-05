@@ -38,6 +38,7 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 # 편입·픽은 알아야 하지만 급하지 않다. **장중이면 data/notify_queue.jsonl 로
 # 미뤄져 마감 HTML 리포트로 나가고**, 장외면 지금처럼 즉시 발송된다.
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="briefs"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 # TZ 가드 — 08:57 유니버스 경계·크론 시각 전부 KST 전제다. 호스트가 KST가 아니면
 # "아침 브리핑"이 엉뚱한 시각에 돌고 자동 등록이 조용히 다음날로 밀린다.

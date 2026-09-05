@@ -542,7 +542,7 @@ def _execute_signal(
     except Exception as e:
         logger.warning("주문 실행 실패 %s: %s", order.symbol, e)
         if notifier is not None:
-            notifier.send(f"⚠️ 주문 실행 실패\n\n📌 종목 {_display(order.symbol)}\n📕 사유 {e}")
+            notifier.send(f"⚠️ 주문 실행 실패\n\n📌 종목 {_display(order.symbol)}\n📕 사유 {e}", lane="trades")
         return
     _emit_order_state(state, sinks)
     if fill is not None:
@@ -659,7 +659,7 @@ def _execute_signal(
                 if "손절" in fill.reason and cooldown_note:
                     lines.append(tgfmt.i(f"⏳ {cooldown_note}"))
             lines += ["", f"📝 {tgfmt.esc(fill.reason)}"]
-            notifier.send("\n".join(lines))
+            notifier.send("\n".join(lines), lane="trades")
 
 
 def _approval_setting(approval_cfg: dict | None, key: str, default: float) -> float:
@@ -979,7 +979,7 @@ def _flatten_all(
                 tgfmt.b("⏳ 청산 보류 — 장 마감"),
                 [tgfmt.code(f"🏢 {', '.join(sorted(market_closed_symbols))}") + "\n"
                  "닫힌 시장에는 체결 가능한 가격이 없어 개장 시 엔진이 자동으로 재시도합니다."],
-            ))
+            ), lane="trades")
     return market_closed_symbols
 
 
@@ -1016,7 +1016,7 @@ def _retry_pending_flatten(
         done = ", ".join(sorted(executed))
         logger.warning("보류됐던 청산 실행 완료: %s", done)
         if notifier is not None:
-            notifier.send(tgfmt.b("🧹 보류됐던 청산 실행") + ": " + tgfmt.code(done))
+            notifier.send(tgfmt.b("🧹 보류됐던 청산 실행") + ": " + tgfmt.code(done), lane="trades")
 
 
 def _strategies_with_open_lots(ctx: Context, strategy_errors: dict[str, str]) -> list[str]:
@@ -2281,7 +2281,8 @@ async def run_paper_loop(
                             f"🏢 {_display(_sym)}\n"
                             f"   ⏱ {_age/60:.0f}분째 현재가를 받지 못했습니다\n\n"
                             "이 종목은 손절가·목표가 판정이 멈춰 있습니다.\n"
-                            "즉시 조치가 필요하면 /flatten 으로 전량 청산하세요."
+                            "즉시 조치가 필요하면 /flatten 으로 전량 청산하세요.",
+                            lane="ops",
                         )
                     except Exception:
                         logger.exception("시세 끊김 알림 실패 — 거래는 계속한다")
@@ -2300,7 +2301,8 @@ async def run_paper_loop(
                         "🚨 고아 포지션 — 관리하는 전략이 없습니다\n\n"
                         f"🏢 {_display(_osym)}\n"
                         f"🧠 소유 전략: {_osid} (현재 비활성)\n\n"
-                        "손절가·목표가 판정이 멈춰 있습니다. /flatten 으로 청산하거나 전략을 다시 켜세요."
+                        "손절가·목표가 판정이 멈춰 있습니다. /flatten 으로 청산하거나 전략을 다시 켜세요.",
+                        lane="ops",
                     )
                 except Exception:
                     logger.exception("고아 포지션 알림 실패 — 거래는 계속한다")
@@ -2354,14 +2356,15 @@ async def run_paper_loop(
                 last_failure_alert = now_mono
                 if notifier is not None:
                     notifier.send(
-                        f"⚠️ 엔진 사이클 실패 (연속 {consecutive_failures}회)\n\n서버 로그 확인이 필요합니다"
+                        f"⚠️ 엔진 사이클 실패 (연속 {consecutive_failures}회)\n\n서버 로그 확인이 필요합니다",
+                        lane="ops",
                     )
             if consecutive_failures >= max_failures and not control.is_halted():
                 reason = f"연속 {consecutive_failures}회 사이클 실패 — 자동 정지"
                 control.halt(reason, by="auto")
                 logger.error(reason)
                 if notifier is not None:
-                    notifier.send(_halt_notify_text(reason))
+                    notifier.send(_halt_notify_text(reason), lane="ops")
         else:
             # 전략이 예외로 죽으면 그 전략의 **손절·목표가·EoD청산이 통째로 건너뛰어진다**
             # (포지션 관리가 전부 on_cycle 안에 있다). 사이클 자체는 성공했으므로 위
@@ -2388,14 +2391,15 @@ async def run_paper_loop(
                             f"🧠 전략: {names}\n"
                             f"📕 사유: {detail}\n\n"
                             "이 전략이 보유한 종목은 손절가·목표가 판정이 멈춰 있습니다.\n"
-                            "즉시 조치가 필요하면 /flatten 으로 전량 청산하세요."
+                            "즉시 조치가 필요하면 /flatten 으로 전량 청산하세요.",
+                            lane="ops",
                         )
                 if consecutive_failures >= max_failures and not control.is_halted():
                     reason = f"전략 오류로 포지션 관리 중단 {consecutive_failures}회 — 자동 정지"
                     control.halt(reason, by="auto")
                     logger.error(reason)
                     if notifier is not None:
-                        notifier.send(_halt_notify_text(reason))
+                        notifier.send(_halt_notify_text(reason), lane="ops")
             else:
                 consecutive_failures = 0
             # timings.total_ms는 flatten 경로(run_cycle 미호출)면 0.0으로 남는다 — 그 경우는
@@ -2479,7 +2483,7 @@ async def run_paper_loop(
                     )
                     logger.error(msg)
                     if notifier is not None:
-                        notifier.send(msg)
+                        notifier.send(msg, lane="ops")
         else:
             consecutive_stale = 0
             stale_alerted = False
@@ -2513,7 +2517,7 @@ async def run_paper_loop(
                 report = None
             if report is not None:
                 last_position_report = now_mono
-                notifier.send(report)
+                notifier.send(report, lane="trades")
 
         # 전략 간 합산 노출 감시(2026-08-30) — capital_mode: per_strategy에서
         # 리스크 상한이 전부 전략별 장부 기준이라, 다른 전략이 같은 심볼을
@@ -2555,7 +2559,8 @@ async def run_paper_loop(
                         notifier.send(
                             _session_summary_text(
                                 market, ctx, risk, control, market_data, tally, strategies,
-                            )
+                            ),
+                            lane="trades",
                         )
                 except Exception:
                     logger.exception("세션 마감 요약 실패 %s — 다음 세션에는 영향 없음", market)

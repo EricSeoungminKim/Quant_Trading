@@ -29,6 +29,7 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 # 이라 텔레그램으로는 **절대 나가지 않는다**. data/notify_queue.jsonl 에 쌓여
 # 마감 HTML 리포트로만 간다.
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="briefs"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 # TZ 가드 — 이 잡의 시각 판단(오늘 날짜, 변경일 경계)이 전부 KST 전제다.
 if [ "$(date +%z)" != "+0900" ]; then

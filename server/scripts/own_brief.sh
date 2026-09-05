@@ -80,6 +80,7 @@ TG_CHAT="$(_env TELEGRAM_CHAT_ID)"
 # DRY_RUN에서는 발송하지 않고 찍기만 한다(게이트가 그대로 승계) — 리허설이
 # 사용자 폰을 울리면 리허설을 안 하게 된다(그래서 검증 없이 배포하게 된다).
 . "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="briefs"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
 
 # TZ 가드 — 편입 데드라인·유니버스 롤 경계가 전부 KST 전제다.
 if [ "$(date +%z)" != "+0900" ]; then
