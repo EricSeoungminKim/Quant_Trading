@@ -52,8 +52,12 @@ cd "$(dirname "$0")/../.."
 
 PY=.venv/bin/python   # 이 저장소(엔진) 자체 venv — 요일 판정 + 심볼 목록 추출용
 QB_DIR="${QB_BACKFILL_DIR:-$HOME/qb_backfill}"
-QB_PY="$QB_DIR/.venv/bin/python"
-LAKE_ROOT="$QB_DIR/lake"   # kr_after_backfill.sh(연구 저장소)가 rsync 로 읽는 것과 같은 경로
+# 실측(2026-09-06): EC2 의 ~/qb_backfill 은 git 체크아웃도 venv 도 아니다 — `qb/` 모듈 사본 + run.sh +
+# lake/ 작업 디렉터리다. 지금까지의 백필(run.sh)은 **엔진 venv 의 python** 을 cwd=~/qb_backfill 에서
+# 실행해 `qb` 를 임포트했고 .env.local 을 환경으로 올렸다. 같은 패턴을 따른다.
+QB_PY="$(pwd)/.venv/bin/python"
+QB_MODULE="$QB_DIR/qb/fetch_kiwoom.py"
+LAKE_ROOT="$QB_DIR/lake"   # run.sh 의 QB_LAKE 와 동일 — 맥 pull_kr_minute.sh 가 rsync 로 읽는 경로
 LOG="data/kr_minute_backfill.log"
 MISSING_MARKER="data/state/kr_minute_backfill_missing.flag"
 
@@ -68,11 +72,11 @@ NOTIFY_LANE="ops"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegra
 . "$(dirname "$0")/lib/memlog.sh"
 memlog_wrap "kr_minute_backfill"
 
-# --- 가드 1: ~/qb_backfill 체크아웃/venv 없음 ---
-if [ ! -x "$QB_PY" ]; then
-  log "중단: $QB_PY 없음 — qb_backfill 체크아웃/venv 확인 필요"
+# --- 가드 1: ~/qb_backfill 의 qb 모듈 사본 없음 ---
+if [ ! -f "$QB_MODULE" ] || [ ! -x "$QB_PY" ]; then
+  log "중단: $QB_MODULE 또는 $QB_PY 없음 — qb_backfill 작업 디렉터리 확인 필요"
   if [ ! -f "$MISSING_MARKER" ]; then
-    notify_now "🚨 KR 1분봉 주간 백필 중단 — ${QB_DIR}/.venv/bin/python 없음. qb_backfill 체크아웃을 확인하라 (server/scripts/kr_minute_backfill.sh). 복구 전까지 재알림 없음."
+    notify_now "🚨 KR 1분봉 주간 백필 중단 — ${QB_DIR}/qb/fetch_kiwoom.py 또는 엔진 venv 없음. qb_backfill 작업 디렉터리를 확인하라 (server/scripts/kr_minute_backfill.sh). 복구 전까지 재알림 없음."
     touch "$MISSING_MARKER"
   fi
   exit 1
@@ -153,7 +157,7 @@ fi
 
 export QB_KIWOOM_CACHE="${QB_KIWOOM_CACHE:-$QB_DIR/.kiwoom_cache}"
 
-FETCH_OUT="$(cd "$QB_DIR" && QT_SYMBOLS="$SYMBOLS" QT_LAKE_ROOT="$LAKE_ROOT" \
+FETCH_OUT="$(cd "$QB_DIR" && set -a && . "$OLDPWD/.env.local" && set +a && QB_LAKE="$LAKE_ROOT" QT_SYMBOLS="$SYMBOLS" QT_LAKE_ROOT="$LAKE_ROOT" \
   timeout 14400 "$QB_PY" - <<'PYEOF' 2>&1
 import os
 import sys
