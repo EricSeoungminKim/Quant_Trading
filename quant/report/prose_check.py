@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import math
 import re
+import sys
 from dataclasses import dataclass
 
 ERROR = "error"
@@ -509,6 +510,11 @@ def redact_prose(
     )
     findings = [f for f, _ in raw]
     bad_sentences = {sentence for f, sentence in raw if f.severity == ERROR}
+    # 치환된 문장을 stderr 에 남긴다(2026-09-07) — 리포트 로그(report.log)에서 "무엇이 왜
+    # 빠졌는지"를 사후 감사할 수 있어야 한다. 렌더된 HTML 에는 "근거 부족으로 생략"만 남는다.
+    for f, sentence in raw:
+        if f.severity == ERROR:
+            print(f"[prose:redacted] {section}: {f.message}", file=sys.stderr)
     if not bad_sentences:
         return text, findings
 
