@@ -240,14 +240,22 @@ else:
 # 세어 임계(기본 3건) 초과 시 ops_watch.sh 경보로 올린다 — 이 파일 자체는 세지
 # 않는다. 쓰기 실패는 삼킨다(원장이 발송 흐름을 막으면 안 된다).
 _notify_record_failure() {  # $1=text
-  local f
+  local f text
+  # `$1`을 지역 변수에 먼저 받아둔다(`${1:-}`) — 모든 호출부가 항상 인자를
+  # 주지만(`_notify_send`), 만에 하나 인자 없이 불려도 `set -u` 아래 바로
+  # `${1:0:200}`처럼 위치 인자를 서브셸(command substitution) 안에서 직접
+  # 잘라 쓰면 "unbound variable"이 그 서브셸만 조용히 죽이고 필드가 빈
+  # 문자열로 새는데, 그 과정에서 stderr에 알림 실패 원장 기록과 무관한
+  # 에러 줄이 찍힌다 — 이 함수의 유일한 목적(원장 기록이 스크립트를 죽이지
+  # 않는다)과는 별개로 불필요한 소음이라 여기서 미리 막는다.
+  text="${1:-}"
   f="${NOTIFY_FAILURE_LEDGER:-$_NOTIFY_ROOT/data/ledger/notify_failures.jsonl}"
   mkdir -p "$(dirname "$f")" 2>/dev/null || true
   printf '{"ts":"%s","source":"%s","lane":"%s","text":"%s"}\n' \
     "$(date +%Y-%m-%dT%H:%M:%S%z)" \
     "$(_notify_json_escape "$(basename "${0:-unknown}" .sh)")" \
     "$(_notify_json_escape "${NOTIFY_LANE:-}")" \
-    "$(_notify_json_escape "${1:0:200}")" \
+    "$(_notify_json_escape "${text:0:200}")" \
     >> "$f" 2>/dev/null || true
 }
 

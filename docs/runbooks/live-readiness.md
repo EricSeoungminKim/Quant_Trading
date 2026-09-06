@@ -63,7 +63,7 @@
 | # | 항목 | 상태 | 근거 |
 |---|---|---|---|
 | E1 | 킬스위치 /halt·/resume·/flatten 코드 경로 | ✅ | tg_bridge 테스트 |
-| E2 | 킬스위치 실전 드릴 | ✅ | 2026-09-07 02:2x — 브리지 명령 처리기(`handle_control_command`)를 EC2에서 직접 호출: `/halt drill` → control.json halted=true(REST, 사유 기록) → `/status` ⏸ REST → `/resume` → halted=false, 왕복 26초. 엔진은 매 사이클 control.json 을 재읽어 진입을 막는다(코드 경로, 다음 하트비트 "정지 발생"으로 확인). 폰→브리지 전송 구간은 /status·/here 로 매일 검증되는 같은 경로. 월 1회 재드릴(`server/scripts/halt_drill.sh`가 전이 시간을 잰다) |
+| E2 | 킬스위치 실전 드릴 | ✅ | 2026-09-07 01:2x — 브리지 명령 처리기(`handle_control_command`)를 EC2에서 직접 호출: `/halt drill` → control.json halted=true(REST, 사유 기록) → `/status` ⏸ REST → `/resume` → halted=false, 왕복 26초. 엔진은 매 사이클 control.json 을 재읽어 진입을 막는다(코드 경로, 다음 하트비트 "정지 발생"으로 확인). 폰→브리지 전송 구간은 /status·/here 로 매일 검증되는 같은 경로. 월 1회 재드릴(`server/scripts/halt_drill.sh`가 전이 시간을 잰다) |
 | E3 | 텔레그램 레인 5개 라우팅 | ✅ | 2026-09-05 바인딩·테스트 발송 확인 |
 | E4 | 배포 하드가드(장중 재시작 거부) | ✅ | deploy.sh |
 | E5 | 배포 드리프트 감지(EC2 HEAD vs origin/main) | ✅ | deploy.sh → data/state/last_deploy_sha.txt, ops_watch.sh 비교·1회 경보 (2026-09-06) |

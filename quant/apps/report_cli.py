@@ -172,29 +172,46 @@ def _lint_and_gate(model: ReportModel | CloseReportModel, root: Path) -> None:
     바로 다음 줄) **전에** `quant.report.lint.lint_report`를 돌린다. 아직
     아무 파일도 안 쓴 시점이라 error가 있으면 렌더 자체를 건너뛸 수 있다.
 
-    error 등급이 하나라도 있으면 예외를 던져 빌드를 중단시킨다(`report build`
-    가 0이 아닌 종료 코드로 끝나 `run_report.sh`/`run_close_report.sh`의 기존
-    "빌드 실패" 알림이 나간다) — 그와 별개로 여기서 NOTIFY_LANE=ops 로 구체적
-    결함(첫 3건)을 바로 알린다(일반 실패 알림은 "로그를 보라"고만 하지 findings
-    를 담지 않는다). warn 등급은 발행을 막지 않고 `report_lint.jsonl`에 남긴다
-    — 둘 다 알림/원장 쓰기 실패가 이 함수의 본 목적(게이트)을 방해하면 안
-    되므로 예외를 삼킨다(`_notify_holiday_skip`과 같은 관례)."""
+    error 등급이 하나라도 있으면 기본적으로 예외를 던져 빌드를 중단시킨다
+    (`report build`가 0이 아닌 종료 코드로 끝나 `run_report.sh`/
+    `run_close_report.sh`의 기존 "빌드 실패" 알림이 나간다) — 그와 별개로
+    여기서 NOTIFY_LANE=ops 로 구체적 결함(첫 3건)을 바로 알린다(일반 실패
+    알림은 "로그를 보라"고만 하지 findings 를 담지 않는다). warn 등급은
+    발행을 막지 않고 `report_lint.jsonl`에 남긴다 — 둘 다 알림/원장 쓰기
+    실패가 이 함수의 본 목적(게이트)을 방해하면 안 되므로 예외를 삼킨다
+    (`_notify_holiday_skip`과 같은 관례).
+
+    **`REPORT_LINT_GATE` 우회 지침(2026-09-07, 오탐 대응)** — 기본값
+    `"block"`(위 동작 그대로). `"warn"`이면 error 등급이 있어도 절대
+    RuntimeError를 던지지 않는다(발행이 계속된다) — 대신 warn 등급과
+    함께 error 등급도 `report_lint.jsonl`에 남겨(평소엔 error 는 원장에
+    안 남는다 — 빌드가 그 자리에서 멈추므로 알림 하나로 충분했다; warn
+    모드는 멈추지 않으니 사후 감사를 위해 남긴다) 그 사실이 흔적 없이
+    사라지지 않게 하고, NOTIFY_LANE=ops 알림은 그대로 보낸다(문구만
+    "발행 중단"→"발행 계속(경고 모드)"로 바꾼다). 오탐으로 게이트가 정상
+    발행을 막을 때 빠르게 재발행하는 법은 `docs/runbooks/report-qa.md`
+    "빠른 재발행" 절 참고. 페이로드 자체에 배너를 심지는 않는다 — 이
+    함수가 건드릴 수 있는 범위(`quant/apps/report_cli.py`의 이 함수)
+    안에는 이미 렌더되는 자유 텍스트 슬롯이 없어서다(텔레그램 알림이
+    유일한 가시 경로)."""
+    import os as _os
+
+    gate_mode = _os.environ.get("REPORT_LINT_GATE", "block")
     findings = lint_report(model)
     errors = [f for f in findings if f.severity == "error"]
     warns = [f for f in findings if f.severity == "warn"]
     payload = model.payload
 
-    if warns:
-        print(f"리포트 린트 경고 {len(warns)}건:", file=sys.stderr)
-        for f in warns:
-            print(f"  {f}", file=sys.stderr)
+    def _append_ledger(rows: list) -> None:
+        if not rows:
+            return
         try:
             import json as _json
 
             path = root / "data" / "ledger" / "report_lint.jsonl"
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as fh:
-                for f in warns:
+                for f in rows:
                     fh.write(_json.dumps({
                         "date": payload.get("session_date"), "market": payload.get("market"),
                         "session": payload.get("session", "open"),
@@ -203,20 +220,36 @@ def _lint_and_gate(model: ReportModel | CloseReportModel, root: Path) -> None:
         except Exception as e:  # noqa: BLE001 — 원장 기록 실패가 발행을 막지 않는다
             print(f"리포트 린트 원장 기록 실패: {type(e).__name__}: {e}", file=sys.stderr)
 
+    if warns:
+        print(f"리포트 린트 경고 {len(warns)}건:", file=sys.stderr)
+        for f in warns:
+            print(f"  {f}", file=sys.stderr)
+        _append_ledger(warns)
+
     if not errors:
         return
-    print(f"리포트 린트 오류 {len(errors)}건 — 발행 중단:", file=sys.stderr)
+    stop = gate_mode != "warn"
+    print(
+        f"리포트 린트 오류 {len(errors)}건"
+        + (" — 발행 중단:" if stop else " — 발행 계속(REPORT_LINT_GATE=warn):"),
+        file=sys.stderr,
+    )
     for f in errors:
         print(f"  {f}", file=sys.stderr)
+    if not stop:
+        _append_ledger(errors)
     try:
         from quant.adapters.notify.telegram import TelegramNotifier
 
         head = "\n".join(f"- [{f.section}] {f.message}" for f in errors[:3])
         more = f"\n(+{len(errors) - 3}건 더)" if len(errors) > 3 else ""
-        text = f"🚨 {payload.get('market')} 리포트 린트 오류 {len(errors)}건 — 발행 중단\n{head}{more}"
+        suffix = "발행 중단" if stop else "발행 계속(경고 모드)"
+        text = f"🚨 {payload.get('market')} 리포트 린트 오류 {len(errors)}건 — {suffix}\n{head}{more}"
         TelegramNotifier.from_env().send(text, lane="ops")
     except Exception:  # noqa: BLE001 — 알림 실패가 아래 예외 전파를 막지 않는다
         pass
+    if not stop:
+        return
     raise RuntimeError(f"리포트 린트 오류 {len(errors)}건 — 발행 중단 (첫 건: {errors[0]})")
 
 

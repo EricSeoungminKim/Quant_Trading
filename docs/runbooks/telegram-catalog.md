@@ -34,20 +34,23 @@
 
 ---
 
-## 0. 발신 경로 3갈래
+## 0. 발신 경로 4갈래
 
 | 경로 | 코드 | 실패 처리 |
 |---|---|---|
 | 엔진(파이썬, 장중 상시 프로세스) | `quant/trade/loop.py` → `quant.adapters.notify.telegram.TelegramNotifier.send()` | HTML 400 → 평문 1회 재시도, 5회 연속 실패 시 10분 뮤트. 모든 시도가 `data/ledger/notifications.jsonl`(성공/실패 전부)과, 실패만 `data/ledger/notify_failures.jsonl`(2026-09-06 신규)에 남는다. |
 | 크론(셸, 배치 잡) | `server/scripts/*.sh` → `. lib/notify.sh` → `notify_now`/`notify_auto`/`notify_defer` | 같은 HTML→평문 폴백. 최종 실패는 `data/ledger/notify_failures.jsonl`(2026-09-06 신규)에 남는다. 큐 쓰기 실패는 반환값으로 호출부에 전달(스크립트 로그로 감). |
 | 브리지(파이썬, 상시 프로세스) | `server/scripts/tg_bridge.py` → `TelegramBotClient.send_message()` | 게이트를 거치지 않는다 — 실패하면 `httpx` 예외가 브리지 프로세스 로그(`journalctl -u tg-bridge`)에 남을 뿐, 별도 원장이 없다(아래 "알려진 격차" 참고). |
+| 리포트 빌드 발행 알림(셸, `run_report.sh`/`run_close_report.sh` 전용) | 자체 `notify()` 함수 — `lib/notify.sh` 게이트를 타지 않는다(§3.5) | 게이트 밖이라 실패 원장에 안 남는다 — curl 실패는 `\|\| true`로 삼켜지고 흔적이 `data/report.log`뿐이다(아래 "알려진 격차" 참고). |
 
 모든 경로가 공유하는 것: **레인(포럼 토픽) 라우팅**(`quant/core/tglanes.py`
 단일 정의, 매핑은 `data/state/tg_lanes.json`) — 미바인딩이면 레거시 단일
 채팅으로 폴백하고, 다른 레인이 하나라도 바인딩된 뒤라면 헤더(이모지+이름)를
-붙인다. 브리지 명령 응답만 예외다 — 레인표를 보지 않고 **명령이 온 채팅/토픽에
-그대로 답한다**(사용자가 어디서 물었는지가 곧 정체성이므로 재라우팅할 이유가
-없다).
+붙인다. 브리지 명령 응답과 리포트 빌드 발행 알림(§3.5)만 예외다 — 브리지는
+레인표를 보지 않고 **명령이 온 채팅/토픽에 그대로 답하고**(사용자가 어디서
+물었는지가 곧 정체성이므로 재라우팅할 이유가 없다), 리포트 빌드 발행 알림은
+`lib/notify.sh`를 아예 소스하지 않아 레인 개념 자체가 없다(항상 레거시 단일
+채팅).
 
 ---
 
@@ -177,6 +180,33 @@ US 세션 20~30통 + 시간당 ops_watch 24회(대부분 무발송) + watchdog 2
 장 마감 문서 1~2통).
 
 ---
+
+## 3.5. 리포트 빌드 발행 알림 (`run_report.sh`/`run_close_report.sh`, 게이트 밖)
+
+**§3의 표에 없다** — 이 둘은 `lib/notify.sh`를 소스하지 않고, `.env.local`을
+직접 읽어(`_env()`) 자체 `notify()` 함수로 curl을 직접 친다(§0의 4번째 경로).
+이 카탈로그가 "저장소가 내보내는 모든 메시지"를 표방하면서도 이 둘이 §3에서
+누락돼 있었다 — 2026-09-07 리포트 QA 세션에서 발견해 여기 채운다.
+
+| 스크립트 | 트리거(KST) | 성공 메시지 | 실패 메시지 | 소프트 캡 |
+|---|---|---|---|---|
+| `run_report.sh KR/US` | 발행 시각(빌드 리드 역산, `when` 서브커맨드 기준) | 📄 개장 전 리포트 발행 + URL + 요일 가드 + `report summary` 결정론 요약 | ⚠️ 리포트 생성 실패 + **빌드 로그 마지막 3줄**(2026-09-07 신규, 아래) | 3500자 |
+| `run_close_report.sh KR` | 13:40 고정 | 📄 마감 포지션 리포트 발행 + URL + `report summary --session close` | ⚠️ 마감 리포트 생성 실패 + **빌드 로그 마지막 3줄** | 3500자 |
+
+- **실패 메시지에 로그 꼬리 3줄이 실린다(2026-09-07)** — 그전에는 "data/
+  report.log 확인"만 나가 원인을 보려면 EC2에 SSH로 들어가야 했다. 빌드가
+  stdout/stderr를 함께 `$LOG`에 이어쓰므로(`$PY ... build ... >> "$LOG" 2>&1`),
+  실패 직후 `tail -n 3 "$LOG"`가 대개 방금 그 결함(예: 리포트 린트 오류 —
+  `quant/report/lint.py`)의 마지막 줄을 그대로 담는다. `report_lint.jsonl`
+  없이도 알림 하나로 무엇이 걸렸는지 보인다 — 오탐 대응 절차는
+  [`report-qa.md`](report-qa.md) "오탐 대응 — 빠른 재발행" 참고.
+- **레인 개념이 없다** — `lib/notify.sh`를 아예 소스하지 않으므로 항상 레거시
+  단일 채팅으로 간다(§0 "모든 경로가 공유하는 것" 예외 목록 참고).
+- **알려진 격차** — 이 경로는 `lib/notify.sh` 게이트를 거치지 않으므로
+  `data/ledger/notify_failures.jsonl`에도, 레이트 리밋에도 걸리지 않는다.
+  curl 자체가 실패해도(`\|\| true`) 스크립트를 죽이지 않지만, 그 실패의
+  유일한 흔적은 `data/report.log`뿐이다 — §5의 발송 실패 감지(`cli health`
+  의 `notify_failure_findings`)가 이 경로의 실패는 세지 못한다.
 
 ## 4. 마감 문서 (deferred 큐 → `daily_wrap.sh`)
 

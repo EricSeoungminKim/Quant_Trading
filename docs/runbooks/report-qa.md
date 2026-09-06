@@ -14,8 +14,50 @@
 - **error 등급 하나라도 있으면 빌드를 멈춘다** — 예외를 던져 `report build`가
   0이 아닌 종료 코드로 끝나고, NOTIFY_LANE=ops로 첫 3건을 알린다(`run_report.sh`/
   `run_close_report.sh`의 기존 실패 알림과 별개로, 구체적 결함 내용까지 담아서).
+  `run_report.sh`/`run_close_report.sh`의 실패 알림 본문에도 빌드 로그 마지막
+  3줄이 함께 실린다(2026-09-07) — 대개 이 3줄 안에 방금 그 린트 오류 줄이
+  그대로 들어 있어, 알림만 보고도 무엇이 걸렸는지 바로 알 수 있다.
 - **warn 등급은 발행을 막지 않는다** — stdout/stderr에 찍히고
   `data/ledger/report_lint.jsonl`에 남는다. 사람이 나중에 훑어보는 용도.
+
+## 오탐 대응 — 빠른 재발행 (`REPORT_LINT_GATE`, 2026-09-07)
+
+게이트가 정상 리포트를 오탐으로 막았을 때(예: 새로 생긴 검사가 과거엔 없던
+형태의 정상 데이터를 오해), 코드를 고쳐 재배포할 시간이 없는 그 순간 바로
+발행을 재시도할 수 있는 우회 스위치다. `quant/apps/report_cli.py`의
+`_lint_and_gate`가 환경변수 `REPORT_LINT_GATE`를 읽는다.
+
+- **기본값(`block`, 미지정 포함)** — 위에서 설명한 기존 동작 그대로. error가
+  있으면 빌드를 멈춘다.
+- **`warn`** — error가 있어도 절대 빌드를 멈추지 않는다(발행이 계속된다).
+  대신:
+  - warn 등급과 함께 error 등급도 `data/ledger/report_lint.jsonl`에 남는다
+    (평소엔 error가 원장에 안 남는다 — 빌드가 그 자리에서 멈추므로 텔레그램
+    알림 하나로 충분했다; warn 모드는 멈추지 않으니 사후 감사를 위해 필요).
+  - NOTIFY_LANE=ops 알림은 그대로 나간다 — 문구만 "발행 중단"→"발행
+    계속(경고 모드)"로 바뀐다. **오탐인지 진짜 결함인지는 사람이 이 알림을
+    보고 판단해야 한다** — warn 모드는 게이트를 끄는 것이지 결함이 사라지는
+    것이 아니다.
+  - 리포트 페이지·텔레그램 발행 요약 자체에는 별도 배너를 심지 않는다 —
+    가시 경로는 위 텔레그램 알림 하나뿐이다.
+
+**빠른 재발행 절차**:
+
+```bash
+REPORT_LINT_GATE=warn ./server/scripts/run_report.sh KR
+# 마감 리포트라면:
+REPORT_LINT_GATE=warn ./server/scripts/run_close_report.sh KR
+```
+
+`run_report.sh`/`run_close_report.sh`는 이 값을 읽거나 가공하지 않는다 —
+`$PY -m quant.apps.report_cli build` 하위 프로세스가 부모 셸의 환경을 그대로
+물려받으므로, 앞에 `REPORT_LINT_GATE=warn `를 붙이기만 하면 그대로 전달된다
+(`tests/test_run_report_scripts.py::test_report_lint_gate_env_reaches_the_build_subprocess`
+가 이 전달 경로를 고정한다). 재발행이 끝나면 **왜 그 검사가 오탐이었는지**를
+`report_lint.jsonl`이나 텔레그램 알림에서 확인해 두는 것을 권한다 — 다음
+정기 빌드는 다시 `block`(기본값)으로 돈다는 것도 기억한다(이 스위치는 그
+한 번의 수동 호출에만 적용되는 임시 우회다, 크론에 영구히 심는 스위치가
+아니다).
 
 ## 섹션별 체크리스트
 

@@ -9,13 +9,22 @@ from __future__ import annotations
 
 import html
 import re
-import time
+import sys
+from concurrent.futures import ThreadPoolExecutor, wait
 
 from quant.adapters.http import client
 
 FRGN_URL = "https://finance.naver.com/item/frgn.naver?code={code}"
 CONSENSUS_URL = "https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx?cmp_cd={code}"
 OPINION_LABELS = ("강력매도", "매도", "중립", "매수", "강력매수")
+
+# fetch_many 전체 소요 시간 상한(2026-09-07 Phase 2 §5, SUMMARY.md §⑤ 시간 예산
+# 가드) — 08:12 own_brief.sh 소비 전까지 리포트 빌드가 끝나야 하므로, 네이버가
+# 느려지거나(client() 기본 timeout=20초) 상한(60종목)에 가까운 날 이 한 호출이
+# 예산을 통째로 삼키면 안 된다. 병렬화(max_workers=4) 이후 정상 상황에서는
+# 60종목도 수 초면 끝나 이 값을 건드릴 일이 거의 없다 — 이건 정상 경로의
+# 최적화가 아니라 네트워크 저하 시의 안전판이다.
+FETCH_MANY_TIME_BUDGET_S = 20.0
 
 _TR = re.compile(r"<tr[^>]*>(.*?)</tr>", re.S)
 _TD = re.compile(r"<td[^>]*>(.*?)</td>", re.S)
@@ -190,13 +199,47 @@ def fetch_stock_detail(code: str) -> dict:
     }
 
 
-def fetch_many(codes: list[str], limit: int = 8) -> dict[str, dict]:
-    results: dict[str, dict] = {}
-    for i, code in enumerate(codes[:limit]):
-        if i > 0:
-            time.sleep(0.3)
-        try:
-            results[code] = fetch_stock_detail(code)
-        except Exception:
-            continue
-    return results
+def fetch_many(
+    codes: list[str], limit: int = 8, *, time_budget_s: float = FETCH_MANY_TIME_BUDGET_S,
+) -> dict[str, dict]:
+    """`codes[:limit]` 개 종목을 병렬로 조회한다 (2026-09-07 Phase 2 §5 수리 —
+    원래 순차 + 심볼당 0.3초 슬립이라 상한 60에서 최대 ~35초가 걸렸다).
+
+    `max_workers=4`로 동시 접속을 제한한다 — 무제한 병렬은 네이버 예절 문제고
+    (모듈독스트링), 이 모듈에 문서화된 명시적 요청 상한은 없지만 순차 버전의
+    "한 번에 하나씩" 기조를 완전히 버리지 않기 위한 보수적 상한이다. 심볼 하나의
+    실패(예외)가 나머지를 막지 않는다(기존 동작 그대로) — `future.result()`를
+    개별로 감싼다. 반환 dict 는 완료 순서가 아니라 **입력 `codes` 순서**로
+    재구성한다 — 호출부가 순서에 의존하지 않더라도 기존 계약(순차 실행 시의
+    삽입 순서)을 유지한다.
+
+    **시간 예산(`time_budget_s`, 기본 `FETCH_MANY_TIME_BUDGET_S`)** — 전체가
+    이 시간 안에 안 끝나면 아직 안 끝난 종목은 포기하고 그때까지 완료된 것만
+    반환한다(그 심볼들은 결측 — 0 이나 캐시값으로 위장하지 않는다). 정상적인
+    병렬 실행이라면 60종목도 몇 초면 끝나 거의 발동하지 않는다 — 네이버가
+    느려지거나(개별 요청 timeout=20초) 응답이 없을 때의 안전판이다. 예산을
+    넘기면 `"수급 조회 N/전체 (시간 예산)"`을 stderr 에 남긴다.
+    """
+    targets = codes[:limit]
+    if not targets:
+        return {}
+    done: dict[str, dict] = {}
+    executor = ThreadPoolExecutor(max_workers=4)
+    try:
+        future_to_code = {executor.submit(fetch_stock_detail, code): code for code in targets}
+        finished, pending = wait(future_to_code, timeout=time_budget_s)
+        for future in finished:
+            code = future_to_code[future]
+            try:
+                done[code] = future.result()
+            except Exception:
+                continue
+        if pending:
+            for future in pending:
+                future.cancel()
+            print(f"수급 조회 {len(done)}/{len(targets)} (시간 예산)", file=sys.stderr)
+    finally:
+        # 아직 시작 안 한 작업만 취소되고(cancel_futures, py3.9+), 이미 실행
+        # 중인 스레드는 백그라운드에서 자연 종료된다 — 여기서 더 기다리지 않는다.
+        executor.shutdown(wait=False, cancel_futures=True)
+    return {code: done[code] for code in targets if code in done}

@@ -28,7 +28,7 @@ log() { echo "[$(date '+%F %T')] [$MARKET 마감] $*" >> "$LOG"; }
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
 
 notify() {
-  local token chat url text SUMMARY
+  local token chat url text SUMMARY TAIL
   token="$(_env TELEGRAM_BOT_TOKEN)"
   chat="$(_env TELEGRAM_CHAT_ID)"
   if [ -z "$token" ] || [ -z "$chat" ]; then
@@ -47,6 +47,17 @@ ${SUMMARY}"
     fi
   else
     text="⚠️ ${MARKET} 마감 리포트 생성 실패 — data/report.log 확인"
+    # 실패 로그 꼬리(2026-09-07, run_report.sh 와 동일한 수정) — 린트 게이트
+    # 등 구체적 결함이 알림 본문에 바로 보이게 한다. TAIL 은 "빌드 실패" 메타
+    # 로그 줄이 찍히기 전에 호출부가 떠 넘긴다.
+    TAIL="${2:-}"
+    if [ -n "$TAIL" ]; then
+      text="${text}
+
+최근 로그 3줄:
+${TAIL}"
+    fi
+    text="${text:0:3500}"
   fi
   curl -s -m 10 "https://api.telegram.org/bot${token}/sendMessage" \
     -d "chat_id=${chat}" --data-urlencode "text=${text}" >/dev/null 2>&1 || true
@@ -70,7 +81,10 @@ else
     log "휴장일 — 리포트 스킵(exit 3)"
     exit 0
   fi
+  # "빌드 실패" 메타 로그 줄을 남기기 전에 꼬리를 떠 둔다(run_report.sh 와
+  # 동일한 이유 — tail -n 3 이 메타 줄 대신 빌드 자신의 마지막 출력을 담게).
+  BUILD_TAIL="$(tail -n 3 "$LOG" 2>/dev/null)"
   log "빌드 실패 (exit $RC)"
-  notify fail
+  notify fail "$BUILD_TAIL"
   exit 1
 fi

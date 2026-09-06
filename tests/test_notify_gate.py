@@ -529,3 +529,70 @@ def test_script_does_not_call_telegram_directly(name):
     """`tg()` 복제가 다시 자라면 "무엇이 장중에 나가나"를 한곳에서 답할 수 없게 된다."""
     text = (SCRIPTS / f"{name}.sh").read_text(encoding="utf-8")
     assert "api.telegram.org" not in text
+
+
+# ── `_notify_record_failure`는 set -u 아래서 스크립트를 죽이지 못한다
+# (2026-09-07, 리포트 QA 세션) ──────────────────────────────────────────────
+#
+# 발견: `${1:0:200}`처럼 위치 인자를 서브셸(command substitution) 안에서
+# 직접 잘라 쓰면, 인자 없이 불렸을 때 `set -u`가 그 서브셸만 조용히 죽이고
+# (필드는 빈 문자열로 샌다) "unbound variable" 에러 줄이 stderr 에 찍힌다 —
+# 호출 스크립트 자체는 죽지 않지만(command substitution 실패는 `errexit`
+# 없이는 전파되지 않는다) 알림 실패 원장 기록과 무관한 소음이 남는다.
+# `text="${1:-}"`로 먼저 받아두게 고쳤다 — 아래는 그 수정을 잠근다.
+
+def test_notify_record_failure_with_zero_args_does_not_raise_or_kill_script(gate):
+    r = gate.run('_notify_record_failure; echo ALIVE rc=$?', **OFF_HOURS)
+    assert r.returncode == 0, r.stderr
+    assert "ALIVE rc=0" in r.stdout
+    assert "unbound variable" not in r.stderr, r.stderr
+
+
+def test_notify_record_failure_with_zero_args_writes_empty_text_field(gate):
+    gate.run('_notify_record_failure', **OFF_HOURS)
+    rows = gate.failures()
+    assert len(rows) == 1
+    assert rows[0]["text"] == ""
+
+
+def test_notify_record_failure_with_normal_arg_is_unaffected(gate):
+    """정상 호출 경로(`_notify_send`가 항상 하는 방식)는 이 수정으로 바뀌지
+    않는다 — 회귀 방지."""
+    gate.run('_notify_record_failure "정상 텍스트"', **OFF_HOURS)
+    rows = gate.failures()
+    assert rows[0]["text"] == "정상 텍스트"
+
+
+# ── NOTIFY_LANE 전파 — notify_auto/notify_now/notify_defer 세 함수 모두
+# (2026-09-07, 리포트 QA 세션 §5) ────────────────────────────────────────────
+#
+# 세 함수 모두 `NOTIFY_LANE`을 자체적으로 파라미터로 받지 않고, `notify.sh`가
+# 소스된 같은 셸 프로세스에서 호출부가 미리 설정해둔 전역 변수를 그대로
+# 읽는다(`_notify_send`/`_notify_enqueue` 내부의 `${NOTIFY_LANE:-}`). 이미
+# `notify_now`(레인 라우팅 절)와 `notify_defer`(`test_queue_line_carries_
+# notify_lane`)는 개별적으로 커버돼 있었지만, `notify_auto`는 레인 전파가
+# 한 번도 직접 검증된 적이 없었다 — 장중/장외 두 분기가 서로 다른 내부
+# 함수(`_notify_enqueue`/`_notify_send`)로 갈라지므로 둘 다 잠근다.
+
+def test_notify_auto_off_hours_propagates_lane_to_bound_thread(gate, tmp_path):
+    import json as _json
+    lanes = tmp_path / "tg_lanes.json"
+    lanes.write_text(_json.dumps({"chat_id": 111, "threads": {"trades": 42}}), encoding="utf-8")
+    r = gate.run(
+        'notify_auto "own_brief" "체결 요약"',
+        NOTIFY_LANE="trades", NOTIFY_LANES_FILE=str(lanes), **OFF_HOURS,
+    )
+    assert r.returncode == 0, r.stderr
+    sent = gate.sends()[0]
+    assert "chat_id=111" in sent
+    assert "message_thread_id=42" in sent
+
+
+def test_notify_auto_in_hours_queue_carries_lane(gate):
+    r = gate.run('notify_auto "own_brief" "편입"', NOTIFY_LANE="briefs", **IN_HOURS)
+    assert r.returncode == 0, r.stderr
+    assert gate.sends() == []
+    rows = gate.queued()
+    assert len(rows) == 1
+    assert rows[0]["lane"] == "briefs"
+    assert rows[0]["level"] == "auto"

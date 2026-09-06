@@ -30,15 +30,19 @@ RC=$?
 if [ "$RC" -ne 0 ]; then
   notify_auto "report_accuracy" "⚠️ 리포트 정확도 채점 실패 (exit ${RC}) — ${LOG} 확인"
   echo "[$(date '+%F %T')] 실패 exit=$RC"
-  exit "$RC"
+else
+  echo "$OUT"
+  notify_auto "report_accuracy" "${OUT:0:3900}"
 fi
-
-echo "$OUT"
-notify_auto "report_accuracy" "${OUT:0:3900}"
 
 # 회고 카드 자동화(2026-09-06, Phase 6 재발 방지 루프) — 정확도 스코어카드
 # 직후, 성숙한 세션(전날 KR 오전/마감·전날 US 오전)의 날짜별 회고 카드를
-# 만들어 텔레그램 브리핑 레인에 한 줄씩 보낸다. 이 파일의 성패와 무관하게
-# 독립 로그(data/report_review.log)로 실패를 격리한다 — 위 정확도 스코어카드
-# 발송은 이미 끝난 뒤라 아래에서 뭐가 터져도 위 알림엔 영향이 없다(`|| true`).
+# 만들어 텔레그램 브리핑 레인에 한 줄씩 보낸다. **이 파일의 성패와 무관하게**
+# 항상 시도한다(2026-09-07 수정 — 예전엔 위 accuracy 채점이 실패하면 여기
+# 도달하기 전에 `exit "$RC"`로 먼저 빠져나가 이 주석의 약속을 코드가 어기고
+# 있었다: 채점기가 넘어진 날 회고 카드까지 통째로 못 도는 사고). 독립 로그
+# (data/report_review.log)로 실패를 격리한다 — 위 정확도 스코어카드 발송은
+# 이미 끝난 뒤라 아래에서 뭐가 터져도 위 알림엔 영향이 없다(`|| true`).
 ./server/scripts/report_review_daily.sh >> data/report_review.log 2>&1 || true
+
+exit "$RC"

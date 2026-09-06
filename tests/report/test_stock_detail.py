@@ -1,9 +1,12 @@
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from quant.collect.sources.stock_detail import (
     OPINION_LABELS,
+    fetch_many,
     opinion_label,
     parse_consensus,
     parse_investor_flow,
@@ -173,6 +176,149 @@ def test_fetch_stock_detail_adds_flow_daily_additively(monkeypatch):
         "date": "2026-08-11", "foreign_net": 2462529, "inst_net": 319290,
     }
     assert all(set(r) == {"date", "foreign_net", "inst_net"} for r in detail["flow_daily"])
+
+
+# --- fetch_many (2026-09-07 Phase 2 §5) — 순차 + 0.3초 슬립 → 병렬 조회 ---
+
+
+def test_fetch_many_respects_limit(monkeypatch):
+    """`limit` 을 넘는 코드는 아예 조회하지 않는다(기존 `codes[:limit]` 계약)."""
+    import quant.collect.sources.stock_detail as sd
+
+    seen = []
+
+    def fake_fetch(code):
+        seen.append(code)
+        return {"code": code}
+
+    monkeypatch.setattr(sd, "fetch_stock_detail", fake_fetch)
+
+    result = fetch_many(["a", "b", "c", "d"], limit=2)
+
+    assert sorted(seen) == ["a", "b"]
+    assert set(result) == {"a", "b"}
+
+
+def test_fetch_many_preserves_input_order(monkeypatch):
+    """스레드 완료 순서와 무관하게 반환 dict 키 순서는 입력 `codes` 순서다
+    (순차 버전의 삽입 순서 계약을 유지)."""
+    import quant.collect.sources.stock_detail as sd
+
+    # 코드를 거꾸로 완료시켜 완료 순서 != 입력 순서가 되게 한다.
+    delays = {"a": 0.06, "b": 0.04, "c": 0.02, "d": 0.0}
+
+    def fake_fetch(code):
+        time.sleep(delays[code])
+        return {"code": code}
+
+    monkeypatch.setattr(sd, "fetch_stock_detail", fake_fetch)
+
+    result = fetch_many(["a", "b", "c", "d"], limit=8)
+
+    assert list(result.keys()) == ["a", "b", "c", "d"]
+
+
+def test_fetch_many_one_failure_does_not_kill_others(monkeypatch):
+    """한 심볼의 예외가 나머지 결과를 막지 않는다(기존 순차 버전과 동일 계약)."""
+    import quant.collect.sources.stock_detail as sd
+
+    def fake_fetch(code):
+        if code == "bad":
+            raise ValueError("boom")
+        return {"code": code}
+
+    monkeypatch.setattr(sd, "fetch_stock_detail", fake_fetch)
+
+    result = fetch_many(["good1", "bad", "good2"], limit=8)
+
+    assert set(result) == {"good1", "good2"}
+
+
+def test_fetch_many_runs_concurrently(monkeypatch):
+    """병렬화가 실제로 일어난다 — N개를 각각 슬립하는 페이크로 감쌌을 때
+    전체 소요시간이 순차 합보다 훨씬 짧아야 한다(요지: 더 이상 종목당
+    0.3초씩 순차로 대기하지 않는다)."""
+    import quant.collect.sources.stock_detail as sd
+
+    n = 8
+    sleep_s = 0.2
+
+    def fake_fetch(code):
+        time.sleep(sleep_s)
+        return {"code": code}
+
+    monkeypatch.setattr(sd, "fetch_stock_detail", fake_fetch)
+
+    t0 = time.perf_counter()
+    result = fetch_many([str(i) for i in range(n)], limit=n)
+    elapsed = time.perf_counter() - t0
+
+    assert len(result) == n
+    # 순차라면 n * sleep_s = 1.6초. max_workers=4 병렬이면 이론상 2 배치 =~0.4초.
+    # CI 노이즈를 감안해 넉넉히 순차 소요의 절반 미만이면 통과로 본다.
+    assert elapsed < (n * sleep_s) / 2
+
+
+def test_fetch_many_empty_codes_returns_empty_dict():
+    assert fetch_many([], limit=8) == {}
+
+
+def test_fetch_many_time_budget_returns_partial_and_warns(monkeypatch, capsys):
+    """예산을 넘기면 그때까지 끝난 것만 돌려주고, 못 끝낸 종목은 결측으로
+    남긴다(0/캐시로 위장하지 않는다) — stderr 경고도 함께 확인한다."""
+    import quant.collect.sources.stock_detail as sd
+
+    def fake_fetch(code):
+        # "slow"만 예산을 넘기도록 오래 걸리게 한다.
+        time.sleep(0.5 if code == "slow" else 0.0)
+        return {"code": code}
+
+    monkeypatch.setattr(sd, "fetch_stock_detail", fake_fetch)
+
+    result = fetch_many(["fast1", "fast2", "slow"], limit=8, time_budget_s=0.1)
+
+    assert set(result) == {"fast1", "fast2"}
+    assert "slow" not in result
+    err = capsys.readouterr().err
+    assert "시간 예산" in err
+    assert "2/3" in err
+
+
+def test_fetch_many_no_budget_overrun_stays_silent(monkeypatch, capsys):
+    """예산 안에 전부 끝나면 경고를 남기지 않는다."""
+    import quant.collect.sources.stock_detail as sd
+
+    monkeypatch.setattr(sd, "fetch_stock_detail", lambda code: {"code": code})
+
+    result = fetch_many(["a", "b"], limit=8, time_budget_s=5.0)
+
+    assert set(result) == {"a", "b"}
+    assert capsys.readouterr().err == ""
+
+
+def test_fetch_many_uses_bounded_worker_pool(monkeypatch):
+    """동시 실행 스레드 수가 4를 넘지 않는지 확인한다(무제한 병렬 금지)."""
+    import quant.collect.sources.stock_detail as sd
+
+    lock = threading.Lock()
+    concurrent = 0
+    peak = 0
+
+    def fake_fetch(code):
+        nonlocal concurrent, peak
+        with lock:
+            concurrent += 1
+            peak = max(peak, concurrent)
+        time.sleep(0.05)
+        with lock:
+            concurrent -= 1
+        return {"code": code}
+
+    monkeypatch.setattr(sd, "fetch_stock_detail", fake_fetch)
+
+    fetch_many([str(i) for i in range(10)], limit=10)
+
+    assert peak <= 4
 
 
 def test_fetch_stock_detail_flow_daily_caps_at_20_when_more_rows_parsed(monkeypatch):
