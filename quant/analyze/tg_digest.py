@@ -99,6 +99,7 @@ program_stance_display()`는 **결정론**(LLM 무관)이다 — `regime`(호출
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections import Counter
 from collections.abc import Callable
@@ -113,6 +114,8 @@ from quant.collect.sources.feeds import parse_published
 from quant.collect.sources.telegram_channels import channels_for
 from quant.core import tgfmt
 from quant.core.report_clock import KST
+
+log = logging.getLogger(__name__)
 
 # 채널당 노출 상한 — telegram_view.ITEMS_PER_CHANNEL(5)과 같은 관례.
 CHANNEL_ITEM_CAP = 5
@@ -184,6 +187,15 @@ _PRICE_WORD_RE = re.compile(r"목표가|주가|종가|저가|고가")
 _BARE_NUMBER_RE = re.compile(r"(?<![0-9])[+-]?\d[\d,]*\.?\d*")
 _PRICE_UNIT_MULTIPLIER = {"만원": 10_000, "원": 1, "억": 100_000_000, "달러": 1}
 _PRICE_CONTEXT_WINDOW = 15
+
+# 가격 단어 근방 bare 숫자 오탐(2026-09-07 실측, EC2 telegram_msgs.jsonl 8개
+# 다이제스트 채널 원문 4,295건 재현 — `docs/vault/변경기록.md` 참고) — 가격
+# 단어 근방(15자)이고 유효숫자 3자리+ 여도 가격이 아닌 정황이 뚜렷한 경우를
+# 걸러낸다. 실측 예:
+#   "목표주가는 2030년 목표 PER 16.6배" → 연도 2030, 배수 16.6배 둘 다 오탐
+#   "S&P500 : 7,686.14" / "K200 야간선물" → 티커에 붙은 500/200 오탐
+#   "모아데이타(288980)( -1.67% )주가 미달" → 괄호 속 6자리 종목코드 오탐
+_YEAR_RE = re.compile(r"^(19|20)\d{2}$")
 
 # ---------------------------------------------------------------------------
 # 리스크 항목 보일러플레이트(소유자 요구, 2026-09-05, rafikiresearch 실측) —
@@ -411,6 +423,36 @@ def _sig_digits(num_str: str) -> int:
     return len(digits)
 
 
+def _looks_non_price_bare_number(sentence: str, s: int, e: int, num_str: str) -> bool:
+    """가격 단어 근방 + 유효숫자 3자리+ 여도, 가격 진술이 아니라는 정황이
+    뚜렷한 bare 숫자를 걸러낸다(모듈 상단 `_YEAR_RE` 주석의 실측 근거).
+    콤마·소수점이 있는 숫자(가격은 보통 이렇게 쓴다: "85000", "71,000")는
+    연도·종목코드 판정에서 애초에 걸리지 않는다 — 그런 표기까지 배제하면
+    이미 검증된 정상 클레임(`test_build_digest_bare_number_accepted_only_near_price_word`
+    등)을 잃는다."""
+    # 연도(1900~2099) — "목표주가는 2030년..." 처럼 콤마·소수점 없는 4자리
+    # 숫자 그대로일 때만(콤마 섞인 4자리는 진짜 가격일 수 있어 그대로 둔다).
+    if _YEAR_RE.match(num_str):
+        return True
+    # 배수(PER/PBR 등 "N배") — 바로 뒤(공백 허용)에 "배"가 오면 가격이 아니다.
+    if sentence[e:e + 2].lstrip().startswith("배"):
+        return True
+    # 티커에 바로 붙은 숫자(예: "S&P500", "K200", "KOSPI200") — 직전 문자가
+    # 공백 없이 영문자면 가격이 아니라 지수/티커 이름의 일부다.
+    if s > 0 and sentence[s - 1].isalpha():
+        return True
+    # 괄호로 감싼 6자리 종목코드(예: "모아데이타(288980)") — 가격 진술이 아니라
+    # 코드 참조다. 콤마·소수점 없는 정확히 6자리일 때만(가격 표기는 보통
+    # 콤마가 있거나 6자리가 아니다).
+    if (
+        s > 0 and e < len(sentence)
+        and sentence[s - 1] == "(" and sentence[e] == ")"
+        and "," not in num_str and "." not in num_str and len(num_str) == 6
+    ):
+        return True
+    return False
+
+
 def _number_claims_in_sentence(sentence: str) -> list[tuple[str, float | None]]:
     """`(표시값, 가격형_숫자|None)` 목록. 가격형(원/만원/억/달러/$)만 두 번째
     값이 채워진다(만원/억은 원화로 환산) — %/bp/포인트/p 나 가격 단어 근방
@@ -470,6 +512,8 @@ def _number_claims_in_sentence(sentence: str) -> list[tuple[str, float | None]]:
                 for ps, pe in price_word_spans
             )
             if not near:
+                continue
+            if _looks_non_price_bare_number(sentence, s, e, num_str):
                 continue
             spans.append((s, e))
             try:
@@ -644,7 +688,7 @@ def build_digest(
     # llm_call 이 이미 유효한 스탠스를 만들었으면 건너뛴다(중복 호출 방지,
     # 하위호환: 기존에 [STANCE] 마커로 성공하던 호출부는 그대로 그 결과를 쓴다).
     if stance_llm_call is not None and channel_entries and digest.stance is None:
-        digest = _apply_llm_stance(digest, stance_llm_call)
+        digest = _apply_llm_stance(digest, stance_llm_call, table)
 
     return digest
 
@@ -768,7 +812,11 @@ def _stance_prompt(digest: Digest) -> str:
     lines = [
         f"다음은 텔레그램 공개 채널에서 수집한 {label} 시장 관련 최근 메시지다.",
         "제시된 메시지 내용만 근거로 오늘의 시장 스탠스를 판단하라. 새 사실을",
-        "지어내지 말고, 숫자를 인용하지 마라.",
+        "지어내지 말고, 숫자를 인용하지 마라. 아래 메시지에 등장하지 않는",
+        "종목명·티커도 언급하지 마라. why에서 특정 사실을 근거로 들 때는 그",
+        "메시지의 채널명(예: tazastock)을 함께 적어라. 메시지들이 뚜렷한",
+        "방향을 보여주지 않으면 방어/공격을 억지로 고르지 말고 stance를",
+        "\"중립\"으로, why를 \"판단 보류 — 근거 부족\"으로 답하라.",
         "",
         "다음 JSON 객체 하나만 답하라(다른 텍스트·설명·마크다운 코드펜스 금지):",
         '{"stance":"방어 또는 중립 또는 공격 중 하나","why":"60자 이내 이유"}',
@@ -781,7 +829,26 @@ def _stance_prompt(digest: Digest) -> str:
     return "\n".join(lines)
 
 
-def _apply_llm_stance(digest: Digest, stance_llm_call) -> Digest:
+def _stance_is_grounded(why: str, digest: Digest, table: list[tuple[str, str]]) -> bool:
+    """스탠스 마이크로프롬프트의 `why`가 이 창의 채널 메시지에 없는 숫자나
+    종목을 지어냈으면 `False`(2026-09-07, 텔레그램 리포트 감사 — "숫자·엔티티
+    할루시네이션 결정론 후검사"). `verify_numbers`(narrator.py, `_apply_llm`
+    이 큰 프롬프트 경로에 이미 쓰는 것과 같은 함수)로 숫자를, 이 모듈이 후보
+    추출에 이미 쓰는 `_candidates_in_sentence`로 종목 언급을 검사한다 — 새
+    의존성 없이 기존 계약 두 개를 재사용한다."""
+    snippets = [e.snippet for entries in digest.channel_entries.values() for e in entries]
+    if not verify_numbers(why, {"messages": snippets}):
+        return False
+    known_symbols = {c.symbol for c in digest.candidates}
+    return all(
+        hit["symbol"] in known_symbols
+        for hit in _candidates_in_sentence(digest.market, why, table)
+    )
+
+
+def _apply_llm_stance(
+    digest: Digest, stance_llm_call, table: list[tuple[str, str]] | None = None,
+) -> Digest:
     try:
         result = stance_llm_call(_stance_prompt(digest))
     except Exception:  # noqa: BLE001 — 스탠스 마이크로프롬프트 실패가 다이제스트를 막지 않는다
@@ -794,6 +861,12 @@ def _apply_llm_stance(digest: Digest, stance_llm_call) -> Digest:
     # 있으므로(테스트 등) 여기서도 한 번 더 확인한다 — "절반만 믿을 수 있는
     # 판정은 안 믿느니만 못하다"(모듈 docstring 원칙).
     if stance not in STANCES or not isinstance(why, str) or not why:
+        return digest
+    if not _stance_is_grounded(why, digest, table or []):
+        log.warning(
+            "tg_digest(%s): 스탠스 마이크로프롬프트 응답에 창 밖 숫자/종목 — 폐기: %r",
+            digest.market, why,
+        )
         return digest
     return Digest(
         market=digest.market, since=digest.since, until=digest.until,

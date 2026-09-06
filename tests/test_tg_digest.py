@@ -259,6 +259,56 @@ def test_build_digest_bare_number_under_3_sig_digits_rejected_even_near_price_wo
     assert digest.number_claims == []
 
 
+# ── bare 숫자 오탐(2026-09-07, EC2 telegram_msgs.jsonl 8개 채널 원문 4,295건
+# 재현으로 실측) — 가격 단어 근방 + 유효숫자 3자리+ 조건을 통과해도 가격이
+# 아닌 정황이 뚜렷한 경우 ────────────────────────────────────────────────
+
+
+def test_build_digest_drops_year_near_price_word():
+    """실측(aetherjapanresearch): "목표주가는 2030년 목표 PER 16.6배로 산출".
+    연도 2030이 "목표주가" 근방(15자)이라 예전엔 바로 클레임이 됐다 — 실제
+    주가가 우연히 2000~2100원대인 종목이면 "✓"로 잘못 확인될 수 있었다."""
+    messages = [_row("tazastock", "1", "삼성전자 목표주가는 2030년 목표 PER 16.6배로 산출.")]
+    digest = build_digest(
+        messages, "KR", NOW, since=SINCE, name_table=KR_TABLE,
+        quotes_lookup=lambda sym: 2030.0,  # 실제 이랬다면 "2030"이 "✓"로 오판됐을 것
+    )
+    assert digest.number_claims == []
+
+
+def test_build_digest_drops_per_multiple_near_price_word():
+    """"PER 16.6배"처럼 배수 뒤에 "배"가 오면 가격이 아니다."""
+    messages = [_row("tazastock", "1", "삼성전자 목표주가는 PER 16.6배 기준으로 산정.")]
+    digest = build_digest(messages, "KR", NOW, since=SINCE, name_table=KR_TABLE)
+    assert digest.number_claims == []
+
+
+def test_build_digest_drops_ticker_glued_number_near_price_word():
+    """실측(tazastock): "S&P500 : 7,686.14 ... 목표주가를 하향". 지수/티커에
+    바로 붙은 숫자(직전 문자가 공백 없는 영문자)는 가격이 아니다."""
+    messages = [_row("tazastock", "1", "삼성전자 목표가와 별개로 S&P500 지수도 함께 언급됐다.")]
+    digest = build_digest(messages, "KR", NOW, since=SINCE, name_table=KR_TABLE)
+    assert not any(c.value == "500" for c in digest.number_claims)
+
+
+def test_build_digest_drops_parenthesized_stock_code_near_price_word():
+    """실측(tazastock): "모아데이타(288980)( -1.67% )주가 미달". 괄호로 감싼
+    6자리 종목코드가 "주가" 근방이라 가격 클레임처럼 잡혔었다."""
+    messages = [_row("tazastock", "1", "모아데이타(288980) 주가 미달에 따른 상장폐지 우려.")]
+    digest = build_digest(
+        messages, "KR", NOW, since=SINCE, name_table=[("모아데이타", "288980")],
+    )
+    assert not any(c.value == "288980" for c in digest.number_claims)
+
+
+def test_build_digest_bare_number_still_accepted_when_not_year_or_glued_or_coded():
+    """새 배제 규칙이 기존 정상 케이스(콤마 있는 5자리 가격)까지 지우면 안
+    된다 — 회귀 방지."""
+    messages = [_row("tazastock", "1", "삼성전자 목표가 85000 상향.")]
+    digest = build_digest(messages, "KR", NOW, since=SINCE, name_table=KR_TABLE)
+    assert any(c.value == "85000" for c in digest.number_claims)
+
+
 def test_build_digest_dedupes_identical_symbol_value_channel():
     messages = [
         _row("tazastock", "1", "삼성전자 71,000원 돌파. 삼성전자 71,000원 재확인."),
@@ -787,3 +837,66 @@ def test_stance_llm_call_skipped_when_llm_call_already_produced_a_stance():
     )
     assert digest.stance == "방어"
     assert calls == []
+
+
+# ── 스탠스 마이크로프롬프트 결정론 후검사(2026-09-07, 텔레그램 리포트 감사 —
+# "숫자·엔티티 할루시네이션 후검사") — `stance_only`는 프롬프트로만 숫자
+# 인용을 금지하지만, 모델이 그래도 창 밖 숫자·종목을 지어내면 여기서 걸러야
+# 한다. `_apply_llm`(큰 프롬프트 경로)이 이미 하는 `verify_numbers` 검사와
+# 같은 원칙을 스탠스 전용 경로에도 적용한다. ──────────────────────────────
+
+
+def test_stance_llm_call_rejected_when_why_cites_number_absent_from_window():
+    """창의 채널 메시지 어디에도 없는 숫자를 why가 인용하면 폐기하고 정직한
+    "서술기 미가용"으로 떨어진다."""
+    digest = build_digest(
+        _kr_messages_with_channel_entry(), "KR", NOW, since=SINCE,
+        stance_llm_call=lambda p: {"stance": "공격", "why": "목표가 90,000원 돌파 기대"},
+    )
+    assert digest.stance is None
+    assert "서술기 미가용" in digest.stance_display()
+
+
+def test_stance_llm_call_accepted_when_why_cites_number_present_in_window():
+    """창의 메시지에 실제로 등장한 숫자를 인용하면 통과한다 — 오탐 방지
+    (모든 숫자를 무조건 차단하는 게 아니다)."""
+    messages = [_row("tazastock", "1", "코스피 오늘 2% 상승 마감.")]
+    digest = build_digest(
+        messages, "KR", NOW, since=SINCE,
+        stance_llm_call=lambda p: {"stance": "공격", "why": "코스피 2% 상승(tazastock)"},
+    )
+    assert digest.stance == "공격"
+
+
+def test_stance_llm_call_rejected_when_why_cites_symbol_absent_from_window():
+    """창에서 실제로 언급된 적 없는 종목명을 why가 지어내면 폐기한다 — 이번
+    창은 SK하이닉스만 언급했는데 삼성전자를 근거로 드는 경우."""
+    messages = [_row("tazastock", "1", "SK하이닉스 강세.")]
+    digest = build_digest(
+        messages, "KR", NOW, since=SINCE, name_table=KR_TABLE,
+        stance_llm_call=lambda p: {"stance": "공격", "why": "삼성전자 강세가 시장을 이끔"},
+    )
+    assert digest.stance is None
+    assert "서술기 미가용" in digest.stance_display()
+
+
+def test_stance_llm_call_accepted_when_why_cites_symbol_present_in_window():
+    """창에서 실제로 언급된 종목을 근거로 들면 통과한다."""
+    messages = [_row("tazastock", "1", "SK하이닉스 강세.")]
+    digest = build_digest(
+        messages, "KR", NOW, since=SINCE, name_table=KR_TABLE,
+        stance_llm_call=lambda p: {"stance": "공격", "why": "SK하이닉스 강세(tazastock)"},
+    )
+    assert digest.stance == "공격"
+
+
+def test_stance_prompt_instructs_citation_and_판단_보류():
+    """프롬프트가 채널명 인용과 "판단 보류" 허용을 실제로 요구하는지 —
+    문구가 조용히 지워지는 회귀를 잡는다."""
+    seen = {}
+    build_digest(
+        _kr_messages_with_channel_entry(), "KR", NOW, since=SINCE,
+        stance_llm_call=lambda p: seen.setdefault("prompt", p) or None,
+    )
+    assert "채널명" in seen["prompt"]
+    assert "판단 보류" in seen["prompt"]
