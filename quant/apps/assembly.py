@@ -25,6 +25,7 @@ from pathlib import Path
 
 from quant.adapters.data.service import Capability, MarketDataService, SourceRoute
 from quant.adapters.execution.paper import PaperBroker
+from quant.adapters.kv import make_kv
 from quant.adapters.persistence.sink import ConsoleSink, JsonlSink, MultiSink
 from quant.adapters.regime_indicators import (
     CompositeIndicatorClient,
@@ -38,6 +39,7 @@ from quant.apps.config import Settings
 from quant.control.exposure import DEFAULT_ALERT_PCT
 from quant.control.exposure import build_report as build_exposure_report
 from quant.control.ledger import TradeLedgerSink
+from quant.control.opstate import record_run
 from quant.core.clock import WallClock
 from quant.core.fx import DailyFxProvider, FixedFxProvider, FxProvider
 from quant.core.models import Side, market_of
@@ -228,6 +230,10 @@ class PaperRuntime:
     # 직접 임포트할 수 없어(아키텍처 규칙) 여기서 quant.control.exposure를
     # 감싸 넘긴다. 시그니처: (lots, prices, capital_krw) -> dict(ExposureReport.to_dict()).
     exposure_check: Callable[[dict, dict, float | None], dict] | None = None
+    # 대사 하트비트 클로저(2026-09-06 라이브 준비 D1) — loop.py는
+    # quant.control.opstate를 직접 임포트할 수 없어(아키텍처 규칙) 여기서
+    # record_run을 감싸 넘긴다. 시그니처: (ok: bool) -> None.
+    reconcile_heartbeat: Callable[[bool], None] | None = None
 
 
 def require_books_capable_broker(broker: object) -> None:
@@ -1392,6 +1398,7 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
     notifier = build_notifier(cfg)
     reconciler = build_reconciler(broker, control, notifier, cfg,
                                   pending_qty=open_orders.pending_qty)
+    reconcile_heartbeat = build_reconcile_heartbeat() if reconciler is not None else None
     logger.info(
         "엔진 조립 완료 — 전략=%s, 판단주기=%.2f분, 시작현금=%.0f원",
         [s.id for s in strategies], clock.cadence_minutes(), start_cash,
@@ -1485,15 +1492,39 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
         books=books,
         tick_logger=tick_logger,
         exposure_check=_exposure_check,
+        reconcile_heartbeat=reconcile_heartbeat,
     )
+
+
+def build_reconcile_heartbeat() -> Callable[[bool], None]:
+    """대사 하트비트 클로저(2026-09-06 라이브 준비 D1) — `reconciler.check()`가
+    실제로 한 번 돈 사이클마다 Redis에 성공/실패를 남긴다. `cli health`의
+    "reconcile" 잡이 이걸로 "마지막 대조 성공 시각"을 판정한다(H.job_findings).
+
+    kv 인스턴스는 여기서 한 번만 만들어 재사용한다(호출마다 새로 만들 필요 없음
+    — record_run 자체가 가벼운 쓰기이고, Redis가 없으면 NullKeyValue가 조용히
+    삼킨다). 콜백 자체의 예외는 여기서 삼키지 않는다 — 호출부(loop.py
+    `_report_reconcile_heartbeat`)가 이미 삼킨다(이중 방어가 아니라 책임 소재를
+    한쪽에 둔다)."""
+    kv = make_kv()
+
+    def _heartbeat(ok: bool) -> None:
+        record_run(kv, "reconcile", ok=ok)
+
+    return _heartbeat
 
 
 def build_reconciler(broker, control, notifier, cfg: dict,
                      pending_qty=None) -> Reconciler | None:
-    """엔진 소유 원장을 노출하는 브로커에서만 대사기를 만든다.
+    """엔진 소유 원장을 노출하는 브로커에서만 대사기를 만든다. 그렇지 않으면
+    None을 돌려주고 루프는 대사가 없던 때와 100% 동일하게 동작한다.
 
-    PaperBroker는 portfolio.json이 곧 엔진 소유라 대조할 상대가 없다 — None을
-    돌려주고 루프는 대사가 없던 때와 100% 동일하게 동작한다."""
+    2026-09-06: PaperBroker도 이제 `engine_owned_qty`/`engine_owned_symbols`를
+    노출한다(paper.py — portfolio.json이 곧 엔진 소유이므로 항등값을 그대로
+    반환) — 그래서 paper에서도 대사기가 만들어진다. positions()와 engine_owned_qty
+    가 같은 portfolio 객체를 읽으므로 **불일치가 날 수 없다** — 이건 새 위험이
+    아니라, 대사 코드 경로가 매 사이클 실제로 실행되는지 확인하는 배선이다
+    (docs/runbooks/reconcile-drill.md 참고)."""
     interval_minutes = float(cfg.get("engine", {}).get("reconcile_interval_minutes", 5))
     stale_order_seconds = float(cfg.get("engine", {}).get("stale_order_seconds", 120))
     reconciler = Reconciler(broker, control, notifier, interval_minutes=interval_minutes,

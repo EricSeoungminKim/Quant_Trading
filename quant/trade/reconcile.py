@@ -15,6 +15,8 @@
 
 이 모듈은 브로커 어댑터를 직접 import하지 않는다. `engine_owned_qty`/`positions`를
 노출하는 객체면 무엇이든 받는다(duck-typing) — 그 둘이 없으면 대사 자체를 하지 않는다.
+`engine_owned_cash`도 노출하면(2026-09-06) 현금까지 함께 대사한다 — 없으면
+기존처럼 포지션만 본다.
 """
 from __future__ import annotations
 
@@ -29,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 # 수량 비교 허용 오차(주). 미국 분할주는 소수점 6자리까지라 그 아래는 반올림 잡음이다.
 _QTY_TOLERANCE = 1e-6
+
+# 현금 비교 허용 오차(원, 2026-09-06 라이브 준비 D1) — float 누적 오차 방지용
+# 최소값이지 "이 정도는 괜찮다"는 리스크 판단이 아니다.
+_CASH_TOLERANCE_KRW = 1.0
 
 _DEFAULT_INTERVAL_MINUTES = 5.0
 
@@ -161,8 +167,33 @@ class Reconciler:
             )
         self._manual_snapshot = manual
 
+        # 현금 대사(2026-09-06 라이브 준비 D1) — `engine_owned_cash()`를 노출하는
+        # 브로커에서만 본다(duck-typing, 이 모듈 전체의 관례). TossBroker는 아직
+        # 이 메서드가 없으므로 기존 동작 그대로(현금 비교 없음) — 실계좌 현금은
+        # 원장이 독립적으로 추적하지 않아 "기대값"이 없기 때문이다. PaperBroker는
+        # portfolio.cash 자체가 엔진 소유 현금이라 이 값을 그대로 반환한다(paper.py).
+        engine_owned_cash = getattr(self._broker, "engine_owned_cash", None)
+        if callable(engine_owned_cash):
+            try:
+                expected_cash = float(engine_owned_cash())
+                actual_cash = float(self._broker.cash())
+            except Exception as e:  # noqa: BLE001 — 현금 조회 실패가 대사 전체를 죽이면 안 된다
+                logger.warning("대사 실패 — 현금 조회 불가: %s: %s", type(e).__name__, e)
+            else:
+                diff = actual_cash - expected_cash
+                if abs(diff) > _CASH_TOLERANCE_KRW:
+                    report.mismatches.append(
+                        f"현금: 엔진 원장 {expected_cash:,.0f}원 vs 브로커 {actual_cash:,.0f}원 "
+                        f"(차이 {diff:+,.0f}원)"
+                    )
+
         if report.mismatches:
             self._on_mismatch(report)
+        logger.info(
+            "브로커 대사 확인 완료 — 대상 %d개 종목, 결과: %s",
+            len(engine_symbols),
+            "일치" if report.ok else f"불일치 {len(report.mismatches)}건",
+        )
         return report
 
     def _pending_for(self, symbol: str) -> float:
@@ -224,7 +255,8 @@ class Reconciler:
             status = "취소 요청 접수" if canceled else "취소 실패 — 토스 앱에서 직접 확인할 것"
             self._notifier.send(
                 f"⚠️ 미체결 주문이 {age:.0f}초째 남아 있어 자동 취소를 시도했습니다 ({status}).\n"
-                f"{o.symbol} {o.side.value} {o.qty:g}주 (orderId={o.order_id})"
+                f"{o.symbol} {o.side.value} {o.qty:g}주 (orderId={o.order_id})",
+                lane="ops",
             )
 
     def _on_mismatch(self, report: ReconcileReport) -> None:
@@ -235,9 +267,13 @@ class Reconciler:
             self._control.halt(reason, by="auto")
         if self._notifier is not None and not self._mismatch_notified:
             self._mismatch_notified = True
+            # lane="ops"(2026-09-06): 회로차단기성 알림이라 다른 운영 감시(시세
+            # 끊김/고아 포지션, loop.py)와 같은 레인으로 보낸다 — 레인이 아직
+            # 안 묶였으면 Notifier가 기존처럼 레거시 채팅으로 폴백한다.
             self._notifier.send(
                 "브로커 대사 불일치 — 신규 진입을 중단했다(청산은 계속 동작한다).\n"
-                f"{detail}\n원인 확인 후 /resume 할 것."
+                f"{detail}\n원인 확인 후 /resume 할 것.",
+                lane="ops",
             )
 
 

@@ -2182,6 +2182,7 @@ async def run_paper_loop(
     approval_notifier: object | None = None,
     approval_cfg: dict | None = None,
     reconciler: object | None = None,
+    reconcile_heartbeat: Callable[[bool], None] | None = None,
     regime: object | None = None,
     universe: object | None = None,
     rebuild_strategies: Callable[[], list[Strategy]] | None = None,
@@ -2201,6 +2202,13 @@ async def run_paper_loop(
     취급). approval이 None이면 승인 게이트 관련 코드는 전혀 실행되지 않는다.
     reconciler(app/reconcile.Reconciler)를 주면 기동 시 1회 + 자체 주기마다 브로커
     실보유와 엔진 소유 원장을 대조한다 — None이면 대사 코드는 실행되지 않는다.
+    reconcile_heartbeat(2026-09-06 라이브 준비 D1, `(ok: bool) -> None`)를 주면
+    실제로 대사가 한 번 실행됐을 때마다(주기 미도달로 건너뛴 사이클은 제외)
+    성공/실패를 인자로 호출한다 — `cli health`의 "reconcile" 잡이 마지막 성공
+    시각을 보여주는 배선이다. 이 파일은 `quant.control.opstate`를 직접 임포트할
+    수 없어(아키텍처 규칙) 클로저로 주입받는다(`quant.apps.assembly`가 조립).
+    콜백 자체의 예외는 삼킨다 — 하트비트 기록 실패가 거래를 막으면 안 된다.
+    None이면(호출부가 주입하지 않음) 관련 코드는 한 줄도 실행되지 않는다.
     universe(refresh()/symbols()를 노출하는 객체)를 주면 국면과 **같은 KST 거래일
     경계**에서 1회 다시 읽고, rebuild_strategies가 함께 주어졌으면 전략을 재조립한다.
     둘 다 None이면 관련 코드는 한 줄도 실행되지 않는다(기존 경로 그대로).
@@ -2222,10 +2230,22 @@ async def run_paper_loop(
     None이면(호출부가 주입하지 않음) 관련 코드는 한 줄도 실행되지 않는다."""
     if control is None:
         control = TradingControl()
+
+    def _report_reconcile_heartbeat(report) -> None:
+        """실제로 대사가 돈 사이클에서만(주기 미도달로 건너뛴 사이클 제외)
+        reconcile_heartbeat를 부른다 — 콜백 예외는 삼킨다(하트비트가 거래를
+        막으면 안 된다는 이 함수 전체의 원칙과 동일선상)."""
+        if not report.checked or reconcile_heartbeat is None:
+            return
+        try:
+            reconcile_heartbeat(report.ok)
+        except Exception:
+            logger.exception("대사 하트비트 기록 실패 — 거래는 계속한다")
+
     if reconciler is not None:
         # 기동 대사는 첫 사이클보다 먼저. 재시작 직후가 원장과 실보유가 가장 어긋나기
         # 쉬운 시점이고, 그 상태로 신규 진입을 내보내면 안 된다.
-        reconciler.check(force=True)
+        _report_reconcile_heartbeat(reconciler.check(force=True))
 
     engine_cfg = settings.raw.get("engine", {})
     max_failures = int(engine_cfg.get("max_consecutive_cycle_failures", _DEFAULT_MAX_CONSECUTIVE_FAILURES))
@@ -2461,7 +2481,7 @@ async def run_paper_loop(
                     logger.exception("고아 포지션 알림 실패 — 거래는 계속한다")
         try:
             if reconciler is not None:
-                reconciler.check()  # 주기 미도달이면 내부에서 즉시 반환한다
+                _report_reconcile_heartbeat(reconciler.check())  # 주기 미도달이면 내부에서 즉시 반환한다
             # 장중 하드레일(2026-09-03) — halt/flatten 여부와 무관하게 매 사이클
             # 돈다. 청산은 절대 막지 않는다는 이 레일 전체의 원칙(모듈 상단 참고)
             # 그대로, 하드 손절도 예외가 아니다.

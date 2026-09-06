@@ -354,3 +354,30 @@ class PaperBroker:
         """paper는 place_order가 그 자리에서 체결/거부로 끝나 미체결 상태를 만들지
         않는다 — 항상 빈 리스트다."""
         return []
+
+    # ------------------------------------------------- 엔진 소유 원장 (2026-09-06 라이브 준비 D1)
+    #
+    # 왜 필요한가: `quant.trade.reconcile.Reconciler`는 이 세 메서드가 있는
+    # 브로커에서만 동작한다(`supported` 판정, duck-typing). PaperBroker는 지금까지
+    # 이걸 노출하지 않아 `build_reconciler`가 항상 None을 돌려줬다 — 대사 코드
+    # 경로가 paper에서 단 한 번도 실행된 적이 없다는 뜻이다(라이브 전환 전 감사
+    # 발견 사항). paper는 TossBroker와 달리 "사용자 수동 보유" 개념이 없다 —
+    # portfolio.json 자체가 곧 엔진 소유 원장이므로(모듈 상단 docstring),
+    # positions()/cash()가 읽는 것과 정확히 같은 값을 그대로 돌려준다(항등).
+    # 그래서 이 세 메서드를 추가해도 대사는 **절대 불일치를 만들 수 없다** —
+    # 이건 새 검증 로직이 아니라, 대사 코드 자체가 매 사이클 정상적으로 돌고
+    # 있음을 확인하는 배선이다(quant/trade/loop.py의 대사 하트비트 참고).
+    #
+    # 부수 효과 확인: loop.py의 flatten 필터·risk/manager.py의 매도가능수량
+    # 클램프도 `getattr(broker, "engine_owned_qty", None)`으로 이 메서드를
+    # duck-type한다 — 항등값이므로 두 곳 모두 기존 동작(브로커 보유 전체를
+    # 엔진 소유로 취급)과 결과가 완전히 같다(회귀 없음).
+    def engine_owned_qty(self, symbol: str) -> float:
+        pos = self.portfolio.positions.get(symbol)
+        return pos.qty if pos is not None else 0.0
+
+    def engine_owned_symbols(self) -> set[str]:
+        return {s for s, p in self.portfolio.positions.items() if p.qty > 0}
+
+    def engine_owned_cash(self) -> float:
+        return self.portfolio.cash

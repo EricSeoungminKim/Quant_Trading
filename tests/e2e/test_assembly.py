@@ -174,7 +174,15 @@ def test_broker_selection_follows_mode(tmp_path, monkeypatch):
     monkeypatch.setenv("MODE", "paper")
     rt = build_paper_runtime(settings)
     assert isinstance(rt.ctx.broker, PaperBroker)
-    assert rt.reconciler is None, "PaperBroker에는 대조할 원장이 없다 — 대사기는 None이어야 한다"
+    # 2026-09-06 라이브 준비 D1: PaperBroker도 engine_owned_qty/symbols/cash를
+    # 노출한다(paper.py — portfolio.json이 곧 엔진 소유이므로 항등값을 그대로
+    # 반환) — 그래서 이제 paper에서도 대사기가 만들어진다. positions()와
+    # engine_owned_qty가 같은 portfolio 객체를 읽으므로 불일치가 날 수 없고,
+    # 이건 새 위험이 아니라 대사 코드 경로가 매 사이클 실제로 실행되는지
+    # 확인하는 배선이다(quant/trade/reconcile.py 감사 발견 — 이전엔 paper가
+    # 대사 대상이 아니라서 이 경로가 실전에서 한 번도 실행된 적이 없었다).
+    assert rt.reconciler is not None, "paper도 이제 대사기가 활성화돼야 한다(항등 대사)"
+    assert rt.reconciler.check(force=True).ok, "paper 항등 대사는 절대 불일치가 나면 안 된다"
 
     monkeypatch.setenv("MODE", "live")
     rt_live = build_paper_runtime(settings)

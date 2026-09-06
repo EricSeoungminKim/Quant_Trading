@@ -511,11 +511,209 @@ def cmd_paper(args: argparse.Namespace) -> None:
         rt.strategies, rt.ctx, rt.risk, rt.sinks, settings, rt.notifier,
         control=rt.control, market_data=rt.data, active_markets=rt.active_markets,
         approval=rt.approval, approval_notifier=rt.approval_notifier,
-        approval_cfg=rt.approval_cfg, reconciler=rt.reconciler, regime=rt.regime,
+        approval_cfg=rt.approval_cfg, reconciler=rt.reconciler,
+        reconcile_heartbeat=rt.reconcile_heartbeat, regime=rt.regime,
         universe=rt.universe, rebuild_strategies=_rebuild if rt.universe is not None else None,
         name_of=rt.name_of, books=rt.books, tick_logger=rt.tick_logger,
         exposure_check=rt.exposure_check,
     ))
+
+
+def cmd_reconcile_drill(args: argparse.Namespace) -> None:
+    """브로커 대사 드릴 (2026-09-06 라이브 준비 D1).
+
+    감사 발견: `quant/trade/reconcile.py`의 Reconciler는 지금까지 실전에서 단
+    한 번도 불일치를 만나 halt해본 적이 없다 — paper는 대사 대상이 아니었고
+    (`build_reconciler`가 항상 None을 돌려줬다), 실계좌(TossBroker)에서도 아직
+    실제 불일치가 난 적이 없다. "불일치가 나면 정말 감지하고, 정말 halt하고,
+    정말 알림이 나가는가"를 라이브 전환 전에 사람이 직접 확인해야 한다.
+
+    실제 `Reconciler`(reconcile.py의 그 클래스, 이 명령이 재구현하지 않는다)를
+    조립하되, 대상은 **현재 paper 포트폴리오의 읽기 전용 스냅샷**이다 —
+    `data/state/portfolio.json`을 `--root`/drill/ 아래로 복사만 하고, 원본은
+    절대 열지 않는다(연다면 읽기 한 번뿐). "브로커"는 이 스냅샷을 엔진 소유
+    원장으로 삼는 가짜(Broker-protocol 스텁)이고, 그 브로커가 보고하는
+    "실보유"만 `--inject` 값에 따라 원장과 어긋나게 조작한다. `place_order`를
+    부르면 그 자리에서 예외를 던진다 — 대사 경로가 절대 주문을 내지 않는다는
+    것을 매 실행마다 재확인한다.
+
+    제어 상태(halt)는 이 드릴 전용 `TradingControl`(drill/control.json)에서만
+    바뀐다 — 실제 `data/state/control.json`은 절대 건드리지 않는다. `--dry-run`
+    이면 이 스냅샷·제어 파일조차 임시 디렉터리에 만들고 실행이 끝나면 지운다
+    (기본값은 `data/state/drill/`에 감사 흔적을 남긴다 — 월례 드릴 실행 증거).
+
+    `--send`가 없으면 알림은 실제로 보내지 않고 텍스트만 캡처해 출력한다.
+    """
+    import shutil
+    import sys as _sys
+    import tempfile
+
+    from quant.core.models import Order, Position
+    from quant.core.portfolio.portfolio import Portfolio
+    from quant.trade.control import TradingControl
+    from quant.trade.reconcile import Reconciler
+
+    kind = args.inject
+    root = Path(args.root)
+    live_portfolio_path = root / "data" / "state" / "portfolio.json"
+
+    cleanup_dir: Path | None = None
+    if args.dry_run:
+        drill_dir = Path(tempfile.mkdtemp(prefix="reconcile_drill_"))
+        cleanup_dir = drill_dir
+    else:
+        drill_dir = root / "data" / "state" / "drill"
+        drill_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        snapshot_path = drill_dir / "portfolio_snapshot.json"
+        if live_portfolio_path.exists():
+            shutil.copy2(live_portfolio_path, snapshot_path)
+            portfolio = Portfolio.load_or_init(start_cash=0.0, state_path=snapshot_path)
+            engine_positions = {s: p.qty for s, p in portfolio.positions.items() if p.qty > 0}
+            engine_cash = portfolio.cash
+        else:
+            engine_positions = {}
+            engine_cash = 0.0
+
+        used_fixture = False
+        if not engine_positions and kind in ("qty", "missing", "extra"):
+            # 실 paper 포트폴리오가 없거나(첫 체크아웃) 전량 청산 상태다 — 그래도
+            # 이 종류의 드릴은 검증할 심볼이 있어야 하므로 내장 fixture로 대체한다.
+            used_fixture = True
+            engine_positions = {"005930": 10.0}
+        if kind == "cash" and engine_cash <= 0:
+            used_fixture = True
+            engine_cash = 10_000_000.0
+
+        target_symbol = sorted(engine_positions)[0] if engine_positions else None
+        injected_positions = {
+            s: Position(symbol=s, qty=q, avg_cost=100.0) for s, q in engine_positions.items()
+        }
+        injected_cash = engine_cash
+        pending: dict[str, float] = {}
+
+        if kind == "none":
+            pass
+        elif kind == "qty":
+            cur = engine_positions[target_symbol]
+            injected_positions[target_symbol] = Position(
+                symbol=target_symbol, qty=cur / 2, avg_cost=100.0)
+        elif kind == "missing":
+            injected_positions[target_symbol] = Position(
+                symbol=target_symbol, qty=0.0, avg_cost=100.0)
+        elif kind == "extra":
+            # 브로커 보유가 원장보다 많다 — "우리 미체결 주문이 뒤늦게 체결된
+            # 것"으로 보이게 pending도 함께 주입한다(reconcile.py의 실제 판정
+            # 로직: 잉여가 pending으로 설명되면 "사용자 수동 보유"가 아니라
+            # "엔진이 이 포지션을 모른다"는 halt 대상 불일치다).
+            cur = engine_positions[target_symbol]
+            extra_qty = max(cur * 0.2, 1.0)
+            injected_positions[target_symbol] = Position(
+                symbol=target_symbol, qty=cur + extra_qty, avg_cost=100.0)
+            pending[target_symbol] = extra_qty
+        else:  # kind == "cash" — argparse choices가 이 5개로 이미 제한한다
+            injected_cash = engine_cash - max(engine_cash * 0.01, 10_000.0)
+
+        class _DrillBroker:
+            """Broker-protocol 스텁 — positions()/cash()만 주입값을 돌려주고,
+            engine_owned_*는 (복사해온) 실 원장을 그대로 돌려준다. place_order는
+            절대 호출되면 안 된다 — 대사는 조회만 한다."""
+
+            def positions(self) -> dict[str, Position]:
+                return injected_positions
+
+            def cash(self) -> float:
+                return injected_cash
+
+            def engine_owned_qty(self, symbol: str) -> float:
+                return engine_positions.get(symbol, 0.0)
+
+            def engine_owned_symbols(self) -> set[str]:
+                return set(engine_positions)
+
+            def engine_owned_cash(self) -> float:
+                return engine_cash
+
+            def place_order(self, order: Order):
+                raise AssertionError(
+                    "reconcile-drill: 대사 경로가 주문을 내려 했다 — 절대 있으면 "
+                    f"안 된다 (symbol={order.symbol} side={order.side} qty={order.qty})"
+                )
+
+            def cancel_order(self, order_id: str) -> bool:
+                return False
+
+            def open_orders(self) -> list:
+                return []
+
+        class _CapturingNotifier:
+            def __init__(self) -> None:
+                self.messages: list[tuple[str, str | None]] = []
+
+            def send(self, text: str, lane: str | None = None) -> None:
+                self.messages.append((text, lane))
+
+        notifier: object
+        if args.send:
+            from quant.apps.assembly import build_notifier
+
+            settings = load_settings()
+            notifier = build_notifier(settings.raw)
+            if notifier is None:
+                print("경고: --send 지정했지만 텔레그램 알림이 비활성 — 캡처로 대체", file=_sys.stderr)
+                notifier = _CapturingNotifier()
+        else:
+            notifier = _CapturingNotifier()
+
+        control_path = drill_dir / "control.json"
+        control_path.unlink(missing_ok=True)  # 이전 드릴의 halt 상태가 새 실행에 새지 않게
+        control = TradingControl(state_path=control_path)
+
+        reconciler = Reconciler(
+            _DrillBroker(), control, notifier,
+            pending_qty=(lambda symbol: pending.get(symbol, 0.0)) if pending else None,
+        )
+        report = reconciler.check(force=True)
+
+        detected = not report.ok
+        halted = control.is_halted()
+        expect_detection = kind != "none"
+        ok = detected == expect_detection and halted == expect_detection
+
+        print("=== 브로커 대사 드릴 ===")
+        print(f"주입 종류: {kind}")
+        if used_fixture:
+            print("(실 paper 포트폴리오에 검증할 보유/현금이 없어 내장 fixture로 대체했다)")
+        print(f"대상 심볼: {target_symbol or '(해당 없음)'}")
+        print(f"검사 실행됨: {report.checked}")
+        print(f"판정: {'일치' if report.ok else '불일치 — ' + '; '.join(report.mismatches)}")
+        print(
+            f"제어 상태: {'halted — ' + control.halt_reason() if halted else '정상(halt 아님)'}"
+        )
+        if isinstance(notifier, _CapturingNotifier):
+            if notifier.messages:
+                text, lane = notifier.messages[-1]
+                print(f"운영 알림({lane or 'legacy'} 레인, 캡처됨 — 실제로 보내지 않았다):\n{text}")
+            else:
+                print("운영 알림: 없음(불일치가 없거나 이미 알림을 보낸 뒤 재확인 사이클)")
+        else:
+            print(f"운영 알림: --send 로 실제 전송 시도함 ({len(getattr(notifier, 'messages', []) or [])}건)")
+        print()
+        if ok:
+            if kind == "none":
+                print("예상대로 '일치' — 신규 진입 halt 없음.")
+            else:
+                print(
+                    f"예상대로 '{kind}' 불일치를 감지해 신규 진입을 halt했다. "
+                    "청산 주문은 이 상태에서도 계속 나간다(reconcile.py의 정책)."
+                )
+        else:
+            print(f"실패 — 대사가 '{kind}' 불일치를 기대대로 감지/halt하지 못했다.")
+        raise SystemExit(0 if ok else 1)
+    finally:
+        if cleanup_dir is not None:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
 def cmd_fetch(args: argparse.Namespace) -> None:
@@ -3434,7 +3632,13 @@ def cmd_health(args: argparse.Namespace) -> None:
     # 지키지 못하므로 밑단 규칙이 대신 지킨다).
     jobs = ["collect:KR", "collect:US", "report:KR", "report:US", "ingest", "backup",
             "deepdive:KR", "deepdive:US", "close-report", "report_close:KR", "ops-judge",
-            "experiments", "equity-snapshot"]
+            "experiments", "equity-snapshot",
+            # 브로커 대사(2026-09-06 라이브 준비 D1) — 엔진(quant.apps.cli paper)이
+            # 대사를 실제로 돌릴 때마다(quant/apps/assembly.py의 build_reconcile_
+            # heartbeat) 기록한다. 처음 배포된 시점엔 기록이 없어 UNKNOWN(계측
+            # 전)으로 뜨고, 엔진이 한 번이라도 사이클을 돌면 채워진다 — 기본 TTL
+            # (1시간)은 기본 5분 주기보다 훨씬 넉넉하다.
+            "reconcile"]
     # now=(2026-09-06) — H.JOB_SCHEDULE 에 등재된 잡(ops-judge)은 캘린더 시간
     # TTL 대신 영업일 수로 신선도를 잰다(H.job_findings docstring) — 주말엔
     # 원래 안 도는 잡을 20시간 TTL로 재면 일요일 아침마다 거짓 경보가 났다.
@@ -6424,6 +6628,28 @@ def main() -> None:
 
     p_paper = sub.add_parser("paper")
     p_paper.set_defaults(func=cmd_paper)
+
+    p_recdrill = sub.add_parser(
+        "reconcile-drill",
+        help="브로커 대사 드릴 — paper 포트폴리오 스냅샷에 불일치를 주입해 "
+             "Reconciler가 실제로 감지·halt·알림하는지 확인한다(실 파일 미변경).",
+    )
+    p_recdrill.add_argument(
+        "--inject", required=True, choices=["none", "qty", "missing", "extra", "cash"],
+        help="none=불일치 없음(halt 없어야 정상) | qty=브로커 보유가 원장보다 적음 | "
+             "missing=브로커 보유 없음 | extra=브로커 보유가 원장보다 많음(미체결 "
+             "늦은 체결로 위장) | cash=브로커 현금이 원장과 어긋남",
+    )
+    p_recdrill.add_argument("--root", default=".", help="저장소 루트(data/state/... 기준)")
+    p_recdrill.add_argument(
+        "--dry-run", action="store_true",
+        help="스냅샷/제어 파일을 data/state/drill/이 아니라 임시 디렉터리에 만들고 실행 후 지운다",
+    )
+    p_recdrill.add_argument(
+        "--send", action="store_true",
+        help="불일치 알림을 캡처만 하지 않고 실제 텔레그램으로도 보낸다",
+    )
+    p_recdrill.set_defaults(func=cmd_reconcile_drill)
 
     p_report = sub.add_parser("report")
     p_report.set_defaults(func=cmd_report)

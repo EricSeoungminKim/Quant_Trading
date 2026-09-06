@@ -393,3 +393,263 @@ def test_run_paper_loop_reconciles_at_startup_before_the_first_cycle(tmp_path, c
 
     assert calls[0] is True  # 기동 대사는 force
     assert control.is_halted()
+
+
+# ------------------------------------------------------------- 현금 대사 (2026-09-06 D1)
+
+class _BrokerWithCash(_Broker):
+    """`engine_owned_cash`까지 노출하는 브로커 — 현금 대사 대상(PaperBroker 상당,
+    2026-09-06 이후)."""
+
+    def __init__(self, holdings, owned, engine_cash: float, broker_cash: float):
+        super().__init__(holdings, owned)
+        self._engine_cash = engine_cash
+        self._broker_cash = broker_cash
+
+    def cash(self) -> float:
+        return self._broker_cash
+
+    def engine_owned_cash(self) -> float:
+        return self._engine_cash
+
+
+def test_cash_mismatch_halts_new_entries(control):
+    broker = _BrokerWithCash(holdings={"TQQQ": 10.0}, owned={"TQQQ": 10.0},
+                             engine_cash=1_000_000.0, broker_cash=500_000.0)
+    notifier = _Notifier()
+
+    report = Reconciler(broker, control, notifier).check(force=True)
+
+    assert not report.ok
+    assert any("현금" in m for m in report.mismatches)
+    assert control.is_halted()
+    assert any("대사 불일치" in m for m in notifier.messages)
+
+
+def test_matching_cash_does_not_halt(control):
+    broker = _BrokerWithCash(holdings={"TQQQ": 10.0}, owned={"TQQQ": 10.0},
+                             engine_cash=1_000_000.0, broker_cash=1_000_000.0)
+
+    report = Reconciler(broker, control).check(force=True)
+
+    assert report.ok
+    assert not control.is_halted()
+
+
+def test_tiny_cash_diff_within_tolerance_does_not_halt(control):
+    """float 누적 오차 정도는 불일치로 보지 않는다."""
+    broker = _BrokerWithCash(holdings={"TQQQ": 10.0}, owned={"TQQQ": 10.0},
+                             engine_cash=1_000_000.0, broker_cash=1_000_000.4)
+
+    report = Reconciler(broker, control).check(force=True)
+
+    assert report.ok
+
+
+def test_broker_without_engine_owned_cash_skips_cash_check(control):
+    """기존 `_Broker`(TossBroker 상당, engine_owned_cash 없음)는 현금을 전혀
+    비교하지 않는다 — 하위호환. cash()가 원장과 아무리 어긋나도 무관하다."""
+    broker = _Broker(holdings={"TQQQ": 10.0}, owned={"TQQQ": 10.0})
+    assert not hasattr(broker, "engine_owned_cash")
+
+    report = Reconciler(broker, control).check(force=True)
+
+    assert report.ok
+
+
+# ------------------------------------------------- 대사는 절대 주문을 내지 않는다
+
+class _BrokerThatRejectsOrders(_Broker):
+    def place_order(self, order):
+        raise AssertionError("Reconciler는 조회만 해야 한다 — 절대 주문을 내면 안 된다")
+
+
+def test_reconcile_never_places_orders_even_on_mismatch(control):
+    """`Reconciler.check()`는 포지션/현금 조회와 halt만 한다 — place_order를
+    부르면 아래에서 즉시 AssertionError로 실패한다(2026-09-06 라이브 준비 D1,
+    reconcile-drill이 매 실행마다 같은 것을 재확인한다)."""
+    broker = _BrokerThatRejectsOrders(holdings={}, owned={"TQQQ": 10.0})
+
+    report = Reconciler(broker, control).check(force=True)
+
+    assert not report.ok
+    assert control.is_halted()
+
+
+# --------------------------------------- 대사 하트비트 (cli health "reconcile" 잡)
+
+def test_run_paper_loop_reports_reconcile_heartbeat_on_startup_check(tmp_path, control):
+    """reconcile_heartbeat(ok)는 실제로 대사가 돈(checked=True) 사이클에서만
+    불린다 — 2026-09-06 라이브 준비 D1, `cli health`의 '마지막 대조 성공 시각'
+    배선. 기동 강제 대사 1회는 항상 checked=True다."""
+    from quant.apps.config import Settings
+    from quant.trade.loop import run_paper_loop
+
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text("engine:\n  poll_seconds: 0\n", encoding="utf-8")
+    settings = Settings({"engine": {"poll_seconds": 0}}, settings_path)
+
+    broker = _Broker(holdings={"TQQQ": 10.0}, owned={"TQQQ": 10.0})
+    heartbeats: list[bool] = []
+
+    class _Clock:
+        def now(self):
+            return datetime.now(UTC)
+
+        def is_market_open(self, market):
+            return False
+
+        def minutes_to_close(self, market):
+            return None
+
+        def cadence_minutes(self):
+            return 15.0
+
+        def should_flatten(self, market, minutes):
+            return False
+
+    class _Data:
+        def quote(self, symbol):
+            return None
+
+        def history(self, symbol, interval, n):
+            return pd.DataFrame(columns=_OHLCV)
+
+    class _Sink:
+        def on_signal(self, signal): ...
+        def on_fill(self, fill): ...
+
+    class _StopLoop(Exception):
+        pass
+
+    async def _stop(_seconds):
+        raise _StopLoop
+
+    ctx = Context(clock=_Clock(), data=_Data(), broker=broker)
+    with patch("asyncio.sleep", _stop):
+        with pytest.raises(_StopLoop):
+            asyncio.run(run_paper_loop(
+                [], ctx, None, _Sink(), settings, control=control,
+                reconciler=Reconciler(broker, control),
+                reconcile_heartbeat=heartbeats.append,
+            ))
+
+    # 기동 강제 대사(일치)는 반드시 True 로 기록된다. 같은 사이클 안의 주기
+    # 대사는 인터벌 미도달로 checked=False 라 하트비트를 남기지 않는다 — 그래서
+    # 리스트의 첫 값만 확정적으로 검증한다(뒤에 더 있어도 무방).
+    assert heartbeats
+    assert heartbeats[0] is True
+
+
+def test_run_paper_loop_reports_reconcile_heartbeat_false_on_mismatch(tmp_path, control):
+    from quant.apps.config import Settings
+    from quant.trade.loop import run_paper_loop
+
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text("engine:\n  poll_seconds: 0\n", encoding="utf-8")
+    settings = Settings({"engine": {"poll_seconds": 0}}, settings_path)
+
+    broker = _Broker(holdings={}, owned={"TQQQ": 10.0})  # 불일치
+    heartbeats: list[bool] = []
+
+    class _Clock:
+        def now(self):
+            return datetime.now(UTC)
+
+        def is_market_open(self, market):
+            return False
+
+        def minutes_to_close(self, market):
+            return None
+
+        def cadence_minutes(self):
+            return 15.0
+
+        def should_flatten(self, market, minutes):
+            return False
+
+    class _Data:
+        def quote(self, symbol):
+            return None
+
+        def history(self, symbol, interval, n):
+            return pd.DataFrame(columns=_OHLCV)
+
+    class _Sink:
+        def on_signal(self, signal): ...
+        def on_fill(self, fill): ...
+
+    class _StopLoop(Exception):
+        pass
+
+    async def _stop(_seconds):
+        raise _StopLoop
+
+    ctx = Context(clock=_Clock(), data=_Data(), broker=broker)
+    with patch("asyncio.sleep", _stop):
+        with pytest.raises(_StopLoop):
+            asyncio.run(run_paper_loop(
+                [], ctx, None, _Sink(), settings, control=control,
+                reconciler=Reconciler(broker, control),
+                reconcile_heartbeat=heartbeats.append,
+            ))
+
+    assert heartbeats
+    assert heartbeats[0] is False
+
+
+def test_reconcile_heartbeat_exception_does_not_break_the_loop(tmp_path, control):
+    """하트비트 콜백이 터져도(예: Redis 접속 실패) 거래는 계속돼야 한다."""
+    from quant.apps.config import Settings
+    from quant.trade.loop import run_paper_loop
+
+    settings_path = tmp_path / "settings.yaml"
+    settings_path.write_text("engine:\n  poll_seconds: 0\n", encoding="utf-8")
+    settings = Settings({"engine": {"poll_seconds": 0}}, settings_path)
+
+    broker = _Broker(holdings={"TQQQ": 10.0}, owned={"TQQQ": 10.0})
+
+    def _broken_heartbeat(ok: bool) -> None:
+        raise RuntimeError("Redis 접속 실패")
+
+    class _Clock:
+        def now(self):
+            return datetime.now(UTC)
+
+        def is_market_open(self, market):
+            return False
+
+        def minutes_to_close(self, market):
+            return None
+
+        def cadence_minutes(self):
+            return 15.0
+
+        def should_flatten(self, market, minutes):
+            return False
+
+    class _Data:
+        def quote(self, symbol):
+            return None
+
+        def history(self, symbol, interval, n):
+            return pd.DataFrame(columns=_OHLCV)
+
+    class _Sink:
+        def on_signal(self, signal): ...
+        def on_fill(self, fill): ...
+
+    class _StopLoop(Exception):
+        pass
+
+    async def _stop(_seconds):
+        raise _StopLoop
+
+    ctx = Context(clock=_Clock(), data=_Data(), broker=broker)
+    with patch("asyncio.sleep", _stop):
+        with pytest.raises(_StopLoop):  # RuntimeError가 아니라 _StopLoop여야 한다
+            asyncio.run(run_paper_loop(
+                [], ctx, None, _Sink(), settings, control=control,
+                reconciler=Reconciler(broker, control),
+                reconcile_heartbeat=_broken_heartbeat,
+            ))

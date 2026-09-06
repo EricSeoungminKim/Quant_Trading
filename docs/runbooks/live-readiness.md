@@ -51,7 +51,7 @@
 
 | # | 항목 | 상태 | 근거 |
 |---|---|---|---|
-| D1 | 브로커 잔고 대조 + 불일치 자동 정지 | 🟡 | quant/trade/reconcile.py — 페이퍼에서는 no-op, 실운영 실행 이력 0 → 실전 전 스테이징 드릴 필수 |
+| D1 | 브로커 잔고 대조 + 불일치 자동 정지 | ✅ | quant/trade/reconcile.py — paper도 이제 항등 대사로 매 사이클 실행됨(engine_owned_* on PaperBroker), `cli health` "reconcile" 잡이 마지막 성공 시각을 보여줌. `cli reconcile-drill --inject {qty,missing,extra,cash,none}`으로 감지·halt·알림을 직접 확인(docs/runbooks/reconcile-drill.md), tests/test_reconcile.py·tests/test_reconcile_drill.py·tests/test_paper_broker_engine_owned.py |
 | D2 | 원장 손상 내성(줄 단위 스킵) | ✅ | ledger.load_trades |
 | D3 | 전략별 독립 계좌(fixed_dual) 사이징·현금 게이트 | ✅ | tests/test_risk_fixed_dual.py (2026-09-06) |
 | D4 | 에폭 리셋 절차(엔진 정지 확인, 장부·포트폴리오 보관) | ✅ | cli paper-epoch, tests/test_cli_paper_epoch.py — 정지 확인은 systemctl 우선(하트비트는 systemctl 없을 때만 대체 신호, 2026-09-06 수리: 정지 직후 하트비트가 여전히 "최근"으로 보여 오판하던 결함) |
