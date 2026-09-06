@@ -417,3 +417,25 @@ def _entry_of(path: Path):
     from quant.control.backup import _entry
 
     return _entry(path)
+
+
+# ── 보존 prune 원장(2026-09-07) — 줄 감소를 회귀로 보지 않는다 ─────────────────────
+def test_regressions_ignores_line_drop_in_pruned_telegram_ledger(tmp_path: Path):
+    """`ledger/telegram_msgs.jsonl` 은 리포트 빌드가 `telegram_channels.prune`(14일)으로
+    다시 쓰는 원장이다 — 03:30 백업이 "줄이 줄었다(4423 → 4295)" 로 실패 처리돼
+    health 오경보를 냈던 실사고(2026-09-07). 진짜 append-only 원장(trades)은 계속 잡는다."""
+    _seed(tmp_path)
+    ledger_dir = tmp_path / "data" / "ledger"
+    ledger_dir.mkdir(parents=True, exist_ok=True)
+    tg = ledger_dir / "telegram_msgs.jsonl"
+    trades = ledger_dir / "trades.jsonl"
+    tg.write_text("".join(f'{{"i": {i}}}\n' for i in range(5)), encoding="utf-8")
+    trades.write_text("".join(f'{{"i": {i}}}\n' for i in range(5)), encoding="utf-8")
+    prev = manifest(tmp_path)
+
+    tg.write_text("".join(f'{{"i": {i}}}\n' for i in range(3)), encoding="utf-8")
+    trades.write_text("".join(f'{{"i": {i}}}\n' for i in range(3)), encoding="utf-8")
+    problems = regressions(manifest(tmp_path), prev, today=date(2026, 9, 7))
+
+    assert not any("telegram_msgs" in p for p in problems)
+    assert any("trades.jsonl" in p and "줄이 줄었다" in p for p in problems)

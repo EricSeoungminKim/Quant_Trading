@@ -295,6 +295,21 @@ def _is_expected_log_prune(key: str) -> bool:
     return key.endswith(".log")
 
 
+# 보존 기간 prune 대상 원장(2026-09-07) — 리포트 빌드가 `telegram_channels.prune`
+# (keep_days=14, tmp 로 다시 씀)으로 줄인다. 03:30 백업 뒤 아침 빌드가 prune 하면 다음
+# 백업에서 줄 수가 "줄어든" 게 정상이다 — 2026-09-07 03:30 백업이 "ledger/
+# telegram_msgs.jsonl: 줄이 줄었다 (4423 → 4295)" 로 실패 처리돼 health 가 "backup:
+# 최근 성공이 없다" 오경보를 냈다(복원 리허설 스크립트의 PRUNED_LEDGERS 와 같은 목록).
+# 여기 넣으려면 "누가 언제 줄이는지"를 적는다 — trades.jsonl 같은 진짜 append-only
+# 원장은 절대 넣지 않는다.
+PRUNED_LEDGERS: frozenset[str] = frozenset({"ledger/telegram_msgs.jsonl"})
+
+
+def _is_expected_ledger_prune(key: str) -> bool:
+    """`key`가 보존 prune 대상 원장(`PRUNED_LEDGERS`)인가 — 줄 감소를 회귀로 보지 않는다."""
+    return key in PRUNED_LEDGERS
+
+
 def regressions(cur: dict[str, Entry], prev: dict[str, Entry],
                 today: date | None = None) -> list[str]:
     """지난 번들 대비 **줄어든** 것. 원장·뉴스는 append-only 이므로 줄어들면 사고다.
@@ -334,5 +349,7 @@ def regressions(cur: dict[str, Entry], prev: dict[str, Entry],
             problems.append(f"{key}: 지난 백업에 있었는데 사라졌다")
             continue
         if was.lines is not None and now.lines is not None and now.lines < was.lines:
+            if _is_expected_ledger_prune(key):
+                continue  # 보존 prune 대상 — PRUNED_LEDGERS 주석 참고(2026-09-07 오경보)
             problems.append(f"{key}: 줄이 줄었다 ({was.lines} → {now.lines})")
     return problems
