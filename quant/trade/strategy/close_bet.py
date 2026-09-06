@@ -81,7 +81,7 @@ from datetime import time as dtime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from quant.core.models import Position, Signal, SignalAction
+from quant.core.models import Position, Signal, SignalAction, market_of_symbol
 from quant.core.ports import Context
 from quant.core.session import in_continuous_session
 from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
@@ -169,7 +169,7 @@ class CloseBetStrategy:
 
         candidates = [
             s for s in self.symbols
-            if s.isdigit() and len(s) == 6  # KR 전용
+            if market_of_symbol(s) == "KR"  # KR 전용
             and _TAG in (self.tags_of or {}).get(s, [])
         ]
         for symbol in candidates:
@@ -445,7 +445,7 @@ class CloseBetPureStrategy:
 
         candidates = [
             s for s in self.symbols
-            if s.isdigit() and len(s) == 6  # KR 전용
+            if market_of_symbol(s) == "KR"  # KR 전용
             and _TAG in (self.tags_of or {}).get(s, [])
         ]
         today_iso = today.isoformat()

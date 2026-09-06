@@ -62,7 +62,7 @@ from datetime import date as dtdate
 
 import pandas as pd
 
-from quant.core.models import Position, Signal, SignalAction
+from quant.core.models import Position, Signal, SignalAction, market_of_symbol
 from quant.core.ports import Context
 from quant.trade.indicators import bollinger, detect_box, macd, rsi, sma, sma_atr, squeeze
 from quant.trade.strategy.orb_scan import _SESSION_OPEN
@@ -140,7 +140,7 @@ class ConfluenceStrategy:
     @staticmethod
     def _market_of(symbol: str) -> str:
         """6자리 숫자 = KR — 저장소 전역과 동일한 구조 추론(orb_scan과 동일)."""
-        return "KR" if (symbol.isdigit() and len(symbol) == 6) else "US"
+        return market_of_symbol(symbol)
 
     # ------------------------------------------------------------------ 사이클
 

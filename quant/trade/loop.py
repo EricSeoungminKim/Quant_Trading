@@ -168,7 +168,7 @@ def _halt_notify_text(reason: str) -> str:
 
 
 def _is_kr(symbol: str) -> bool:
-    return symbol.isdigit() and len(symbol) == 6
+    return market_of_symbol(symbol) == "KR"
 
 
 def _display(symbol: str) -> str:
@@ -500,7 +500,7 @@ def _execute_signal(
     if mult_by_market:
         # 시장별 국면 배수(2026-08-10): KR 신호는 KR 국면으로 사이징 — 심볼에서
         # 시장을 추론(6자리=KR, 저장소 전역 규약). 없으면 기존 단일 배수 유지.
-        _mkt = "KR" if (signal.symbol.isdigit() and len(signal.symbol) == 6) else "US"
+        _mkt = market_of_symbol(signal.symbol)
         risk_multiplier = mult_by_market.get(_mkt, risk_multiplier)
     try:
         t0 = time.perf_counter()

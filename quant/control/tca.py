@@ -23,6 +23,8 @@ from __future__ import annotations
 import logging
 from datetime import UTC, date, datetime, timedelta
 
+from quant.core.models import market_of_symbol
+
 logger = logging.getLogger(__name__)
 
 # intent 행이 신호 시점 가격을 실었다면 쓸 법한 키 — 둘 중 먼저 찾은 것을 쓴다.
@@ -32,7 +34,7 @@ _PRICE_KEYS = ("price", "intent_price")
 def _market_of(symbol: str) -> str:
     """6자리 숫자 = KR — 저장소 전역과 동일한 추론(ledger._market_of와 동일 규칙,
     이 모듈을 순수하게 유지하려고 별도로 둔다)."""
-    return "KR" if (symbol.isdigit() and len(symbol) == 6) else "US"
+    return market_of_symbol(symbol)
 
 
 def _price(row: dict) -> float | None:

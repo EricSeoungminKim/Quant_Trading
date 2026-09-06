@@ -755,7 +755,7 @@ def _reconcile(
         # 시세가 없으면 평균단가로 마킹한다 — Portfolio.equity()와 반드시 같은
         # 폴백을 써야 한다(그쪽은 원가로 잡는데 여기서 시세로 잡으면 잔차가 난다).
         price = last_prices.get(symbol, pos.avg_cost)
-        unrealized_pnl += to_krw(pos.qty * (price - pos.avg_cost), market_of.get(symbol) or ("KR" if symbol.isdigit() and len(symbol) == 6 else "US"), fx)
+        unrealized_pnl += to_krw(pos.qty * (price - pos.avg_cost), market_of.get(symbol) or market_of_symbol(symbol), fx)
 
     residual = (final_equity - initial_equity) - (realized_pnl + unrealized_pnl - fees)
     tolerance = _RECONCILE_REL_TOL * max(abs(initial_equity), abs(final_equity), 1.0)

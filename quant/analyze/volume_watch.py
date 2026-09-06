@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 from pathlib import Path
 
+from quant.core.models import market_of_symbol
+
 BOARD = "거래대금"
 
 
@@ -44,7 +46,7 @@ def recurring_volume_symbols(
         seen_today: set[str] = set()
         for item in r.data.get("boards", {}).get(BOARD, [])[:board_top]:
             symbol = item.get("symbol")
-            if symbol and len(symbol) == 6 and symbol.isdigit():
+            if symbol and market_of_symbol(symbol) == "KR":
                 seen_today.add(symbol)
         for symbol in seen_today:
             counts[symbol] = counts.get(symbol, 0) + 1

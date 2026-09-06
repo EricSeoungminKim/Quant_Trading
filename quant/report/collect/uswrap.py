@@ -24,6 +24,7 @@ from datetime import time as dtime
 from pathlib import Path
 
 from quant.analyze.us_kr_bridge import build_us_kr_bridge
+from quant.core.models import market_of_symbol
 
 # 리포트에 실을 미국 지수 — S&P500/NASDAQ/다우. quotes 딕셔너리(quant.collect.
 # sources.market.fetch_quotes)의 키 그대로다.
@@ -161,7 +162,7 @@ def gather_kr_wrap(root: Path, kr_day: date) -> dict | None:
     if history.exists():
         for sym_dir in sorted(history.iterdir()):
             sym = sym_dir.name
-            if not (sym.isdigit() and len(sym) == 6):
+            if market_of_symbol(sym) != "KR":
                 continue
             part = sym_dir / str(kr_day.year) / f"{kr_day.month:02d}.parquet"
             if not part.exists():

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 
 import pytest
 
@@ -185,3 +186,32 @@ def test_every_plane_directory_exists():
     missing = [p for p in ("core", "collect", "analyze", "trade", "control", "adapters", "apps")
                if not (PKG / p).is_dir()]
     assert not missing, f"평면 디렉토리가 없다: {missing}"
+
+
+# KR/US 판정 규칙(6자리 숫자 = KR)을 각 파일이 따로 베껴 쓰던 패턴 — 저장소 19곳이
+# 갈라져 있었고, 그중 하나가 어긋나 2026-08-11 058610을 US로 잘못 분류해 0.0015주를
+# 매수한 사고로 이어졌다(quant/core/models.py: market_of_symbol docstring 참고).
+# 정방향(`isdigit() and len(...)`)과 역방향(`len(...) == 6 and ... isdigit()`) 둘 다 잡는다.
+_LEGACY_KR_HEURISTIC = re.compile(
+    r"isdigit\(\)\s*and\s*len\(|len\([^)]*\)\s*==\s*6\s*and\s*[^\n]*isdigit\(\)"
+)
+
+
+def test_kr_market_heuristic_is_not_reimplemented():
+    """`market_of_symbol`(quant/core/models.py)이 KR/US 판정의 유일한 출처여야 한다.
+
+    새 사이트가 이 규칙을 다시 베껴 쓰면 여기서 잡는다 — 정의 그 자체(models.py)만
+    예외다."""
+    canonical = PKG / "core" / "models.py"
+    targets = list(PKG.rglob("*.py")) + list((ROOT / "server" / "scripts").rglob("*.py"))
+    violations = [
+        str(f.relative_to(ROOT))
+        for f in targets
+        if "__pycache__" not in str(f)
+        and f != canonical
+        and _LEGACY_KR_HEURISTIC.search(f.read_text(encoding="utf-8"))
+    ]
+    assert not violations, (
+        "KR/US 판정 규칙이 재구현됐다 — quant.core.models.market_of_symbol을 델리게이트해라:\n  "
+        + "\n  ".join(violations)
+    )

@@ -42,6 +42,7 @@ from quant.control import alpha as _alpha
 from quant.control import cost_model as _cost_model
 from quant.control import exposure as _exposure
 from quant.control.ledger import MIN_TRIPS_FOR_JUDGEMENT, ab_compare
+from quant.core.models import market_of_symbol
 
 # 절 제목 — 소유자가 지정한 순서 그대로. 순서를 바꾸지 않는다. "지수 대비 성적"은
 # 2026-08-29에 추가됐다(`alpha.py` 모듈 docstring — "항상 지수 위에서 노는 것").
@@ -289,7 +290,7 @@ def build_positions(positions: dict, session_trades: list[dict],
 
 def _market_of(symbol: str) -> str:
     """6자리 숫자 = KR — 저장소 전역(ledger/assembly)과 같은 추론."""
-    return "KR" if (symbol.isdigit() and len(symbol) == 6) else "US"
+    return market_of_symbol(symbol)
 
 
 # ── 3·4. 이상 / 변경 ────────────────────────────────────────────────────

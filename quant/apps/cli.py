@@ -4563,6 +4563,7 @@ def cmd_promotion_debate(args: argparse.Namespace) -> None:
     from quant.analyze import promotion_debate as pd
     from quant.analyze.watch_scorer import resolve_regime_label, run_watch_score
     from quant.apps.assembly import MissingCredentials, _load_symbol_names, build_toss_client
+    from quant.core.models import market_of_symbol
 
     settings = load_settings()
     root = Path(args.root) if args.root else REPO_ROOT
@@ -4580,7 +4581,7 @@ def cmd_promotion_debate(args: argparse.Namespace) -> None:
         return
 
     def _is_kr(sym: str) -> bool:
-        return sym.isdigit() and len(sym) == 6
+        return market_of_symbol(sym) == "KR"
 
     tokens: list[str] = []
     for e in (raw.get("symbols") or []):
@@ -4971,13 +4972,14 @@ def cmd_kr_flow(args: argparse.Namespace) -> None:
 
     from quant.adapters.env import REPO_ROOT
     from quant.collect.sources.stock_detail import fetch_many
+    from quant.core.models import market_of_symbol
     from quant.report.collect.ledger import _record_flows, _record_frgn_flow
     from quant.trade.universe import FileWatchlistUniverse
 
     load_settings()
     root = Path(args.root) if args.root else REPO_ROOT
     watch = FileWatchlistUniverse(root / "data" / "watchlist.yaml")
-    symbols = [s for s in watch.refresh() if s.isdigit() and len(s) == 6]
+    symbols = [s for s in watch.refresh() if market_of_symbol(s) == "KR"]
     if not symbols:
         logger.info("kr-flow: 워치리스트에 KR 종목이 없다 — 건너뜀")
         return

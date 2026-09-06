@@ -365,7 +365,7 @@ def handle_control_command(
 def normalize_symbol(raw: str) -> str:
     """6자리 숫자면 KR 종목코드로 그대로, 그 외에는 대문자화해 US 심볼로 취급."""
     s = raw.strip()
-    if s.isdigit() and len(s) == 6:
+    if market_of_symbol(s) == "KR":
         return s
     return s.upper()
 
@@ -1044,7 +1044,7 @@ def handle_balance(toss_client: TossClient) -> str:
     for sym, p in positions.items():
         qty = float(p.get("qty", 0))
         avg = float(p.get("avg_cost", 0))
-        is_kr = sym.isdigit() and len(sym) == 6
+        is_kr = market_of_symbol(sym) == "KR"
         unit = "원" if is_kr else "$"
         cur = quotes.get(sym)
         meta = p.get("meta") or {}
@@ -1165,7 +1165,7 @@ def handle_daily_record(toss_client: TossClient, now: Optional[datetime] = None)
     if not by_key:
         lines.append("   오늘 청산한 종목 없음")
     for (sym, strat), fills in by_key.items():
-        is_kr = sym.isdigit() and len(sym) == 6
+        is_kr = market_of_symbol(sym) == "KR"
         pnl = sum(float(f.get("realized_pnl") or 0) - float(f.get("fee") or 0) for f in fills)
         realized_krw += pnl if is_kr else pnl * usd_krw
         label = STRATEGY_LABELS.get(strat, strat)
@@ -1191,7 +1191,7 @@ def handle_daily_record(toss_client: TossClient, now: Optional[datetime] = None)
         except Exception as exc:  # noqa: BLE001
             log(f"오늘의 전적 시세 조회 실패: {exc}")
         for sym, p in positions.items():
-            is_kr = sym.isdigit() and len(sym) == 6
+            is_kr = market_of_symbol(sym) == "KR"
             qty = float(p.get("qty", 0))
             avg = float(p.get("avg_cost", 0))
             cur = quotes.get(sym)

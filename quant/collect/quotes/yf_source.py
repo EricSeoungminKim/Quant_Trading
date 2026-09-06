@@ -19,6 +19,8 @@ from datetime import datetime
 import pandas as pd
 import yfinance as yf
 
+from quant.core.models import market_of_symbol
+
 logger = logging.getLogger(__name__)
 
 _COLUMNS = ["open", "high", "low", "close", "volume"]
@@ -82,7 +84,7 @@ class YFinanceCandleSource:
         # yf.Ticker 질의에만 적용하고 symbol 변수 자체는 바꾸지 않는다.
         if symbol in _YAHOO_TICKER_OVERRIDES:
             yahoo_symbol = _YAHOO_TICKER_OVERRIDES[symbol]
-        elif symbol.isdigit() and len(symbol) == 6:
+        elif market_of_symbol(symbol) == "KR":
             yahoo_symbol = f"{symbol}.KS"
         else:
             yahoo_symbol = symbol

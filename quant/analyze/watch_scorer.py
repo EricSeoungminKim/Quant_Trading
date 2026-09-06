@@ -36,6 +36,8 @@ from datetime import date, datetime, timedelta
 
 import pandas as pd
 
+from quant.core.models import market_of_symbol
+
 logger = logging.getLogger(__name__)
 
 _MIN_ROWS = 30
@@ -67,7 +69,7 @@ class ScoreResult:
 
 
 def _is_kr_symbol(symbol: str) -> bool:
-    return symbol.isdigit() and len(symbol) == 6
+    return market_of_symbol(symbol) == "KR"
 
 
 def _as_date(ts) -> date:

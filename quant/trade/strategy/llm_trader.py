@@ -170,7 +170,7 @@ from datetime import UTC, datetime, timedelta
 from datetime import date as dtdate
 from typing import Any
 
-from quant.core.models import Position, Signal, SignalAction, trading_day
+from quant.core.models import Position, Signal, SignalAction, market_of_symbol, trading_day
 from quant.core.ports import Context
 from quant.core.session import in_continuous_session
 
@@ -217,7 +217,7 @@ def _parse_ts(raw: object) -> datetime | None:
 
 
 def _is_kr_symbol(symbol: object) -> bool:
-    return isinstance(symbol, str) and symbol.isdigit() and len(symbol) == 6
+    return isinstance(symbol, str) and market_of_symbol(symbol) == "KR"
 
 
 class LlmTraderStrategy:

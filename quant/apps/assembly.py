@@ -42,7 +42,7 @@ from quant.control.ledger import TradeLedgerSink
 from quant.control.opstate import record_run
 from quant.core.clock import WallClock
 from quant.core.fx import DailyFxProvider, FixedFxProvider, FxProvider
-from quant.core.models import Side, market_of
+from quant.core.models import Side, market_of, market_of_symbol
 from quant.core.portfolio.portfolio import Portfolio
 from quant.core.ports import Context, EventSink, Notifier, Strategy
 from quant.core.session import TossSessionCalendar
@@ -871,7 +871,7 @@ def rebuild_strategies(
     # 매핑이 만들어지는 이 한 곳에서 채워 넣는다.
     for sym in symbols:
         if sym not in markets:
-            markets[sym] = "KR" if (sym.isdigit() and len(sym) == 6) else "US"
+            markets[sym] = market_of_symbol(sym)
     active_markets = frozenset(markets[s] for s in symbols)
     return strategies, markets, active_markets
 

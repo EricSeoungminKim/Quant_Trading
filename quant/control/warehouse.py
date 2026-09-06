@@ -19,6 +19,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from quant.adapters.db import upsert_sql
+from quant.core.models import market_of_symbol
 
 log = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ def trade_row(rec: dict) -> tuple | None:
         return None
     market = str(rec.get("market") or "").strip().upper()
     if market not in _MARKETS:
-        market = "KR" if (symbol.isdigit() and len(symbol) == 6) else "US"
+        market = market_of_symbol(symbol)
     return (
         fill_sha(rec),
         ts,

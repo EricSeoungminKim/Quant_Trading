@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from quant.core.models import Quote
+from quant.core.models import Quote, market_of_symbol
 from quant.core.ports import Clock, DataSourceError
 
 from .websocket import KiwoomRealtimeFeed
@@ -23,7 +23,7 @@ def is_kr_symbol(symbol: str) -> bool:
     않는다. 접미사가 실제로 이 형태로 오는지는 [미확인]이지만, 접미사 유무와
     무관하게 숫자 6자리 여부만으로 KR/US를 가르면 충분하다."""
     base = symbol.split("_", 1)[0]
-    return base.isdigit() and len(base) == 6
+    return market_of_symbol(base) == "KR"
 
 
 class KiwoomRealtimeSource:

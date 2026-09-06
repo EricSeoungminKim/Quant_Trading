@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from quant.core import strategy_ids, tgfmt
-from quant.core.models import Fill, OrderStatus, Signal
+from quant.core.models import Fill, OrderStatus, Signal, market_of_symbol
 from quant.core.ports import EventSink
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ def _verdict(lower: float, upper: float) -> str:
 
 def _market_of(symbol: str) -> str:
     """6자리 숫자 = KR — 저장소 전역과 동일한 추론 (orb_scan/assembly와 같음)."""
-    return "KR" if (symbol.isdigit() and len(symbol) == 6) else "US"
+    return market_of_symbol(symbol)
 
 
 # `quant.apps.cli.cmd_seed_real`이 이식 정리 매도에 남기는 마커. **원장을 읽는
