@@ -12,8 +12,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from quant.analyze.foreign_flow_v2 import FOREIGN_V2_MAX, foreign_score_v2
+from quant.analyze.foreign_flow_v2 import FOREIGN_V2_MAX
 from quant.analyze.foreign_trend import LABEL_INFLOW, LABEL_NEUTRAL, LABEL_OUTFLOW_TREND
+from quant.backtest.intraday_verify import index_frgn_flow
 from quant.backtest.report_replay import (
     ANCHOR_SYMBOL,
     COMPOSITION_RETAIN_HIGH,
@@ -57,7 +58,6 @@ from quant.backtest.report_replay import (
     upside_reach_pct,
     write_ledger,
 )
-from quant.backtest.intraday_verify import index_frgn_flow
 
 D = date(2026, 8, 15)
 

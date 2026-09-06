@@ -11,12 +11,11 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from quant.adapters.data.stub import StubDataFeed
 from quant.backtest import BacktestResult, run_backtest
 from quant.backtest.engine import ReconciliationError, _reconcile
 from quant.core.fx import FixedFxProvider
-from quant.adapters.data.stub import StubDataFeed
 from quant.core.models import Position
-
 
 # ------------------------------------------------------- watchlist 전략(symbols: [])
 

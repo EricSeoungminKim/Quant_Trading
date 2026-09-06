@@ -23,7 +23,8 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 from quant.core.session import continuous_window, in_continuous_session

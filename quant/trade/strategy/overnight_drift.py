@@ -125,8 +125,9 @@ EoD 강제청산 레일에 걸리면 진입한 날 마감에 그대로 털려 �
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, Mapping
+from typing import Any
 
 import pandas as pd
 

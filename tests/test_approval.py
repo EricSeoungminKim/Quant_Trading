@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from quant.trade.approval import ApprovalGate, ApprovalRequest
 from quant.adapters.notify.telegram_approval import TelegramApprovalBot
+from quant.trade.approval import ApprovalGate, ApprovalRequest
 
 
 def _create(gate: ApprovalGate, symbol: str = "TQQQ", now: float | None = None) -> ApprovalRequest:

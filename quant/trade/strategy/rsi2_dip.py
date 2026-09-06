@@ -120,8 +120,9 @@ RSI(2)/SMA는 **완성된 일봉 종가**로 정의되지만, 이 전략은 "오
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date as dtdate
-from typing import Any, Mapping
+from typing import Any
 
 import pandas as pd
 
@@ -129,7 +130,8 @@ from quant.core.models import Signal, SignalAction, market_of_symbol
 from quant.core.session import in_continuous_session, market_tz
 from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
 from quant.trade.fmt import fmt_price
-from quant.trade.indicators import rsi as _wilder_rsi, sma
+from quant.trade.indicators import rsi as _wilder_rsi
+from quant.trade.indicators import sma
 from quant.trade.strategy import kernel
 from quant.trade.strategy.shell import PureStrategyShell
 

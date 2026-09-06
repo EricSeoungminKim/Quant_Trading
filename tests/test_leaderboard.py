@@ -42,7 +42,6 @@ from quant.control.leaderboard import (
     verdicts_from_ledger,
 )
 
-
 # ── 하루의 횡단면 순위 상관 ───────────────────────────────────────────────
 
 def test_perfect_ranking_scores_one():

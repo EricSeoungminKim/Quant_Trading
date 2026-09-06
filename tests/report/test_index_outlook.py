@@ -18,7 +18,9 @@ import pandas as pd
 import pytest
 
 from quant.analyze.index_outlook import (
-    empirical_probability, factor_outlook, shrinkage_probability,
+    empirical_probability,
+    factor_outlook,
+    shrinkage_probability,
 )
 from quant.collect.contracts import SCHEMA_VERSION, Snapshot, SourceResult
 from quant.core.report_clock import KST

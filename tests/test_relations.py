@@ -2,8 +2,13 @@
 0점이 아니라 **버린다** (shadow-judge 와 같은 규칙: 0점을 주면 '최하위 평가'가
 되어 하류 순위를 오염시킨다)."""
 from quant.analyze.relations import (
-    MIN_EVIDENCE, build_extraction_prompt, evidence_score, match_codes,
-    merge_relation, parse_candidates)
+    MIN_EVIDENCE,
+    build_extraction_prompt,
+    evidence_score,
+    match_codes,
+    merge_relation,
+    parse_candidates,
+)
 
 _NAMES = {"한미반도체": "042700", "이오테크닉스": "039030", "삼성전자": "005930"}
 _TABLE = list(_NAMES.items())

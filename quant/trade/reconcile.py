@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from quant.core.models import Side
 
@@ -198,7 +198,7 @@ class Reconciler:
         except Exception as e:  # noqa: BLE001 — 감시 실패가 대사 자체를 죽이면 안 된다
             logger.warning("미체결 주문 조회 실패 — stale 감시 스킵: %s: %s", type(e).__name__, e)
             return
-        now = self._clock.now() if self._clock is not None else datetime.now(timezone.utc)
+        now = self._clock.now() if self._clock is not None else datetime.now(UTC)
         for o in orders:
             try:
                 age = (now - o.submitted_at).total_seconds()

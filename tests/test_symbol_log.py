@@ -5,14 +5,16 @@
 """
 from __future__ import annotations
 
-import json
 from datetime import date
-from pathlib import Path
 
 import pytest
 
 from quant.control.symbol_log import (
-    accuracy_join, append_scores, build_score_rows, hot_streak_symbols, load_scores,
+    accuracy_join,
+    append_scores,
+    build_score_rows,
+    hot_streak_symbols,
+    load_scores,
 )
 
 D = date(2026, 8, 26)

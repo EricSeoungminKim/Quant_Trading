@@ -17,7 +17,8 @@
 from __future__ import annotations
 
 import copy
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import pandas as pd

@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 DEFAULT_SPREAD_LEDGER_PATH = Path("data/ledger/spread.jsonl")
@@ -72,7 +72,7 @@ def _parse_ts(raw: object) -> datetime | None:
         d = datetime.fromisoformat(str(raw))
     except ValueError:
         return None
-    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    return d if d.tzinfo else d.replace(tzinfo=UTC)
 
 
 def _nearest_spread_bp(rows: list[dict], ts: object, max_gap_seconds: float) -> float | None:

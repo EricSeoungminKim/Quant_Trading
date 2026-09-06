@@ -208,21 +208,25 @@ data-availability.md) 백테스트 표본이 없다 — paper 번인이 유일�
 from __future__ import annotations
 
 import math
-from datetime import date as dtdate, datetime, time as dtime
+from collections.abc import Mapping
+from datetime import date as dtdate
+from datetime import datetime
+from datetime import time as dtime
+from typing import Any
 
 import pandas as pd
 
-from quant.core.ports import Context
 from quant.core.models import Position, Signal, SignalAction, market_of_symbol
+from quant.core.ports import Context
 from quant.core.session import in_continuous_session
 from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
 from quant.trade.fmt import fmt_price
 from quant.trade.indicators import sma
 from quant.trade.indicators.trend_gate import adx_di, atr_ratio
-from quant.trade.structure import structure_bracket, williams_r
 from quant.trade.strategy import kernel
 from quant.trade.strategy.orb_scan import _SESSION_OPEN
 from quant.trade.strategy.shell import PureStrategyShell
+from quant.trade.structure import structure_bracket, williams_r
 
 _INTERVAL = "1m"
 

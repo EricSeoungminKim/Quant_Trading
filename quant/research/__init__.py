@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from quant.research.optimize import OptimizeResult, Trial, optimize
 from quant.research.walkforward import (
-    Window,
     WalkForwardResult,
+    Window,
     WindowResult,
     split_windows,
     walk_forward,

@@ -24,9 +24,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Callable
 
 from quant.analyze import foreign_trend
 from quant.analyze.bullish_markers import classify_titles

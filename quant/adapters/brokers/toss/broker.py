@@ -12,11 +12,12 @@ import os
 import re
 import time
 import uuid
-from datetime import datetime, time as dtime, timezone
+from datetime import UTC, datetime
+from datetime import time as dtime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
-from zoneinfo import ZoneInfo
 
 from quant.core import oms
 from quant.core.models import Fill, OpenOrder, Order, OrderState, Position, Side
@@ -219,7 +220,7 @@ class TossBroker:
         client_order_id = uuid.uuid4().hex
         intent_record = {
             "event": "intent",
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(UTC).isoformat(),
             "client_order_id": client_order_id,
             "symbol": order.symbol,
             "side": side,
@@ -289,7 +290,7 @@ class TossBroker:
         order_id = result["orderId"]
         self._append_intent({
             "event": "placed",
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(UTC).isoformat(),
             "client_order_id": client_order_id,
             "order_id": order_id,
             "symbol": order.symbol,
@@ -358,7 +359,7 @@ class TossBroker:
             return float(qty_int), None
 
         fractional = qty != int(qty)
-        if fractional and not _is_us_regular_hours(datetime.now(timezone.utc)):
+        if fractional and not _is_us_regular_hours(datetime.now(UTC)):
             qty_int = int(qty)
             if qty_int <= 0:
                 logger.warning(
@@ -468,7 +469,7 @@ class TossBroker:
             side=order.side,
             qty=filled_qty,
             price=float(avg_price) if avg_price is not None else 0.0,
-            ts=datetime.now(timezone.utc),
+            ts=datetime.now(UTC),
             strategy_id=order.strategy_id,
             fee=fee,
             reason=order.reason,

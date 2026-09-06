@@ -20,9 +20,9 @@ import pytest
 
 from quant.apps.assembly import build_universe, rebuild_strategies
 from quant.core.fx import FixedFxProvider
-from quant.core.ports import Context
 from quant.core.models import Position, Quote, Signal, SignalAction
 from quant.core.portfolio.portfolio import Portfolio
+from quant.core.ports import Context
 from quant.trade.risk.manager import RiskManagerImpl
 
 NY = ZoneInfo("America/New_York")

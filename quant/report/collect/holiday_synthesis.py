@@ -13,7 +13,6 @@ import sys
 from pathlib import Path
 
 from quant.analyze.holiday_synthesis import aggregate, detect_gap, is_empty
-
 from quant.report.collect.snapshot import _load_morning_snapshot
 from quant.report.paths import _engine_json_path, _load_artifact
 

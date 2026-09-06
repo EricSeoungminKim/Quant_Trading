@@ -10,7 +10,6 @@ import pytest
 
 from quant.backtest.purged_cv import embargo_size, fold_blocks, purged_splits
 
-
 # ── 블록 분할 ──────────────────────────────────────────────────────────────
 
 def test_fold_blocks_partition_everything_in_order():

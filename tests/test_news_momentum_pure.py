@@ -22,7 +22,8 @@ news_momentum용 `run_backtest` 선례 자체가 없다). 다중 세션 규모 �
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import pandas as pd

@@ -7,14 +7,15 @@ news_momentum과 달리 청산은 손절 + EoD 둘 뿐(부분익절·시간청�
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
 
-from quant.core.ports import Context
 from quant.core.models import Position, Quote, SignalAction
+from quant.core.ports import Context
 from quant.trade.strategy.news_scalp import NewsScalpStrategy
 
 NY = ZoneInfo("America/New_York")

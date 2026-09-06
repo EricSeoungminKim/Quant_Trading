@@ -129,8 +129,9 @@ self.long_symbol`)에 암묵적으로 의존하지 않게 한다.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date as dtdate
-from typing import Any, Mapping
+from typing import Any
 
 import pandas as pd
 
@@ -479,7 +480,7 @@ class IntradayMomentumPureStrategy:
         def _exit(reason: str) -> Signal:
             return kernel.exit_signal(self.id, symbol, reason)
 
-        entry_session = lot.get("session")
+        _entry_session = lot.get("session")
         today_iso = snap.now.astimezone(tz).date().isoformat()
         if kernel.is_overnight_carry(lot, today_iso):
             return _exit(

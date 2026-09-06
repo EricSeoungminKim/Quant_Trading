@@ -8,8 +8,8 @@
 """
 from __future__ import annotations
 
-from quant.trade.loop import _build_marks_and_unpriced
 from quant.core.models import Position, Quote
+from quant.trade.loop import _build_marks_and_unpriced
 
 
 class _Broker:

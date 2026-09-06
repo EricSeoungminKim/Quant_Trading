@@ -1,9 +1,9 @@
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 from quant.analyze.mentions import collect_mentions, continuity
-from quant.collect.contracts import SourceResult, Snapshot
+from quant.collect.contracts import Snapshot, SourceResult
 
-UTC = timezone.utc
+UTC = UTC
 
 
 # ── 뉴스 소스 유니언(2026-09-03) 소비 — collect_mentions 는 build_sources 의

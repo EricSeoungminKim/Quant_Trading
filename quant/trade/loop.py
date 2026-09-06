@@ -11,38 +11,50 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
 import logging
 import math
 import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
 import pandas as pd
 
-from quant.trade.approval import STATUS_REJECTED, ApprovalGate, ApprovalRequest
-from quant.core import oms
-from quant.core import strategy_ids
-from quant.core import tgfmt
-from quant.trade.control import TradingControl
-from quant.core.ports import (
-    ColdFetchBudgetExceeded, Context, EventSink, Notifier, OrderSink, RiskManager,
-    Strategy, TickLogger,
-)
+from quant.core import oms, strategy_ids, tgfmt
 from quant.core.models import (
-    Fill, Order, OrderState, Quote, Side, Signal, SignalAction, market_of_symbol,
+    Fill,
+    Order,
+    OrderState,
+    Quote,
+    Side,
+    Signal,
+    SignalAction,
+    market_of_symbol,
 )
 from quant.core.portfolio.portfolio import to_krw
+from quant.core.ports import (
+    ColdFetchBudgetExceeded,
+    Context,
+    EventSink,
+    Notifier,
+    OrderSink,
+    RiskManager,
+    Strategy,
+    TickLogger,
+)
 from quant.core.session import in_continuous_session
+from quant.trade.approval import STATUS_REJECTED, ApprovalGate, ApprovalRequest
+from quant.trade.control import TradingControl
 from quant.trade.risk.books import StrategyBooks
 from quant.trade.risk.manager import MARKET_CLOSED_MARKER
 from quant.trade.watch_conditions import Rule as WatchRule
 from quant.trade.watch_conditions import apply_cooldown as apply_watch_cooldown
 from quant.trade.watch_conditions import evaluate as evaluate_watch_conditions
 from quant.trade.watch_conditions import parse_rules as parse_watch_rules
+
 
 class EngineSettings(Protocol):
     """루프가 설정에게 실제로 요구하는 것 전부 — 부채 상환(2026-08-24)으로

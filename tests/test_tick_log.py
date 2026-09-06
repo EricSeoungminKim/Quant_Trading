@@ -8,11 +8,11 @@ from __future__ import annotations
 import json
 import os
 import stat
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from quant.adapters.tick_log import TickLogger
 
-_T0 = datetime(2026, 8, 28, 9, 0, 0, tzinfo=timezone.utc)
+_T0 = datetime(2026, 8, 28, 9, 0, 0, tzinfo=UTC)
 
 
 def _read_jsonl(path):

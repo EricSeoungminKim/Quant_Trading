@@ -24,9 +24,9 @@ from quant.adapters.brokers.toss.client import TossAPIError
 from quant.adapters.execution.paper import PaperBroker
 from quant.core.fx import FixedFxProvider
 from quant.core.models import OpenOrder, Quote, Side
-from quant.core.ports import Broker
 from quant.core.portfolio.ownership import EngineOwnership
 from quant.core.portfolio.portfolio import Portfolio
+from quant.core.ports import Broker
 
 
 @pytest.fixture(autouse=True)

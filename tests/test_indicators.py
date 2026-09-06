@@ -11,7 +11,6 @@ import pytest
 
 from quant.trade.indicators import bollinger, detect_box, ema, macd, rsi, sma, sma_atr, squeeze
 
-
 # ---------------------------------------------------------------- sma / ema
 
 def test_sma_matches_simple_average_and_warms_up_as_nan():

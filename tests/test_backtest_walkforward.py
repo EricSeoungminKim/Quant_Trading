@@ -12,7 +12,6 @@ import pandas as pd
 
 from quant.backtest.walkforward import rolling_windows, run_walkforward, stability_summary
 
-
 # ── rolling_windows: 순수 수학, run_backtest 불필요 ──────────────────────────
 
 def test_rolling_windows_non_overlapping_step_equals_window():

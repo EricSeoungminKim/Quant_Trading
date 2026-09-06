@@ -2,8 +2,6 @@
 analytics 를 손으로 지어 go/no-go/판단 불가 판정을 검증한다."""
 from __future__ import annotations
 
-import pytest
-
 from quant.backtest.gate import GateThresholds, evaluate_gate, render_gate
 
 

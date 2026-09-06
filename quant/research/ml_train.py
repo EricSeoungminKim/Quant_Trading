@@ -113,7 +113,8 @@ import logging
 import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date as _date, datetime, timezone
+from datetime import UTC, datetime
+from datetime import date as _date
 from pathlib import Path
 
 import numpy as np
@@ -304,8 +305,12 @@ def evaluate_target_oos(
     from sklearn.ensemble import GradientBoostingRegressor
     from sklearn.inspection import permutation_importance
     from sklearn.metrics import (
-        brier_score_loss, mean_absolute_error, precision_score, r2_score,
-        roc_auc_score, root_mean_squared_error,
+        brier_score_loss,
+        mean_absolute_error,
+        precision_score,
+        r2_score,
+        roc_auc_score,
+        root_mean_squared_error,
     )
 
     X_all = _feature_matrix(rows)
@@ -883,7 +888,7 @@ def main(argv: list[str] | None = None) -> int:
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     registry_current = {
-        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
         "git_sha": git_sha, "run_date": run_date,
         "markets": {
             market: {

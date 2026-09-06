@@ -30,7 +30,7 @@ write+fsync+rename으로 원자화했다(`quant/core/portfolio/portfolio.py`). �
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -42,7 +42,7 @@ from quant.core.portfolio.portfolio import Portfolio
 class _FakeQuote:
     def __init__(self, price: float):
         self.price = price
-        self.ts = datetime.now(timezone.utc)
+        self.ts = datetime.now(UTC)
 
 
 class _FakeData:

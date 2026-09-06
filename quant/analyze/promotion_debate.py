@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 PRODUCER = "promotion_debate"
@@ -180,7 +180,7 @@ def to_records(final: list[dict], items: list[dict], market: str, date_str: str)
     """최종 판정 → 원장 행. **서류의 전 종목**을 남긴다(판정이 빠진 종목도
     "유지"로 안전하게 기록 — ai_trader.to_judgments 와 같은 "전 행 기록" 원칙)."""
     by_symbol = {v["symbol"]: v for v in final}
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     out: list[dict] = []
     for it in items:
         sym = str(it.get("symbol") or "")

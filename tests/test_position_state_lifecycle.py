@@ -19,11 +19,11 @@ from datetime import datetime
 from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
-from quant.trade.loop import run_cycle
 from quant.adapters.brokers.toss.broker import TossBroker
-from quant.core.ports import Context
 from quant.core.models import Fill, Order, Position, Quote, Side, SignalAction
 from quant.core.portfolio.ownership import EngineOwnership
+from quant.core.ports import Context
+from quant.trade.loop import run_cycle
 from quant.trade.strategy.donchian import DonchianStrategy
 
 NY = ZoneInfo("America/New_York")

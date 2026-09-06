@@ -9,9 +9,17 @@ import pandas as pd
 import pytest
 
 from quant.trade.structure import (
-    StructureBracket, broke_prior_high, broke_prior_low, ma_alignment,
-    moving_averages, nearest_resistance, nearest_support, structure_bracket,
-    swing_points, trend_slope, williams_r,
+    StructureBracket,
+    broke_prior_high,
+    broke_prior_low,
+    ma_alignment,
+    moving_averages,
+    nearest_resistance,
+    nearest_support,
+    structure_bracket,
+    swing_points,
+    trend_slope,
+    williams_r,
 )
 
 
@@ -84,8 +92,10 @@ def test_support_resistance_nearest():
 
 def test_breakout_and_breakdown():
     df = _swing_frame()
-    up = df.copy(); up.loc[10, "close"] = 18.0   # 전고 17 돌파
-    dn = df.copy(); dn.loc[10, "close"] = 5.0    # 전저 6 이탈
+    up = df.copy()
+    up.loc[10, "close"] = 18.0   # 전고 17 돌파
+    dn = df.copy()
+    dn.loc[10, "close"] = 5.0    # 전저 6 이탈
     assert broke_prior_high(up, wing=2) is True
     assert broke_prior_low(up, wing=2) is False
     assert broke_prior_low(dn, wing=2) is True

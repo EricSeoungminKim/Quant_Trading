@@ -5,7 +5,7 @@
 검증하는 데 계속 쓴다, 아래 `test_fetch_all_records_reason_for_disabled_preview`).
 """
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from quant.collect.sources.telegram_channels import (
@@ -18,7 +18,7 @@ from quant.collect.sources.telegram_channels import (
     prune,
 )
 
-UTC = timezone.utc
+UTC = UTC
 
 _TAZASTOCK_FIXTURE = Path(__file__).parent / "report" / "fixtures" / "telegram_tazastock.html"
 _DISABLED_FIXTURE = Path(__file__).parent / "report" / "fixtures" / "telegram_preview_disabled.html"

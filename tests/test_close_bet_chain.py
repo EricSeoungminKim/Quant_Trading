@@ -11,12 +11,9 @@ from __future__ import annotations
 import json
 import types
 
-import pytest
-
 from quant.analyze.market_brief import close_bet_tokens, engine_tokens
 from quant.analyze.watch_scorer import _VALID_TAGS, _parse_token
 from quant.report.collect.close import _build_close_bet_view
-
 
 # ── 픽스처 헬퍼 ──────────────────────────────────────────────────────────
 

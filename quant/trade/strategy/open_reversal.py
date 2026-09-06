@@ -51,8 +51,10 @@
 """
 from __future__ import annotations
 
-from datetime import date as dtdate, datetime
-from typing import Any, Mapping
+from collections.abc import Mapping
+from datetime import date as dtdate
+from datetime import datetime
+from typing import Any
 
 import pandas as pd
 

@@ -65,8 +65,8 @@ TelegramNotifier.send()`가 성공·실패 모두 `data/ledger/notifications.jso
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 _VALID_LEVELS = frozenset({"ok", "review", "alert"})
 

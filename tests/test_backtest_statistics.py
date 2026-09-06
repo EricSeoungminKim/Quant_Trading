@@ -22,7 +22,6 @@ from quant.backtest.statistics import (
     to_per_observation,
 )
 
-
 # ── PSR ────────────────────────────────────────────────────────────────────
 
 def test_psr_at_benchmark_is_half():

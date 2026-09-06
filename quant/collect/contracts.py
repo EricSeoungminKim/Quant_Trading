@@ -49,7 +49,7 @@ class Snapshot:
         return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
 
     @classmethod
-    def from_json(cls, raw: str) -> "Snapshot":
+    def from_json(cls, raw: str) -> Snapshot:
         d = json.loads(raw)
         return cls(
             schema_version=d["schema_version"],

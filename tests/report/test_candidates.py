@@ -3,7 +3,10 @@
 # ── 근거 임계 (2026-08-12 실측: 1건짜리 잡음이 후보에 올랐다) ──────────
 
 from quant.analyze.render import (  # noqa: E402
-    MIN_ARTICLES, MIN_STREAK, candidates_line, is_candidate,
+    MIN_ARTICLES,
+    MIN_STREAK,
+    candidates_line,
+    is_candidate,
 )
 
 

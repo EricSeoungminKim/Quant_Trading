@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from quant.analyze.promotion_debate import (
-    append_ledger, dossier_lines, notify_text, parse_verdicts, run_debate, to_records,
+    append_ledger,
+    dossier_lines,
+    notify_text,
+    parse_verdicts,
+    run_debate,
+    to_records,
 )
 
 

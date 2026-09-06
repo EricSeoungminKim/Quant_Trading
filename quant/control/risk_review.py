@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 PRODUCER = "risk_review"
@@ -203,7 +203,7 @@ def to_record(date_str: str, flags: dict, issues: list[dict] | None) -> dict:
         "threshold_breach": flags["breach"], "breach_reasons": flags["reasons"],
         "issues": issues or [],
         "llm_ok": issues is not None,
-        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
     }
 
 

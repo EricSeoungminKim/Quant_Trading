@@ -1,12 +1,15 @@
 """주간 재검토(`quant/control/weekly_review.py`) — 2026-08-26 손계산 고정."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date
 
 import pytest
 
 from quant.control.weekly_review import (
-    loss_patterns, week_range, weekly_index_flow, weekly_review_text,
+    loss_patterns,
+    week_range,
+    weekly_index_flow,
+    weekly_review_text,
     weekly_strategy_stats,
 )
 
@@ -20,9 +23,9 @@ def test_week_range_from_saturday():
 
 
 def _trip(day, strategy, symbol, bps, hold_min=30):
-    from datetime import datetime, time, timedelta, timezone
+    from datetime import datetime, time, timedelta
 
-    entry = datetime.combine(day, time(1, 0), tzinfo=timezone.utc)
+    entry = datetime.combine(day, time(1, 0), tzinfo=UTC)
     return {"strategy": strategy, "symbol": symbol, "bps": bps,
             "entry_ts": entry.isoformat(),
             "exit_ts": (entry + timedelta(minutes=hold_min)).isoformat()}

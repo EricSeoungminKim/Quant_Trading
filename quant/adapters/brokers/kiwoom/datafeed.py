@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from quant.core.ports import Clock, DataSourceError
 from quant.core.models import Quote
+from quant.core.ports import Clock, DataSourceError
 
 from .websocket import KiwoomRealtimeFeed
 

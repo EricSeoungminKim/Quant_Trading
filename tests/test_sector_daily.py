@@ -4,7 +4,10 @@
 파일 I/O 없이 인자로만 판단한다(sector_view.py와 같은 원칙).
 """
 from quant.analyze.sector_daily import (
-    build_sector_daily_rows, composite_score, rank_with_trend, scoring_context,
+    build_sector_daily_rows,
+    composite_score,
+    rank_with_trend,
+    scoring_context,
 )
 
 

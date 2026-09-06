@@ -22,7 +22,7 @@ CANCELED / PARTIAL_FILLED / PENDING...). **"우리가 모른다"를 상태로 �
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -36,7 +36,7 @@ from quant.core.oms import (
     on_reject,
 )
 
-T0 = datetime(2026, 8, 14, 0, 30, tzinfo=timezone.utc)
+T0 = datetime(2026, 8, 14, 0, 30, tzinfo=UTC)
 
 
 def _order(qty: float = 20) -> Order:

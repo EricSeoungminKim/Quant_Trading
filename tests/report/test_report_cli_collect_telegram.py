@@ -6,7 +6,6 @@ news-collect@ 와 같은 30분 주기 패턴이되, 대상이 원장 하나(`tel
 from __future__ import annotations
 
 from datetime import date
-from pathlib import Path
 
 from quant.apps import report_cli
 from quant.collect.sources import telegram_channels

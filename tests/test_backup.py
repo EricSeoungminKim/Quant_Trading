@@ -155,7 +155,7 @@ def test_create_is_immune_to_concurrent_growth_during_archiving(tmp_path: Path, 
     monkeypatch.setattr(Path, "read_bytes", _read_then_grow)
 
     out = tmp_path / "bundle.tar.gz"
-    stats = create(tmp_path, out)  # 예전 구현이면 여기서 RuntimeError(대조 실패)
+    _stats = create(tmp_path, out)  # 예전 구현이면 여기서 RuntimeError(대조 실패)
 
     assert verify(out) == []
     assert call_count["n"] == 1, "대상 파일을 딱 한 번만 읽어야 한다"

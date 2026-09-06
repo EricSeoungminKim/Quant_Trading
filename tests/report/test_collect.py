@@ -1,8 +1,8 @@
 from datetime import date
 from pathlib import Path
 
-from quant.collect.snapshot import collect, load_snapshot, run_source, save_snapshot
 from quant.collect.contracts import Snapshot
+from quant.collect.snapshot import collect, load_snapshot, run_source, save_snapshot
 
 
 def test_run_source_captures_success():

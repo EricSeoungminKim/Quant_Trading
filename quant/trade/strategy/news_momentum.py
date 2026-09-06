@@ -142,11 +142,13 @@
 """
 from __future__ import annotations
 
-from datetime import date as dtdate, datetime, timedelta
-from typing import Any, Mapping
+from collections.abc import Mapping
+from datetime import date as dtdate
+from datetime import datetime, timedelta
+from typing import Any
 
-from quant.core.ports import Context
 from quant.core.models import Position, Signal, SignalAction, market_of_symbol
+from quant.core.ports import Context
 from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
 from quant.trade.indicators.breadth import ANCHOR_SYMBOLS, anchor_drawdown
 from quant.trade.strategy import kernel

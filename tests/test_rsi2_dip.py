@@ -18,7 +18,8 @@ RSI(2) 계산 자체의 정확성은 손으로 계산한 수열(①)로 별도 �
 from __future__ import annotations
 
 import copy
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import pandas as pd

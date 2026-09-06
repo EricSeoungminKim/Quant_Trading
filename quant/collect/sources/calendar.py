@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
 
-from quant.core.report_clock import ET, KST
-from quant.core.terms import event_freq
 from quant.adapters.env import get_key
 from quant.adapters.http import client
+from quant.core.report_clock import ET, KST
+from quant.core.terms import event_freq
 
 FRED_DATES = "https://api.stlouisfed.org/fred/releases/dates"
 FOMC_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"

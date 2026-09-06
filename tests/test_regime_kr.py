@@ -1,13 +1,10 @@
 """KR 국면 분리(2026-08-10) — KR 세션은 KOSPI 프록시 추세 + 투자자 수급으로 판단."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import pandas as pd
 
+from quant.core.models import Signal, SignalAction
 from quant.trade.loop import _execute_signal
-from quant.core.ports import Context
-from quant.core.models import Quote, Signal, SignalAction
 from quant.trade.regime.provider import RegimeProvider
 
 

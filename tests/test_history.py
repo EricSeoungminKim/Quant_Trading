@@ -5,11 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
-import pytest
 
 from quant.adapters.data.history import HistoryDataFeed
 from quant.collect.quotes.backfill import backfill
-
 
 # --------------------------------------------------------------------- helpers
 

@@ -275,7 +275,8 @@ def _alpha_series(n_up: int = 5, n_down: int = 5) -> list[tuple]:
     """`alpha.wrap_section()`이 받는 (날짜, 우리%, 지수%, 알파pp) 시퀀스를 손으로
     조립한다 — 상승일 n_up개(지수+0.5%, 우리+1.0%), 하락일 n_down개(지수-1.0%,
     우리-0.5%)로 참여율/방어율 표본(각 `MIN_SAMPLE_DAYS`=5)을 채운다."""
-    from datetime import date as _d, timedelta
+    from datetime import date as _d
+    from datetime import timedelta
 
     series: list[tuple] = []
     d = _d(2026, 8, 1)

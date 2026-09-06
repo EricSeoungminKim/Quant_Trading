@@ -12,10 +12,10 @@ EC2 `data/ledger/orders.jsonl`에 donchian SQQQ "매도 가능 수량 0" 거부�
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from quant.adapters.execution.paper import PaperBroker
-from quant.core.models import Order, Quote, Position, Side
+from quant.core.models import Order, Position, Quote, Side
 from quant.core.portfolio.portfolio import Portfolio
 
 
@@ -26,7 +26,7 @@ class _Feed:
     def quote(self, symbol: str):
         if self._price is None:
             return None
-        return Quote(symbol=symbol, ts=datetime(2026, 8, 29, 0, 30, tzinfo=timezone.utc),
+        return Quote(symbol=symbol, ts=datetime(2026, 8, 29, 0, 30, tzinfo=UTC),
                      price=self._price)
 
 

@@ -21,7 +21,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def _parse_ts(value) -> datetime | None:
     except ValueError:
         return None
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
+        ts = ts.replace(tzinfo=UTC)
     return ts
 
 
@@ -93,7 +93,7 @@ def join_intents_fills(
             continue
         fills_by_group.setdefault(_group_key(tr, "side"), []).append(tr)
     for group in fills_by_group.values():
-        group.sort(key=lambda r: _parse_ts(r.get("ts")) or datetime.min.replace(tzinfo=timezone.utc))
+        group.sort(key=lambda r: _parse_ts(r.get("ts")) or datetime.min.replace(tzinfo=UTC))
 
     intents_by_group: dict[tuple[str, str, str], list[dict]] = {}
     for it in priced_intents:
@@ -106,7 +106,7 @@ def join_intents_fills(
         used = [False] * len(candidates)
         ordered_intents = sorted(
             group_intents,
-            key=lambda r: _parse_ts(r.get("ts")) or datetime.min.replace(tzinfo=timezone.utc),
+            key=lambda r: _parse_ts(r.get("ts")) or datetime.min.replace(tzinfo=UTC),
         )
         for it in ordered_intents:
             it_ts = _parse_ts(it.get("ts"))

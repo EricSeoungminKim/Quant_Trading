@@ -35,7 +35,7 @@ import json
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from quant.core.fx import FxProvider
@@ -49,7 +49,7 @@ _QTY_EPSILON = 1e-9
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 @dataclass
@@ -83,7 +83,7 @@ class StrategyBooks:
     dual_currency: bool = False
 
     @classmethod
-    def load(cls, path: "Path | str", initial_krw: float) -> "StrategyBooks":
+    def load(cls, path: Path | str, initial_krw: float) -> StrategyBooks:
         """파일이 없거나 깨졌으면 빈 장부로 시작한다 — 복원 실패가 기동을 막으면
         안 된다(risk/manager.py `_load_day_state`와 같은 원칙)."""
         p = Path(path)
@@ -158,7 +158,7 @@ class StrategyBooks:
             book.setdefault("fees_usd", 0.0)
         return book
 
-    def seed(self, strategy_ids: "Iterable[str]") -> int:
+    def seed(self, strategy_ids: Iterable[str]) -> int:
         """아직 없는 전략의 장부를 initial_krw로 미리 만든다. 새로 만든 개수를 반환.
 
         체결이 나야 장부가 생기면, 첫 거래 전까지 전략별 리포트가 "장부 없음"으로
@@ -201,7 +201,7 @@ class StrategyBooks:
         return float(book["cash_krw"])
 
     def equity_krw(
-        self, strategy_id: str, marks: "dict[str, float] | None", fx: FxProvider,
+        self, strategy_id: str, marks: dict[str, float] | None, fx: FxProvider,
     ) -> float:
         """cash + 보유 포지션 평가액(KRW). `marks`(심볼→현지통화 현재가)에 없는
         종목은 avg_cost로 저하(degrade)한다 — risk/manager.py의 계좌 전체 equity

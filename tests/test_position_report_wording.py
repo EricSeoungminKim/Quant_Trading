@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from quant.adapters.env import REPO_ROOT
 from quant.trade.loop import _OVERNIGHT_STRATEGIES

@@ -1,7 +1,7 @@
 from datetime import date, datetime
 
-from quant.core.report_clock import KST
 from quant.collect.contracts import SCHEMA_VERSION, Snapshot, SourceResult
+from quant.core.report_clock import KST
 
 
 def _snap() -> Snapshot:

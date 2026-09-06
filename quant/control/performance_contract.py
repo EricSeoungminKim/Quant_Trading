@@ -49,7 +49,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 from quant.control.performance import FX_KRW_PER_USD
 
@@ -736,10 +736,10 @@ def _check_generated_at_freshness(v: _V, payload: dict, now: datetime | None) ->
         v.error("generated_at", f"ISO 타임스탬프 아님: {raw!r}")
         return
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    ref = now if now is not None else datetime.now(timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
+    ref = now if now is not None else datetime.now(UTC)
     if ref.tzinfo is None:
-        ref = ref.replace(tzinfo=timezone.utc)
+        ref = ref.replace(tzinfo=UTC)
     age_hours = abs((ref - dt).total_seconds()) / 3600
     if age_hours > 36:
         v.error("generated_at", f"생성 시각이 {age_hours:.1f}시간 전 — 36시간 기준 초과(발행 파이프라인 정지 의심)")

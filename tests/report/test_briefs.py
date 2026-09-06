@@ -8,7 +8,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 
 from quant.report.collect.briefs import (
     _fetch_telegram_briefs,
@@ -16,7 +16,7 @@ from quant.report.collect.briefs import (
     _telegram_default_window,
 )
 
-UTC = timezone.utc
+UTC = UTC
 
 
 def _msg(msg_id, text="t", published="2026-09-02T00:00:00Z"):

@@ -9,20 +9,23 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from quant.adapters.execution.paper import PaperBroker
+from quant.core import tgfmt
 from quant.core.fx import FixedFxProvider
 from quant.core.models import Position, Quote, Signal, SignalAction
-from quant.core.ports import Context
 from quant.core.portfolio.portfolio import Portfolio
-from quant.core import tgfmt
+from quant.core.ports import Context
 from quant.trade.control import TradingControl
 from quant.trade.loop import (
-    _execute_signal, _halt_notify_text, _heartbeat_text, _position_report_text,
+    _execute_signal,
+    _halt_notify_text,
+    _heartbeat_text,
+    _position_report_text,
 )
 from quant.trade.risk.manager import RiskManagerImpl
 
@@ -136,7 +139,7 @@ def test_halt_notify_text_is_valid_html_and_escapes_reason():
 
 
 def test_position_report_text_is_valid_html():
-    now = datetime(2026, 8, 10, 9, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 10, 9, 30, tzinfo=UTC)
     pos = Position(symbol="088350", qty=363, avg_cost=4606.15,
                    opened_at=now - timedelta(minutes=18))
     pos.meta.update(entry=4606.15, stop=4522.0, target=None)

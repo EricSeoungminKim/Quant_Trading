@@ -9,11 +9,12 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from quant.control.health import (
     ALERT,
     UNKNOWN,
+    Finding,
     alert_fingerprint,
     backup_findings,
     bar_findings,
@@ -21,7 +22,6 @@ from quant.control.health import (
     clock_findings,
     dedupe_repeat_alerts,
     feed_findings,
-    Finding,
     flow_anomaly_findings,
     frgn_flow_degenerate_findings,
     install_drift_findings,
@@ -30,20 +30,20 @@ from quant.control.health import (
     ledger_findings,
     ledger_portfolio_findings,
     llm_health_findings,
+    positions_from_trades,
     regime_findings,
     report_findings,
     report_intake_findings,
     report_quality_findings,
-    secret_findings_for,
-    positions_from_trades,
     secret_findings,
+    secret_findings_for,
     selection_dup_findings,
     summarize,
     telegram_silence_findings,
     timer_findings,
 )
 
-NOW = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 13, 12, 0, tzinfo=UTC)
 
 
 def _levels(findings) -> list[str]:
@@ -273,7 +273,7 @@ _SEED_REASON = "실계좌 이식 정리 — 소유자 지시 2026-09-01: 005930�
 
 
 def test_positions_from_trades_ignores_trades_at_or_before_boundary():
-    boundary = datetime(2026, 9, 1, 3, 0, tzinfo=timezone.utc)
+    boundary = datetime(2026, 9, 1, 3, 0, tzinfo=UTC)
     trades = [
         {"symbol": "000500", "side": "buy", "qty": 10, "ts": "2026-08-20T01:00:00+00:00"},
         {"symbol": "000500", "side": "sell", "qty": 7, "ts": "2026-09-01T03:00:00+00:00"},
@@ -282,7 +282,7 @@ def test_positions_from_trades_ignores_trades_at_or_before_boundary():
 
 
 def test_positions_from_trades_counts_only_after_boundary():
-    boundary = datetime(2026, 9, 1, 3, 0, tzinfo=timezone.utc)
+    boundary = datetime(2026, 9, 1, 3, 0, tzinfo=UTC)
     trades = [
         {"symbol": "005930", "side": "buy", "qty": 100, "ts": "2026-08-01T01:00:00+00:00"},
         {"symbol": "005930", "side": "buy", "qty": 5, "ts": "2026-09-02T01:00:00+00:00"},
@@ -330,7 +330,7 @@ def test_positions_from_trades_includes_carry_row_even_at_boundary():
     """캐리오버 합성 buy는 그 정의상 경계 시각 그 자체(또는 그 이전)에 찍힌다 —
     일반 규칙(ts<=boundary면 제외)을 그대로 적용하면 이 행마저 걸러져 시작
     잔량이 0으로 재구성된다. 캐리 행은 시각 필터를 건너뛰어야 한다."""
-    boundary = datetime(2026, 9, 1, 14, 1, 8, tzinfo=timezone.utc)
+    boundary = datetime(2026, 9, 1, 14, 1, 8, tzinfo=UTC)
     trades = [
         {"symbol": "005930", "side": "buy", "qty": 6, "ts": boundary.isoformat(),
          "reason": _CARRY_REASON, "strategy_id": "seed"},

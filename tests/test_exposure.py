@@ -7,13 +7,12 @@
 """
 from __future__ import annotations
 
-from quant.core.fx import FixedFxProvider
-
 from quant.control.exposure import (
     DEFAULT_ALERT_PCT,
     KNOWN_OFFSETTING_PAIRS,
     build_report,
 )
+from quant.core.fx import FixedFxProvider
 
 # US 심볼(TQQQ/SQQQ)은 to_krw가 환율을 곱한다 — 테스트 산수를 KRW 1:1로
 # 유지하려고 고정환율 1.0을 준다(test_loop_resilience.py와 같은 관례).

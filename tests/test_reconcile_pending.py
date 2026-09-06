@@ -17,13 +17,13 @@ Phase 6.3 이후 그 값이 `OrderState.remaining_qty` 로 존재한다.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from quant.core.models import Order, Position, Side
 from quant.core.oms import accept, on_fill, on_reject
 from quant.trade.reconcile import OpenOrderBook, Reconciler
 
-T0 = datetime(2026, 8, 14, 0, 30, tzinfo=timezone.utc)
+T0 = datetime(2026, 8, 14, 0, 30, tzinfo=UTC)
 
 
 class _Control:
@@ -247,7 +247,7 @@ def test_stale_pending_ages_out_so_it_cannot_halt_forever():
     """
     class _Clock:
         def __init__(self):
-            self.t = datetime(2026, 8, 14, 0, 0, tzinfo=timezone.utc)
+            self.t = datetime(2026, 8, 14, 0, 0, tzinfo=UTC)
 
         def now(self):
             return self.t

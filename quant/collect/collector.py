@@ -38,7 +38,7 @@ import json
 import logging
 import os
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -92,8 +92,8 @@ def _local_hhmm(raw: str | None, market: str) -> str:
     except ValueError:
         return raw[11:16] or "??:??"
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(_DISPLAY_TZ.get(market, timezone.utc)).strftime("%H:%M")
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(_DISPLAY_TZ.get(market, UTC)).strftime("%H:%M")
 
 
 def store_path(root: Path, market: str, day: date) -> Path:
@@ -138,7 +138,7 @@ def load_window(
     원칙으로 버리지 않고 남긴다 — "모르는 것을 모른다고 두는" 쪽이 조용히
     틀리는 것보다 낫다.
     """
-    until = until or datetime.now(timezone.utc)
+    until = until or datetime.now(UTC)
     kst = timezone(timedelta(hours=9))
     day = since.astimezone(kst).date()
     end_day = until.astimezone(kst).date()
@@ -158,7 +158,7 @@ def load_window(
                     dt = None
                 if dt is not None:
                     if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
+                        dt = dt.replace(tzinfo=UTC)
                     if not (since <= dt <= until):
                         continue
             seen.add(key)
@@ -207,7 +207,7 @@ def collect_once(market: str, root: Path, now: datetime | None = None) -> dict:
     **append-only 가 아니라 전체 재기록**이다 — `seen_count`/`last_seen` 을
     갱신해야 하므로 한 줄을 고쳐 쓸 수 없다. 하루치라 파일이 작아 문제없다.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     day = now.astimezone(timezone(timedelta(hours=9))).date()  # KST 기준 하루
     path = store_path(root, market, day)
     store = load_store(path)

@@ -1,11 +1,15 @@
 import re
 from datetime import date, datetime, timedelta
 
-from quant.core.report_clock import KST
-from quant.collect.contracts import SCHEMA_VERSION, Snapshot, SourceResult
 from quant.analyze.render import (
-    candidates_line, is_candidate, machine_payload, relation_items, render,
+    candidates_line,
+    is_candidate,
+    machine_payload,
+    relation_items,
+    render,
 )
+from quant.collect.contracts import SCHEMA_VERSION, Snapshot, SourceResult
+from quant.core.report_clock import KST
 
 _AT = datetime(2026, 8, 12, 8, 0, tzinfo=KST)
 

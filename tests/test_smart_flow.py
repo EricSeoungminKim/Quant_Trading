@@ -15,7 +15,7 @@ verbatim 예시를 그대로 쓰거나(0B), 스펙에 매핑표가 없는 타입
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from quant.adapters.brokers.kiwoom.websocket import (
     REALTIME_TICK_TYPE,
@@ -25,7 +25,7 @@ from quant.adapters.brokers.kiwoom.websocket import (
 from quant.adapters.smart_flow_log import SmartFlowLogger
 from quant.apps.assembly import build_smart_flow
 
-_T0 = datetime(2026, 8, 28, 9, 0, 0, tzinfo=timezone.utc)
+_T0 = datetime(2026, 8, 28, 9, 0, 0, tzinfo=UTC)
 
 
 class RecordingSink:

@@ -18,10 +18,9 @@ import pandas as pd
 import pytest
 import yaml
 
-from quant.analyze import foreign_trend, manual_recs
+from quant.analyze import manual_recs
 from quant.control import selections
 from quant.trade.indicators import rsi as _trade_rsi
-
 
 # --------------------------------------------------------------------------- RSI(2) 중복 구현 대조
 
@@ -593,7 +592,7 @@ def test_scorecard_text_reports_hit_rate_and_mean_bp_at_or_above_30():
 
 # ── render_telegram_message HTML 서식 (2026-09-04, tgfmt) ──────────────────
 
-import re as _re
+import re as _re  # noqa: E402 — 파일 뒤쪽 섹션 전용 임포트, 상단 이동 불필요
 
 
 def _assert_balanced_html(text: str) -> None:

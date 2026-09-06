@@ -149,6 +149,7 @@ def test_load_series_reuses_parse_until_file_changes(tmp_path, monkeypatch):
 
 def test_load_series_rereads_after_file_change(tmp_path):
     import os
+
     import quant.control.frgn_flow as ff
 
     path = tmp_path / "frgn_flow.jsonl"

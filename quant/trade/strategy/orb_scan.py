@@ -36,13 +36,14 @@
 """
 from __future__ import annotations
 
-from datetime import date as dtdate, time as dtime
+from datetime import date as dtdate
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from quant.core.ports import Context
 from quant.core.models import Position, Signal, SignalAction
+from quant.core.ports import Context
 
 _SESSION_OPEN: dict[str, tuple[ZoneInfo, dtime]] = {
     "US": (ZoneInfo("America/New_York"), dtime(9, 30)),

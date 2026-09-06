@@ -166,7 +166,7 @@ def test_score_candidate_claims_forward_return_and_ic():
     h1 = out["horizons"][1]
     assert h1["n"] == 2
     assert h1["hitrate"] == 0.5
-    assert round(h1["mean_bps"]) == round(((1000 + -200) / 2))
+    assert round(h1["mean_bps"]) == round((1000 + -200) / 2)
     # 점수 80(수익률 +) vs 40(수익률 -) -> 완전 단조 -> IC=1.0
     assert out["ic"][1] == 1.0
     assert out["by_tag"]["news"][1]["n"] == 1

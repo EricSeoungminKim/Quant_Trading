@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -441,7 +441,7 @@ def test_history_fallback_serves_the_intervals_strategies_actually_request(tmp_p
 
     class _Clock:
         def now(self):
-            return datetime(2024, 1, 6, tzinfo=timezone.utc)
+            return datetime(2024, 1, 6, tzinfo=UTC)
 
     service = build_market_data(
         object(), _Clock(), interval="15m", symbols=["TQQQ"], cfg={},

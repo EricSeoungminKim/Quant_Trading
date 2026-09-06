@@ -23,17 +23,17 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from quant.control.ledger import TradeLedgerSink
+from quant.core import oms
 from quant.core.models import Fill, Order, OrderStatus, Position, Quote, Side, Signal, SignalAction
+from quant.core.oms import accept, on_fill
 from quant.core.ports import Context
 from quant.trade.loop import _execute_signal
-from quant.core import oms
-from quant.core.oms import accept, on_fill
 
-T0 = datetime(2026, 8, 14, 0, 30, tzinfo=timezone.utc)
+T0 = datetime(2026, 8, 14, 0, 30, tzinfo=UTC)
 
 
 # ── 페이크 ────────────────────────────────────────────────────────────────

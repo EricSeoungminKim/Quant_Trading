@@ -25,7 +25,8 @@ legacy `CloseBetStrategy.on_cycle(ctx)`와 나란히 비교한다(shell 배선 �
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import pandas as pd

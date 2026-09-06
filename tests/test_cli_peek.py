@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
@@ -23,10 +23,10 @@ class FakeTossDataFeed:
         self.symbols = symbols
 
     def quote(self, symbol):
-        return Quote(symbol=symbol, ts=datetime(2026, 8, 30, tzinfo=timezone.utc), price=123.45)
+        return Quote(symbol=symbol, ts=datetime(2026, 8, 30, tzinfo=UTC), price=123.45)
 
     def history(self, symbol, interval, n):
-        idx = pd.date_range("2026-08-29", periods=n, freq="5min", tz=timezone.utc)
+        idx = pd.date_range("2026-08-29", periods=n, freq="5min", tz=UTC)
         return pd.DataFrame({
             "open": [100.0] * n, "high": [101.0] * n, "low": [99.0] * n,
             "close": [100.5] * n, "volume": [1000.0] * n,

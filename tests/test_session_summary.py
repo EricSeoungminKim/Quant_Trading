@@ -18,14 +18,14 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from quant.core.models import Fill, Position, Side
 from quant.core.ports import Context
 from quant.trade.control import TradingControl
-from quant.trade.loop import _SessionTallySink, _session_summary_text
+from quant.trade.loop import _session_summary_text, _SessionTallySink
 
-TS = datetime(2026, 9, 1, 10, 0, tzinfo=timezone.utc)
+TS = datetime(2026, 9, 1, 10, 0, tzinfo=UTC)
 
 
 class _NullSink:

@@ -201,7 +201,7 @@ def _threshold_rule(params: dict) -> list[EntryEvent]:
     """봉 수익률이 임계치를 넘으면 진입 — 임계치가 데이터의 어디에 놓이냐가 전부다."""
     thr = params["threshold_pct"]
     idx = pd.date_range("2020-01-01", periods=len(_SPIKES), freq="15min", tz="UTC")
-    hits = np.flatnonzero(_SPIKES > thr)
+    hits = np.flatnonzero(thr < _SPIKES)
     return [EntryEvent(ts=idx[i], symbol=_SYMBOL, price=100.0) for i in hits]
 
 

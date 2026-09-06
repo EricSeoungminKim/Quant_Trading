@@ -1,8 +1,7 @@
 """테마 기반 탐색(순수). 핵심 계약: `select_sources` 는 한 테마가 결과를 독식하지
 못한다 — 뉴스가 아무리 반도체 편중이어도 삼성전자·SK하이닉스만 나오지 않는다."""
-from quant.analyze.theme_search import (
-    beneficiaries, hot_themes, leaders, select_sources, theme_index)
 from quant.analyze.relations import match_codes
+from quant.analyze.theme_search import beneficiaries, hot_themes, leaders, select_sources, theme_index
 
 _THEMES = {
     "1": {

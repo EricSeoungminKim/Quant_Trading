@@ -17,16 +17,15 @@ from __future__ import annotations
 import json
 import logging
 import math
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from quant.core.ports import EventSink
+from quant.core import strategy_ids, tgfmt
 from quant.core.models import Fill, OrderStatus, Signal
-from quant.core import strategy_ids
-from quant.core import tgfmt
+from quant.core.ports import EventSink
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +135,7 @@ def seeding_boundary_ts(trades: list[dict]) -> datetime | None:
         except ValueError:
             continue
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
+            ts = ts.replace(tzinfo=UTC)
         if best is None or ts > best:
             best = ts
     return best
@@ -156,7 +155,7 @@ def is_paper_epoch_marker(trade: dict) -> bool:
     return PAPER_EPOCH_MARKER in str(trade.get("reason") or "")
 
 
-def paper_epoch_ts(trades: "list[dict] | None" = None) -> datetime | None:
+def paper_epoch_ts(trades: list[dict] | None = None) -> datetime | None:
     """가장 최근 페이퍼 에폭 리셋 경계 시각 = 에폭 마커 행들의 **최대 ts**.
 
     마커가 없으면 None. `seeding_boundary_ts`와 정의가 같다(최대 ts) — 에폭을
@@ -177,7 +176,7 @@ def paper_epoch_ts(trades: "list[dict] | None" = None) -> datetime | None:
         except ValueError:
             continue
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
+            ts = ts.replace(tzinfo=UTC)
         if best is None or ts > best:
             best = ts
     return best
@@ -197,7 +196,7 @@ DEFAULT_BOOKS_PATH = Path("data/state/strategy_books.json")
 
 
 def strategy_start_capital(
-    strategy_id: str, books_path: "Path | str" = DEFAULT_BOOKS_PATH,
+    strategy_id: str, books_path: Path | str = DEFAULT_BOOKS_PATH,
 ) -> dict[str, float]:
     """그 전략의 시작 명목자본을 통화별로 반환한다: `{"KRW": ..., "USD": ...}`.
 
@@ -304,7 +303,7 @@ class TradeLedgerSink:
         reason = state.reason or state.order.reason
         if state.status == OrderStatus.REJECTED:
             key = (state.order.strategy_id, state.order.symbol, reason)
-            now = state.updated_at or datetime.now(timezone.utc)
+            now = state.updated_at or datetime.now(UTC)
             last = self._reject_last_logged.get(key)
             if last is not None and (now - last) < REJECT_LOG_COOLDOWN:
                 inner_on_order = getattr(self._inner, "on_order", None)
@@ -415,7 +414,7 @@ def round_trips(trades: list[dict]) -> list[dict]:
             d = datetime.fromisoformat(str(row.get("ts")))
         except ValueError:
             return None
-        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+        return d if d.tzinfo else d.replace(tzinfo=UTC)
 
     by_key: dict[tuple[str, str], list[dict]] = {}
     for t in sorted(trades, key=lambda x: str(x.get("ts", ""))):
@@ -495,7 +494,7 @@ def round_trips_since_epoch(trades: list[dict]) -> list[dict]:
             d = datetime.fromisoformat(str(row.get("ts")))
         except ValueError:
             return None
-        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+        return d if d.tzinfo else d.replace(tzinfo=UTC)
 
     scoped = [
         t for t in trades
@@ -777,7 +776,7 @@ def trades_in_session(trades: list[dict], market: str, on: date) -> list[dict]:
         except ValueError:
             continue
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)  # 방어적 — 원장은 항상 오프셋 포함으로 기록
+            ts = ts.replace(tzinfo=UTC)  # 방어적 — 원장은 항상 오프셋 포함으로 기록
         if start <= ts <= end:
             out.append(t)
     return out
@@ -1035,7 +1034,7 @@ def strategy_trading_days(trades: list[dict], strategy_id: str) -> int:
         except ValueError:
             continue
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)  # 방어적 — 원장은 항상 오프셋 포함으로 기록
+            ts = ts.replace(tzinfo=UTC)  # 방어적 — 원장은 항상 오프셋 포함으로 기록
         days.add(trading_day(ts))
     return len(days)
 
@@ -1104,12 +1103,12 @@ def news_scalp_promotion_verdict(
 
 
 def filter_recent(trips: list[dict], days: int) -> list[dict]:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
 
     def _ts(t: dict) -> datetime | None:
         try:
             d = datetime.fromisoformat(str(t.get("exit_ts")))
-            return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+            return d if d.tzinfo else d.replace(tzinfo=UTC)
         except ValueError:
             return None
 

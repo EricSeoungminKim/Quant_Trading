@@ -9,8 +9,12 @@ import math
 import pytest
 
 from quant.core.timeseries import (
-    annualized_volatility, cagr, max_drawdown, performance_summary,
-    sharpe_ratio_rf0, simple_returns,
+    annualized_volatility,
+    cagr,
+    max_drawdown,
+    performance_summary,
+    sharpe_ratio_rf0,
+    simple_returns,
 )
 
 

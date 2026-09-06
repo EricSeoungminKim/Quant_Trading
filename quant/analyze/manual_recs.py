@@ -64,9 +64,9 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable, Iterable
 from datetime import date as _date
 from pathlib import Path
-from typing import Callable, Iterable
 
 import pandas as pd
 import yaml
@@ -74,8 +74,8 @@ import yaml
 from quant.analyze import foreign_trend, swing_signals
 from quant.control import frgn_flow as frgn_flow_ledger
 from quant.control import selections
-from quant.core.models import market_of_symbol
 from quant.core import tgfmt
+from quant.core.models import market_of_symbol
 
 logger = logging.getLogger(__name__)
 

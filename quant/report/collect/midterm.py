@@ -11,7 +11,7 @@ Phase D 엔진 분리(2026-08-19) — `quant/apps/report_cli.py`에서 그대로
 from __future__ import annotations
 
 import sys
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from quant.analyze.bullish_markers import classify_titles
@@ -20,14 +20,17 @@ from quant.analyze.midterm_watch import (
     all_beneficiary_symbols,
     build_midterm_watch,
     build_us_news_kr_map,
+)
+from quant.analyze.midterm_watch import (
     mention_counts as midterm_mention_counts,
+)
+from quant.analyze.midterm_watch import (
     narrate_prose as midterm_narrate_prose,
 )
 from quant.collect.sources.telegram_channels import load_ledger as load_telegram_ledger
-
-from quant.report.paths import _paths
 from quant.report.collect.agent_interpret import _build_agent_foreign_flow, _build_agent_news_items
 from quant.report.collect.telegram import _usnews_titles
+from quant.report.paths import _paths
 
 _MIDTERM_PRODUCER = "midterm_watch_v1"
 _MIDTERM_PRODUCER_CLOSE = "midterm_watch_v1_close"
@@ -95,7 +98,7 @@ def _build_midterm_watch_view(
 
     실패해도 리포트를 막지 않는다 — 다른 `_build_*` 헬퍼와 같은 관례."""
     try:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         entities = _midterm_entities(root, market, payload)
         candidates = midterm_mention_counts(market, telegram_msgs, entities, now=now)
         symbols = set(candidates.keys())

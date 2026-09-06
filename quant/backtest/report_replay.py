@@ -1025,7 +1025,7 @@ def format_ab_comparison(result_a: dict, result_b: dict) -> str:
     — 한쪽만 개선되면 혼재 결과로 그대로 보고한다(통계적 정직성)."""
     agg_a, agg_b = result_a["aggregate"], result_b["aggregate"]
     mp_a, mu_a, pr_a = result_a["mover_picks_aggregate"], result_a["mover_universe_aggregate"], result_a["mover_precision_recall"]
-    mp_b, mu_b, pr_b = result_b["mover_picks_aggregate"], result_b["mover_universe_aggregate"], result_b["mover_precision_recall"]
+    mp_b, _mu_b, pr_b = result_b["mover_picks_aggregate"], result_b["mover_universe_aggregate"], result_b["mover_precision_recall"]
 
     lines: list[str] = []
     lines.append("=== A/B 비교 — 외국인 축 v2(쌍끌이·연속일·강도) vs 기존 라벨 (서브프로젝트 O) ===")

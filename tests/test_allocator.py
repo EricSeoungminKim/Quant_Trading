@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from datetime import date
 
-from quant.control.allocator import Demotion, StrategyStat, decide, is_losing, next_fraction
+from quant.control.allocator import StrategyStat, decide, is_losing, next_fraction
 
 TODAY = date(2026, 8, 28)
 

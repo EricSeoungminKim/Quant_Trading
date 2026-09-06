@@ -15,9 +15,9 @@ look-ahead 방지: split_windows가 만드는 test 구간은 자신의 train 구
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 import pandas as pd
 

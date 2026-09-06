@@ -32,10 +32,10 @@ import hashlib
 import io
 import json
 import tarfile
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Sequence
 
 # 지켜야 할 아티팩트. `data/` 아래 이 디렉토리들만 담는다.
 ARTIFACTS = ("state", "ledger", "news")
@@ -130,7 +130,7 @@ def manifest(root: Path | str) -> dict[str, Entry]:
 
 def _manifest_bytes(entries: dict[str, Entry]) -> bytes:
     body = {
-        "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "created": datetime.now(UTC).isoformat(timespec="seconds"),
         "entries": {k: asdict(v) for k, v in sorted(entries.items())},
     }
     return json.dumps(body, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")

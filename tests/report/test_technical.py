@@ -12,6 +12,7 @@ from quant.collect.sources.technical import (
     structure_label,
 )
 
+
 # 아래 기존 breadth 테스트는 naver_path_fetcher 를 주지 않으면 기본
 # `_fetch_naver_path`(실네트워크)를 호출하므로 전부 명시적으로 None 을
 # 돌려주는 페이크를 준다 — 네이버 경로 해석 자체는 별도 테스트 블록에서 검증한다.

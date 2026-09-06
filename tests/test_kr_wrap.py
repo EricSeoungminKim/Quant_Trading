@@ -10,7 +10,9 @@ import pandas as pd
 import pytest
 
 from quant.analyze.kr_wrap import (
-    build_kr_session_wrap, classify_session, flow_day_summary,
+    build_kr_session_wrap,
+    classify_session,
+    flow_day_summary,
 )
 
 N = 381  # KR 정규장 분봉 수 (09:00~15:30)

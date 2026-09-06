@@ -13,7 +13,7 @@ API를 때린다 — Toss MARKET_DATA는 10 TPS라 그 자체로 rate limit이�
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 
@@ -98,7 +98,7 @@ def _service(source, clock: FakeClock, **kwargs) -> MarketDataService:
 # ------------------------------------------------------- ① 같은 경계 = 소스 1회
 
 def test_two_calls_in_same_bar_boundary_hit_source_once():
-    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 20, tzinfo=timezone.utc))
+    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 20, tzinfo=UTC))
     source = CountingSource(clock)
     svc = _service(source, clock)
 
@@ -115,7 +115,7 @@ def test_two_calls_in_same_bar_boundary_hit_source_once():
 # --------------------------------------------------------- ② 경계를 넘으면 재조회
 
 def test_crossing_bar_boundary_refetches():
-    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 50, tzinfo=timezone.utc))
+    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 50, tzinfo=UTC))
     source = CountingSource(clock)
     svc = _service(source, clock)
 
@@ -131,7 +131,7 @@ def test_crossing_bar_boundary_refetches():
 def test_boundary_is_interval_sized_not_wall_clock_ttl():
     """15분봉은 같은 15분 버킷 안이면 14분이 흘러도 캐시가 유효하다. 시간 기반 TTL이면
     벌써 만료됐을 구간 — 이게 경계 캐시를 쓰는 이유다."""
-    clock = FakeClock(datetime(2026, 8, 28, 13, 0, 30, tzinfo=timezone.utc))
+    clock = FakeClock(datetime(2026, 8, 28, 13, 0, 30, tzinfo=UTC))
     source = CountingSource(clock)
     svc = _service(source, clock)
 
@@ -150,7 +150,7 @@ def test_boundary_is_interval_sized_not_wall_clock_ttl():
 def test_larger_n_refetches_and_smaller_n_slices_the_cached_frame():
     """작은 요청이 큰 요청을 무효화하면 캐시가 매 사이클 갈린다 — 전략마다 요구
     봉 수가 다른 이 시스템에서는 그게 곧 캐시 무용지물이다."""
-    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=timezone.utc))
+    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=UTC))
     source = CountingSource(clock)
     svc = _service(source, clock)
 
@@ -174,7 +174,7 @@ def test_larger_n_refetches_and_smaller_n_slices_the_cached_frame():
 def test_short_history_does_not_thrash_the_cache():
     """소스가 요청보다 적은 봉만 가진 경우(신규 상장·얕은 히스토리). 캐시 유효성을
     '행 수'로 판정하면 n=200으로 30개를 받은 뒤 n=50 요청이 영원히 miss가 난다."""
-    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=timezone.utc))
+    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=UTC))
     source = CountingSource(clock, periods=30)
     svc = _service(source, clock)
 
@@ -188,7 +188,7 @@ def test_short_history_does_not_thrash_the_cache():
 def test_empty_frame_is_not_cached():
     """빈 프레임을 캐시하면 그 봉 내내 모든 전략이 데이터 없이 돈다 — 손절 판정이
     조용히 멈춘다. 다음 호출은 반드시 소스를 다시 쳐야 한다."""
-    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=timezone.utc))
+    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=UTC))
     source = CountingSource(clock, empty=True)
     svc = _service(source, clock)
 
@@ -199,7 +199,7 @@ def test_empty_frame_is_not_cached():
 
 
 def test_source_exception_is_not_cached_and_recovers_within_same_boundary():
-    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=timezone.utc))
+    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=UTC))
     broken = CountingSource(clock, error=RuntimeError("network down"))
     svc = _service(broken, clock)
 
@@ -216,7 +216,7 @@ def test_source_exception_is_not_cached_and_recovers_within_same_boundary():
 # ------------------------------------------------- ⑤ 비활성화 = 기존 동작 그대로
 
 def test_disabled_cache_calls_source_every_time():
-    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=timezone.utc))
+    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=UTC))
     source = CountingSource(clock)
     svc = _service(source, clock, bar_cache_enabled=False)
 
@@ -228,8 +228,8 @@ def test_disabled_cache_calls_source_every_time():
 
 def test_disabled_cache_matches_enabled_cache_output():
     """캐시는 성능 최적화일 뿐 결과를 바꾸면 안 된다 — 같은 입력에 같은 프레임."""
-    clock_a = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=timezone.utc))
-    clock_b = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=timezone.utc))
+    clock_a = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=UTC))
+    clock_b = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=UTC))
     cached = _service(CountingSource(clock_a), clock_a)
     uncached = _service(CountingSource(clock_b), clock_b, bar_cache_enabled=False)
 
@@ -242,7 +242,7 @@ def test_disabled_cache_matches_enabled_cache_output():
 # ------------------------------------------------------------ ⑥ interval 격리
 
 def test_different_intervals_are_cached_separately():
-    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=timezone.utc))
+    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=UTC))
     source = CountingSource(clock)
     svc = _service(source, clock)
 
@@ -262,7 +262,7 @@ def test_different_intervals_are_cached_separately():
 # ---------------------------------------------------------- ⑦ 메모리 상한 정리
 
 def test_cache_evicts_oldest_when_over_max_entries():
-    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=timezone.utc))
+    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=UTC))
     source = CountingSource(clock)
     svc = _service(source, clock, bar_cache_max_entries=3)
 
@@ -282,7 +282,7 @@ def test_cache_evicts_oldest_when_over_max_entries():
 def test_stale_boundaries_do_not_accumulate():
     """키에 봉 경계가 들어 있으므로 정리하지 않으면 분마다 항목이 쌓인다 — 이 저장소는
     1.8GB EC2에서 무인으로 며칠씩 돌기 때문에 상한만으로는 부족하다."""
-    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=timezone.utc))
+    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=UTC))
     source = CountingSource(clock)
     svc = _service(source, clock)
 
@@ -301,7 +301,7 @@ def test_eight_strategies_twenty_symbols_hit_source_twenty_times_not_160():
     """소유자 지시(2026-08-28)의 핵심 수치를 테스트로 고정한다. 전략을 늘려도 소스
     호출은 심볼 수에 묶여야 한다 — 여기가 깨지면 병렬 스캘핑 실험이 rate limit에
     막힌다."""
-    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=timezone.utc))
+    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=UTC))
     source = CountingSource(clock)
     svc = _service(source, clock)
     symbols = [f"SYM{i:02d}" for i in range(20)]
@@ -315,7 +315,7 @@ def test_eight_strategies_twenty_symbols_hit_source_twenty_times_not_160():
     assert stats == {"hits": 140, "misses": 20, "source_calls": 20}
 
     # 대조군: 캐시를 끄면 실제로 160회다(20이 캐시 덕분임을 증명한다).
-    bare_clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=timezone.utc))
+    bare_clock = FakeClock(datetime(2026, 8, 28, 13, 30, 10, tzinfo=UTC))
     bare_source = CountingSource(bare_clock)
     bare = _service(bare_source, bare_clock, bar_cache_enabled=False)
     for _strategy in range(8):
@@ -327,7 +327,7 @@ def test_eight_strategies_twenty_symbols_hit_source_twenty_times_not_160():
 def test_next_cycle_within_same_bar_still_hits_cache():
     """1분봉 · poll 5초면 한 봉 안에 사이클이 12번 돈다. 캐시가 사이클 경계에서
     풀리면(=TTL 방식) 절감분의 대부분이 사라진다."""
-    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 0, tzinfo=timezone.utc))
+    clock = FakeClock(datetime(2026, 8, 28, 13, 30, 0, tzinfo=UTC))
     source = CountingSource(clock)
     svc = _service(source, clock)
     symbols = [f"SYM{i:02d}" for i in range(20)]

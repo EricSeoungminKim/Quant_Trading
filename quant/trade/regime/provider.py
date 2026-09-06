@@ -18,9 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Callable
 from zoneinfo import ZoneInfo
 
 import pandas as pd

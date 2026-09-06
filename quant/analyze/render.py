@@ -9,10 +9,9 @@
 """
 from __future__ import annotations
 
-from functools import partial as _partial
-
 import json
 from datetime import date, datetime
+from functools import partial as _partial
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -20,18 +19,22 @@ from markupsafe import Markup
 
 from quant.analyze import charts, news_direction
 from quant.analyze.news_cluster import dedup_with_counts
+from quant.analyze.relations import MIN_EVIDENCE
+from quant.analyze.themes import cluster, summarize
+from quant.analyze.units import (
+    fmt_fred,
+    fmt_krw_eok,
+    fmt_shares,
+    fmt_value,
+    group_quotes,
+)
 from quant.collect.contracts import Snapshot
 from quant.collect.sources.dart import classify_report
 from quant.collect.sources.feeds import outlet_diversity, parse_published
 from quant.collect.sources.youtube_brief import channels_for as _youtube_channels_for
+from quant.control import flows as flows_ledger
 from quant.core.report_clock import KST
 from quant.core.terms import event_full, event_term
-from quant.analyze.relations import MIN_EVIDENCE
-from quant.analyze.themes import cluster, summarize
-from quant.analyze.units import (
-    fmt_fred, fmt_krw_eok, fmt_shares, fmt_value, group_quotes,
-)
-from quant.control import flows as flows_ledger
 
 _TEMPLATES = Path(__file__).resolve().parent / "templates"
 
@@ -973,11 +976,11 @@ def render(
         ranked=ranked,
         spine=spine_quotes(snap.market, quotes),
         quote_groups=group_quotes(quotes),
-        cal_near=group_events_by_day(((_ok(snap, 'calendar') or {}).get('events') or []))[0],
+        cal_near=group_events_by_day((_ok(snap, 'calendar') or {}).get('events') or [])[0],
         themes=theme_clusters,
         theme_line=summarize(theme_clusters, len(titles), snap.market),
         theme_total=len(titles),
-        cal_later=group_events_by_day(((_ok(snap, 'calendar') or {}).get('events') or []))[1],
+        cal_later=group_events_by_day((_ok(snap, 'calendar') or {}).get('events') or [])[1],
         indi={sym: describe(q) for sym, q in quotes.items()},
         sym_quotes=sym_quotes or {},
         details=details or {},

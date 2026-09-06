@@ -6,14 +6,14 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from quant.adapters.brokers.kiwoom.datafeed import KiwoomRealtimeSource, is_kr_symbol
 from quant.adapters.data.service import Capability, MarketDataService, SourceRoute
-from quant.core.ports import DataSourceError
 from quant.core.models import Quote
+from quant.core.ports import DataSourceError
 
 
 class FakeHealth:
@@ -52,7 +52,7 @@ class FakeTossSource:
 
     def quote(self, symbol: str) -> Quote | None:
         self.calls.append(symbol)
-        return Quote(symbol=symbol, ts=datetime.now(timezone.utc), price=self.price)
+        return Quote(symbol=symbol, ts=datetime.now(UTC), price=self.price)
 
     def history(self, symbol: str, interval: str, n: int):  # pragma: no cover - 이 테스트들에서 안 씀
         raise NotImplementedError
@@ -72,7 +72,7 @@ def test_is_kr_symbol_classifies_six_digit_codes():
 # ------------------------------------------------------------- quote() 안전장치
 
 def test_quote_returns_fresh_tick_when_connected_and_recent():
-    now = datetime(2024, 6, 3, 5, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 6, 3, 5, 0, tzinfo=UTC)
     tick = Quote(symbol="005930", ts=now - timedelta(seconds=5), price=71500.0)
     feed = FakeFeed(connected=True, quotes={"005930": tick})
     source = KiwoomRealtimeSource(feed, FakeClock(now), stale_seconds=30.0)
@@ -84,7 +84,7 @@ def test_quote_returns_fresh_tick_when_connected_and_recent():
 
 def test_quote_raises_when_disconnected():
     """웹소켓이 끊겨 있으면 마지막 값을 조용히 주지 않고 DataSourceError를 던진다."""
-    now = datetime(2024, 6, 3, 5, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 6, 3, 5, 0, tzinfo=UTC)
     tick = Quote(symbol="005930", ts=now - timedelta(seconds=1), price=71500.0)
     feed = FakeFeed(connected=False, quotes={"005930": tick})
     source = KiwoomRealtimeSource(feed, FakeClock(now), stale_seconds=30.0)
@@ -95,7 +95,7 @@ def test_quote_raises_when_disconnected():
 
 def test_quote_raises_when_no_tick_received_yet():
     """구독은 됐지만 아직 틱이 한 번도 안 왔으면(quote()가 None) 지어내지 않고 실패시킨다."""
-    now = datetime(2024, 6, 3, 5, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 6, 3, 5, 0, tzinfo=UTC)
     feed = FakeFeed(connected=True, quotes={})
     source = KiwoomRealtimeSource(feed, FakeClock(now), stale_seconds=30.0)
 
@@ -105,7 +105,7 @@ def test_quote_raises_when_no_tick_received_yet():
 
 def test_quote_raises_when_tick_is_stale():
     """연결은 돼 있어도 최신 틱이 임계보다 오래됐으면 죽은 걸로 보고 폴백시킨다."""
-    now = datetime(2024, 6, 3, 5, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 6, 3, 5, 0, tzinfo=UTC)
     stale_tick = Quote(symbol="005930", ts=now - timedelta(seconds=45), price=71500.0)
     feed = FakeFeed(connected=True, quotes={"005930": stale_tick})
     source = KiwoomRealtimeSource(feed, FakeClock(now), stale_seconds=30.0)
@@ -115,7 +115,7 @@ def test_quote_raises_when_tick_is_stale():
 
 
 def test_quote_accepts_tick_just_under_stale_threshold():
-    now = datetime(2024, 6, 3, 5, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 6, 3, 5, 0, tzinfo=UTC)
     fresh_tick = Quote(symbol="005930", ts=now - timedelta(seconds=29), price=71500.0)
     feed = FakeFeed(connected=True, quotes={"005930": fresh_tick})
     source = KiwoomRealtimeSource(feed, FakeClock(now), stale_seconds=30.0)
@@ -125,7 +125,7 @@ def test_quote_accepts_tick_just_under_stale_threshold():
 
 def test_history_is_not_supported():
     feed = FakeFeed(connected=True)
-    source = KiwoomRealtimeSource(feed, FakeClock(datetime.now(timezone.utc)))
+    source = KiwoomRealtimeSource(feed, FakeClock(datetime.now(UTC)))
 
     with pytest.raises(DataSourceError):
         source.history("005930", "15m", 10)
@@ -134,7 +134,7 @@ def test_history_is_not_supported():
 # ---------------------------------------------- MarketDataService 라우팅 통합
 
 def test_kiwoom_rt_route_serves_before_toss_when_alive():
-    now = datetime(2024, 6, 3, 5, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 6, 3, 5, 0, tzinfo=UTC)
     tick = Quote(symbol="TQQQ", ts=now - timedelta(seconds=2), price=51.0)
     feed = FakeFeed(connected=True, quotes={"TQQQ": tick})
     kiwoom_source = KiwoomRealtimeSource(feed, FakeClock(now), stale_seconds=30.0)
@@ -157,7 +157,7 @@ def test_kiwoom_rt_route_serves_before_toss_when_alive():
 
 def test_stale_kiwoom_rt_falls_back_to_toss_and_marks_degraded(caplog):
     """이 테스트가 이 기능의 핵심이다: 죽은 웹소켓의 마지막 가격으로 거래하면 안 된다."""
-    now = datetime(2024, 6, 3, 5, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 6, 3, 5, 0, tzinfo=UTC)
     stale_tick = Quote(symbol="TQQQ", ts=now - timedelta(seconds=90), price=51.0)
     feed = FakeFeed(connected=True, quotes={"TQQQ": stale_tick})
     kiwoom_source = KiwoomRealtimeSource(feed, FakeClock(now), stale_seconds=30.0)
@@ -187,7 +187,7 @@ def test_stale_kiwoom_rt_falls_back_to_toss_and_marks_degraded(caplog):
 
 
 def test_disconnected_kiwoom_rt_falls_back_to_toss():
-    now = datetime(2024, 6, 3, 5, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 6, 3, 5, 0, tzinfo=UTC)
     feed = FakeFeed(connected=False, quotes={})
     kiwoom_source = KiwoomRealtimeSource(feed, FakeClock(now), stale_seconds=30.0)
     toss = FakeTossSource(price=52.5)

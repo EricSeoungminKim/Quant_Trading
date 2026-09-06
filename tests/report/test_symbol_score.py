@@ -1,6 +1,11 @@
 from quant.analyze.scoring import label_100, to_100
 from quant.analyze.symbol_score import (
-    CONFIRMATION_BONUS, NEWS_HOT_WEIGHT, SPAN, TRENDING_WEIGHT, score_all, score_symbol,
+    CONFIRMATION_BONUS,
+    NEWS_HOT_WEIGHT,
+    SPAN,
+    TRENDING_WEIGHT,
+    score_all,
+    score_symbol,
 )
 
 

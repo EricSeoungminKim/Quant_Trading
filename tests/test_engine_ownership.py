@@ -21,11 +21,11 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import pytest
 
-from quant.trade.loop import _flatten_all
 from quant.adapters.brokers.toss.broker import TossBroker
-from quant.core.ports import Context
-from quant.core.models import Order, Position, Quote, Side, Signal, SignalAction
+from quant.core.models import Order, Quote, Side, Signal, SignalAction
 from quant.core.portfolio.ownership import EngineOwnership
+from quant.core.ports import Context
+from quant.trade.loop import _flatten_all
 from quant.trade.risk.manager import RiskManagerImpl
 
 NY = ZoneInfo("America/New_York")

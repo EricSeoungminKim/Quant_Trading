@@ -14,9 +14,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import date, datetime, timezone
+from collections.abc import Callable, Iterable
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Callable, Iterable
 
 from quant.adapters.db import upsert_sql
 
@@ -39,7 +39,7 @@ def _utc_naive(iso: str | None) -> datetime | None:
         return None
     if dt.tzinfo is None:
         return dt
-    return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.astimezone(UTC).replace(tzinfo=None)
 
 
 def link_sha(link_key: str) -> str:

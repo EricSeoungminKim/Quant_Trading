@@ -10,9 +10,10 @@ backtest가 우연히 Sharpe가 높게 나오는 건 우위가 아니라 노이�
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from quant.backtest import BacktestResult
 from quant.backtest import run_backtest as _default_run_backtest
@@ -93,7 +94,7 @@ def optimize(
     obj_fn = objective or _sharpe_objective
     trials: list[Trial] = []
 
-    def _objective(trial: "optuna.Trial") -> float:
+    def _objective(trial: optuna.Trial) -> float:
         params = _sample_params(trial, param_space)
         result = backtest_fn(
             strategy_id=strategy_id, days=days, interval=interval, source=source,

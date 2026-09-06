@@ -16,7 +16,8 @@
 from __future__ import annotations
 
 import copy
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -87,7 +88,7 @@ def _snap(
     lots: dict | None = None, market_open: bool = True,
 ) -> StrategySnapshot:
     """`specs`: 심볼 → {price, prev_close, today_open, daily(kwargs), bars5(kwargs)}."""
-    tz = KST if market == "KR" else NY
+    _tz = KST if market == "KR" else NY
     now = now or ENTRY_NOW
     specs = specs or {}
     bars: dict[tuple[str, str], pd.DataFrame] = {}

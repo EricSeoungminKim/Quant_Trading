@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
-
-import pytest
+from datetime import UTC, datetime
 
 from quant.analyze.tg_digest import (
     DIGEST_MAX_CHARS,
@@ -14,7 +12,7 @@ from quant.analyze.tg_digest import (
     render_telegram,
 )
 
-UTC = timezone.utc
+UTC = UTC
 NOW = datetime(2026, 9, 5, 0, 0, tzinfo=UTC)
 SINCE = datetime(2026, 9, 4, 22, 0, tzinfo=UTC)
 

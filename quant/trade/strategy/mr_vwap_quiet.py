@@ -155,8 +155,10 @@ lot 에 산다** — 장중에 엔진을 재시작해도 손절이 사라지지 
 """
 from __future__ import annotations
 
-from datetime import date as dtdate, datetime
-from typing import Any, Mapping
+from collections.abc import Mapping
+from datetime import date as dtdate
+from datetime import datetime
+from typing import Any
 
 import pandas as pd
 

@@ -64,9 +64,8 @@ from datetime import timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from quant.core.fx import FixedFxProvider, FxProvider
-from quant.core.ports import Context, DataSourceError
 from quant.core import strategy_ids
+from quant.core.fx import FixedFxProvider, FxProvider
 from quant.core.models import (
     Order,
     Position,
@@ -77,6 +76,7 @@ from quant.core.models import (
     trading_day,
 )
 from quant.core.portfolio.portfolio import from_krw, to_krw
+from quant.core.ports import Context, DataSourceError
 from quant.core.session import in_continuous_session
 from quant.trade.risk.books import StrategyBooks
 
@@ -178,9 +178,9 @@ class RiskManagerImpl:
         capital_fraction: dict[str, float | dict[str, float]] | None = None,
         market_of: dict[str, str] | None = None,
         fx: FxProvider | None = None,
-        state_path: "Path | str | None" = None,
+        state_path: Path | str | None = None,
         leverage_of: dict[str, float] | None = None,
-        books: "StrategyBooks | None" = None,
+        books: StrategyBooks | None = None,
         pending_entry_qty=None,
     ):
         risk_cfg = settings.get("risk", {})
@@ -260,7 +260,8 @@ class RiskManagerImpl:
                 for w in windows or []:
                     try:
                         a, b = str(w).split("-")
-                        ah, am = a.split(":"); bh, bm = b.split(":")
+                        ah, am = a.split(":")
+                        bh, bm = b.split(":")
                         parsed.append((int(ah) * 60 + int(am), int(bh) * 60 + int(bm)))
                     except (ValueError, AttributeError):
                         continue  # 형식 오류 창은 조용히 넓히지 않는다 — 무시가 안전측

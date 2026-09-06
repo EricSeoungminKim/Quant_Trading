@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import logging
 
-import pytest
-
 from quant.analyze.section_advice import _MARKERS, _SECTION_ORDER, _parse, advise
 
 

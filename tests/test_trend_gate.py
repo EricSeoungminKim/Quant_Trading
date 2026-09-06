@@ -11,7 +11,6 @@ import pytest
 
 from quant.trade.indicators.trend_gate import adx_di, atr_ratio, trend_ok, volatility_ok
 
-
 # ------------------------------------------------------------------- adx_di
 
 def test_adx_di_hand_calculated_small_series():

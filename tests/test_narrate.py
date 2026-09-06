@@ -25,7 +25,6 @@ from quant.adapters.narrate import (
 )
 from quant.core.ports import Narrator
 
-
 # ── 포트 계약 ─────────────────────────────────────────────────────────────
 
 def test_all_implementations_satisfy_the_port():
@@ -68,7 +67,7 @@ def test_openrouter_default_model_has_no_date_suffix():
     """웹 URL 에는 `-20260604` 같은 접미사가 붙어 보이지만 실제 모델 ID 에는 없다.
     붙이면 404 다 — 그리고 404 는 `None` 이 되어 조용히 서술이 사라진다."""
     assert DEFAULT_OPENROUTER_MODEL == "nvidia/nemotron-3-ultra-550b-a55b:free"
-    assert not DEFAULT_OPENROUTER_MODEL.rstrip(":free").endswith(tuple("0123456789"))
+    assert not DEFAULT_OPENROUTER_MODEL.removesuffix(":free").endswith(tuple("0123456789"))
 
 
 def test_openrouter_default_max_tokens_is_1500_for_short_ops_narration():

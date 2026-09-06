@@ -1,5 +1,8 @@
 from quant.analyze.market_digest import (
-    STOCK_KEYWORDS, build_digest, build_news_flow, summarize_digest,
+    STOCK_KEYWORDS,
+    build_digest,
+    build_news_flow,
+    summarize_digest,
 )
 
 

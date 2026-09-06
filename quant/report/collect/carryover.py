@@ -11,7 +11,6 @@ from pathlib import Path
 
 from quant.analyze.carryover import merge_carryover
 from quant.analyze.opendays import anchor_dir_for, last_open_day, window_dates
-
 from quant.report.paths import _engine_json_path, _load_artifact
 
 

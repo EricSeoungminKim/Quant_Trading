@@ -8,12 +8,10 @@ import json
 import logging
 from datetime import date, datetime
 
-import pandas as pd
 import pytest
 
 from quant.analyze.watch_scorer import _market_cap_krw as _analyze_market_cap_krw
 from quant.collect import kr_largecap_daily as kld
-
 
 # --------------------------------------------------------------------- KIND 파싱
 

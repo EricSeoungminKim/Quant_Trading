@@ -1,6 +1,7 @@
 """오케스트레이터 — 모든 I/O 를 주입해 밀폐로 검증한다.
 핵심 계약: LLM 이 죽으면(narrate→None) 신규 발견만 멈추고 기존 스냅샷은 보존."""
 import json
+
 from quant.apps.deepdive import run_deepdive
 
 

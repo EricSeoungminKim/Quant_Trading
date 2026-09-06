@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -30,7 +30,7 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 
 def _telegram_row(handle: str, msg_id: str, text: str, days_ago: float = 0.5) -> dict:
-    dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    dt = datetime.now(UTC) - timedelta(days=days_ago)
     return {"handle": handle, "msg_id": msg_id, "text": text,
             "published": dt.isoformat().replace("+00:00", "Z")}
 

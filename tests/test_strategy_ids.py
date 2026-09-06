@@ -51,9 +51,9 @@ def test_all_three_call_sites_agree():
     """`loop._base_strategy_id`/`manager._base_strategy_id`/`ledger.base_strategy_id`
     가 전부 `quant.core.strategy_ids.base_strategy_id`를 가리키는 같은 함수인지
     — 별칭이 끊기면(예: 셋 중 하나가 로컬로 재구현되면) 여기서 잡는다."""
+    from quant.control.ledger import base_strategy_id as ledger_fn
     from quant.trade.loop import _base_strategy_id as loop_fn
     from quant.trade.risk.manager import _base_strategy_id as manager_fn
-    from quant.control.ledger import base_strategy_id as ledger_fn
 
     cases = ["scalp_1m", "scalp_1m_cat", "donchian_pure", "scalp_1m_pure_cat", "", None]
     for sid in cases:

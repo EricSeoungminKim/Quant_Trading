@@ -8,8 +8,6 @@ import argparse
 import json
 from pathlib import Path
 
-import pytest
-
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

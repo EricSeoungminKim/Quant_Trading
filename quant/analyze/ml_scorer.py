@@ -33,7 +33,7 @@ WHERE 절(호출부, `quant/apps/cli.py`)이 1차 방어선이고, `training_row
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 
@@ -220,7 +220,7 @@ def to_judgments(scores: dict[str, float], rows: list[dict],
     **전 행을 남긴다** — 픽 상한이 없어도 채점 못 한 종목(학습표본 자체가
     없어 결근한 날)은 있을 수 있으므로 `scores` 에 없는 심볼도 reject/None 으로
     기록한다(selection_judgment/ai_trader.to_judgments 와 같은 원칙)."""
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     out: list[Judgment] = []
     for row in rows:
         attrs = selection_attributes(row)

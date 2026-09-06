@@ -158,6 +158,7 @@ def test_should_record_ledger_allows_normal_monday(tmp_path, monkeypatch):
     last_open=금요일)에서 기록이 차단되면 매주 월요일 선정 원장이 통째로
     유실된다(ai_trader 결근·ML 라벨 구멍). 평일은 항상 기록해야 한다."""
     from datetime import date
+
     import quant.report.collect.ledger as L
 
     monkeypatch.setattr(L, "last_open_day", lambda d, t: date(2026, 8, 28))  # 금

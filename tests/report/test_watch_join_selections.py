@@ -17,9 +17,7 @@
 """
 from __future__ import annotations
 
-import json
 from datetime import date
-from pathlib import Path
 
 from quant.control import selections
 from quant.control.selections import WATCH_JOIN_PRODUCER

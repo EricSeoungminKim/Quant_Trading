@@ -4,6 +4,7 @@ _ROW_1 / _ROW_2 / _ROW_ALNUM_CODE: finance.naver.com/sise/sise_quant.naver (page
 _ROW_SAMSUNG: 같은 페이지, 2026-08-19 실측 — PER/ROE가 "N/A"가 아닌 실제 종목.
 """
 import json
+from datetime import UTC
 
 from quant.collect.sources.naver_quant import (
     INDEX_URL,
@@ -515,13 +516,13 @@ def test_append_ledger_empty_rows_noop(tmp_path):
 
 
 def test_fetch_and_persist_records_kst_date_and_source(tmp_path):
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     def getter(url):
         return _ROW_SAMSUNG
 
     # UTC 2026-08-19 15:30 = KST 2026-08-20 00:30 — 날짜 경계를 넘는지 확인한다.
-    now = datetime(2026, 8, 19, 15, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 19, 15, 30, tzinfo=UTC)
     stat = fetch_and_persist(tmp_path, getter=getter, now=now)
     assert stat == {"fetched": 1, "added": 1, "date": "2026-08-20"}
 
@@ -543,12 +544,12 @@ def test_fetch_and_persist_records_kst_date_and_source(tmp_path):
 
 
 def test_fetch_and_persist_second_call_same_day_does_not_duplicate(tmp_path):
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     def getter(url):
         return _ROW_SAMSUNG
 
-    now = datetime(2026, 8, 19, 1, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 19, 1, 0, tzinfo=UTC)
     fetch_and_persist(tmp_path, getter=getter, now=now)
     stat2 = fetch_and_persist(tmp_path, getter=getter, now=now)
     assert stat2["added"] == 0

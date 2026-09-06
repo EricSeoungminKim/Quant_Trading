@@ -14,7 +14,6 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-import pytest
 
 from quant.adapters.execution.paper import PaperBroker
 from quant.core.models import Order, Position, Quote, Side, Signal

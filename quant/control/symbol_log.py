@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date as dtdate, datetime, timezone
+from datetime import UTC, datetime
+from datetime import date as dtdate
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,7 @@ def append_scores(rows: list[dict], path: Path | str = DEFAULT_PATH) -> int:
                 continue
     p.parent.mkdir(parents=True, exist_ok=True)
     added = 0
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     with p.open("a", encoding="utf-8") as f:
         for row in rows:
             key = (row.get("date"), row.get("market"), row.get("symbol"))

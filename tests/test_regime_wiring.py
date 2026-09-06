@@ -7,16 +7,16 @@ max_total_exposure_pct, 팻핑거, 일손실 한도)에는 절대 곱하지 않�
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
-from quant.trade.loop import run_cycle
+from quant.core.models import Position, Quote, Signal, SignalAction
 from quant.core.ports import Context
-from quant.core.models import Order, Position, Quote, Signal, SignalAction
+from quant.trade.loop import run_cycle
 from quant.trade.risk.manager import RiskManagerImpl
 
-_NOW = datetime(2026, 1, 5, 15, 0, tzinfo=timezone.utc)
+_NOW = datetime(2026, 1, 5, 15, 0, tzinfo=UTC)
 
 
 class _Clock:

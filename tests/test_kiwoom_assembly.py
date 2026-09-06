@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -21,7 +21,7 @@ from quant.apps.assembly import (
 
 class FakeClock:
     def now(self) -> datetime:
-        return datetime(2024, 6, 3, 5, 0, tzinfo=timezone.utc)
+        return datetime(2024, 6, 3, 5, 0, tzinfo=UTC)
 
 
 class ScriptedFeed:

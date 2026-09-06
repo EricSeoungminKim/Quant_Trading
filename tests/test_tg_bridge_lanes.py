@@ -10,13 +10,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
-
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "server" / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import tg_bridge  # noqa: E402
+
 from quant.core import tglanes  # noqa: E402
 
 

@@ -12,17 +12,17 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
-from quant.trade.loop import _flatten_all, run_cycle
-from quant.control.ledger import round_trips
-from quant.core.ports import Context
-from quant.core.models import Order, Position, Quote, Side, Signal, SignalAction
 from quant.adapters.execution.paper import PaperBroker
 from quant.adapters.persistence.sink import MultiSink
+from quant.control.ledger import round_trips
+from quant.core.models import Order, Position, Quote, Side, Signal, SignalAction
 from quant.core.portfolio.portfolio import Portfolio
+from quant.core.ports import Context
+from quant.trade.loop import _flatten_all, run_cycle
 from quant.trade.risk.manager import RiskManagerImpl
 
 SYMBOL = "TQQQ"
@@ -33,7 +33,7 @@ class _Feed:
         self._price = price
 
     def quote(self, symbol: str) -> Quote | None:
-        return Quote(symbol=symbol, ts=datetime.now(timezone.utc), price=self._price)
+        return Quote(symbol=symbol, ts=datetime.now(UTC), price=self._price)
 
     def history(self, symbol, interval, n):
         import pandas as pd
@@ -254,7 +254,7 @@ def test_lot_qty_and_lot_are_pure_reads_without_migration():
 
 class _FixedClock:
     def now(self) -> datetime:
-        return datetime(2026, 1, 5, 20, 0, tzinfo=timezone.utc)
+        return datetime(2026, 1, 5, 20, 0, tzinfo=UTC)
 
     def is_market_open(self, market: str) -> bool:
         return True

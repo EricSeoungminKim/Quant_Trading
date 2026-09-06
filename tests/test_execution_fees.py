@@ -15,10 +15,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from quant.adapters.execution.paper import PaperBroker
 from quant.backtest.engine import run_backtest
 from quant.core.fx import FixedFxProvider
 from quant.core.models import Order, Quote, Side
-from quant.adapters.execution.paper import PaperBroker
 from quant.core.portfolio.portfolio import Portfolio
 
 NY = ZoneInfo("America/New_York")

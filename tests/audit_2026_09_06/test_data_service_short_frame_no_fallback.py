@@ -32,7 +32,7 @@ approve()`의 `_bar_ts`)이 실제보다 적은 봉으로 세져 쿨다운이 �
 그 버그 자체가 없어졌으므로 제거했다."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 
@@ -80,7 +80,7 @@ def _service(short_source: _FakeSource, full_source: _FakeSource) -> MarketDataS
             SourceRoute(name="short_primary", source=short_source, capabilities=frozenset({Capability.BARS})),
             SourceRoute(name="deep_fallback", source=full_source, capabilities=frozenset({Capability.BARS})),
         ],
-        clock=_FakeClock(datetime(2024, 1, 3, 0, 0, tzinfo=timezone.utc)),
+        clock=_FakeClock(datetime(2024, 1, 3, 0, 0, tzinfo=UTC)),
     )
 
 

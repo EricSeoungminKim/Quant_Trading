@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import re
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
-from typing import Callable
 
-from quant.core.report_clock import KST
 from quant.collect.contracts import SCHEMA_VERSION, Snapshot, SourceResult
+from quant.core.report_clock import KST
 
 MAX_WORKERS = 8
 _ERROR_MAX = 160

@@ -1,10 +1,10 @@
 from datetime import date, datetime
 from pathlib import Path
 
-from quant.core.report_clock import KST
-from quant.collect.snapshot import save_snapshot
-from quant.collect.contracts import SCHEMA_VERSION, Snapshot, SourceResult
 from quant.analyze.delta import compare, previous_snapshot
+from quant.collect.contracts import SCHEMA_VERSION, Snapshot, SourceResult
+from quant.collect.snapshot import save_snapshot
+from quant.core.report_clock import KST
 
 
 def _snap(day: int, kospi: float = 6345.0, foreign: int = 535,

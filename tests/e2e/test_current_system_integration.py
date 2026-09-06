@@ -9,17 +9,17 @@ run_cycle을 쓰고, mock 호출 여부가 아니라 실제 수량·수수료·�
 """
 from __future__ import annotations
 
-from datetime import datetime, time as dtime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from quant.trade.loop import run_cycle
-from quant.core.fx import FixedFxProvider
-from quant.core.ports import Context
-from quant.core.models import Quote, Side, Signal, SignalAction
 from quant.adapters.execution.paper import PaperBroker
+from quant.core.fx import FixedFxProvider
+from quant.core.models import Quote, Side, Signal, SignalAction
 from quant.core.portfolio.portfolio import Portfolio
+from quant.core.ports import Context
+from quant.trade.loop import run_cycle
 from quant.trade.risk.manager import RiskManagerImpl
 
 KST = ZoneInfo("Asia/Seoul")
@@ -170,9 +170,9 @@ def test_per_market_regime_multiplier_applies_by_symbol(tmp_path):
 def test_assembled_runtime_ledger_sink_writes_fills(tmp_path, monkeypatch):
     """조립 계층이 TradeLedgerSink를 실제로 감싸고, 체결이 원장 파일에 남는지.
     (조립 누락은 유닛 테스트가 못 잡는다 — FxProvider 미배선 사고의 재발 방지축)"""
+    from quant.adapters.persistence.sink import MultiSink
     from quant.control import ledger as ledger_module
     from quant.control.ledger import TradeLedgerSink, load_trades
-    from quant.adapters.persistence.sink import MultiSink
 
     monkeypatch.setattr(ledger_module, "DEFAULT_LEDGER_PATH", tmp_path / "trades.jsonl")
     ctx, risk, broker = _rig({"069500": 10_000.0}, {"069500": "KR"}, tmp_path=tmp_path)

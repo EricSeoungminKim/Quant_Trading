@@ -8,11 +8,11 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from quant.collect.sources import _fetch_news_merged, _merge_news_feeds
 
-UTC = timezone.utc
+UTC = UTC
 
 
 def _art(title, link, published="2026-09-02T00:00:00+00:00", outlet=""):

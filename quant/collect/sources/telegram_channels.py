@@ -99,7 +99,7 @@ import json
 import os
 import re
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import lxml.html as LH
@@ -345,7 +345,7 @@ def load_window(path: Path, since: datetime, until: datetime | None = None) -> l
     한 번 더 제거한다. 발행시각을 못 읽은 행은 버리지 않는다(`collector.
     load_window`와 같은 원칙).
     """
-    until = until or datetime.now(timezone.utc)
+    until = until or datetime.now(UTC)
     seen: set[tuple[str, str]] = set()
     rows: list[dict] = []
     for row in load_ledger(path):
@@ -358,7 +358,7 @@ def load_window(path: Path, since: datetime, until: datetime | None = None) -> l
         seen.add(key)
         rows.append(row)
     rows.sort(
-        key=lambda r: parse_published(r.get("published")) or datetime.min.replace(tzinfo=timezone.utc),
+        key=lambda r: parse_published(r.get("published")) or datetime.min.replace(tzinfo=UTC),
         reverse=True,
     )
     return rows

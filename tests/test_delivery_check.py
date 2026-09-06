@@ -134,7 +134,7 @@ def test_check_ai_trader_missing_on_explicit_failure():
 
 def test_check_ai_trader_missing_when_job_never_ran():
     target = date(2026, 8, 24)
-    lines = [f"[2026-08-20 08:20:15] KR 픽 발생:"]  # 다른 날짜뿐
+    lines = ["[2026-08-20 08:20:15] KR 픽 발생:"]  # 다른 날짜뿐
     finding = check_ai_trader(lines, "KR", target)
     assert finding is not None
     assert finding.level == MISSING

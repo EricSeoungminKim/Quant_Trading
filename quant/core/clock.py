@@ -8,7 +8,7 @@ domain/interfaces.py의 Clock.should_flatten docstring 참고.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from quant.core.session import StaticSessionCalendar, continuous_window, market_tz
 
@@ -125,7 +125,7 @@ class WallClock:
         self._calendar = calendar or StaticSessionCalendar()
 
     def now(self) -> datetime:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
     def is_market_open(self, market: str) -> bool:
         return _is_open(self._calendar, market, self.now())

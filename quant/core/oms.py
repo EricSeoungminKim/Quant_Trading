@@ -39,7 +39,6 @@ from datetime import datetime
 
 from quant.core.models import QTY_TOLERANCE, Fill, Order, OrderState, OrderStatus
 
-
 logger = logging.getLogger(__name__)
 
 

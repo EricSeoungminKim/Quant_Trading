@@ -139,7 +139,7 @@ def test_link_equality_merges_even_when_title_jaccard_below_threshold():
         {"title": "완전히 다른 후속 요약으로 갱신된 제목입니다",
          "link": "https://example.com/article/123"},
     ]
-    from quant.analyze.news_cluster import cluster_titles, _jaccard, _shingles
+    from quant.analyze.news_cluster import _jaccard, _shingles, cluster_titles
     assert _jaccard(_shingles(items[0]["title"]), _shingles(items[1]["title"])) < 0.6
     assert cluster_titles(items) == [[0], [1]]  # 자카드만으로는 안 묶인다
     out = dedup_with_counts(items)

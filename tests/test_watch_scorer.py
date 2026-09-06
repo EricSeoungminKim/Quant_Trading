@@ -5,18 +5,17 @@
 최종 판단한다)."""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 
 from quant.analyze.watch_scorer import (
-    ScoreResult,
     _VALID_TAGS,
+    ScoreResult,
     _check_prerequisites,
     _event_score,
     _market_cap_krw,
     _rebound_score,
-    _trend_score,
     effective_threshold,
     macro_sector_adjustment,
     rejection_summary,
@@ -305,7 +304,7 @@ def test_us_symbol_needs_5_more_boundary():
 
 
 def test_resolve_regime_label_passes_through_fresh_state():
-    now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
     state = {"label": "aggressive", "computed_at": (now - timedelta(hours=1)).isoformat()}
     label, reason = resolve_regime_label(state, now=now)
     assert label == "aggressive"
@@ -313,7 +312,7 @@ def test_resolve_regime_label_passes_through_fresh_state():
 
 
 def test_resolve_regime_label_stale_falls_back_to_neutral():
-    now = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
     state = {"label": "aggressive", "computed_at": (now - timedelta(hours=25)).isoformat()}
     label, reason = resolve_regime_label(state, now=now)
     assert label == "neutral"
@@ -372,7 +371,7 @@ def test_run_watch_score_unknown_tag_falls_back_to_untagged_best_of():
 # ---------------------------------------------------------------------------
 # 시장 수급 조류 (market_flow_adjustment) — 외국인+기관 순매수 기반 임계 조정
 # ---------------------------------------------------------------------------
-def _flow_client(base: "_FakeClient", net_per_market: int) -> "_FakeClient":
+def _flow_client(base: _FakeClient, net_per_market: int) -> _FakeClient:
     """FakeClient에 investor_trading을 얹는다 — 시장당 순매수 net_per_market원."""
     def investor_trading(symbol="KOSPI", interval="1d", count=2):
         buy = max(net_per_market, 0)

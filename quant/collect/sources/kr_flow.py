@@ -29,8 +29,8 @@ import html
 import re
 from datetime import date, datetime
 
-from quant.core.report_clock import KST
 from quant.adapters.http import client
+from quant.core.report_clock import KST
 
 FREESIS_MAIN_URL = "https://freesis.kofia.or.kr/stat/main.do"
 

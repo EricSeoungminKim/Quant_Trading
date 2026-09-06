@@ -31,7 +31,6 @@ from quant.control.judgment import (
 )
 from quant.core.models import Judgment, input_hash
 
-
 # ── input_hash ────────────────────────────────────────────────────────────
 
 def test_hash_is_stable_across_key_order():

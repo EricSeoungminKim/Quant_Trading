@@ -6,7 +6,7 @@ Phase D 엔진 분리(2026-08-19) — `quant/apps/report_cli.py`에서 그대로
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -42,10 +42,10 @@ def _telegram_default_window(now: datetime | None = None) -> datetime:
     넓게 고치지 않기 위해) 상황에서, 원장 저장소 병합 범위를 정하는 합리적
     기본값 — 텔레그램 원장도 뉴스 저장소처럼 KST 하루 단위로 쌓인다(append-only,
     `data/ledger/telegram_msgs.jsonl`)."""
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     kst = timezone(timedelta(hours=9))
     start = now.astimezone(kst).replace(hour=0, minute=0, second=0, microsecond=0)
-    return start.astimezone(timezone.utc)
+    return start.astimezone(UTC)
 
 
 def _merge_telegram_results(fresh: dict, store_rows: list[dict]) -> dict:
@@ -107,7 +107,7 @@ def _merge_telegram_results(fresh: dict, store_rows: list[dict]) -> dict:
     for handle, bucket in buckets.items():
         msgs = sorted(
             bucket.values(),
-            key=lambda m: parse_published(m.get("published")) or datetime.min.replace(tzinfo=timezone.utc),
+            key=lambda m: parse_published(m.get("published")) or datetime.min.replace(tzinfo=UTC),
             reverse=True,
         )
         out[handle] = {"messages": msgs, "error": errors.get(handle)}

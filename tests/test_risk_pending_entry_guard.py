@@ -25,10 +25,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-import pytest
 
-from quant.core.ports import Context
 from quant.core.models import Position, Quote, Signal, SignalAction
+from quant.core.ports import Context
 from quant.trade.risk.manager import RiskManagerImpl
 
 NY = ZoneInfo("America/New_York")

@@ -5,8 +5,7 @@
 Bloomberg·Yahoo 가 겹침 0). 그래서 여러 번 긁어 **쌓고**, 중복은 버리지 않고 센다.
 """
 import json
-from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
+from datetime import UTC, date, datetime, timedelta
 
 from quant.collect.collector import (
     collect_once,
@@ -17,7 +16,7 @@ from quant.collect.collector import (
     store_path,
 )
 
-UTC = timezone.utc
+UTC = UTC
 
 
 # --- 링크 정규화 (중복 판정의 기준) ---
@@ -448,7 +447,7 @@ def test_outcomes_already_filled_are_preserved_on_upgrade(tmp_path):
 # 소스가 실시간 결과와 유니언할 수 있게, 저장소에서 발행창에 맞는 기사를 피드별로
 # 묶어 돌려준다(`fetch_news`의 `feeds` 값과 같은 모양).
 
-from quant.collect.collector import load_window
+from quant.collect.collector import load_window  # noqa: E402 — 파일 뒤쪽 섹션 전용 임포트, 상단 이동 불필요
 
 
 def test_load_window_returns_feeds_shape_grouped_by_feed(tmp_path, monkeypatch):

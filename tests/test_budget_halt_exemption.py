@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 
 from quant.core.ports import ColdFetchBudgetExceeded, DataSourceError
-from quant.trade.loop import run_cycle, CycleTimings
+from quant.trade.loop import CycleTimings, run_cycle
 
 
 class _BudgetStrategy:

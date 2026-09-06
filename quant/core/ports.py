@@ -143,7 +143,7 @@ class RiskManager(Protocol):
     def approve(
         self,
         signal: Signal,
-        ctx: "Context",
+        ctx: Context,
         risk_multiplier: float = 1.0,
         marks: dict[str, float] | None = None,
     ) -> Order | None:

@@ -15,14 +15,14 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from quant.trade.loop import run_cycle
-from quant.core.fx import FixedFxProvider
 from quant.adapters.data.service import Capability, MarketDataService, SourceRoute
-from quant.core.ports import Context
-from quant.core.models import Quote, Side
 from quant.adapters.execution.paper import PaperBroker
 from quant.adapters.persistence.sink import MultiSink
+from quant.core.fx import FixedFxProvider
+from quant.core.models import Quote, Side
 from quant.core.portfolio.portfolio import Portfolio
+from quant.core.ports import Context
+from quant.trade.loop import run_cycle
 from quant.trade.risk.manager import RiskManagerImpl
 from quant.trade.strategy.donchian import DonchianStrategy
 

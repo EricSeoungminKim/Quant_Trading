@@ -39,7 +39,7 @@ entry_grade 를 매겨 매수 타이밍을 붙인다. KR 리포트 전용이다(
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from quant.analyze.entities import extract
 from quant.analyze.entry_grade import entry_grade
@@ -93,8 +93,8 @@ def mention_counts(
     `market`에 해당하는 채널(`channels_for`)만 본다 — KR/US 리포트가 서로
     다른 채널의 언급을 섞지 않는다."""
     handles = {c["handle"] for c in channels_for(market)}
-    now = now or datetime.now(timezone.utc)
-    since = now.astimezone(timezone.utc) - timedelta(days=MENTION_LOOKBACK_DAYS)
+    now = now or datetime.now(UTC)
+    since = now.astimezone(UTC) - timedelta(days=MENTION_LOOKBACK_DAYS)
 
     by_symbol: dict[str, list[dict]] = {}
     for row in telegram_msgs:

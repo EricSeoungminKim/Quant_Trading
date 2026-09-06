@@ -9,7 +9,6 @@ import pytest
 
 from quant.adapters.regime_indicators import TossIndicatorClient, UpbitBitcoinAdapter
 
-
 # --------------------------------------------------------------------- TossIndicatorClient
 
 
@@ -117,28 +116,28 @@ class _FakeHttpClient:
 
 def test_upbit_price_change_pct_computes_from_ticker():
     payload = [{"trade_price": 110_000_000.0, "prev_closing_price": 100_000_000.0}]
-    factory = lambda timeout=10.0: _FakeHttpClient(payload)
+    factory = lambda timeout=10.0: _FakeHttpClient(payload)  # noqa: E731 — 테스트 팩토리, def 불필요
     adapter = UpbitBitcoinAdapter(client_factory=factory)
 
     assert adapter.price_change_pct() == pytest.approx(10.0)
 
 
 def test_upbit_network_failure_returns_none():
-    factory = lambda timeout=10.0: _FakeHttpClient(raise_on_get=True)
+    factory = lambda timeout=10.0: _FakeHttpClient(raise_on_get=True)  # noqa: E731 — 테스트 팩토리, def 불필요
     adapter = UpbitBitcoinAdapter(client_factory=factory)
 
     assert adapter.price_change_pct() is None
 
 
 def test_upbit_malformed_response_returns_none():
-    factory = lambda timeout=10.0: _FakeHttpClient(payload=[{"unexpected": "shape"}])
+    factory = lambda timeout=10.0: _FakeHttpClient(payload=[{"unexpected": "shape"}])  # noqa: E731 — 테스트 팩토리, def 불필요
     adapter = UpbitBitcoinAdapter(client_factory=factory)
 
     assert adapter.price_change_pct() is None
 
 
 def test_upbit_empty_response_returns_none():
-    factory = lambda timeout=10.0: _FakeHttpClient(payload=[])
+    factory = lambda timeout=10.0: _FakeHttpClient(payload=[])  # noqa: E731 — 테스트 팩토리, def 불필요
     adapter = UpbitBitcoinAdapter(client_factory=factory)
 
     assert adapter.price_change_pct() is None

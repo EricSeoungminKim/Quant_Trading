@@ -22,7 +22,7 @@ loop.py를 임포트할 수 없어 순환을 피하려는 것 — 두 모듈 doc
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -180,7 +180,7 @@ class _Feed:
         self._price = price
 
     def quote(self, symbol: str) -> Quote | None:
-        return Quote(symbol=symbol, ts=datetime.now(timezone.utc), price=self._price)
+        return Quote(symbol=symbol, ts=datetime.now(UTC), price=self._price)
 
     def history(self, symbol, interval, n):
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
@@ -188,7 +188,7 @@ class _Feed:
 
 class _FixedClock:
     def now(self) -> datetime:
-        return datetime(2026, 1, 5, 20, 0, tzinfo=timezone.utc)
+        return datetime(2026, 1, 5, 20, 0, tzinfo=UTC)
 
     def is_market_open(self, market: str) -> bool:
         return True

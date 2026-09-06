@@ -12,9 +12,9 @@ Phase 2에서 LLM이 이 위에 얹는다.
 """
 from __future__ import annotations
 
+from quant.analyze.scoring import label_100, to_100
 from quant.collect.contracts import Snapshot
 from quant.core.terms import event_full, event_term
-from quant.analyze.scoring import label_100, to_100
 
 
 def josa(word: str, with_batchim: str, without: str) -> str:

@@ -8,9 +8,9 @@
 """
 from __future__ import annotations
 
-import logging
 import html
 import io
+import logging
 import re
 from pathlib import Path
 
@@ -463,7 +463,7 @@ def _preferred_share_names(base: dict[str, str]) -> dict[str, str]:
     }
 
 
-def make_symbol_resolver(market_code: str, cache_dir: "Path | None"):
+def make_symbol_resolver(market_code: str, cache_dir: Path | None):
     """symbol -> 회사명 resolver. 부채 상환(2026-08-24)으로 collect 의
     `_make_resolver`가 여기로 왔다 — 종목 사전(fuzzy 정제 로직 포함)은 분석
     평면의 소유물이고, 수집은 이 함수를 **주입받아** 쓴다(collect → analyze

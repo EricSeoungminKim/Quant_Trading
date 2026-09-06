@@ -123,8 +123,10 @@ in-sample 파라미터 채택이다. 다음 반복이 할 일은 문턱을 올�
 """
 from __future__ import annotations
 
-from datetime import date as dtdate, datetime
-from typing import Any, Mapping
+from collections.abc import Mapping
+from datetime import date as dtdate
+from datetime import datetime
+from typing import Any
 
 import pandas as pd
 

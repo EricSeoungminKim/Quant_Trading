@@ -11,7 +11,6 @@ from pathlib import Path
 
 from quant.analyze import foreign_trend
 from quant.control import frgn_flow as frgn_flow_ledger
-
 from quant.report.paths import _load_artifact
 
 

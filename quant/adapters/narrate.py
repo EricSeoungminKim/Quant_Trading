@@ -29,7 +29,7 @@ import logging
 import os
 import re
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from quant.adapters.env import get_key
 

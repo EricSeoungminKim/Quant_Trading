@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import argparse
 
-import pytest
-
 
 def test_manual_recs_kr_loads_settings_before_toss_fallback(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("quant.adapters.env.REPO_ROOT", tmp_path)

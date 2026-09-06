@@ -22,7 +22,6 @@ from quant.trade.universe import (
     StaticUniverse,
 )
 
-
 _DONCHIAN_PARAMS = {
     "interval_minutes": 15, "lookback_bars": 40, "volume_mult": 1.5,
     "stop_fallback_pct": 1.5, "risk_reward": 2.0, "max_concurrent_names": 1,
@@ -277,6 +276,8 @@ def test_empty_universe_keeps_the_configured_symbols(tmp_path):
 
 # ------------------------------------------------------- 세션 롤 (run_paper_loop)
 
+from quant.core.models import Position, Signal, SignalAction  # noqa: E402
+from quant.core.ports import Context  # noqa: E402
 from tests.test_loop_resilience import (  # noqa: E402  (fakes 재사용)
     FakeBroker,
     FakeClock,
@@ -287,9 +288,6 @@ from tests.test_loop_resilience import (  # noqa: E402  (fakes 재사용)
     _drive_n_cycles,
     make_settings,
 )
-
-from quant.core.ports import Context  # noqa: E402
-from quant.core.models import Position, Signal, SignalAction  # noqa: E402
 
 
 class _FakeUniverse:

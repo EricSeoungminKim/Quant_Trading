@@ -8,7 +8,6 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-import pytest
 
 from quant.trade.regime.indicators import (
     bitcoin_score,

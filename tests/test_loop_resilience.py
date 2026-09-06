@@ -9,20 +9,24 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
 
 from quant.apps.config import Settings
+from quant.core.models import Fill, Order, Position, Quote, Side, Signal, SignalAction
+from quant.core.ports import Context
 from quant.trade.control import TradingControl
 from quant.trade.loop import (
-    CycleTimings, _build_marks_and_unpriced, _flatten_all, _retry_pending_flatten,
-    run_cycle, run_paper_loop,
+    CycleTimings,
+    _build_marks_and_unpriced,
+    _flatten_all,
+    _retry_pending_flatten,
+    run_cycle,
+    run_paper_loop,
 )
-from quant.core.ports import Context
-from quant.core.models import Fill, Order, Position, Quote, Side, Signal, SignalAction
 from quant.trade.risk.manager import MARKET_CLOSED_MARKER
 
 _OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
@@ -42,7 +46,7 @@ class FakeClock:
         self.per_market = per_market
 
     def now(self) -> datetime:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
     def is_market_open(self, market: str) -> bool:
         if self.per_market is not None:
@@ -61,7 +65,7 @@ class FakeClock:
 
 class FakeDataFeed:
     def quote(self, symbol: str) -> Quote | None:
-        return Quote(symbol=symbol, ts=datetime.now(timezone.utc), price=100.0)
+        return Quote(symbol=symbol, ts=datetime.now(UTC), price=100.0)
 
     def history(self, symbol: str, interval: str, n: int) -> pd.DataFrame:
         return pd.DataFrame(columns=_OHLCV_COLUMNS)
@@ -100,7 +104,7 @@ class FakeBroker:
                 pos.qty = 0.0
         return Fill(
             symbol=order.symbol, side=order.side, qty=order.qty, price=100.0,
-            ts=datetime.now(timezone.utc), strategy_id=order.strategy_id, reason=order.reason,
+            ts=datetime.now(UTC), strategy_id=order.strategy_id, reason=order.reason,
             fee=self._fee,
         )
 
@@ -198,12 +202,12 @@ class _FixedClock:
 
 
 # 2026-01-05(월) 10:00 ET = US 연속 거래 구간(09:30~16:00 ET) 한복판.
-_US_CONTINUOUS_NOW = datetime(2026, 1, 5, 15, 0, tzinfo=timezone.utc)
+_US_CONTINUOUS_NOW = datetime(2026, 1, 5, 15, 0, tzinfo=UTC)
 # 2026-01-05(월) 10:00 KST = KR 연속 거래 구간(09:00~15:20 KST) 한복판.
-_KR_CONTINUOUS_NOW = datetime(2026, 1, 5, 1, 0, tzinfo=timezone.utc)
+_KR_CONTINUOUS_NOW = datetime(2026, 1, 5, 1, 0, tzinfo=UTC)
 # 동시호가 구간(US 09:00 ET, 정규장 09:30 전) — is_market_open은 True일 수 있어도
 # in_continuous_session은 False여야 한다.
-_US_PREOPEN_NOW = datetime(2026, 1, 5, 14, 0, tzinfo=timezone.utc)
+_US_PREOPEN_NOW = datetime(2026, 1, 5, 14, 0, tzinfo=UTC)
 
 
 class FakeSink:
@@ -299,7 +303,7 @@ class _RecordingDataFeed:
         price = self.prices.get(symbol)
         if price is None:
             return None
-        return Quote(symbol=symbol, ts=datetime.now(timezone.utc), price=price)
+        return Quote(symbol=symbol, ts=datetime.now(UTC), price=price)
 
     def history(self, symbol: str, interval: str, n: int) -> pd.DataFrame:
         return pd.DataFrame(columns=_OHLCV_COLUMNS)
@@ -1007,13 +1011,13 @@ def test_session_summary_counts_fills_and_fees_then_resets(tmp_path):
 # 포지션 현황 리포트 (1분 주기, 보유 중일 때만) — 2026-08-10
 # ---------------------------------------------------------------------------
 def test_position_report_shows_entry_pnl_and_rails():
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    from quant.trade.loop import _position_report_text
-    from quant.core.ports import Context
     from quant.core.models import Position
+    from quant.core.ports import Context
+    from quant.trade.loop import _position_report_text
 
-    now = datetime(2026, 8, 10, 9, 30, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 10, 9, 30, tzinfo=UTC)
     pos = Position(symbol="088350", qty=363, avg_cost=4606.15,
                    opened_at=now - timedelta(minutes=18))
     pos.meta.update(entry=4606.15, stop=4522.0, target=None)
@@ -1041,12 +1045,12 @@ def test_position_report_shows_entry_pnl_and_rails():
 def test_position_report_header_shows_cash_and_invested_mixed_markets():
     """헤더 밑 잔고 요약: 남은 현금 + 주식 투자금(US는 KRW 환산) — 미장에서도
     동일하게 동작해야 한다(2026-08-10 사용자 요청)."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    from quant.trade.loop import _position_report_text
     from quant.core.fx import FixedFxProvider
-    from quant.core.ports import Context
     from quant.core.models import Position
+    from quant.core.ports import Context
+    from quant.trade.loop import _position_report_text
 
     kr = Position(symbol="069500", qty=100, avg_cost=10_000.0)
     kr.meta.update(entry=10_000.0, stop=9_800.0, target=11_000.0)
@@ -1065,7 +1069,7 @@ def test_position_report_header_shows_cash_and_invested_mixed_markets():
 
     class _Clock:
         def now(self):
-            return datetime(2026, 8, 10, 23, 40, tzinfo=timezone.utc)  # US 세션 시간대
+            return datetime(2026, 8, 10, 23, 40, tzinfo=UTC)  # US 세션 시간대
 
     text = _position_report_text(Context(clock=_Clock(), data=None, broker=_Broker()),
                                  {"069500": 10_500.0, "TQQQ": 75.0})
@@ -1078,11 +1082,11 @@ def test_position_report_header_shows_cash_and_invested_mixed_markets():
 
 def test_position_report_footer_shows_daily_pnl():
     """맨 밑 금일 손익: 시작 자산 대비 ±원 + % (2026-08-10 사용자 요청)."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    from quant.trade.loop import _position_report_text
-    from quant.core.ports import Context
     from quant.core.models import Position
+    from quant.core.ports import Context
+    from quant.trade.loop import _position_report_text
 
     pos = Position(symbol="069500", qty=100, avg_cost=10_000.0)
     pos.meta.update(entry=10_000.0, stop=9_800.0, target=None)
@@ -1118,7 +1122,7 @@ def test_position_report_footer_shows_daily_pnl():
 
     class _Clock:
         def now(self):
-            return datetime(2026, 8, 10, 5, 0, tzinfo=timezone.utc)
+            return datetime(2026, 8, 10, 5, 0, tzinfo=UTC)
 
     text = _position_report_text(Context(clock=_Clock(), data=_Data(), broker=_Broker()),
                                  {"069500": 10_500.0}, risk=_Risk())
@@ -1126,8 +1130,8 @@ def test_position_report_footer_shows_daily_pnl():
 
 
 def test_position_report_is_none_without_positions():
-    from quant.trade.loop import _position_report_text
     from quant.core.ports import Context
+    from quant.trade.loop import _position_report_text
 
     class _Broker:
         def positions(self):
@@ -1138,17 +1142,17 @@ def test_position_report_is_none_without_positions():
 
 def test_position_report_survives_missing_mark():
     """시세 조회 실패 종목도 리포트를 죽이지 않고 '미상'으로 남긴다."""
-    from quant.trade.loop import _position_report_text
-    from quant.core.ports import Context
     from quant.core.models import Position
+    from quant.core.ports import Context
+    from quant.trade.loop import _position_report_text
 
     pos = Position(symbol="TQQQ", qty=10, avg_cost=70.0)
     pos.meta.update(entry=70.0, stop=68.0, target=None)
 
     class _Clock:
         def now(self):
-            from datetime import datetime, timezone
-            return datetime(2026, 8, 10, 9, 30, tzinfo=timezone.utc)
+            from datetime import datetime
+            return datetime(2026, 8, 10, 9, 30, tzinfo=UTC)
 
     class _Broker:
         def positions(self):
@@ -1164,10 +1168,10 @@ def test_position_report_survives_missing_mark():
 def test_position_meta_is_persisted_when_strategy_writes_stop(tmp_path):
     """전략이 _ensure_state로 meta를 채운 뒤 주문이 없어도 디스크에 반영돼야 한다.
     실측 버그: save()가 주문 시점에만 불려 디스크 meta가 {}로 남았다."""
-    from quant.trade.loop import _persist_position_meta
-    from quant.core.ports import Context
     from quant.core.models import Position
     from quant.core.portfolio.portfolio import Portfolio
+    from quant.core.ports import Context
+    from quant.trade.loop import _persist_position_meta
 
     pos = Position(symbol="088350", qty=363, avg_cost=4606.15)
     portfolio = Portfolio(cash=1000.0, positions={"088350": pos},
@@ -1194,10 +1198,10 @@ def test_position_meta_is_persisted_when_strategy_writes_stop(tmp_path):
 
 def test_persist_position_meta_skips_when_unchanged(tmp_path):
     """변경이 없으면 쓰지 않는다 — 5초마다 tmp-replace는 불필요한 I/O."""
-    from quant.trade.loop import _persist_position_meta
-    from quant.core.ports import Context
     from quant.core.models import Position
     from quant.core.portfolio.portfolio import Portfolio
+    from quant.core.ports import Context
+    from quant.trade.loop import _persist_position_meta
 
     pos = Position(symbol="TQQQ", qty=10, avg_cost=70.0)
     pos.meta.update(entry=70.0, stop=68.0)
@@ -1221,8 +1225,8 @@ def test_persist_position_meta_skips_when_unchanged(tmp_path):
 
 def test_persist_position_meta_noop_for_broker_without_portfolio():
     """실거래 브로커처럼 portfolio를 노출하지 않으면 아무 것도 하지 않는다."""
-    from quant.trade.loop import _persist_position_meta
     from quant.core.ports import Context
+    from quant.trade.loop import _persist_position_meta
 
     class _Broker:
         def positions(self):
@@ -1301,8 +1305,8 @@ def test_broken_strategy_with_open_position_is_reported_not_silently_skipped():
     """전략이 on_cycle에서 죽으면 그 전략의 손절·목표가·EoD청산이 통째로 건너뛰어진다
     (포지션 관리가 전부 on_cycle 안에 있다). 예전에는 WARNING 로그만 남고 사이클은
     '성공'으로 집계돼 **청산이 멈춘 상태를 시스템이 정상이라고 보고**했다."""
-    from quant.trade.loop import _strategies_with_open_lots
     from quant.core.models import Position
+    from quant.trade.loop import _strategies_with_open_lots
 
     class _Broker:
         def __init__(self, positions):
@@ -1330,8 +1334,8 @@ def test_broken_strategy_with_open_position_is_reported_not_silently_skipped():
 def test_untagged_open_position_counts_every_broken_strategy_as_risky():
     """랏 태그가 없으면 누가 소유자인지 알 수 없다 — 모르는 것을 안전하다고
     가정하지 않고 위험 쪽으로 센다."""
-    from quant.trade.loop import _strategies_with_open_lots
     from quant.core.models import Position
+    from quant.trade.loop import _strategies_with_open_lots
 
     class _Broker:
         def positions(self):
@@ -1344,8 +1348,8 @@ def test_untagged_open_position_counts_every_broken_strategy_as_risky():
 
 
 def test_no_open_positions_means_broken_strategy_is_not_escalated():
-    from quant.trade.loop import _strategies_with_open_lots
     from quant.core.models import Position
+    from quant.trade.loop import _strategies_with_open_lots
 
     class _Broker:
         def positions(self):
@@ -1359,8 +1363,8 @@ def test_no_open_positions_means_broken_strategy_is_not_escalated():
 
 def test_cycle_records_strategy_error_so_the_loop_can_escalate():
     """run_cycle이 예외를 삼키더라도 그 사실이 timings에 남아야 한다."""
-    from quant.trade.loop import CycleTimings, run_cycle
     from quant.adapters.persistence.sink import MultiSink
+    from quant.trade.loop import CycleTimings, run_cycle
 
     class _Boom:
         id = "boom"
@@ -1507,9 +1511,9 @@ def test_heartbeat_labels_the_number_as_cycles_not_checks():
     """cycle_count는 엔진이 한 바퀴 돈 횟수(poll 5초 → 분당 ~10회)인데 하트비트는
     30분마다 온다. "N번째 확인"이라고 쓰면 알림 횟수처럼 읽혀 숫자가 300~400씩
     점프하는 이유를 알 수 없다 — 세는 단위를 정확히 쓴다."""
-    from quant.trade.loop import _heartbeat_text
-    from quant.trade.control import TradingControl
     from quant.core.models import Position
+    from quant.trade.control import TradingControl
+    from quant.trade.loop import _heartbeat_text
 
     class _Broker:
         def positions(self):
@@ -1537,8 +1541,8 @@ def test_heartbeat_labels_the_number_as_cycles_not_checks():
 
 def test_heartbeat_omits_uptime_when_unknown():
     """가동시간을 모르면 그 줄만 빠지고 나머지는 정상이어야 한다."""
-    from quant.trade.loop import _heartbeat_text
     from quant.trade.control import TradingControl
+    from quant.trade.loop import _heartbeat_text
 
     class _Broker:
         def positions(self):

@@ -51,12 +51,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from quant.apps.config import load_settings
-from quant.core.models import market_of
-from quant.core.clock import SimClock
 from quant.adapters.data.history import HistoryDataFeed
+from quant.apps.config import load_settings
+from quant.core.clock import SimClock
+from quant.core.models import SignalAction, market_of
 from quant.core.ports import Context
-from quant.core.models import SignalAction
 from quant.trade.strategy import STRATEGY_REGISTRY
 
 # 분포(중앙값·사분위)를 말하려면 최소 이 정도는 있어야 한다. 근거는

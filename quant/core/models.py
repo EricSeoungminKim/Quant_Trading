@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
@@ -366,7 +365,7 @@ class OrderState:
     reason: str = ""
     # 이 주문이 만들어낸 체결(있으면). 원장에 넣을 값은 여기서 나온다 —
     # 수수료·실현손익·현금 스냅샷은 브로커만 아는 값이라 상태기계가 만들 수 없다.
-    fill: "Fill | None" = None
+    fill: Fill | None = None
 
     @property
     def remaining_qty(self) -> float:

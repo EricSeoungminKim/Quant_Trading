@@ -31,7 +31,8 @@ Phase A, `donchian_pure`/`scalp_1m_pure` 다음 이전 대상.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import pandas as pd

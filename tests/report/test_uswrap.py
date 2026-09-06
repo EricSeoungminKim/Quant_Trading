@@ -244,9 +244,12 @@ def test_uswrap_cli_no_market_flag_needed():
 
 def test_gather_kr_wrap_reads_local_partitions_and_flow(tmp_path):
     """어제 KR 세션 1분봉(로컬 파케이) + frgn_flow 원장 → 패턴·흐름 조립."""
-    import pandas as pd
-    from datetime import datetime, time as dtime
+    from datetime import datetime
+    from datetime import time as dtime
     from zoneinfo import ZoneInfo
+
+    import pandas as pd
+
     from quant.report.collect.uswrap import gather_kr_wrap
 
     kst = ZoneInfo("Asia/Seoul")

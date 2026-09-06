@@ -60,7 +60,7 @@ class TelegramApprovalBot:
         self._muted_until = 0.0
 
     @classmethod
-    def from_env(cls) -> "TelegramApprovalBot":
+    def from_env(cls) -> TelegramApprovalBot:
         token = os.environ.get("TELEGRAM_BOT_TOKEN")
         bridge_token = os.environ.get("TELEGRAM_BRIDGE_BOT_TOKEN")
         if token and bridge_token and token == bridge_token:

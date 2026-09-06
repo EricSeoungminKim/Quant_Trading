@@ -17,7 +17,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -41,7 +41,7 @@ class _Feed:
         price = self._prices.get(symbol)
         if price is None:
             return None
-        return Quote(symbol=symbol, ts=datetime.now(timezone.utc), price=price)
+        return Quote(symbol=symbol, ts=datetime.now(UTC), price=price)
 
     def history(self, symbol, interval, n):
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])

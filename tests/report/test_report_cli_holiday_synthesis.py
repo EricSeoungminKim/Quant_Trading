@@ -18,7 +18,8 @@ from quant.analyze.opendays import anchor_dir_for
 from quant.collect.contracts import SCHEMA_VERSION, Snapshot, SourceResult
 from quant.collect.snapshot import save_snapshot
 from quant.report.collect.holiday_synthesis import (
-    _apply_holiday_synthesis, _build_holiday_synthesis_prose,
+    _apply_holiday_synthesis,
+    _build_holiday_synthesis_prose,
 )
 from quant.report.paths import _engine_json_path
 

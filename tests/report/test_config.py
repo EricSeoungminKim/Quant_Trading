@@ -5,7 +5,7 @@ from quant.adapters.env import DEFAULT_ENV, load_env
 
 def test_default_env_is_repo_root_not_quant_package():
     repo_root = Path(__file__).resolve().parents[2]
-    assert DEFAULT_ENV == repo_root / ".env.local"
+    assert repo_root / ".env.local" == DEFAULT_ENV
 
 
 def test_load_env_parses_keys_and_ignores_comments(tmp_path: Path):

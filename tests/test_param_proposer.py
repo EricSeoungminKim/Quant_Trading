@@ -13,7 +13,11 @@ from __future__ import annotations
 import json
 
 from quant.analyze.param_proposer import (
-    append_proposals, build_prompt, parse_proposals, propose, render_note,
+    append_proposals,
+    build_prompt,
+    parse_proposals,
+    propose,
+    render_note,
 )
 
 

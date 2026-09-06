@@ -19,6 +19,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import tg_bridge  # noqa: E402
+
 from quant.trade.control import TradingControl  # noqa: E402
 
 
@@ -154,6 +155,7 @@ def test_watchlist_names_falls_back_to_engine_symbol_cache(tmp_path, monkeypatch
     이름을 알고 있었다. 관심종목 이름이 우선하고, 없으면 캐시가 메운다.
     """
     import json as _json
+
     import tg_bridge
 
     cache = tmp_path / "symbol_names.json"

@@ -6,7 +6,7 @@ server/scripts/tg_bridge.py는 패키지가 아닌 독립 스크립트라 sys.pa
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -732,11 +732,11 @@ def _write_ledger(tmp_path, rows):
 
 def test_daily_record_realized_and_unrealized(tmp_path, monkeypatch):
     import json
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     import tg_bridge
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     yesterday = now - timedelta(days=2)
     ledger = _write_ledger(tmp_path, [
         # 오늘 매수 — 실현 손익에 포함되면 안 됨
@@ -805,6 +805,7 @@ def test_daily_record_empty_day(tmp_path, monkeypatch):
 
 def test_status_appends_daily_record_when_toss_available(tmp_path, monkeypatch):
     import tg_bridge
+
     from quant.trade.control import TradingControl
 
     monkeypatch.setattr(tg_bridge, "LEDGER_PATH", tmp_path / "no_ledger.jsonl")
@@ -846,7 +847,6 @@ def test_parse_quote_rows_accepts_real_server_lastprice_shape():
 def test_daily_record_treats_kr_open_to_us_close_as_one_day(tmp_path, monkeypatch):
     """거래일 = KR 개장 ~ 다음날 US 마감. 달력 자정으로 쪼개지면 안 된다
     (2026-08-11 사용자 정의)."""
-    import json
     from datetime import datetime, timezone
 
     import tg_bridge
@@ -1218,16 +1218,16 @@ def test_source_flag_still_works_in_leading_position():
 
 def test_unknown_double_dash_option_is_rejected_not_treated_as_symbol():
     """모르는 `--` 인자를 심볼로 삼키면 같은 부류의 사고가 반복된다."""
-    import tg_bridge
     import pytest as _pytest
+    import tg_bridge
 
     with _pytest.raises(tg_bridge._WatchAddUsageError):
         tg_bridge._parse_watch_add_argv(["NVDA", "--bogus"])
 
 
 def test_source_flag_without_value_is_a_usage_error():
-    import tg_bridge
     import pytest as _pytest
+    import tg_bridge
 
     with _pytest.raises(tg_bridge._WatchAddUsageError):
         tg_bridge._parse_watch_add_argv(["NVDA", "--source"])

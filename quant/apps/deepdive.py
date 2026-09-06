@@ -14,8 +14,13 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from quant.analyze.relations import (
-    MIN_EVIDENCE, build_extraction_prompt, evidence_score, match_codes,
-    merge_relation, parse_candidates)
+    MIN_EVIDENCE,
+    build_extraction_prompt,
+    evidence_score,
+    match_codes,
+    merge_relation,
+    parse_candidates,
+)
 from quant.analyze.theme_search import beneficiaries, select_sources
 from quant.collect.sources.article_body import fetch_body
 from quant.collect.sources.naver_quant import fetch_quant_top
@@ -47,8 +52,7 @@ def _name_maps(root: Path, market: str):
     건너뛴다**(코드가 이미 확정된 뒤 표시용 이름을 붙이는 것뿐이라 오탐 위험이
     없다는 전제) — 그걸 매칭에 재사용하면 SK·LG(2글자) 같은 조각, Gap(모호명)
     같은 이름이 그대로 들어와 오탐을 낸다(I5). 테스트는 이 함수를 바꿔친다."""
-    from quant.analyze.entities import (
-        AMBIGUOUS_NAMES, MIN_NAME_LEN, load_name_map, load_table, load_us_table)
+    from quant.analyze.entities import AMBIGUOUS_NAMES, MIN_NAME_LEN, load_name_map, load_table, load_us_table
     cache = root / "data" / "cache"          # report_cli._paths 와 같은 경로 규약
     code_to_name = load_name_map(cache, market)  # 표시용 — 우선주명 등 매칭엔 불필요한 이형도 포함
     if market == "US":

@@ -20,7 +20,7 @@ import logging
 import re
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 
 from quant.adapters.http import client
@@ -364,13 +364,13 @@ def parse_published(raw: str | None) -> datetime | None:
         except (TypeError, ValueError):
             continue
         if dt is not None and dt.tzinfo is not None:
-            return dt.astimezone(timezone.utc)
+            return dt.astimezone(UTC)
 
     try:  # Atom: "2026-08-12T08:25:27Z" / "2026-08-12T08:25:27+09:00"
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return dt.astimezone(timezone.utc) if dt.tzinfo else None
+    return dt.astimezone(UTC) if dt.tzinfo else None
 
 
 def filter_since(items: list[dict], since: datetime | None) -> tuple[list[dict], int]:

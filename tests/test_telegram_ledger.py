@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from quant.adapters.notify import telegram as tg
 
 

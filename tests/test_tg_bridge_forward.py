@@ -15,6 +15,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import tg_bridge  # noqa: E402
+
 from quant.collect.sources.telegram_channels import load_ledger  # noqa: E402
 
 

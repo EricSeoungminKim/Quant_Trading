@@ -8,7 +8,7 @@ import contextlib
 import json
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 import websockets
@@ -237,7 +237,7 @@ def test_wait_for_tick_fires_immediately_on_tick_and_false_on_timeout():
 
         async def emit_soon() -> None:
             await asyncio.sleep(0.05)
-            feed._set_quote("005930", Quote(symbol="005930", ts=datetime.now(timezone.utc), price=100.0))
+            feed._set_quote("005930", Quote(symbol="005930", ts=datetime.now(UTC), price=100.0))
 
         emit_task = asyncio.create_task(emit_soon())
         got = await feed.wait_for_tick(["005930"], timeout=2.0)

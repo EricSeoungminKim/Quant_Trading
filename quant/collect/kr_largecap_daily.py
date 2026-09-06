@@ -65,9 +65,9 @@ import json
 import logging
 import re
 import sys
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterable
 
 from quant.adapters.env import REPO_ROOT, get_key
 from quant.collect.listed_companies import fetch_kind_corp_list

@@ -44,7 +44,6 @@
 from __future__ import annotations
 
 import math
-from datetime import date
 
 # 리포트 방향콜/종목 후보를 재는 지평(거래일). judgment.py의 HOLD_HORIZONS
 # (1,5,20 — LLM 리더보드용)와 의도적으로 다르다 — 이건 소유자가 명시한

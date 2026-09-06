@@ -42,7 +42,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from quant.control.judgment import selection_attributes
@@ -242,7 +242,7 @@ def to_judgments(final: list[dict], rows: list[dict], version: str = PRODUCER_VE
     input_hash 는 selection_judgment 와 **동일한 산식**(selection_attributes →
     input_hash)이어야 한다 — 리더보드의 "같은 입력을 본 판단끼리 비교" 전제."""
     by_symbol = {p["symbol"]: p for p in final}
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     out: list[Judgment] = []
     for row in rows:
         attrs = selection_attributes(row)

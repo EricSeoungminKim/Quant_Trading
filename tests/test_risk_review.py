@@ -12,8 +12,15 @@ from __future__ import annotations
 import json
 
 from quant.control.risk_review import (
-    CONCENTRATION_THRESHOLD, LOSS_STREAK_THRESHOLD, append_ledger, build_dossier,
-    deterministic_flags, format_card, parse_issues, run_review, strategy_consecutive_losses,
+    CONCENTRATION_THRESHOLD,
+    LOSS_STREAK_THRESHOLD,
+    append_ledger,
+    build_dossier,
+    deterministic_flags,
+    format_card,
+    parse_issues,
+    run_review,
+    strategy_consecutive_losses,
     to_record,
 )
 

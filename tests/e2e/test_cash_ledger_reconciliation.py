@@ -12,23 +12,23 @@ cash_audit.audit_cash가 재구성하는 현금흐름과 형태가 동일하므�
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
 
-from quant.trade.cash_audit import audit_cash
+from quant.adapters.execution.paper import PaperBroker
 from quant.control.ledger import TradeLedgerSink, load_trades
 from quant.core.fx import FixedFxProvider
 from quant.core.models import Order, Quote, Side
-from quant.adapters.execution.paper import PaperBroker
 from quant.core.portfolio.portfolio import Portfolio
+from quant.trade.cash_audit import audit_cash
 
 FX_RATE = 1_400.0
 START_CASH_KRW = 5_000_000.0
 TOL = 1e-6
 
-TS0 = datetime(2026, 8, 10, 1, 0, tzinfo=timezone.utc)
+TS0 = datetime(2026, 8, 10, 1, 0, tzinfo=UTC)
 
 _EMPTY_BARS = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 

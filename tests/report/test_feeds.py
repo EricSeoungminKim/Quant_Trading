@@ -419,7 +419,7 @@ def test_live_fetch_youtube_kr_empty_channels_not_error():
 
 # ── 발행시각 파싱 회귀 (2026-08-13 피드 감사에서 발견) ──────────────────
 
-from datetime import timezone as _tz  # noqa: E402
+from datetime import UTC  # noqa: E402
 
 from quant.collect.sources.feeds import parse_published  # noqa: E402
 
@@ -446,7 +446,7 @@ def test_unknown_timezone_yields_none_not_a_wrong_utc_guess():
 def test_iso8601_with_offset_is_parsed():
     """dc:date 는 ISO8601 로 온다(경향신문)."""
     assert parse_published("2026-08-13T09:00:00+09:00").isoformat() == "2026-08-13T00:00:00+00:00"
-    assert parse_published("2026-08-13T00:00:00Z").tzinfo is _tz.utc
+    assert parse_published("2026-08-13T00:00:00Z").tzinfo is UTC
 
 
 def test_dc_date_is_read_when_pubdate_is_absent():

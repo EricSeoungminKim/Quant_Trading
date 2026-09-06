@@ -46,7 +46,7 @@ import hashlib
 import json
 import random
 import statistics as st
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 # 판정에 필요한 최소 종결 건수(변경군 기준, 전/후 각각). 30은 `ledger.py`의
@@ -117,7 +117,7 @@ def record_fingerprints(
             "fingerprint": fp,
             "baseline": sid not in last,
             "params": cfg.get("params") or {},
-            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "recorded_at": datetime.now(UTC).isoformat(),
         })
 
     if added:

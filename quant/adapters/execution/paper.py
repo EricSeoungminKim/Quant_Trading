@@ -13,15 +13,21 @@ from __future__ import annotations
 
 import copy
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from quant.core.fx import FixedFxProvider, FxProvider
-from quant.core.ports import DataFeed
 from quant.core import oms
+from quant.core.fx import FixedFxProvider, FxProvider
 from quant.core.models import (
-    Fill, OpenOrder, Order, OrderState, Position, Side, market_of_symbol,
+    Fill,
+    OpenOrder,
+    Order,
+    OrderState,
+    Position,
+    Side,
+    market_of_symbol,
 )
 from quant.core.portfolio.portfolio import Portfolio, to_krw
+from quant.core.ports import DataFeed
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +155,7 @@ class PaperBroker:
             # "ts": null 110건): 이 아래 not_submitted 호출들이 at= 을 안 넘겨
             # oms.accept()의 updated_at 이 그대로 None 으로 남았다. 벽시계로 채운다.
             return oms.not_submitted(
-                order, "시세 없음/0 이하 — 주문 생성 불가", at=datetime.now(timezone.utc))
+                order, "시세 없음/0 이하 — 주문 생성 불가", at=datetime.now(UTC))
         slippage_bps = self._slippage_bps_for(order.symbol)
         # 기준가: 평소엔 현재가, 오버라이드가 걸려 있으면(봉내 체결 모델) 그 값.
         # 0 이하 오버라이드는 무시한다 — 가격 0으로 체결시키면 회계가 거짓말을 한다.

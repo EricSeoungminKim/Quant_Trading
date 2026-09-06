@@ -1,8 +1,8 @@
 from datetime import date, datetime
 
 from quant.analyze.briefing import build
-from quant.core.report_clock import KST
 from quant.collect.contracts import SCHEMA_VERSION, Snapshot, SourceResult
+from quant.core.report_clock import KST
 
 _AT = datetime(2026, 8, 12, 8, 0, tzinfo=KST)
 

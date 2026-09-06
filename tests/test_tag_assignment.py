@@ -64,9 +64,9 @@ def test_tag_constants_match_assignment_table_core_four():
     assert FrgnAccumulateStrategy is STRATEGY_REGISTRY["frgn_accumulate"]
     assert CloseBetStrategy is STRATEGY_REGISTRY["close_bet"]
 
-    from quant.trade.strategy import news_momentum as _news_momentum
-    from quant.trade.strategy import frgn_accumulate as _frgn_accumulate
     from quant.trade.strategy import close_bet as _close_bet
+    from quant.trade.strategy import frgn_accumulate as _frgn_accumulate
+    from quant.trade.strategy import news_momentum as _news_momentum
 
     assert _news_momentum._EVENT_TAG == "EVENT"
     assert TAG_ASSIGNMENT["EVENT"] == ["news_momentum"]

@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from quant.analyze.ai_trader import (
-    append_judgments, daily_note, dossier_lines, parse_stage_json, run_debate,
-    to_judgments, MAX_PICKS,
+    MAX_PICKS,
+    append_judgments,
+    daily_note,
+    dossier_lines,
+    parse_stage_json,
+    run_debate,
+    to_judgments,
 )
 from quant.control.judgment import selection_judgment
 

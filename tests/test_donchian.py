@@ -7,8 +7,8 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import pytest
 
-from quant.core.ports import Context
 from quant.core.models import Position, Quote, SignalAction
+from quant.core.ports import Context
 from quant.trade.strategy.donchian import DonchianStrategy
 
 NY = ZoneInfo("America/New_York")

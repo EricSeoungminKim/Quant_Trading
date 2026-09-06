@@ -25,7 +25,7 @@ import json
 import re
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 from quant.adapters.http import client
@@ -180,7 +180,7 @@ def fetch_and_persist(root: Path, getter=None, now: datetime | None = None) -> d
     자체가 이미 페이지 실패를 빈 리스트로 흡수하므로 여기선 그 결과를 그대로
     기록할 뿐이다.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     observed = now.astimezone(_KST).date()
     rows = fetch_quant_top(getter=getter)
     ledger_rows = [

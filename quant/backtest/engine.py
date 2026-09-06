@@ -35,15 +35,25 @@ USD, 자산곡선이 KRW라 둘을 비교하는 사람이 아무도 없었고, �
 from __future__ import annotations
 
 import copy
-from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 
+from quant.adapters.data.history import HistoryDataFeed
+from quant.adapters.data.resample import resample_1m
+from quant.adapters.data.stub import SESSION_ANCHOR, StubDataFeed
+from quant.adapters.execution.paper import PaperBroker
+from quant.adapters.persistence.sink import MultiSink
 from quant.apps.config import load_settings
 from quant.backtest import roundtrips
-from quant.core.models import Signal, SignalAction, market_of
+from quant.core.clock import SimClock
+from quant.core.models import Signal, SignalAction, market_of, market_of_symbol
+from quant.core.portfolio.portfolio import Portfolio, to_krw
+from quant.core.ports import Context
+from quant.core.session import BarSessionCalendar, MultiMarketBarSessionCalendar
+
 # `_execute_signal`은 비공개지만 **의도적으로** 재사용한다. 봉내(intrabar) 청산이
 # 승인(risk.approve) → 주문 → 체결 → 싱크 → 랏 정리를 거치는 경로가 전략이 낸
 # EXIT 시그널과 **한 글자도 다르면 안 되기 때문**이다. 브로커를 직접 조작해
@@ -51,16 +61,6 @@ from quant.core.models import Signal, SignalAction, market_of
 # 그 갈라짐은 백테스트 숫자에만 나타나 아무도 못 본다. `quant/trade/loop.py`의
 # `_hard_rail_exit`(엔진 레벨 하드레일)이 쓰는 것과 정확히 같은 패턴이다.
 from quant.trade.loop import CycleTimings, _execute_signal, run_cycle
-from quant.core.clock import SimClock
-from quant.adapters.data.history import HistoryDataFeed
-from quant.adapters.data.resample import resample_1m
-from quant.core.session import BarSessionCalendar, MultiMarketBarSessionCalendar
-from quant.adapters.data.stub import SESSION_ANCHOR, StubDataFeed
-from quant.core.ports import Context
-from quant.core.models import market_of_symbol
-from quant.adapters.execution.paper import PaperBroker
-from quant.adapters.persistence.sink import MultiSink
-from quant.core.portfolio.portfolio import Portfolio, to_krw
 from quant.trade.risk.manager import RiskManagerImpl
 from quant.trade.strategy import build_strategies
 

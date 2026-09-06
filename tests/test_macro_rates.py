@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from quant.adapters.macro.fred import append_macro_rows, fetch_series, parse_fred_csv
 from quant.adapters.regime_indicators import FileMacroIndicatorClient
 

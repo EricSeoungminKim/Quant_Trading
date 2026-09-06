@@ -11,18 +11,19 @@
 """
 from __future__ import annotations
 
-from quant.core.ports import Context
-from quant.core.models import Position
-from quant.trade.risk.manager import MARKET_CLOSED_MARKER, RiskManagerImpl
+from datetime import UTC
 
+from quant.core.models import Position
+from quant.core.ports import Context
+from quant.trade.risk.manager import MARKET_CLOSED_MARKER, RiskManagerImpl
 from tests.test_risk_circuit_breakers import (
     _DEFAULT_NOW,
     _MARKET_OF,
     _SYMBOL,
-    _FakeBroker,
-    _FakeData,
     _entry,
     _exit,
+    _FakeBroker,
+    _FakeData,
     _risk_cfg,
 )
 
@@ -101,8 +102,8 @@ def _risk_with_extended() -> RiskManagerImpl:
 
 
 def _kst(h, m, day=2026_01_05):
-    from zoneinfo import ZoneInfo
     from datetime import datetime
+    from zoneinfo import ZoneInfo
     # 2026-01-05 = 월요일 (평일 게이트 통과용)
     return datetime(2026, 1, 5, h, m, tzinfo=ZoneInfo("Asia/Seoul"))
 
@@ -209,16 +210,16 @@ def test_extended_session_us_premarket_dst_safe_across_edt_and_est(fake_clock_cl
     실제 UTC 오프셋 차이(-4 vs -5)를 명시적으로 통과시킨다 — 시장 로컬 tz 대신
     KST로 고정 판정했다면(과거 버그 모양) 두 계절의 결과가 서로 어긋났을
     것이다(KST는 DST가 없어 오프셋이 항상 +9로 고정이므로)."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     risk = _risk_with_us_extended()
     data = _FakeData(price=100.0)
     broker = _FakeBroker(10_000_000.0, None)
 
     # EDT: 2026-07-06(월) 08:30 America/New_York = 12:30 UTC.
-    edt_now = datetime(2026, 7, 6, 12, 30, tzinfo=timezone.utc)
+    edt_now = datetime(2026, 7, 6, 12, 30, tzinfo=UTC)
     # EST: 2026-01-05(월) 08:30 America/New_York = 13:30 UTC.
-    est_now = datetime(2026, 1, 5, 13, 30, tzinfo=timezone.utc)
+    est_now = datetime(2026, 1, 5, 13, 30, tzinfo=UTC)
 
     for now in (edt_now, est_now):
         clock = fake_clock_cls(now=now, market_open=False)

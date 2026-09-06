@@ -15,18 +15,18 @@ asyncio.sleep을 패치해 지정한 사이클 수만큼만 돌린다(tests/test
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
 
-from quant.trade.approval import ApprovalGate
 from quant.apps.config import Settings
+from quant.core.models import Fill, Order, Position, Quote, Side, Signal, SignalAction
+from quant.core.ports import Context
+from quant.trade.approval import ApprovalGate
 from quant.trade.control import TradingControl
 from quant.trade.loop import run_cycle, run_paper_loop
-from quant.core.ports import Context
-from quant.core.models import Fill, Order, Position, Quote, Side, Signal, SignalAction
 
 _OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 _APPROVAL_CFG = {"expire_seconds": 300, "max_price_drift_pct": 0.5, "prune_after_seconds": 86400}
@@ -36,7 +36,7 @@ _APPROVAL_CFG = {"expire_seconds": 300, "max_price_drift_pct": 0.5, "prune_after
 
 class FakeClock:
     def now(self) -> datetime:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
     def is_market_open(self, market: str) -> bool:
         return True
@@ -60,7 +60,7 @@ class FakeDataFeed:
     def quote(self, symbol: str) -> Quote | None:
         if self.price is None:
             return None
-        return Quote(symbol=symbol, ts=datetime.now(timezone.utc), price=self.price)
+        return Quote(symbol=symbol, ts=datetime.now(UTC), price=self.price)
 
     def history(self, symbol: str, interval: str, n: int) -> pd.DataFrame:
         return pd.DataFrame(columns=_OHLCV_COLUMNS)
@@ -86,7 +86,7 @@ class FakeBroker:
             pos.qty = max(pos.qty - order.qty, 0.0)
         return Fill(
             symbol=order.symbol, side=order.side, qty=order.qty, price=100.0,
-            ts=datetime.now(timezone.utc), strategy_id=order.strategy_id, reason=order.reason,
+            ts=datetime.now(UTC), strategy_id=order.strategy_id, reason=order.reason,
         )
 
     def positions(self) -> dict[str, Position]:

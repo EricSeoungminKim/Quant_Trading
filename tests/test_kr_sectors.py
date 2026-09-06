@@ -1,8 +1,12 @@
 """quant.analyze.kr_sectors — Naver 업종→GICS-11 매핑 + 전일 US 섹터 신호
 (2026-09-06). 순수 함수만, 네트워크/파일 I/O 없음(모듈 docstring과 같은 원칙)."""
 from quant.analyze.kr_sectors import (
-    GICS_TO_KR_LABEL, UPJONG_TO_GICS, US_SECTOR_ETF_TO_GICS,
-    gics_for_upjong, us_sector_returns_from_source, us_sector_signal,
+    GICS_TO_KR_LABEL,
+    UPJONG_TO_GICS,
+    US_SECTOR_ETF_TO_GICS,
+    gics_for_upjong,
+    us_sector_returns_from_source,
+    us_sector_signal,
 )
 from quant.analyze.us_sector_map import KR_BENEFICIARIES
 

@@ -21,11 +21,11 @@ from __future__ import annotations
 # 되기 때문이고, 감추지 않는 이유는 현재값으로 오해되면 안 되기 때문이다.
 STALE_DAYS = 21
 
-import html
-import re
-from datetime import datetime
+import html  # noqa: E402 — STALE_DAYS 상수 설명 주석 바로 아래 배치가 의도된 구성
+import re  # noqa: E402 — 위와 동일
+from datetime import datetime  # noqa: E402 — 위와 동일
 
-from quant.adapters.http import client
+from quant.adapters.http import client  # noqa: E402 — 위와 동일
 
 CNN_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
 NAAIM_URL = "https://index.naaim.org/embeddable/table"

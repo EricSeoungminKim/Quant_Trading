@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from quant.analyze import trending_score as trending_mod
 from quant.analyze.baseline import baseline_score
 from quant.analyze.briefing import build as build_brief
 from quant.analyze.briefing import stance
@@ -16,13 +17,11 @@ from quant.analyze.entities import load_market_map, load_name_map, load_table, l
 from quant.analyze.mentions import append_ledger, collect_mentions, continuity, load_ledger, mark_origin
 from quant.analyze.render import machine_payload, rank
 from quant.analyze.symbol_score import score_all
-from quant.analyze import trending_score as trending_mod
 from quant.collect.sources.market import fetch_symbol_quotes
 from quant.collect.sources.stock_detail import fetch_many
-
-from quant.report.paths import _load_artifact, _paths
 from quant.report.collect.index_outlook import build_index_outlook
 from quant.report.collect.ledger import _log_overlap, _record_flows, _record_frgn_flow
+from quant.report.paths import _load_artifact, _paths
 
 
 def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
@@ -200,7 +199,10 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
     streak_watch: list[str] = []
     try:
         from quant.control.symbol_log import (
-            append_scores, build_score_rows, hot_streak_symbols, load_scores,
+            append_scores,
+            build_score_rows,
+            hot_streak_symbols,
+            load_scores,
         )
 
         log_path = root / "data" / "ledger" / "symbol_scores.jsonl"

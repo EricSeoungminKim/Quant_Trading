@@ -30,7 +30,6 @@ from quant.analyze.ml_scorer import (
 )
 from quant.control.judgment import selection_judgment
 
-
 # ---------------------------------------------------------------- ① 표본 게이트
 
 def test_enough_sample_gate_at_default_threshold():

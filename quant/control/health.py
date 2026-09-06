@@ -31,7 +31,7 @@ from __future__ import annotations
 import hashlib
 import statistics
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from quant.control.selections import _natural_key as _selection_natural_key
 from quant.core.log_redact import redact
@@ -59,7 +59,7 @@ def _age(then: str | datetime | None, now: datetime) -> timedelta | None:
         except ValueError:
             return None
     if then.tzinfo is None:
-        then = then.replace(tzinfo=timezone.utc)
+        then = then.replace(tzinfo=UTC)
     return now - then
 
 
@@ -234,7 +234,7 @@ def positions_from_trades(trades: list[dict], boundary_ts: datetime | None = Non
             except ValueError:
                 ts = None
             if ts is not None and ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
+                ts = ts.replace(tzinfo=UTC)
             if ts is None or ts <= boundary_ts:
                 continue
         symbol = str(rec.get("symbol") or "").strip()
@@ -323,7 +323,7 @@ def dedupe_repeat_alerts(
             except ValueError:
                 last_dt = None
             if last_dt is not None and last_dt.tzinfo is None:
-                last_dt = last_dt.replace(tzinfo=timezone.utc)
+                last_dt = last_dt.replace(tzinfo=UTC)
         if last_dt is not None and (now - last_dt) < window:
             suppressed.append(f)
             continue

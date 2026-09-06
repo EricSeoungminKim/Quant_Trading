@@ -123,8 +123,10 @@ gap_fade는 2026-08-29 도입이라 이 저장소 로컬 원장은 08-28까지�
 """
 from __future__ import annotations
 
-from datetime import date as dtdate, datetime, timedelta
-from typing import Any, Mapping
+from collections.abc import Mapping
+from datetime import date as dtdate
+from datetime import datetime, timedelta
+from typing import Any
 
 import pandas as pd
 

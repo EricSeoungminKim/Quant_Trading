@@ -22,12 +22,11 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-
-from quant.adapters.env import REPO_ROOT
 from zoneinfo import ZoneInfo
 
 import httpx
 
+from quant.adapters.env import REPO_ROOT
 
 logger = logging.getLogger(__name__)
 

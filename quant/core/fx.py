@@ -8,8 +8,9 @@ DailyFxProvider는 거래일 기준 하루 1회(그날 첫 호출 시점 = "장 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import date
-from typing import Callable, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from quant.core.ports import Clock
 

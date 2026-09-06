@@ -8,15 +8,23 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from collections.abc import Callable
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Callable
 
-from quant.collect.sources import calendar as calendar_src
 from quant.collect.sources import (
-    after_hours, feeds, fred, kr_flow, market, naver_flow, seeded_news, sentiment,
-    technical, toss,
+    after_hours,
+    feeds,
+    fred,
+    kr_flow,
+    market,
+    naver_flow,
+    seeded_news,
+    sentiment,
+    technical,
+    toss,
 )
+from quant.collect.sources import calendar as calendar_src
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +81,7 @@ def _fetch_news_merged(market_code: str, news_since: datetime | None, root: Path
     """
     from quant.collect import collector  # 지연 임포트 — _merge_news_feeds 주석 참고
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     since = news_since or (now - timedelta(hours=24))
 
     store_dir = root / "data" / "news" / market_code
@@ -181,7 +189,7 @@ ResolverFactory = Callable[[], Callable[[str], "str | None"]]
 
 
 def build_seeded_source(
-    market_code: str, rankings: dict, resolver_factory: "ResolverFactory | None" = None,
+    market_code: str, rankings: dict, resolver_factory: ResolverFactory | None = None,
 ) -> dict[str, Source]:
     """랭킹 시드 뉴스 — **1차 수집이 끝난 뒤 2차로 돈다.**
 

@@ -40,7 +40,6 @@ from quant.control.outcomes import (
     to_yahoo_us_symbol,
 )
 
-
 # ── 오늘 만기가 된 지평 ───────────────────────────────────────────────────
 
 def test_next_business_day_is_horizon_one():

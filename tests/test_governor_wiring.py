@@ -12,8 +12,8 @@ from datetime import date
 
 import yaml
 
-from quant.apps.config import _deep_merge, _read_merged, load_settings
 from quant.apps.cli import _load_recent_governor_proposals, cmd_governor_apply
+from quant.apps.config import _deep_merge, _read_merged, load_settings
 from quant.control import governor
 from quant.control.ledger import base_strategy_id
 

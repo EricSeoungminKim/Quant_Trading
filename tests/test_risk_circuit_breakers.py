@@ -15,7 +15,6 @@ max_orders_per_day는 진입(ENTER_LONG/SCALE_IN) 폭주만 실제로 정지시�
 """
 from __future__ import annotations
 
-import math
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -23,9 +22,9 @@ import pandas as pd
 import pytest
 
 from quant.core.fx import FixedFxProvider
-from quant.core.ports import ColdFetchBudgetExceeded, Context
 from quant.core.models import Position, Quote, Side, Signal, SignalAction, trading_day
 from quant.core.portfolio.portfolio import to_krw
+from quant.core.ports import ColdFetchBudgetExceeded, Context
 from quant.trade.risk.manager import RiskManagerImpl
 
 NY = ZoneInfo("America/New_York")

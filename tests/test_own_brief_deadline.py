@@ -62,9 +62,10 @@ def test_us_at_or_after_deadline_skips(hhmm):
 
 def test_deadline_precedes_the_universe_roll_it_protects():
     """데드라인은 그 시장의 유니버스 롤(_universe_roll_bucket)보다 앞서야 의미가 있다."""
-    from quant.trade.loop import _universe_roll_bucket
     from datetime import datetime
     from zoneinfo import ZoneInfo
+
+    from quant.trade.loop import _universe_roll_bucket
 
     kst = ZoneInfo("Asia/Seoul")
     dl = _deadlines()
@@ -105,9 +106,10 @@ def test_kr_close_at_or_after_deadline_skips(hhmm):
 
 
 def test_close_deadline_precedes_the_1453_universe_roll():
-    from quant.trade.loop import _universe_roll_bucket
     from datetime import datetime
     from zoneinfo import ZoneInfo
+
+    from quant.trade.loop import _universe_roll_bucket
 
     kst = ZoneInfo("Asia/Seoul")
     dl = _close_deadline()

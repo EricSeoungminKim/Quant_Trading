@@ -22,7 +22,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 # 살아있음의 정의 = 이 시간 안에 갱신됐나. 만료가 곧 경보다.
 #
@@ -81,7 +81,7 @@ JOB_HEARTBEAT_TTL: dict[str, int] = {
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def record_run(kv, job: str, ok: bool, detail: str = "", now: str | None = None) -> None:

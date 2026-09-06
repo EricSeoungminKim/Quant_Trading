@@ -33,7 +33,7 @@
   통과 0건). KR 1년 분봉 게이트는 scalp_1m만 결론이 났다(6폴드 양수 0건,
   NO_GO) — orb_rvol·eod_reversal·open_reversal 도 2026-09-04 KR 1년 분봉 게이트에서
   전부 NO_GO(scalp_1m 포함 4/4).
-  **아는 것과 모르는 것을 구분해 정직하게 적는다** — 
+  **아는 것과 모르는 것을 구분해 정직하게 적는다** —
   open_reversal에 "NO_GO"라고 단정하지 않는다(사실이 아니다). 오버나이트형
   6종(frgn_accumulate/close_bet/overnight_drift/rsi2_dip/mean_reversion/
   cross_momentum)은 "자동매매는 단타·스캘핑만" 정책(2026-09-03)으로

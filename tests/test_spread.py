@@ -6,11 +6,11 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from quant.collect.spread import MIN_CALL_INTERVAL, sample_spread, spread_row
 
-NOW = datetime(2026, 8, 28, 4, 30, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 28, 4, 30, tzinfo=UTC)
 
 
 def _lv(price, volume):

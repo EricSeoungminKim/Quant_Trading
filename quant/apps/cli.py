@@ -5,13 +5,14 @@ import argparse
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import UTC, datetime
+from pathlib import Path
 
-from quant.core import log_redact as _redact
 from quant.adapters.env import load_env as _load_dotenv_secrets
 from quant.apps.config import load_settings
-from quant.trade.loop import run_paper_loop
 from quant.backtest import run_backtest
+from quant.core import log_redact as _redact
+from quant.trade.loop import run_paper_loop
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -706,7 +707,7 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     )
 
     print()
-    print(quant.analyze.render_text(result, strategy_id=args.strategy))
+    print(quant.analyze.render_text(result, strategy_id=args.strategy))  # noqa: F821 — 기존 버그로 보임(quant 미임포트, report.render_text 오타 추정) — 이 린트 패스 범위 밖, 별도 확인 필요
 
     out_dir = Path("data/research")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -718,8 +719,8 @@ def cmd_optimize(args: argparse.Namespace) -> None:
 def cmd_report(args: argparse.Namespace) -> None:
     """Toss 실계좌 일일 진단 리포트 → Telegram (미설정 시 콘솔 출력)."""
     load_settings()  # .env/.env.local 로드
-    from quant.control.banker import run_report
     from quant.adapters.brokers.toss.client import TossClient
+    from quant.control.banker import run_report
 
     class _ConsoleNotifier:
         def send(self, text: str, lane: str | None = None) -> None:
@@ -752,12 +753,11 @@ def cmd_watch_score(args: argparse.Namespace) -> None:
     입력 토큰 포맷: `SYMBOL[:TAGS[:YYYYMMDD]]` (TAGS는 TREND/REBOUND/EVENT를
     '+'로 조합, 세 번째 필드는 리포트 발행일)."""
     import json
-    from pathlib import Path
 
     settings = load_settings()
     _redact.install()  # .env/.env.local + settings.yaml 로드
-    from quant.apps.assembly import MissingCredentials, build_toss_client
     from quant.analyze.watch_scorer import resolve_regime_label, run_watch_score
+    from quant.apps.assembly import MissingCredentials, build_toss_client
 
     auto_score_cfg = settings.universe.get("watchlist", {}).get("auto_score", {})
     enabled = auto_score_cfg.get("enabled", True)
@@ -1031,9 +1031,16 @@ def cmd_scoreboard(args: argparse.Namespace) -> None:
     from zoneinfo import ZoneInfo
 
     from quant.control.ledger import (
-        ab_compare, ab_pairs_from_config, filter_recent,
-        frgn_accumulate_promotion_verdict, load_trades, paper_epoch_ts, round_trips,
-        round_trips_since_epoch, scoreboard_text, strategy_start_capital,
+        ab_compare,
+        ab_pairs_from_config,
+        filter_recent,
+        frgn_accumulate_promotion_verdict,
+        load_trades,
+        paper_epoch_ts,
+        round_trips,
+        round_trips_since_epoch,
+        scoreboard_text,
+        strategy_start_capital,
     )
 
     ledger_path = Path(args.ledger) if getattr(args, "ledger", None) else ledger_state_path()
@@ -1120,7 +1127,6 @@ def cmd_forensics(args: argparse.Namespace) -> None:
     청산 규칙은 **여기 하드코딩된 4종만** 재생한다(탐색 4회). 파라미터를
     탐색하지 않는 게 요점이다: 표본 수십 건에 규칙 수십 개를 시험하면 그중
     몇 개는 반드시 우연히 훌륭해 보인다."""
-    from pathlib import Path
 
     import pandas as pd
 
@@ -1198,14 +1204,18 @@ def cmd_daily_feedback(args: argparse.Namespace) -> None:
     픽(진입 체결) 없으면 무출력 — experiments_daily.sh 관례. 같은 (날짜, 시장)
     은 `data/ledger/daily_feedback.jsonl`에 멱등 append(재실행해도 중복 안 남음)."""
     import json as _json
-    from datetime import date as _date, datetime as _dt
+    from datetime import date as _date
+    from datetime import datetime as _dt
     from zoneinfo import ZoneInfo
 
     import pandas as pd
 
     from quant.adapters.env import REPO_ROOT
     from quant.control.daily_feedback import (
-        already_recorded, render_feedback_text, strategy_feedback, todays_round_trips,
+        already_recorded,
+        render_feedback_text,
+        strategy_feedback,
+        todays_round_trips,
     )
     from quant.control.ledger import load_trades
     from quant.control.warehouse import read_jsonl
@@ -1318,7 +1328,11 @@ def cmd_alpha_report(args: argparse.Namespace) -> None:
 
     from quant.adapters.env import REPO_ROOT
     from quant.control.alpha import (
-        BENCHMARKS, alpha_series, alpha_summary, benchmark_returns, daily_returns,
+        BENCHMARKS,
+        alpha_series,
+        alpha_summary,
+        benchmark_returns,
+        daily_returns,
     )
 
     path = REPO_ROOT / "data" / "ledger" / "equity_curve.jsonl"
@@ -1559,6 +1573,7 @@ def cmd_performance(args: argparse.Namespace) -> None:
     점 5개 미만이면 곡선별로 "표본 부족"을 출력한다 — 이 숫자로 아무것도
     판단하지 마라."""
     import json as _json
+
     from quant.adapters.env import REPO_ROOT
     from quant.core.timeseries import performance_summary
 
@@ -2002,8 +2017,12 @@ def cmd_daily_wrap(args: argparse.Namespace) -> None:
     from quant.apps.assembly import _load_kr_etf, _load_symbol_names
     from quant.control import daily_wrap as DW
     from quant.control.ledger import (
-        ab_pairs_from_config, load_trades, round_trips, session_pnl_summary,
-        session_window, trades_in_session,
+        ab_pairs_from_config,
+        load_trades,
+        round_trips,
+        session_pnl_summary,
+        session_window,
+        trades_in_session,
     )
     from quant.core.models import market_of_symbol
 
@@ -2080,8 +2099,8 @@ def cmd_weekly_review(args: argparse.Namespace) -> None:
     점수 적중률의 '다음 거래일 등락'은 로컬 일봉 파케이에서만 읽는다 —
     표본이 안 되는 종목은 정직하게 빠진다."""
     import json as _json
-    from datetime import date as _date, timedelta
-    from pathlib import Path
+    from datetime import date as _date
+    from datetime import timedelta
 
     import pandas as pd
 
@@ -2091,7 +2110,10 @@ def cmd_weekly_review(args: argparse.Namespace) -> None:
     from quant.control.tca import join_intents_fills, slippage_bps, tca_summary
     from quant.control.warehouse import read_jsonl
     from quant.control.weekly_review import (
-        loss_patterns, week_range, weekly_index_flow, weekly_review_text,
+        loss_patterns,
+        week_range,
+        weekly_index_flow,
+        weekly_review_text,
         weekly_strategy_stats,
     )
 
@@ -2208,7 +2230,10 @@ def cmd_experiments(args: argparse.Namespace) -> None:
 
     from quant.adapters.env import REPO_ROOT
     from quant.control.experiments import (
-        daily_report, load_changes, record_death_watch, record_fingerprints,
+        daily_report,
+        load_changes,
+        record_death_watch,
+        record_fingerprints,
     )
     from quant.control.ledger import load_trades, round_trips
 
@@ -2265,7 +2290,6 @@ def cmd_session_pnl(args: argparse.Namespace) -> None:
     사용자 원칙). 출력은 stdout — server/scripts/session_pnl.sh가 텔레그램으로 쏜다."""
     import json as _json
     from datetime import date as _date
-    from pathlib import Path
     from zoneinfo import ZoneInfo
 
     from quant.control.ledger import load_trades, session_pnl_summary, session_pnl_text
@@ -2616,7 +2640,6 @@ def cmd_strategy_pnl(args: argparse.Namespace) -> None:
     strategy_books.json)는 리스크 평면(별도 작업자)이 쓴다 — 여기선 읽기만.
     시세 조회는 session-pnl과 같은 패턴(Toss 실시세, 자격증명 없으면 생략).
     출력은 stdout — server/scripts/session_pnl.sh가 텔레그램으로 쏜다."""
-    from pathlib import Path
 
     from quant.control.ledger import load_trades, round_trips
     from quant.control.strategy_books import (
@@ -2897,7 +2920,7 @@ def cmd_seed_real(args: argparse.Namespace) -> None:
     필요하다(과도한 자동 조정 대신 백업만 남기고 사람 판단에 맡긴다).
     """
     import json as _json
-    from datetime import datetime, timezone
+    from datetime import datetime
     from pathlib import Path
 
     import pandas as pd
@@ -2958,7 +2981,7 @@ def cmd_seed_real(args: argparse.Namespace) -> None:
     execution_cfg = settings.execution
     fx = FixedFxProvider(float(snapshot["fx_usd_krw"]))
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     portfolio = Portfolio(
         cash=float(snapshot["buying_power_KRW"]["cashBuyingPower"]),
         cash_usd=float(snapshot["buying_power_USD"]["cashBuyingPower"]),
@@ -3079,7 +3102,10 @@ def cmd_seed_carry(args: argparse.Namespace) -> None:
     from datetime import datetime as _dt
 
     from quant.control.ledger import (
-        SEEDING_CARRY_MARKER, TradeLedgerSink, is_seeding_carry, load_trades,
+        SEEDING_CARRY_MARKER,
+        TradeLedgerSink,
+        is_seeding_carry,
+        load_trades,
     )
     from quant.core.models import Fill, Side, market_of_symbol
 
@@ -3217,7 +3243,7 @@ def cmd_paper_epoch(args: argparse.Namespace) -> None:
     """
     import json as _json
     import time as _time
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from quant.adapters.env import REPO_ROOT
     from quant.apps.assembly import fixed_dual_books, validated_capital_fractions
@@ -3229,7 +3255,7 @@ def cmd_paper_epoch(args: argparse.Namespace) -> None:
 
     ts = datetime.fromisoformat(args.at)
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
+        ts = ts.replace(tzinfo=UTC)
 
     root = REPO_ROOT
     state_dir = root / "data" / "state"
@@ -3342,10 +3368,8 @@ def cmd_health(args: argparse.Namespace) -> None:
     import json as _json
     import shutil
     import subprocess
-    import sys
-    from datetime import timedelta, timezone
+    from datetime import timedelta
     from pathlib import Path
-
     from zoneinfo import ZoneInfo
 
     from quant.adapters import olap as OLAP
@@ -3354,6 +3378,7 @@ def cmd_health(args: argparse.Namespace) -> None:
     from quant.control import health as H
     from quant.control.ledger import load_trades
     from quant.control.opstate import llm_stats, snapshot, stale_feeds
+
     # 봉 신선도 임계값은 **거래 평면의 상수를 그대로 쓴다.** 여기 숫자를 따로 적으면
     # 언젠가 갈라지고, 갈라진 쪽이 조용한 쪽이 된다. (apps 는 두 평면을 다 안다 —
     # control 이 trade 를 임포트하는 건 아키텍처 위반이므로 주입 지점이 여기다.)
@@ -3361,7 +3386,7 @@ def cmd_health(args: argparse.Namespace) -> None:
 
     load_settings()
     root = Path(args.root)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     _KST_TZ = ZoneInfo("Asia/Seoul")
 
     def _read(path: Path) -> str | None:
@@ -3461,7 +3486,7 @@ def cmd_health(args: argparse.Namespace) -> None:
     hb = _json_file(root / "data" / "state" / "heartbeat.json")
     hb_stamp = None
     if hb and isinstance(hb.get("ts"), (int, float)):
-        hb_stamp = datetime.fromtimestamp(hb["ts"], tz=timezone.utc).isoformat()
+        hb_stamp = datetime.fromtimestamp(hb["ts"], tz=UTC).isoformat()
     local_offset = datetime.now().astimezone().utcoffset()
     findings += H.clock_findings(
         None if local_offset is None else int(local_offset.total_seconds()), hb_stamp, now)
@@ -3619,7 +3644,7 @@ def cmd_health(args: argparse.Namespace) -> None:
     # 리포트 결측 — 리포트가 `engine.json` 의 `missing` 에 **이미 기록하는데** 아무도
     # 읽지 않았다. 2026-08-14: API 키를 못 읽어 소스 5개가 결측인 채로 발행됐고,
     # 사람이 빌드 출력의 "결측 5건"을 보고도 "장중이라 그런가"로 미뤘다.
-    today = datetime.now(timezone.utc).astimezone(_KST_TZ).date()
+    today = datetime.now(UTC).astimezone(_KST_TZ).date()
 
     def _engine_json(market: str, d) -> dict | None:
         return _json_file(root / "out" / f"{d:%Y/%m/%d}" / f"{market}_engine.json")
@@ -3736,7 +3761,7 @@ def cmd_health(args: argparse.Namespace) -> None:
     bundle_stamp = None
     if bundles:
         bundle_stamp = datetime.fromtimestamp(
-            bundles[-1].stat().st_mtime, tz=timezone.utc).isoformat()
+            bundles[-1].stat().st_mtime, tz=UTC).isoformat()
     pull_raw = _read(root / "data" / "backups" / "LAST_PULL")
     # 복원 리허설(2026-09-06 live-readiness §3) — backup_pull.sh의 LAST_PULL과
     # 같은 계약: backup_restore_check.sh가 **성공**했을 때만 이 파일을 남긴다.
@@ -3784,9 +3809,9 @@ def cmd_ops_judge(args: argparse.Namespace) -> None:
     from datetime import timedelta, timezone
     from pathlib import Path
 
+    from quant.adapters import olap as OLAP
     from quant.adapters.env import REPO_ROOT, get_key
     from quant.adapters.kv import make_kv
-    from quant.adapters import olap as OLAP
     from quant.adapters.narrate import TOOL_MODEL, chat_with_tools
     from quant.control import ops_judge as J
     from quant.control.ledger import load_trades
@@ -3795,7 +3820,7 @@ def cmd_ops_judge(args: argparse.Namespace) -> None:
 
     settings = load_settings()
     root = Path(args.root) if args.root else REPO_ROOT
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     def _read(path: Path) -> str | None:
         try:
@@ -4079,7 +4104,8 @@ def cmd_ai_trader(args: argparse.Namespace) -> None:
     주문·워치리스트에는 닿지 않는다.
     """
     import json as _json
-    from datetime import date as _date, datetime as _dt, timezone as _tz
+    from datetime import date as _date
+    from datetime import datetime as _dt
     from pathlib import Path
 
     from quant.adapters.env import REPO_ROOT
@@ -4140,7 +4166,7 @@ def cmd_ai_trader(args: argparse.Namespace) -> None:
         f.write(_json.dumps({
             "date": today, "market": market, "final": result["final"],
             "transcript": [{"role": role, "raw": raw} for role, raw in result["transcript"]],
-            "recorded_at": _dt.now(_tz.utc).isoformat(timespec="seconds"),
+            "recorded_at": _dt.now(UTC).isoformat(timespec="seconds"),
         }, ensure_ascii=False) + "\n")
 
     logger.info("ai-trader: %s %s — 행 %d, 판단 %d(신규 %d)",
@@ -4621,7 +4647,9 @@ def cmd_delivery_check(args: argparse.Namespace) -> None:
     1=미배달 있음 / 2=미배달은 없지만 확인 못 한 게 있음(모름을 정상으로
     합산하지 않는다).
     """
-    from datetime import date as _date, timedelta as _timedelta, timezone as _timezone
+    from datetime import date as _date
+    from datetime import timedelta as _timedelta
+    from datetime import timezone as _timezone
     from pathlib import Path
 
     from quant.adapters.env import REPO_ROOT
@@ -4704,7 +4732,8 @@ def cmd_macro_collect(args: argparse.Namespace) -> None:
     macro_collect.sh, 매일 1회)은 작은 `--days`로 최근분만 갱신해 매일 전체
     이력을 다시 받는 낭비를 줄인다. 일부 시리즈가 실패해도 나머지는 계속
     진행하고 실패분을 출력에 명시한다(정직하게 실패를 숨기지 않는다)."""
-    from datetime import date as _date, timedelta as _timedelta
+    from datetime import date as _date
+    from datetime import timedelta as _timedelta
     from pathlib import Path
 
     from quant.adapters.macro.fred import DEFAULT_LEDGER_PATH, SERIES, append_macro_rows, fetch_series
@@ -4758,7 +4787,10 @@ def cmd_param_propose(args: argparse.Namespace) -> None:
     from quant.analyze import param_proposer
     from quant.control.ledger import load_trades, round_trips
     from quant.control.weekly_review import (
-        loss_patterns, week_range, weekly_review_text, weekly_strategy_stats,
+        loss_patterns,
+        week_range,
+        weekly_review_text,
+        weekly_strategy_stats,
     )
 
     settings = load_settings()
@@ -4881,7 +4913,8 @@ def _load_recent_governor_proposals(path, today, window_days: int) -> list:
     없는 줄(구 스키마)은 자연히 건너뛴다.
     """
     import json as _json
-    from datetime import date as _date, timedelta as _timedelta
+    from datetime import date as _date
+    from datetime import timedelta as _timedelta
     from pathlib import Path
 
     from quant.control import governor
@@ -5512,8 +5545,8 @@ def cmd_close_report(args: argparse.Namespace) -> None:
     from quant.adapters.narrate import make_narrator
     from quant.control import selections
     from quant.control.close_report import build_close_report, matured_today
-    from quant.control.ledger import load_trades, round_trips, scoreboard_text
     from quant.control.leaderboard import verdicts_from_ledger
+    from quant.control.ledger import load_trades, round_trips, scoreboard_text
     from quant.control.opstate import record_run
 
     load_settings()
@@ -5580,7 +5613,7 @@ def cmd_shadow_judge(args: argparse.Namespace) -> None:
     "최하위로 평가했다"가 되어 IC 를 오염시킨다.
     """
     import json as _json
-    from datetime import datetime as _dt, timezone as _tz
+    from datetime import datetime as _dt
     from pathlib import Path
 
     from quant.adapters.env import REPO_ROOT
@@ -5611,7 +5644,7 @@ def cmd_shadow_judge(args: argparse.Namespace) -> None:
                           ensure_ascii=False))
         raise SystemExit(2)
 
-    now = _dt.now(_tz.utc).isoformat(timespec="seconds")
+    now = _dt.now(UTC).isoformat(timespec="seconds")
     jpath = root / "data" / "ledger" / "judgments.jsonl"
     existing = {
         (r.get("producer"), r.get("producer_version"), r.get("input_hash"),
@@ -5795,7 +5828,7 @@ def cmd_spread_sample(args: argparse.Namespace) -> None:
     import json
     import statistics
     import time as _time
-    from datetime import datetime, timezone
+    from datetime import datetime
     from pathlib import Path
 
     from quant.adapters.env import REPO_ROOT
@@ -5868,7 +5901,7 @@ def cmd_spread_sample(args: argparse.Namespace) -> None:
             _time.sleep(args.interval_seconds)
         sample = sample_spread(
             client, symbols,
-            now=datetime.now(timezone.utc),
+            now=datetime.now(UTC),
             min_interval=args.interval_seconds,
         )
         if sample.rows:
@@ -5925,7 +5958,7 @@ def cmd_slippage_report(args: argparse.Namespace) -> None:
 
     계산 자체는 `quant.control.slippage`(순수 함수)에 있다 — 여기는 원장 읽기
     + `--since` 필터 + 출력뿐."""
-    from datetime import datetime, timezone
+    from datetime import datetime
     from pathlib import Path
 
     from quant.adapters.env import REPO_ROOT
@@ -5938,14 +5971,14 @@ def cmd_slippage_report(args: argparse.Namespace) -> None:
     if args.since:
         cutoff = datetime.fromisoformat(args.since)
         if cutoff.tzinfo is None:
-            cutoff = cutoff.replace(tzinfo=timezone.utc)
+            cutoff = cutoff.replace(tzinfo=UTC)
 
         def _ts(f: dict) -> datetime | None:
             try:
                 d = datetime.fromisoformat(str(f.get("ts")))
             except ValueError:
                 return None
-            return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+            return d if d.tzinfo else d.replace(tzinfo=UTC)
 
         fills = [f for f in fills if (ts := _ts(f)) is not None and ts >= cutoff]
 
@@ -6121,7 +6154,7 @@ def cmd_tg_digest(args: argparse.Namespace) -> None:
     (반복 실행해도 같은 창을 다시 읽는다 — 검증용).
     """
     import sys
-    from datetime import timedelta, timezone
+    from datetime import timedelta
 
     from quant.adapters.env import REPO_ROOT
     from quant.analyze import tg_digest
@@ -6135,13 +6168,13 @@ def cmd_tg_digest(args: argparse.Namespace) -> None:
     ledger_path = root / "data" / "ledger" / "telegram_msgs.jsonl"
     last_run_path = root / "data" / "state" / "tg_digest_last.json"
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     since = None
     if args.since:
         try:
             since = datetime.fromisoformat(args.since.replace("Z", "+00:00"))
             if since.tzinfo is None:
-                since = since.replace(tzinfo=timezone.utc)
+                since = since.replace(tzinfo=UTC)
         except ValueError:
             print(f"tg-digest: --since 파싱 실패({args.since}) — 마지막 실행 시각으로 대체", file=sys.stderr)
     if since is None:

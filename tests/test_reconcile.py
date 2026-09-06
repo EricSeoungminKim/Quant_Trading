@@ -10,19 +10,26 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
 
+from quant.core.models import (
+    Fill,
+    OpenOrder,
+    Order,
+    Position,
+    Quote,
+    Side,
+    Signal,
+    SignalAction,
+)
+from quant.core.ports import Context
 from quant.trade.control import TradingControl
 from quant.trade.loop import run_cycle
 from quant.trade.reconcile import Reconciler
-from quant.core.ports import Context
-from quant.core.models import (
-    Fill, OpenOrder, Order, Position, Quote, Side, Signal, SignalAction,
-)
 
 _OHLCV = ["open", "high", "low", "close", "volume"]
 
@@ -51,7 +58,7 @@ class _Broker:
     def place_order(self, order: Order) -> Fill:
         self.orders.append(order)
         return Fill(symbol=order.symbol, side=order.side, qty=order.qty, price=100.0,
-                    ts=datetime.now(timezone.utc), strategy_id=order.strategy_id)
+                    ts=datetime.now(UTC), strategy_id=order.strategy_id)
 
 
 class _BrokerWithOpenOrders(_Broker):
@@ -192,7 +199,7 @@ def test_reconciler_is_inactive_for_brokers_without_an_ownership_ledger(control)
 # --------------------------------------------------------- 미체결 주문 나이 감시(stale)
 
 def test_stale_open_order_triggers_auto_cancel_and_notification(control):
-    now = datetime(2026, 8, 30, 10, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 10, 0, 0, tzinfo=UTC)
     stale = OpenOrder(order_id="o1", symbol="TQQQ", side=Side.BUY, qty=5.0,
                        submitted_at=now - timedelta(seconds=200))
     broker = _BrokerWithOpenOrders(
@@ -208,7 +215,7 @@ def test_stale_open_order_triggers_auto_cancel_and_notification(control):
 
 
 def test_fresh_open_order_is_not_canceled(control):
-    now = datetime(2026, 8, 30, 10, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 10, 0, 0, tzinfo=UTC)
     fresh = OpenOrder(order_id="o2", symbol="TQQQ", side=Side.BUY, qty=5.0,
                        submitted_at=now - timedelta(seconds=10))
     broker = _BrokerWithOpenOrders(
@@ -221,7 +228,7 @@ def test_fresh_open_order_is_not_canceled(control):
 
 
 def test_stale_order_watchdog_can_be_disabled(control):
-    now = datetime(2026, 8, 30, 10, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 10, 0, 0, tzinfo=UTC)
     very_stale = OpenOrder(order_id="o3", symbol="TQQQ", side=Side.BUY, qty=5.0,
                            submitted_at=now - timedelta(days=1))
     broker = _BrokerWithOpenOrders(
@@ -234,7 +241,7 @@ def test_stale_order_watchdog_can_be_disabled(control):
 
 
 def test_stale_order_cancel_failure_still_notifies(control):
-    now = datetime(2026, 8, 30, 10, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 30, 10, 0, 0, tzinfo=UTC)
     stale = OpenOrder(order_id="o4", symbol="TQQQ", side=Side.BUY, qty=5.0,
                        submitted_at=now - timedelta(seconds=200))
     broker = _BrokerWithOpenOrders(
@@ -270,14 +277,14 @@ def test_exits_still_execute_while_halted_for_mismatch(control):
 
     class _Data:
         def quote(self, symbol):
-            return Quote(symbol=symbol, ts=datetime.now(timezone.utc), price=100.0)
+            return Quote(symbol=symbol, ts=datetime.now(UTC), price=100.0)
 
         def history(self, symbol, interval, n):
             return pd.DataFrame(columns=_OHLCV)
 
     class _Clock:
         def now(self):
-            return datetime.now(timezone.utc)
+            return datetime.now(UTC)
 
         def is_market_open(self, market):
             return True
@@ -345,7 +352,7 @@ def test_run_paper_loop_reconciles_at_startup_before_the_first_cycle(tmp_path, c
 
     class _Clock:
         def now(self):
-            return datetime.now(timezone.utc)
+            return datetime.now(UTC)
 
         def is_market_open(self, market):
             return False

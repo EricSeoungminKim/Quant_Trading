@@ -52,8 +52,8 @@ from datetime import date as dtdate
 
 import pandas as pd
 
-from quant.core.ports import Context
 from quant.core.models import Position, Signal, SignalAction, market_of_symbol
+from quant.core.ports import Context
 from quant.trade.indicators import sma_atr
 from quant.trade.strategy.orb_scan import _SESSION_OPEN
 

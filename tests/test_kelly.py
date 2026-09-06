@@ -11,7 +11,6 @@ import pytest
 
 from quant.control.kelly import MIN_N_DEFAULT, advisory, kelly_fraction
 
-
 # ── kelly_fraction ───────────────────────────────────────────────────────
 
 def test_kelly_fraction_known_value():

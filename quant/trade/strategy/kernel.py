@@ -13,8 +13,9 @@
 """
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from datetime import datetime
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 from quant.core.models import Signal, SignalAction
 from quant.core.session import continuous_window, market_tz
@@ -123,7 +124,7 @@ def should_flatten_dual(
 
     둘 다 `cadence_minutes`를 빼서 판정한다 — 다음 사이클이 오기 전에 창이
     닫히면 이번 사이클에 나가야 한다."""
-    if minutes_to_close is not None and 0 < minutes_to_close and minutes_to_close - cadence_minutes < flatten_minutes:
+    if minutes_to_close is not None and minutes_to_close > 0 and minutes_to_close - cadence_minutes < flatten_minutes:
         return True
     tz = market_tz(market)
     now_local = now.astimezone(tz)
@@ -131,7 +132,7 @@ def should_flatten_dual(
     remaining = (
         datetime.combine(now_local.date(), end_t, tzinfo=tz) - now_local
     ).total_seconds() / 60
-    return 0 < remaining and remaining - cadence_minutes < flatten_minutes
+    return remaining > 0 and remaining - cadence_minutes < flatten_minutes
 
 
 def is_overnight_carry(lot: Mapping[str, Any], today_iso: str) -> bool:

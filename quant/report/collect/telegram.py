@@ -9,7 +9,7 @@ Phase D 엔진 분리(2026-08-19) — `quant/apps/report_cli.py`에서 그대로
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from quant.analyze.entities import load_table
@@ -17,7 +17,6 @@ from quant.analyze.telegram_view import describe_sector_images, narrate_channels
 from quant.analyze.telegram_view import telegram_mentions as compute_telegram_mentions
 from quant.collect.sources.feeds import parse_published
 from quant.collect.sources.telegram_channels import CHANNELS as TELEGRAM_CHANNELS
-
 from quant.report.paths import _paths
 
 # US 리포트 "🇺🇸 실시간 헤드라인" 소구획 최대 건수(사용자 지시).
@@ -124,7 +123,7 @@ def _usnews_headlines(telegram_result: dict) -> list[dict]:
             rows.append({
                 "text": msg["text"],
                 "published_hhmm": _hhmm(msg.get("published")),
-                "_dt": parse_published(msg.get("published")) or datetime.min.replace(tzinfo=timezone.utc),
+                "_dt": parse_published(msg.get("published")) or datetime.min.replace(tzinfo=UTC),
             })
     rows.sort(key=lambda r: r["_dt"], reverse=True)
     return [{"text": r["text"], "published_hhmm": r["published_hhmm"]} for r in rows[:_USNEWS_HEADLINE_LIMIT]]

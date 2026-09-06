@@ -16,14 +16,15 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
 
-from quant.core.ports import Context
 from quant.core.models import Position, Quote, SignalAction
+from quant.core.ports import Context
 from quant.trade.strategy import confluence as conf_module
 from quant.trade.strategy.confluence import ConfluenceStrategy
 

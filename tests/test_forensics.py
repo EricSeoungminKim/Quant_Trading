@@ -7,17 +7,21 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import pytest
 
 from quant.control.forensics import (
-    entry_range_control, forensics_text, replay_all, replay_trip,
-    simulate_exit_rules, summarize,
+    entry_range_control,
+    forensics_text,
+    replay_all,
+    replay_trip,
+    simulate_exit_rules,
+    summarize,
 )
 
-T0 = datetime(2026, 8, 20, 0, 30, tzinfo=timezone.utc)
+T0 = datetime(2026, 8, 20, 0, 30, tzinfo=UTC)
 
 
 def _bars(closes, highs=None, lows=None, start=T0):

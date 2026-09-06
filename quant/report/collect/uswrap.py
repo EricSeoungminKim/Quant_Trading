@@ -19,7 +19,8 @@ I/O 없음), `write_us_wrap`이 `out/YYYY/MM/DD/US_wrap.json`에 저장하고,
 from __future__ import annotations
 
 import json
-from datetime import date, time as dtime, timedelta
+from datetime import date, timedelta
+from datetime import time as dtime
 from pathlib import Path
 
 from quant.analyze.us_kr_bridge import build_us_kr_bridge

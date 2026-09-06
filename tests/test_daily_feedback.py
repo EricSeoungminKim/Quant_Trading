@@ -13,7 +13,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -26,7 +26,7 @@ from quant.control.daily_feedback import (
     todays_round_trips,
 )
 
-T0 = datetime(2026, 8, 24, 0, 0, tzinfo=timezone.utc)  # 세션 시작(예: KR 09:00 KST)
+T0 = datetime(2026, 8, 24, 0, 0, tzinfo=UTC)  # 세션 시작(예: KR 09:00 KST)
 
 
 def _bars(closes, volumes=None, highs=None, lows=None, start=T0):
@@ -302,7 +302,7 @@ def test_render_includes_unverified_threshold_footer():
 
 # ── render_feedback_text HTML 서식 (2026-09-04, tgfmt) ────────────────────
 
-import re as _re
+import re as _re  # noqa: E402 — 파일 뒤쪽 섹션 전용 임포트, 상단 이동 불필요
 
 
 def _assert_balanced_html(text: str) -> None:

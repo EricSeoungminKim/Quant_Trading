@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from quant.analyze.scalp_grade import GRADE_ENTER
 from quant.apps.report_cli import (
     _build_intraday_view,
     _candidate_symbols,
@@ -19,7 +20,6 @@ from quant.apps.report_cli import (
     _theme_change_pct,
     _visible_intraday,
 )
-from quant.analyze.scalp_grade import GRADE_ENTER
 from quant.control import selections
 
 

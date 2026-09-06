@@ -1,7 +1,7 @@
 """`quant.analyze.midterm_watch` — 중기 관심 종목 섹션(서브프로젝트 W part 3)."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from quant.analyze.midterm_watch import (
     MENTION_LOOKBACK_DAYS,
@@ -13,7 +13,7 @@ from quant.analyze.midterm_watch import (
     narrate_prose,
 )
 
-NOW = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
 KR_TABLE = [("삼성전자", "005930"), ("SK하이닉스", "000660")]
 
 

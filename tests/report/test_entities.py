@@ -220,7 +220,9 @@ def test_ambiguous_names_are_not_in_table(us_table):
 # 그대로 두면 랭킹 표가 종목코드로만 보인다(2026-08-13 사용자 지적).
 # ---------------------------------------------------------------------------
 
-from quant.analyze.entities import _preferred_share_names
+from quant.analyze.entities import (  # noqa: E402 — 파일 뒤쪽 섹션 전용 임포트, 상단 이동 불필요
+    _preferred_share_names,
+)
 
 
 def test_preferred_share_code_follows_the_krx_convention():

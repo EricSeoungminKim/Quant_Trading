@@ -6,10 +6,8 @@ from __future__ import annotations
 import json
 from datetime import date, datetime
 
-import pytest
-
-from quant.core.report_clock import KST
 from quant.collect.contracts import SCHEMA_VERSION, Snapshot, SourceResult
+from quant.core.report_clock import KST
 from quant.report.collect.money_flow import build_money_flow_view
 
 _AT = datetime(2026, 8, 31, 8, 0, tzinfo=KST)
@@ -85,7 +83,7 @@ def test_build_money_flow_view_us_market_uses_us_sector_tilt_and_nasdaq_quote(tm
     assert view is not None
     # US 시장 리포트는 US 섹터 기울기(GICS ETF 라벨)만 받는다 — KR 업종명이 섞이지 않는다.
     for sector in view["sector_tilt"]:
-        assert "은행" != sector and "석유와가스" != sector
+        assert sector != "은행" and sector != "석유와가스"
     assert view["prose"] is None  # narrator 실패 → None, fallback_text로 완전해야 한다
     assert view["fallback_text"]
 

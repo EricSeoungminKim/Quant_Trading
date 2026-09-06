@@ -15,7 +15,6 @@ from quant.collect.sources.market import fetch_symbol_quotes
 from quant.control import flows as flows_ledger
 from quant.control import frgn_flow as frgn_flow_ledger
 from quant.control import selections
-
 from quant.report.collect.agent_interpret import _AGENT_INTERPRET_PRODUCER
 from quant.report.collect.intraday import _INTRADAY_FACTOR_KEYS, _INTRADAY_PRODUCER, _candidate_symbols
 from quant.report.collect.midterm import _MIDTERM_PRODUCER

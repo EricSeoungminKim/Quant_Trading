@@ -286,7 +286,7 @@ def test_crontab_has_market_pulse_lines():
 
 # --------------------------------------------------------------------------- render_telegram HTML 서식 (2026-09-04, tgfmt)
 
-import re as _re
+import re as _re  # noqa: E402 — 파일 뒤쪽 섹션 전용 임포트, 상단 이동 불필요
 
 
 def _assert_balanced_html(text: str) -> None:

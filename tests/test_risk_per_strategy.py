@@ -19,7 +19,7 @@ import pandas as pd
 import pytest
 
 from quant.core.fx import FixedFxProvider
-from quant.core.models import Position, Quote, Side, Signal, SignalAction
+from quant.core.models import Quote, Side, Signal, SignalAction
 from quant.core.ports import Context
 from quant.trade.risk.books import StrategyBooks
 from quant.trade.risk.manager import RiskManagerImpl

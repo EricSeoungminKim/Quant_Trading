@@ -27,7 +27,6 @@ from quant.control.warehouse import (
     trade_row,
 )
 
-
 # ── 가짜 연결 ─────────────────────────────────────────────────────────────
 
 class FakeCursor:
@@ -118,6 +117,7 @@ def test_schema_files_never_use_add_column_if_not_exists():
     멱등성은 `db.migrate()` 의 `schema_migration` 파일명 단위 1회 적용이 이미
     보장하므로(001~003 방식) ALTER 문에 이 문법이 나올 이유가 없다."""
     import re
+
     from quant.adapters.db import SCHEMA_DIR
     pattern = re.compile(r"ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS", re.IGNORECASE)
     offenders = [

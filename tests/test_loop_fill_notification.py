@@ -16,8 +16,8 @@ import pandas as pd
 from quant.adapters.execution.paper import PaperBroker
 from quant.core.fx import FixedFxProvider
 from quant.core.models import Quote, Signal, SignalAction
-from quant.core.ports import Context
 from quant.core.portfolio.portfolio import Portfolio
+from quant.core.ports import Context
 from quant.trade.loop import _execute_signal
 from quant.trade.risk.manager import RiskManagerImpl
 

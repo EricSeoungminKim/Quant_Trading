@@ -16,9 +16,19 @@ from datetime import date
 import pytest
 
 from quant.control.experiments import (
-    KILL_P_THRESHOLD, consecutive_dead_candidates, daily_report, death_watch,
-    did_compare, load_changes, params_fingerprint, pending_experiments,
-    permutation_p, record_death_watch, record_fingerprints, split_trips, verdict,
+    KILL_P_THRESHOLD,
+    consecutive_dead_candidates,
+    daily_report,
+    death_watch,
+    did_compare,
+    load_changes,
+    params_fingerprint,
+    pending_experiments,
+    permutation_p,
+    record_death_watch,
+    record_fingerprints,
+    split_trips,
+    verdict,
 )
 
 D = date(2026, 8, 24)

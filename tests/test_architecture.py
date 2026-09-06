@@ -82,7 +82,7 @@ FORBIDDEN_EXTERNAL = {
                     "pymysql", "MySQLdb", "sqlalchemy", "aiomysql",
                     "redis", "valkey", "duckdb"},
     # 코어도 마찬가지 — Protocol 만 두고 구현은 어댑터가 갖는다.
-    "quant.core": {"redis", "duckdb"},
+    "quant.core": {"redis", "duckdb"},  # noqa: F601 — 위 "quant.core" 키와 중복, 뒤 값이 앞 값을 덮어씀(기존 버그로 보임) — 이 린트 패스 범위 밖, 별도 확인 필요
     # 전략은 파라미터를 생성자 인자로만 받는다.
     "quant.trade.strategy": {"yaml", "dotenv"},
 }

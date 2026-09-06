@@ -165,8 +165,10 @@ _tradable`과 같은 게이트). **그 밖의 보유 관리는 하지 않는다*
 from __future__ import annotations
 
 import logging
-from datetime import date as dtdate, datetime, timedelta, timezone
-from typing import Any, Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from datetime import UTC, datetime, timedelta
+from datetime import date as dtdate
+from typing import Any
 
 from quant.core.models import Position, Signal, SignalAction, trading_day
 from quant.core.ports import Context
@@ -210,7 +212,7 @@ def _parse_ts(raw: object) -> datetime | None:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
 
 

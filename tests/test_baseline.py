@@ -1,7 +1,9 @@
 """베이스라인 = watch_scorer TREND 프로필의 적용 범위 확장.
 핵심 계약: 채점 불가는 None (0 이 아니다 — 0 은 '최하위 평가'가 되어 IC 를 오염)."""
-import pandas as pd
 from datetime import date
+
+import pandas as pd
+
 from quant.analyze.baseline import baseline_score
 
 

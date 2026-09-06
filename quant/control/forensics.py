@@ -38,7 +38,7 @@
 from __future__ import annotations
 
 import statistics as st
-from typing import Callable
+from collections.abc import Callable
 
 from quant.control.cost_model import FALLBACK_ROUND_TRIP_BP
 

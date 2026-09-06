@@ -50,6 +50,7 @@ import pytest
 
 import quant.backtest.engine as bt_engine
 import quant.trade.strategy as strategies_pkg
+from quant.adapters.execution.paper import PaperBroker
 from quant.backtest.engine import (
     ReconciliationError,
     _compute_metrics,
@@ -57,7 +58,6 @@ from quant.backtest.engine import (
     run_backtest,
 )
 from quant.core.fx import FixedFxProvider
-from quant.core.ports import Context
 from quant.core.models import (
     Order,
     Position,
@@ -66,8 +66,8 @@ from quant.core.models import (
     Signal,
     SignalAction,
 )
-from quant.adapters.execution.paper import PaperBroker
 from quant.core.portfolio.portfolio import Portfolio, from_krw, to_krw
+from quant.core.ports import Context
 from quant.trade.risk.manager import RiskManagerImpl
 
 NY = ZoneInfo("America/New_York")
@@ -594,9 +594,9 @@ def test_rung3_fill_realized_pnl_matches_hand_arithmetic_when_present():
     if getattr(buy, "realized_pnl", None) is None and getattr(sell, "realized_pnl", None) is None:
         pytest.skip("Fill.realized_pnl 미도입 — 이 단은 해당 없음")
 
-    check(getattr(buy, "realized_pnl"), 0.0, what="매수 체결의 실현손익(항상 0)", layer=layer)
+    check(buy.realized_pnl, 0.0, what="매수 체결의 실현손익(항상 0)", layer=layer)
     # ($12.00 - $10.00) x 25주 = $50.00, 수수료 차감 전
-    check(getattr(sell, "realized_pnl"), 50.0, what="부분매도 실현손익(USD, 수수료 전)", layer=layer)
+    check(sell.realized_pnl, 50.0, what="부분매도 실현손익(USD, 수수료 전)", layer=layer)
 
 
 # ===========================================================================

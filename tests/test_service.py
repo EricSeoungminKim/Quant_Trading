@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -84,14 +84,14 @@ def _bars(start: str, periods: int, freq: str = "15min", tz: str | None = "UTC")
 # ------------------------------------------------------------------- routing
 
 def test_routing_picks_declared_priority_source():
-    primary = FakeSource(quote_result=Quote(symbol="TQQQ", ts=datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc), price=51.0))
-    secondary = FakeSource(quote_result=Quote(symbol="TQQQ", ts=datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc), price=99.0))
+    primary = FakeSource(quote_result=Quote(symbol="TQQQ", ts=datetime(2024, 1, 2, 10, 0, tzinfo=UTC), price=51.0))
+    secondary = FakeSource(quote_result=Quote(symbol="TQQQ", ts=datetime(2024, 1, 2, 10, 0, tzinfo=UTC), price=99.0))
     svc = MarketDataService(
         routes=[
             SourceRoute(name="primary", source=primary, capabilities=frozenset({Capability.QUOTE})),
             SourceRoute(name="secondary", source=secondary, capabilities=frozenset({Capability.QUOTE})),
         ],
-        clock=FakeClock(datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc)),
+        clock=FakeClock(datetime(2024, 1, 2, 10, 0, tzinfo=UTC)),
     )
 
     q = svc.quote("TQQQ")
@@ -105,13 +105,13 @@ def test_routing_picks_declared_priority_source():
 
 def test_falls_back_when_primary_raises_and_records_degraded_state(caplog):
     primary = FakeSource(quote_error=RuntimeError("network down"))
-    secondary = FakeSource(quote_result=Quote(symbol="TQQQ", ts=datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc), price=99.0))
+    secondary = FakeSource(quote_result=Quote(symbol="TQQQ", ts=datetime(2024, 1, 2, 10, 0, tzinfo=UTC), price=99.0))
     svc = MarketDataService(
         routes=[
             SourceRoute(name="primary", source=primary, capabilities=frozenset({Capability.QUOTE})),
             SourceRoute(name="secondary", source=secondary, capabilities=frozenset({Capability.QUOTE})),
         ],
-        clock=FakeClock(datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc)),
+        clock=FakeClock(datetime(2024, 1, 2, 10, 0, tzinfo=UTC)),
     )
 
     with caplog.at_level("DEBUG"):
@@ -146,7 +146,7 @@ def test_source_not_supporting_symbol_or_interval_is_skipped():
             SourceRoute(name="wrong_interval", source=wrong_interval, capabilities=frozenset({Capability.BARS}), intervals=frozenset({"1d"})),
             SourceRoute(name="matching", source=matching, capabilities=frozenset({Capability.BARS})),
         ],
-        clock=FakeClock(datetime(2024, 1, 3, 0, 0, tzinfo=timezone.utc)),
+        clock=FakeClock(datetime(2024, 1, 3, 0, 0, tzinfo=UTC)),
     )
 
     svc.history("TQQQ", "15m", 10)
@@ -178,7 +178,7 @@ def test_lookahead_bars_from_sloppy_source_are_filtered():
 
 def test_naive_timestamps_get_normalized():
     naive_bars = _bars("2024-01-02T09:30", 3, tz=None)  # naive index
-    now = datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2024, 1, 2, 10, 0, tzinfo=UTC)
     bars_source = FakeSource(history_df=naive_bars)
     quote_source = FakeSource(quote_result=Quote(symbol="TQQQ", ts=datetime(2024, 1, 2, 9, 45), price=51.0))
     svc = MarketDataService(
@@ -209,7 +209,7 @@ def test_all_sources_fail_quote_returns_none_and_history_returns_empty_frame():
             SourceRoute(name="q", source=failing_quote, capabilities=frozenset({Capability.QUOTE})),
             SourceRoute(name="b", source=failing_bars, capabilities=frozenset({Capability.BARS})),
         ],
-        clock=FakeClock(datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc)),
+        clock=FakeClock(datetime(2024, 1, 2, 10, 0, tzinfo=UTC)),
     )
 
     assert svc.quote("TQQQ") is None
@@ -234,7 +234,7 @@ class _CountingQuoteSource:
 
     def quote(self, symbol: str):
         self.calls += 1
-        return Quote(symbol=symbol, ts=datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc),
+        return Quote(symbol=symbol, ts=datetime(2024, 6, 3, 14, 0, tzinfo=UTC),
                      price=self.price)
 
     def history(self, symbol: str, interval: str, n: int):
@@ -256,7 +256,7 @@ def test_quote_cache_collapses_repeat_calls_within_a_cycle():
     계산해 놓고 다른 가격에 체결되므로 주문금액 상한 검증이 무의미해진다.
     """
     src = _CountingQuoteSource()
-    svc = _svc(src, FakeClock(datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)), quote_cache_seconds=5.0)
+    svc = _svc(src, FakeClock(datetime(2024, 6, 3, 14, 0, tzinfo=UTC)), quote_cache_seconds=5.0)
 
     prices = [svc.quote("TQQQ").price for _ in range(3)]
     assert src.calls == 1
@@ -265,7 +265,7 @@ def test_quote_cache_collapses_repeat_calls_within_a_cycle():
 
 def test_quote_cache_is_off_by_default():
     src = _CountingQuoteSource()
-    svc = _svc(src, FakeClock(datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)))
+    svc = _svc(src, FakeClock(datetime(2024, 6, 3, 14, 0, tzinfo=UTC)))
     for _ in range(3):
         svc.quote("TQQQ")
     assert src.calls == 3, "기본값은 캐시 없음 — 기존 동작이 바뀌면 안 된다"
@@ -273,7 +273,7 @@ def test_quote_cache_is_off_by_default():
 
 def test_quote_cache_expires_so_next_cycle_gets_fresh_data():
     src = _CountingQuoteSource()
-    svc = _svc(src, FakeClock(datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)), quote_cache_seconds=0.01)
+    svc = _svc(src, FakeClock(datetime(2024, 6, 3, 14, 0, tzinfo=UTC)), quote_cache_seconds=0.01)
     svc.quote("TQQQ")
     time.sleep(0.02)
     svc.quote("TQQQ")
@@ -282,7 +282,7 @@ def test_quote_cache_expires_so_next_cycle_gets_fresh_data():
 
 def test_quote_cache_is_per_symbol():
     src = _CountingQuoteSource()
-    svc = _svc(src, FakeClock(datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)), quote_cache_seconds=5.0)
+    svc = _svc(src, FakeClock(datetime(2024, 6, 3, 14, 0, tzinfo=UTC)), quote_cache_seconds=5.0)
     svc.quote("TQQQ")
     svc.quote("SQQQ")
     svc.quote("TQQQ")
@@ -295,7 +295,7 @@ def test_quote_cache_is_per_symbol():
 # 서빙해도 degraded=True가 되어 "시세 조회 연속 3회 실패"가 5분마다 떴다.
 # 항상 울리는 경고는 없는 경고보다 나쁘다 — 진짜 장애를 무시하게 만든다.
 
-_NOW = datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc)
+_NOW = datetime(2024, 1, 2, 10, 0, tzinfo=UTC)
 
 
 def test_all_sources_exhausted_is_degraded():
@@ -386,7 +386,7 @@ def test_history_when_market_closed_still_returns_n():
 
 # --------------------------------------------------- 사이클당 콜드 페치 예산
 
-_BUDGET_NOW = datetime(2024, 6, 3, 14, 0, tzinfo=timezone.utc)
+_BUDGET_NOW = datetime(2024, 6, 3, 14, 0, tzinfo=UTC)
 
 
 def _budget_svc(cold_fetch_budget_per_cycle, src=None):
@@ -493,7 +493,7 @@ def test_reset_cycle_budget_is_harmless_without_budget_configured():
 # 여기서는 fake clock(time.monotonic 몽키패치)으로 (route,symbol)별 스로틀
 # 상태머신만 고정한다 — stale 임계값이나 라우팅 자체는 건드리지 않는다.
 
-_THROTTLE_NOW = datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc)
+_THROTTLE_NOW = datetime(2024, 1, 2, 10, 0, tzinfo=UTC)
 
 
 def test_total_failure_first_occurrence_warns_repeat_within_window_is_debug(monkeypatch, caplog):
@@ -572,7 +572,7 @@ def test_prefetch_warms_the_bar_cache_for_each_symbol_and_need():
     src = FakeSource(history_df=_bars("2024-06-03T09:00", 50, freq="1min"))
     svc = MarketDataService(
         routes=[SourceRoute(name="s", source=src, capabilities=frozenset({Capability.BARS}))],
-        clock=FakeClock(datetime(2024, 6, 3, 10, 0, tzinfo=timezone.utc)),
+        clock=FakeClock(datetime(2024, 6, 3, 10, 0, tzinfo=UTC)),
     )
 
     warmed = svc.prefetch(["AAA", "BBB"], [("1m", 10)])
@@ -589,7 +589,7 @@ def test_prefetch_respects_time_budget_and_stops_early(monkeypatch):
     src = FakeSource(history_df=_bars("2024-06-03T09:00", 50, freq="1min"))
     svc = MarketDataService(
         routes=[SourceRoute(name="s", source=src, capabilities=frozenset({Capability.BARS}))],
-        clock=FakeClock(datetime(2024, 6, 3, 10, 0, tzinfo=timezone.utc)),
+        clock=FakeClock(datetime(2024, 6, 3, 10, 0, tzinfo=UTC)),
     )
     fake_now = {"t": 0.0}
     monkeypatch.setattr(time, "monotonic", lambda: fake_now["t"])
@@ -624,7 +624,7 @@ def test_prefetch_failure_for_one_symbol_does_not_stop_the_rest():
     src = _FlakySource()
     svc = MarketDataService(
         routes=[SourceRoute(name="s", source=src, capabilities=frozenset({Capability.BARS}))],
-        clock=FakeClock(datetime(2024, 6, 3, 10, 0, tzinfo=timezone.utc)),
+        clock=FakeClock(datetime(2024, 6, 3, 10, 0, tzinfo=UTC)),
     )
 
     warmed = svc.prefetch(["GOOD", "BAD"], [("1m", 10)])
@@ -637,7 +637,7 @@ def test_prefetch_with_no_symbols_or_needs_is_a_harmless_noop():
     src = FakeSource(history_df=_bars("2024-06-03T09:00", 10, freq="1min"))
     svc = MarketDataService(
         routes=[SourceRoute(name="s", source=src, capabilities=frozenset({Capability.BARS}))],
-        clock=FakeClock(datetime(2024, 6, 3, 10, 0, tzinfo=timezone.utc)),
+        clock=FakeClock(datetime(2024, 6, 3, 10, 0, tzinfo=UTC)),
     )
 
     assert svc.prefetch([], [("1m", 10)]) == 0

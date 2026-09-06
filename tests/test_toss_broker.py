@@ -13,7 +13,7 @@ import pytest
 import quant.adapters.brokers.toss.broker as broker_module
 from quant.adapters.brokers.toss.broker import TossBroker, snap_to_tick
 from quant.adapters.brokers.toss.client import TossAPIError
-from quant.core.models import Order, Side, OrderStatus
+from quant.core.models import Order, OrderStatus, Side
 from quant.core.portfolio.ownership import EngineOwnership
 
 

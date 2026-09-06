@@ -12,11 +12,10 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-import pytest
 
 from quant.core.models import Position, Quote
 from quant.core.ports import Context
-from quant.core.strategy_api import DataNeeds, Decision, StrategySnapshot
+from quant.core.strategy_api import DataNeeds, Decision
 from quant.trade.strategy.shell import PureStrategyShell
 
 NY = ZoneInfo("America/New_York")

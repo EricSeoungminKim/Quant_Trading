@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -55,7 +55,7 @@ class TelegramNotifier:
         self.lanes_path = lanes_path or _LANES_PATH
 
     @classmethod
-    def from_env(cls) -> "TelegramNotifier":
+    def from_env(cls) -> TelegramNotifier:
         return cls(os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID"))
 
     def _load_lane_mapping(self) -> dict | None:
@@ -141,7 +141,7 @@ class TelegramNotifier:
         본말전도다(Notifier 프로토콜 규칙: 모든 예외는 이 안에서 삼킨다)."""
         try:
             row = {
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": datetime.now(UTC).isoformat(),
                 "ok": ok,
                 "text": text,
             }

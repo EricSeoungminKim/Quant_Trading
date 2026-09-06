@@ -269,8 +269,8 @@ def test_assumed_round_trip_bp_has_the_three_named_buckets():
     26/4/30 을 따로 적어 뒀는데, 같은 원장을 읽는 세 리포트가 서로 다른 왕복
     비용을 쓰고 있었다(cost_model 상단 주석)."""
     assert ASSUMED_ROUND_TRIP_BP == {"US": 20.0, "KR_ETF": 3.0, "KR_STOCK": 23.0}
-    assert ASSUMED_ROUND_TRIP_BP == round_trip_bp_from_settings(DEFAULT_EXECUTION_CFG)
-    assert FALLBACK_ROUND_TRIP_BP == ASSUMED_ROUND_TRIP_BP["US"]
+    assert round_trip_bp_from_settings(DEFAULT_EXECUTION_CFG) == ASSUMED_ROUND_TRIP_BP
+    assert ASSUMED_ROUND_TRIP_BP["US"] == FALLBACK_ROUND_TRIP_BP
 
 
 def test_round_trip_bp_from_settings_is_the_single_source():

@@ -30,7 +30,7 @@ quant-backtest 워크포워드(KR 일봉 2016→2026, 유니버스=시총≥3,00
 """
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import pandas as pd
 

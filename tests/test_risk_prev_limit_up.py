@@ -16,17 +16,14 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-import pytest
 
-from quant.core.ports import DataSourceError
 from quant.core.models import Position, Signal, SignalAction
+from quant.core.ports import DataSourceError
 from quant.trade.risk.manager import RiskManagerImpl
-
 from tests.test_risk_circuit_breakers import (
-    _FakeBroker,
-    _FakeData,
     _ctx,
     _exit,
+    _FakeData,
     _risk_cfg,
 )
 

@@ -20,7 +20,8 @@
 from __future__ import annotations
 
 import copy
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -527,7 +528,7 @@ def test_min_stop_gate_rejects_degenerate_stop():
     않고, 사유가 last_reject 에 남아야 한다."""
     strat = PullbackImpulsePureStrategy(["AAA"], {"min_stop_bp": 40.0})
     # 손절폭 계산만 검증하는 최소 경로: entry 100.0, stop 99.98 (2bp) → 거부
-    lr: dict = {}
+    _lr: dict = {}
     stop_bp = (100.0 - 99.98) / 100.0 * 1e4
     assert stop_bp < strat.min_stop_bp
     # 통합 경로는 기존 진입 시나리오 픽스처가 복잡하므로, 게이트 상수와

@@ -14,7 +14,6 @@ from quant.analyze.bullish_markers import (
     news_axis_v2,
 )
 
-
 # ------------------------------------------------------------------ classify_titles — 유형별
 
 def test_classify_titles_finds_order_contract():
@@ -315,8 +314,9 @@ def test_news_axis_v2_tier_weight_applies_to_low_tier_too():
 
 def test_hynix_weekend_catalyst_regression():
     from datetime import date
-    from quant.analyze.mentions import continuity
+
     from quant.analyze.intraday_score import NEWS_AXIS_BUDGET
+    from quant.analyze.mentions import continuity
 
     ledger = [
         {"date": "2026-08-17", "symbol": "000660", "name": "SK하이닉스",

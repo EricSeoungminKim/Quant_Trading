@@ -28,8 +28,6 @@ from __future__ import annotations
 import os
 import time
 
-import pytest
-
 from quant.apps.config import Settings, _read_merged
 
 _GOOD_YAML = "engine:\n  poll_seconds: 5\nstrategies: {}\n"

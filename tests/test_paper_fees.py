@@ -12,13 +12,13 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
+from quant.adapters.execution.paper import PaperBroker
 from quant.apps.config import load_settings
 from quant.core.models import Order, Quote, Side
-from quant.adapters.execution.paper import PaperBroker
 from quant.core.portfolio.portfolio import Portfolio
 
 
@@ -27,7 +27,7 @@ class _Feed:
         self._price = price
 
     def quote(self, symbol):
-        return Quote(symbol=symbol, ts=datetime.now(timezone.utc), price=self._price)
+        return Quote(symbol=symbol, ts=datetime.now(UTC), price=self._price)
 
 
 def _broker(**kw):
@@ -76,14 +76,14 @@ def test_unclassified_kr_symbol_treated_as_stock():
 def test_fill_records_cash_after_snapshot_matching_portfolio(tmp_path):
     """체결 직후 현금 스냅샷 — 원장↔현금 갭의 발생 지점을 기록으로 특정하기 위함
     (2026-08-11 160,974원 미설명 갭에서 시점별 기록 부재로 원인 특정 실패)."""
-    from quant.core.models import Order, Quote, Side
     from quant.adapters.execution.paper import PaperBroker
+    from quant.core.models import Order, Quote, Side
     from quant.core.portfolio.portfolio import Portfolio
 
     class _Data:
         def quote(self, symbol):
-            from datetime import datetime, timezone
-            return Quote(symbol=symbol, ts=datetime.now(timezone.utc), price=10_000.0)
+            from datetime import datetime
+            return Quote(symbol=symbol, ts=datetime.now(UTC), price=10_000.0)
 
     portfolio = Portfolio(cash=1_000_000.0, state_path=None)
     broker = PaperBroker(data=_Data(), portfolio=portfolio, fee_bps={"KR": 0.0, "US": 0.0},

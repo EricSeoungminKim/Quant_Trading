@@ -17,7 +17,7 @@ Portfolio(quant/trade/portfolio/portfolio.py)와 동일한 tmp-write-then-replac
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 DEFAULT_STATE_PATH = Path("data/state/control.json")
@@ -156,10 +156,10 @@ class TradingControl:
             return
         if self._pending_flatten is not None and self._pending_flatten.get("scope") == scope:
             merged = sorted(set(self._pending_flatten.get("symbols", [])) | set(symbols))
-            requested_at = self._pending_flatten.get("requested_at") or datetime.now(timezone.utc).isoformat()
+            requested_at = self._pending_flatten.get("requested_at") or datetime.now(UTC).isoformat()
         else:
             merged = sorted(set(symbols))
-            requested_at = datetime.now(timezone.utc).isoformat()
+            requested_at = datetime.now(UTC).isoformat()
         self._pending_flatten = {"scope": scope, "symbols": merged, "requested_at": requested_at}
         self._save()
 

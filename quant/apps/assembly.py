@@ -17,23 +17,40 @@ import asyncio
 import json
 import logging
 import os
-from pathlib import Path
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
-from quant.trade.approval import ApprovalGate
-from quant.apps.config import Settings
+from quant.adapters.data.service import Capability, MarketDataService, SourceRoute
+from quant.adapters.execution.paper import PaperBroker
+from quant.adapters.persistence.sink import ConsoleSink, JsonlSink, MultiSink
+from quant.adapters.regime_indicators import (
+    CompositeIndicatorClient,
+    FileMacroIndicatorClient,
+    TossIndicatorClient,
+    UpbitBitcoinAdapter,
+)
 from quant.adapters.smart_flow_log import SmartFlowLogger
 from quant.adapters.tick_log import TickLogger
-from quant.core.models import Side, market_of
-from quant.trade.control import TradingControl
-from quant.trade.reconcile import OpenOrderBook, Reconciler
+from quant.apps.config import Settings
+from quant.control.exposure import DEFAULT_ALERT_PCT
+from quant.control.exposure import build_report as build_exposure_report
+from quant.control.ledger import TradeLedgerSink
 from quant.core.clock import WallClock
 from quant.core.fx import DailyFxProvider, FixedFxProvider, FxProvider
-from quant.adapters.data.service import Capability, MarketDataService, SourceRoute
+from quant.core.models import Side, market_of
+from quant.core.portfolio.portfolio import Portfolio
+from quant.core.ports import Context, EventSink, Notifier, Strategy
 from quant.core.session import TossSessionCalendar
+from quant.trade.approval import ApprovalGate
+from quant.trade.control import TradingControl
+from quant.trade.reconcile import OpenOrderBook, Reconciler
+from quant.trade.regime import RegimeProvider
+from quant.trade.risk.books import StrategyBooks
+from quant.trade.risk.manager import RiskManagerImpl
+from quant.trade.strategy import build_strategies
 from quant.trade.universe import (
     DEFAULT_WATCHLIST_PATH,
     CompositeUniverse,
@@ -41,22 +58,6 @@ from quant.trade.universe import (
     StaticUniverse,
     TossRankingUniverse,
 )
-from quant.core.ports import Context, EventSink, Notifier, Strategy
-from quant.adapters.execution.paper import PaperBroker
-from quant.control.exposure import DEFAULT_ALERT_PCT, build_report as build_exposure_report
-from quant.control.ledger import TradeLedgerSink
-from quant.adapters.persistence.sink import ConsoleSink, JsonlSink, MultiSink
-from quant.core.portfolio.portfolio import Portfolio
-from quant.adapters.regime_indicators import (
-    CompositeIndicatorClient,
-    FileMacroIndicatorClient,
-    TossIndicatorClient,
-    UpbitBitcoinAdapter,
-)
-from quant.trade.regime import RegimeProvider
-from quant.trade.risk.books import StrategyBooks
-from quant.trade.risk.manager import RiskManagerImpl
-from quant.trade.strategy import build_strategies
 
 logger = logging.getLogger(__name__)
 
@@ -218,15 +219,15 @@ class PaperRuntime:
     leverage_of: dict[str, float]
     # 전략별 독립 명목계정(2026-08-19, capital_mode: per_strategy 전용) — shared
     # 모드(기본)면 None이고 loop.py의 books 갱신 코드는 한 줄도 실행되지 않는다.
-    books: "StrategyBooks | None" = None
+    books: StrategyBooks | None = None
     # 틱 로거(2026-08-28) — 항상 주입되고, engine.tick_log.enabled: false는 이
     # 인스턴스 내부의 enabled 플래그로 표현된다(TickLogger.__init__ 참고). loop.py는
     # quant.core.ports.TickLogger Protocol로만 받고 이 어댑터를 직접 임포트하지 않는다.
-    tick_logger: "TickLogger | None" = None
+    tick_logger: TickLogger | None = None
     # 전략 간 합산 노출 감시 클로저(2026-08-30) — loop.py는 quant.control을
     # 직접 임포트할 수 없어(아키텍처 규칙) 여기서 quant.control.exposure를
     # 감싸 넘긴다. 시그니처: (lots, prices, capital_krw) -> dict(ExposureReport.to_dict()).
-    exposure_check: "Callable[[dict, dict, float | None], dict] | None" = None
+    exposure_check: Callable[[dict, dict, float | None], dict] | None = None
 
 
 def require_books_capable_broker(broker: object) -> None:

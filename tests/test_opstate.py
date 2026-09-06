@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from quant.adapters.kv import NullKeyValue, RedisKeyValue
 from quant.control.opstate import (
@@ -22,7 +22,7 @@ from quant.control.opstate import (
 )
 from tests.test_kv import BrokenRedis, FakeRedis
 
-UTC = timezone.utc
+UTC = UTC
 NOW = datetime(2026, 8, 13, 7, 0, tzinfo=UTC)
 
 

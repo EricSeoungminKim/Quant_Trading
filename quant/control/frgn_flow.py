@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 # 프로세스 내 파싱 캐시(2026-08-25, Phase 3 데이터 효율) — {절대경로: (mtime, rows)}.
 # 한 리포트 빌드가 4곳(agent_interpret/intraday/sector/close_bet)에서 심볼마다
 # load_series 를 불러, 심볼 수십 개면 같은 원장(실측 1,905줄)을 수백 번 전체

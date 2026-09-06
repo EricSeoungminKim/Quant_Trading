@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, Mapping
+from typing import Any
 
 from quant.core.models import Signal, market_of_symbol
 from quant.core.ports import Context

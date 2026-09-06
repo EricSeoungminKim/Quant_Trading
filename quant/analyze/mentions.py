@@ -15,8 +15,8 @@ from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
-from quant.collect.contracts import Snapshot
 from quant.analyze.entities import extract, extract_us
+from quant.collect.contracts import Snapshot
 
 STREAK_WINDOW = 10
 

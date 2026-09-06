@@ -28,7 +28,7 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from collections.abc import Iterable
 
 from quant.analyze import foreign_trend
 

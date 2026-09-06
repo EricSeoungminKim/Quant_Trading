@@ -69,8 +69,10 @@ KOSPI 일중 반전 실증은 **소형·저유동 종목에서 훨씬 강하다*
 from __future__ import annotations
 
 import math
-from datetime import date as dtdate, datetime
-from typing import Any, Mapping
+from collections.abc import Mapping
+from datetime import date as dtdate
+from datetime import datetime
+from typing import Any
 
 import pandas as pd
 

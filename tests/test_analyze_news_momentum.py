@@ -18,7 +18,6 @@ from pathlib import Path
 
 from quant.analyze.news_momentum import daily_counts, news_zscore
 
-
 # ── news_zscore ──────────────────────────────────────────────────────────
 
 def test_zscore_of_a_clear_spike_is_positive_and_large():

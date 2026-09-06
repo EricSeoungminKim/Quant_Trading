@@ -26,8 +26,8 @@ report: ## Private Banker 일일 계좌 진단 리포트 (Toss 실계좌 읽기 
 fetch: ## 과거 봉 수집 (yfinance / Alpaca / Toss)
 	uv run python -m quant.apps.cli fetch
 
-lint: ## ruff가 설치돼 있으면 실행, 아니면 no-op (현재 린터 미구성)
-	@command -v ruff >/dev/null 2>&1 && ruff check . || echo "[lint] ruff not installed — no-op (no linter configured yet)"
+lint: ## ruff 정적 검사 (설정: pyproject.toml [tool.ruff])
+	uv run ruff check quant tests
 
 deploy: ## EC2에 배포 (QT_SSH_HOST=ubuntu@<ElasticIP> make deploy). 절차: docs/runbooks/deploy.md
 	./server/scripts/deploy.sh

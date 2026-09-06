@@ -32,7 +32,8 @@ scalp_1m용 `run_backtest` 선례 자체가 없다(grep 결과 0건). 근거 없
 from __future__ import annotations
 
 import math
-from datetime import date, datetime, time as dtime, timedelta
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -366,7 +367,7 @@ def test_pattern_b_entry_after_pattern_a_used_equivalence():
     legacy._session_date["US"] = DAY1
     # pure 쪽은 decide()의 next_state를 통해서만 상태를 주입할 수 있다 — 첫
     # 사이클(패턴 A 사용 처리)을 먼저 재현한 뒤 이 사이클을 돌린다.
-    inner = pure.inner
+    _inner = pure.inner
     inner_state = {"pattern_a_used": {"AAA": True}, "session_date": {"US": DAY1}}
     pure._state = inner_state
 

@@ -1,7 +1,9 @@
 from pathlib import Path
 
 from quant.collect.sources.youtube_brief import (
-    BRIEF_CHANNELS, fetch_briefs, fetch_channel_videos,
+    BRIEF_CHANNELS,
+    fetch_briefs,
+    fetch_channel_videos,
 )
 
 FIXTURE = Path(__file__).parent / "report" / "fixtures" / "youtube_brief_3protv.xml"

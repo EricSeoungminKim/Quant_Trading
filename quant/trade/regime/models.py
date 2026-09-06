@@ -30,7 +30,7 @@ class RegimeState:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "RegimeState":
+    def from_dict(cls, d: dict) -> RegimeState:
         return cls(
             label=d["label"],
             risk_multiplier=d["risk_multiplier"],

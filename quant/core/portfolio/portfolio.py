@@ -107,7 +107,7 @@ class Portfolio:
         tmp.replace(self.state_path)
 
     @classmethod
-    def load_or_init(cls, start_cash: float, state_path: Path = DEFAULT_STATE_PATH) -> "Portfolio":
+    def load_or_init(cls, start_cash: float, state_path: Path = DEFAULT_STATE_PATH) -> Portfolio:
         state_path = Path(state_path)
         if state_path.exists():
             data = json.loads(state_path.read_text(encoding="utf-8"))

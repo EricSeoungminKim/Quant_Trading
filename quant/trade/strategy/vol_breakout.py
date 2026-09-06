@@ -89,8 +89,9 @@ Larry Williams 원 전략 자체가 목표가를 두지 않는다 — 트리거 
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date as dtdate
-from typing import Any, Mapping
+from typing import Any
 
 import pandas as pd
 
@@ -370,7 +371,7 @@ class VolBreakoutPureStrategy:
         # 오버나잇 안전망 — 이 전략은 정의상 하루 안에서 닫힌다(EoD 청산이 주
         # 경로다). 그래도 데이터 결손 등으로 EoD 청산을 놓친 경우의 방어선으로
         # 세션 롤 강제청산을 둔다(`mr_vwap_quiet`/`pullback_impulse`와 동일 패턴).
-        entry_session = lot.get("session")
+        _entry_session = lot.get("session")
         today_iso = snap.now.astimezone(tz).date().isoformat()
         if kernel.is_overnight_carry(lot, today_iso):
             return _exit(

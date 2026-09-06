@@ -25,14 +25,14 @@ import logging
 import math
 import time
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
 import pandas as pd
 
-from quant.core.ports import ColdFetchBudgetExceeded, Clock, DataSourceError
 from quant.core.models import Quote
+from quant.core.ports import Clock, ColdFetchBudgetExceeded
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ class ServiceHealth:
 
 def _normalize_quote(quote: Quote) -> Quote:
     ts = quote.ts
-    ts = ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts.astimezone(timezone.utc)
+    ts = ts.replace(tzinfo=UTC) if ts.tzinfo is None else ts.astimezone(UTC)
     return replace(quote, ts=ts)
 
 
@@ -142,10 +142,10 @@ def _bar_boundary(now: datetime, interval: str) -> datetime:
     소스를 때리고, 분이 바뀌는 순간 지체 없이 새 봉을 받는다.
     """
     if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
+        now = now.replace(tzinfo=UTC)
     step = _interval_minutes(interval) * 60
     epoch = int(now.timestamp())
-    return datetime.fromtimestamp(epoch - (epoch % step), tz=timezone.utc)
+    return datetime.fromtimestamp(epoch - (epoch % step), tz=UTC)
 
 
 @dataclass

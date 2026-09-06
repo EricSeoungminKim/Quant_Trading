@@ -20,77 +20,126 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from quant.adapters.kv import make_kv
 from quant.analyze.delta import previous_snapshot
 from quant.analyze.entities import (
-    extract as extract_kr, extract_us, load_name_map, load_table, load_us_table,
+    extract as extract_kr,
+)
+from quant.analyze.entities import (
+    extract_us,
+    load_name_map,
+    load_table,
+    load_us_table,
+    make_symbol_resolver,
 )
 from quant.analyze.opendays import anchor_dir_for, last_open_day
 from quant.analyze.telegram_view import build_telegram_view
-from quant.core.report_clock import KST, publish_at
 from quant.collect import collector
 from quant.collect.snapshot import collect, load_snapshot, save_snapshot
-from quant.analyze.entities import make_symbol_resolver
 from quant.collect.sources import build_seeded_source, build_sources
 from quant.collect.sources.dart import append_ledger as append_disclosures
 from quant.collect.sources.dart import fetch_disclosures
-from quant.adapters.kv import make_kv
-from quant.control import selections
+from quant.control import (
+    selections,  # noqa: F401 — 테스트가 report_cli.selections로 모듈 속성 접근(monkeypatch)
+)
 from quant.control.opstate import record_feed_health, record_run
-
-from quant.report.model import CloseReportModel, ReportModel
-from quant.report.paths import (
-    _close_engine_json_path, _engine_json_path, _load_artifact, _paths,
-)
-from quant.report.render.html import write_close_report, write_open_report
-from quant.report.render.telegram import _format_close_summary, _format_summary
+from quant.core.report_clock import KST, publish_at
 from quant.report.collect.agent_interpret import (
-    AGENT_INTERPRET_TOP_N, _AGENT_INTERPRET_PRODUCER, _AGENT_INTERPRET_PRODUCER_CLOSE,
-    _build_agent_disclosures, _build_agent_foreign_flow, _build_agent_interpret,
-    _build_agent_news_items, _build_track_record, _score_breakdown_from_intraday,
-)
+    _AGENT_INTERPRET_PRODUCER,  # noqa: F401 — 테스트가 report_cli.<이름>으로 모듈 속성 접근
+    _AGENT_INTERPRET_PRODUCER_CLOSE,
+    AGENT_INTERPRET_TOP_N,  # noqa: F401 — 테스트가 report_cli.<이름>으로 모듈 속성 접근
+    _build_agent_disclosures,  # noqa: F401 — 위와 동일(재수출)
+    _build_agent_foreign_flow,  # noqa: F401 — 위와 동일(재수출)
+    _build_agent_interpret,
+    _build_agent_news_items,  # noqa: F401 — 위와 동일(재수출)
+    _build_track_record,  # noqa: F401 — 위와 동일(재수출)
+    _score_breakdown_from_intraday,  # noqa: F401 — 위와 동일(재수출)
+    )
 from quant.report.collect.briefs import _fetch_blog_briefs, _fetch_telegram_briefs, _fetch_youtube_briefs
 from quant.report.collect.carryover import _apply_carryover
 from quant.report.collect.close import (
-    _build_close_bet_view, _build_close_flow_view, _build_close_news_view,
+    _build_close_bet_view,
+    _build_close_flow_view,
+    _build_close_news_view,
     _build_close_ranking_view,
 )
 from quant.report.collect.core import _derive
 from quant.report.collect.holiday_synthesis import _apply_holiday_synthesis
 from quant.report.collect.intraday import (
-    _INTRADAY_PRODUCER, _INTRADAY_PRODUCER_CLOSE, _build_intraday_view, _candidate_symbols,
-    _theme_change_pct, _visible_intraday,
+    _INTRADAY_PRODUCER,  # noqa: F401 — _INTRADAY_PRODUCER는 report_cli.<이름>으로 테스트가 참조(재수출)
+    _INTRADAY_PRODUCER_CLOSE,
+    _build_intraday_view,
+    _candidate_symbols,  # noqa: F401 — 위와 동일 블록
+    _theme_change_pct,  # noqa: F401 — 위와 동일 블록
+    _visible_intraday,
 )
 from quant.report.collect.ledger import (
-    _load_flow_rows, _record_agent_interpret_selections, _record_close_report_claims,
-    _record_intraday_selections, _record_midterm_selections, _record_selections,
+    _load_flow_rows,
+    _record_agent_interpret_selections,
+    _record_close_report_claims,
+    _record_intraday_selections,
+    _record_midterm_selections,
+    _record_selections,
     _should_record_ledger,
 )
 from quant.report.collect.midterm import (
-    _MIDTERM_PRODUCER, _MIDTERM_PRODUCER_CLOSE, _apply_midterm_prose,
-    _build_midterm_bullish, _build_midterm_prose, _build_midterm_watch_view,
-    _build_us_news_kr_view, _load_midterm_telegram_msgs, _midterm_entities,
-    _midterm_name_by_symbol,
+    _MIDTERM_PRODUCER,  # noqa: F401 — 테스트가 report_cli.<이름>으로 모듈 속성 접근
+    _MIDTERM_PRODUCER_CLOSE,
+    _apply_midterm_prose,
+    _build_midterm_bullish,  # noqa: F401 — 위와 동일(재수출)
+    _build_midterm_prose,
+    _build_midterm_watch_view,
+    _build_us_news_kr_view,  # noqa: F401 — 위와 동일(재수출)
+    _load_midterm_telegram_msgs,
+    _midterm_entities,  # noqa: F401 — 위와 동일(재수출)
+    _midterm_name_by_symbol,  # noqa: F401 — 위와 동일(재수출)
 )
 from quant.report.collect.money_flow import build_money_flow_view
 from quant.report.collect.news import (
-    _build_digest, _build_digest_prose, _build_exec_summary, _build_news_flow,
-    _build_section_advice, _build_stance_prose, _load_disclosures, _load_research,
-    _research_badges, _source_data,
+    _build_digest,
+    _build_digest_prose,
+    _build_exec_summary,
+    _build_news_flow,
+    _build_section_advice,
+    _build_stance_prose,
+    _load_disclosures,
+    _load_research,
+    _research_badges,
+    _source_data,
 )
 from quant.report.collect.sector import (
-    _build_foreign_view, _build_sector_daily_view, _build_sector_view, _build_top_movers,
+    _build_foreign_view,
+    _build_sector_daily_view,
+    _build_sector_view,
+    _build_top_movers,
     _load_sector_data,
 )
 from quant.report.collect.snapshot import (
-    CLOSE_NEWS_FALLBACK_WINDOW, _close_snapshot_path, _collect_snapshot,
-    _load_morning_snapshot, close_news_since_for, news_since_for,
+    CLOSE_NEWS_FALLBACK_WINDOW,  # noqa: F401 — 테스트가 report_cli.CLOSE_NEWS_FALLBACK_WINDOW로 모듈 속성 접근
+    _close_snapshot_path,
+    _collect_snapshot,
+    _load_morning_snapshot,
+    close_news_since_for,
+    news_since_for,
 )
 from quant.report.collect.telegram import (
-    _build_telegram_image_desc, _build_telegram_mentions, _build_telegram_prose,
-    _usnews_headlines, _usnews_titles,
+    _build_telegram_image_desc,
+    _build_telegram_mentions,
+    _build_telegram_prose,
+    _usnews_headlines,
+    _usnews_titles,
 )
 from quant.report.collect.tg_digest_section import _build_channel_digest_view
 from quant.report.collect.uswrap import build_us_wrap, gather_kr_wrap, load_latest_us_wrap, write_us_wrap
+from quant.report.model import CloseReportModel, ReportModel
+from quant.report.paths import (
+    _close_engine_json_path,
+    _engine_json_path,
+    _load_artifact,
+    _paths,
+)
+from quant.report.render.html import write_close_report, write_open_report
+from quant.report.render.telegram import _format_close_summary, _format_summary
 
 
 def _print_summary(market: str, root: Path, session: date, session_kind: str = "open") -> None:
@@ -587,7 +636,8 @@ def _run_uswrap(session: date, root: Path, snap_root: Path, out_root: Path) -> N
         return
     # 전일 KR 세션 절반(2026-08-25 확장) — "미국장만이 아니라 한국장·미국장을
     # 둘 다 고려한, 다음날 흐름을 파악하는 리포트". KR 전일 개장일 기준.
-    from quant.analyze.opendays import anchor_dir_for as _adf, last_open_day as _lod
+    from quant.analyze.opendays import anchor_dir_for as _adf
+    from quant.analyze.opendays import last_open_day as _lod
 
     try:
         kr_day = _lod(_adf("KR", root), session)
@@ -884,6 +934,7 @@ def main(argv: list[str] | None = None) -> int:
         db_status = "skip"
         try:
             import json as _json
+
             from quant.adapters.db import connect
             conn = connect()
             if conn is not None:

@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -140,7 +140,7 @@ def append_proposals(proposals: list[dict], path: Path | str, week: str) -> int:
                 continue
             existing.add((r.get("week"), r.get("strategy"), r.get("param")))
     p.parent.mkdir(parents=True, exist_ok=True)
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     added = 0
     with p.open("a", encoding="utf-8") as f:
         for prop in proposals:

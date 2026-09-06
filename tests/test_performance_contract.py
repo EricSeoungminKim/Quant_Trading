@@ -7,8 +7,7 @@
 from __future__ import annotations
 
 import copy
-import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -472,13 +471,13 @@ def test_overall_seed_within_rounding_is_clean():
 def test_stale_generated_at_is_error():
     payload = _valid_payload()
     payload["generated_at"] = "2026-09-01T00:00:00+09:00"  # now 기준 훨씬 과거
-    now = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 6, 12, 0, 0, tzinfo=UTC)
     findings = _errors(validate_payload(payload, now=now))
     assert any(f.path == "generated_at" for f in findings)
 
 
 def test_fresh_generated_at_is_clean():
-    now = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 6, 12, 0, 0, tzinfo=UTC)
     payload = _valid_payload()
     payload["generated_at"] = "2026-09-06T20:00:00+09:00"  # now로부터 몇 시간 이내
     findings = validate_payload(payload, now=now)

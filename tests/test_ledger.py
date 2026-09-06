@@ -1,5 +1,5 @@
 """거래 원장(TradeLedgerSink) + 라운드트립 + 스코어보드 테스트 — 전부 오프라인."""
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -37,7 +37,7 @@ class _InnerSink:
 def _fill(symbol, side, qty, price, *, pnl=None, fee=0.0, strategy="orb_scan", ts=None):
     return Fill(
         symbol=symbol, side=side, qty=qty, price=price,
-        ts=ts or datetime(2026, 8, 10, 10, 0, tzinfo=timezone.utc),
+        ts=ts or datetime(2026, 8, 10, 10, 0, tzinfo=UTC),
         strategy_id=strategy, fee=fee, realized_pnl=pnl,
     )
 
@@ -63,7 +63,7 @@ def test_sink_write_failure_never_blocks_fill(tmp_path):
 def test_round_trip_win_and_loss_math(tmp_path):
     p = tmp_path / "t.jsonl"
     sink = TradeLedgerSink(_InnerSink(), path=p)
-    t0 = datetime(2026, 8, 10, 9, 5, tzinfo=timezone.utc)
+    t0 = datetime(2026, 8, 10, 9, 5, tzinfo=UTC)
     # 승리 트립: 069500 매수 10@10000 → 매도 10@10200 (pnl 2000, fee 3+3)
     sink.on_fill(_fill("069500", Side.BUY, 10, 10000.0, fee=3.0, ts=t0))
     sink.on_fill(_fill("069500", Side.SELL, 10, 10200.0, pnl=2000.0, fee=3.0, ts=t0))
@@ -199,12 +199,12 @@ def test_session_window_kr_boundaries():
 def test_session_window_us_dst_summer_vs_winter():
     """서머타임(EDT/EST)을 America/New_York으로 계산 — KST 고정 클럭이면 여기서 어긋난다."""
     summer_start, summer_end = session_window("US", date(2026, 7, 15))  # EDT, UTC-4
-    assert summer_start.astimezone(timezone.utc).isoformat() == "2026-07-15T13:30:00+00:00"
-    assert summer_end.astimezone(timezone.utc).isoformat() == "2026-07-15T20:00:00+00:00"
+    assert summer_start.astimezone(UTC).isoformat() == "2026-07-15T13:30:00+00:00"
+    assert summer_end.astimezone(UTC).isoformat() == "2026-07-15T20:00:00+00:00"
 
     winter_start, winter_end = session_window("US", date(2026, 1, 15))  # EST, UTC-5
-    assert winter_start.astimezone(timezone.utc).isoformat() == "2026-01-15T14:30:00+00:00"
-    assert winter_end.astimezone(timezone.utc).isoformat() == "2026-01-15T21:00:00+00:00"
+    assert winter_start.astimezone(UTC).isoformat() == "2026-01-15T14:30:00+00:00"
+    assert winter_end.astimezone(UTC).isoformat() == "2026-01-15T21:00:00+00:00"
 
 
 def test_trades_in_session_excludes_other_market():
@@ -760,7 +760,7 @@ def test_ab_compare_ignores_trips_with_unknown_pnl():
 
 # ── session_pnl_text HTML 서식 (2026-09-04, tgfmt) ────────────────────────
 
-import re as _re
+import re as _re  # noqa: E402 — 파일 뒤쪽 섹션 전용 임포트, 상단 이동 불필요
 
 
 def _assert_balanced_html(text: str) -> None:

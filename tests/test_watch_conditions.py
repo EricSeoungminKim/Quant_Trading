@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import dataclasses
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
@@ -22,7 +22,7 @@ from quant.trade.watch_conditions import (
     parse_rules,
 )
 
-NOW = datetime(2026, 8, 30, 9, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 8, 30, 9, 0, tzinfo=UTC)
 
 
 def _daily_bars(closes: list[float]) -> pd.DataFrame:

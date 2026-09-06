@@ -66,13 +66,13 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 from quant.control.cost_model import round_trip_bp_from_settings
 from quant.control.ledger import (
     MIN_TRIPS_FOR_JUDGEMENT,
-    SEEDING_LIQUIDATION_MARKER,
+    SEEDING_LIQUIDATION_MARKER,  # noqa: F401 — tests/test_performance.py가 performance.SEEDING_LIQUIDATION_MARKER로 재수출 참조
     _verdict,
     _wilson_ci,
     base_strategy_id,
@@ -231,7 +231,7 @@ def _strategy_name_en(sid: str) -> str:
 def _parse_ts(trade: dict) -> datetime:
     ts = datetime.fromisoformat(str(trade.get("ts")))
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)  # 원장은 항상 오프셋 포함 — 방어적 처리
+        ts = ts.replace(tzinfo=UTC)  # 원장은 항상 오프셋 포함 — 방어적 처리
     return ts
 
 
@@ -527,9 +527,9 @@ def _trip_hold_minutes(trip: dict) -> float | None:
     except ValueError:
         return None
     if entry.tzinfo is None:
-        entry = entry.replace(tzinfo=timezone.utc)
+        entry = entry.replace(tzinfo=UTC)
     if exit_.tzinfo is None:
-        exit_ = exit_.replace(tzinfo=timezone.utc)
+        exit_ = exit_.replace(tzinfo=UTC)
     return (exit_ - entry).total_seconds() / 60.0
 
 

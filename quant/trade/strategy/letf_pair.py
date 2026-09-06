@@ -195,9 +195,11 @@ JSON을 읽어 생성자에 주입한다(이 파일은 파일을 열지 않는�
 """
 from __future__ import annotations
 
-from datetime import date as dtdate, datetime
+from collections.abc import Mapping
+from datetime import date as dtdate
+from datetime import datetime
 from datetime import time as dtime
-from typing import Any, Mapping
+from typing import Any
 
 import pandas as pd
 

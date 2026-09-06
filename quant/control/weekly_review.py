@@ -12,7 +12,6 @@
 """
 from __future__ import annotations
 
-import statistics as st
 from datetime import date, timedelta
 
 

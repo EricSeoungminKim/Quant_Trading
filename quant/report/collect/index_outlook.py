@@ -19,7 +19,11 @@ import pandas as pd
 
 from quant.analyze import index_outlook as idx_calc
 from quant.analyze.briefing import (
-    ANCHOR_STRONG_PCT, FLOW_BIG, INDEX_STRONG_PCT, VIX_CALM, VIX_STRESS,
+    ANCHOR_STRONG_PCT,
+    FLOW_BIG,
+    INDEX_STRONG_PCT,
+    VIX_CALM,
+    VIX_STRESS,
 )
 from quant.collect.contracts import Snapshot
 from quant.collect.sources.market import fetch_symbol_quotes

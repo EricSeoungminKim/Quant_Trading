@@ -13,7 +13,6 @@ from pathlib import Path
 
 from quant.analyze import render as _render
 from quant.collect.contracts import Snapshot
-
 from quant.report.model import CloseReportModel, ReportModel
 
 

@@ -384,6 +384,7 @@ def test_lane_header_matches_python_tglanes_registry():
     """셸의 헤더 문구가 quant.core.tglanes.LANES 와 갈리면 레거시 채팅에서
     보이는 헤더가 파이썬 어댑터 쪽과 달라진다 — 대조해서 잡는다."""
     import subprocess as _sp
+
     from quant.core import tglanes
 
     for lane in tglanes.LANES:

@@ -146,8 +146,10 @@ KR 연속매매는 **15:20 종료**다(15:20~15:30 은 마감 동시호가 — �
 """
 from __future__ import annotations
 
-from datetime import date as dtdate, datetime, timedelta
-from typing import Any, Mapping
+from collections.abc import Mapping
+from datetime import date as dtdate
+from datetime import datetime, timedelta
+from typing import Any
 
 import pandas as pd
 
