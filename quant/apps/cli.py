@@ -707,7 +707,11 @@ def cmd_optimize(args: argparse.Namespace) -> None:
     )
 
     print()
-    print(quant.analyze.render_text(result, strategy_id=args.strategy))  # noqa: F821 — 기존 버그로 보임(quant 미임포트, report.render_text 오타 추정) — 이 린트 패스 범위 밖, 별도 확인 필요
+    # 2026-09-06 수리: `quant.analyze.render_text` 는 존재하지 않는 경로(quant 미임포트 NameError).
+    # walk-forward 텍스트 렌더러는 quant.research.report.render_text 다.
+    from quant.research import report as _wf_report
+
+    print(_wf_report.render_text(result, strategy_id=args.strategy))
 
     out_dir = Path("data/research")
     out_dir.mkdir(parents=True, exist_ok=True)

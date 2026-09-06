@@ -70,8 +70,11 @@ KNOWN_DEBT: set[tuple[str, str]] = set()
 # 평면별 금지 외부 라이브러리.
 FORBIDDEN_EXTERNAL = {
     # 도메인은 stdlib + pandas 타입힌트만 (quant/core/CLAUDE.md).
+    # 2026-09-06 수리: 아래에 같은 키가 한 번 더 있어 dict 리터럴이 뒤 값({"redis","duckdb"})
+    # 으로 덮어써지면서 이 줄의 금지 목록이 **통째로 무력화**돼 있었다(린트 패스 F601 발견).
     "quant.core": {"httpx", "requests", "websockets", "yaml", "dotenv", "jinja2",
-                   "yfinance", "lxml", "pymysql", "MySQLdb", "sqlalchemy"},
+                   "yfinance", "lxml", "pymysql", "MySQLdb", "sqlalchemy",
+                   "redis", "valkey", "duckdb"},
     # 거래 평면은 네트워크도 DB 도 직접 만지지 않는다. 09:15 에 MySQL 이 딸꾹질했다고
     # 매매가 멈추면 안 된다.
     #
@@ -81,8 +84,7 @@ FORBIDDEN_EXTERNAL = {
     "quant.trade": {"httpx", "requests", "websockets", "lxml", "jinja2",
                     "pymysql", "MySQLdb", "sqlalchemy", "aiomysql",
                     "redis", "valkey", "duckdb"},
-    # 코어도 마찬가지 — Protocol 만 두고 구현은 어댑터가 갖는다.
-    "quant.core": {"redis", "duckdb"},  # noqa: F601 — 위 "quant.core" 키와 중복, 뒤 값이 앞 값을 덮어씀(기존 버그로 보임) — 이 린트 패스 범위 밖, 별도 확인 필요
+    # 코어도 마찬가지 — Protocol 만 두고 구현은 어댑터가 갖는다(redis/duckdb 는 위 quant.core 집합에 합쳤다).
     # 전략은 파라미터를 생성자 인자로만 받는다.
     "quant.trade.strategy": {"yaml", "dotenv"},
 }
