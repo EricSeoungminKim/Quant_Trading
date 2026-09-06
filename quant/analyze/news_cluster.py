@@ -24,7 +24,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 
 from quant.collect.collector import normalize_link
 
@@ -86,14 +86,26 @@ def cluster_titles(items: list[dict], threshold: float = 0.6) -> list[list[int]]
 
 
 def _parse_published(value) -> datetime | None:
+    """발행 시각을 **항상 tz-aware(UTC)** 로 돌려준다. 뉴스 소스마다 `published`가
+    "2026-09-05T08:00:00+09:00"(aware)·"2026-09-05 08:00:00"(naive)·Z 접미 등으로
+    섞여 들어오는데, `dedup_with_counts`가 클러스터 대표를 `max(parsed)`로 고르므로
+    naive 와 aware 가 한 그룹에 섞이면 `TypeError: can't compare offset-naive and
+    offset-aware datetimes` 로 리포트 빌드 전체가 죽는다 — 2026-09-05 KR 아침
+    리포트 빌드 실패의 원인(data/report.log). naive 는 UTC 로 간주한다(원장의
+    naive 값은 수집기가 UTC 로 쓴 것 — 잘못돼도 대표 선택 순서만 흔들릴 뿐 크래시는
+    없다)."""
     if isinstance(value, datetime):
-        return value
-    if not isinstance(value, str) or not value:
+        dt = value
+    elif isinstance(value, str) and value:
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
         return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
 
 
 def dedup_with_counts(items: list[dict], threshold: float = 0.6) -> list[dict]:

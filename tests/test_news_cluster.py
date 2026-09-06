@@ -176,3 +176,29 @@ def test_different_episodes_of_same_show_do_not_merge():
     ]
     out = dedup_with_counts(items)
     assert len(out) == 2
+
+
+# ── 2026-09-07 회귀: naive/aware 발행 시각이 한 클러스터에 섞여도 죽지 않는다 ─────
+def test_dedup_with_counts_mixed_naive_and_aware_published_does_not_crash():
+    from quant.analyze.news_cluster import dedup_with_counts
+
+    items = [
+        {"title": "삼성전자 3분기 실적 발표 예정", "published": "2026-09-05T08:00:00+09:00"},
+        {"title": "삼성전자 3분기 실적 발표 예정", "published": "2026-09-05 00:30:00"},  # naive (UTC 로 간주)
+        {"title": "삼성전자 3분기 실적 발표 예정", "published": "2026-09-04T23:00:00Z"},
+    ]
+    out = dedup_with_counts(items)
+    assert len(out) == 1 and out[0]["dup_count"] == 3
+    # 대표 = 가장 늦은 발행: 00:30 naive(UTC) = 09:30 KST > 08:00 KST > 23:00Z(08:00 KST)
+    assert out[0]["published"] == "2026-09-05 00:30:00"
+
+
+def test_parse_published_always_returns_aware_utc():
+    from datetime import UTC, datetime
+
+    from quant.analyze.news_cluster import _parse_published
+
+    assert _parse_published("2026-09-05 08:00:00").tzinfo is UTC
+    assert _parse_published(datetime(2026, 9, 5, 8, 0)).tzinfo is UTC
+    assert _parse_published("2026-09-05T08:00:00+09:00").utcoffset().total_seconds() == 9 * 3600
+    assert _parse_published("not a date") is None and _parse_published(None) is None
