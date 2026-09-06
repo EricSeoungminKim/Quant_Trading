@@ -553,7 +553,10 @@ def test_render_telegram_message_shows_evidence_line_once_per_kind():
     msg = manual_recs.render_telegram_message(recs, "KR")
 
     assert msg.count("단기반전(5일) 근거:") == 1
-    assert "+17.5bp" in msg
+    # 2026-09-06 정정: 날짜 밀림 결함 수리 후 재실행에서 OOS 유의성이 사라졌다 — 근거 문구는
+    # 옛 숫자(+17.5bp)를 "결함의 산물" 로 밝히고 재검증 결과(유의성 없음)를 먼저 말해야 한다.
+    assert "근거 재검증 결과 유의성 없음" in msg
+    assert "결함의 산물" in msg
     assert "frgn_accumulate 근거:" not in msg  # 기존 4종은 이 문구 자체가 없다
 
 
