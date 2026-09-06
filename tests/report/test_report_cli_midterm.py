@@ -141,6 +141,93 @@ def test_build_midterm_watch_view_exception_returns_empty_not_raise(tmp_path, mo
     assert out == []
 
 
+# ── load_midterm_history (2026-09-07 리포트 정확도 감사 후속 — 근거 갱신
+# 추적 배선, results/report_prose_audit/SUMMARY.md §근거 갱신 추적 실측) ────
+
+def test_load_midterm_history_reproduces_nvda_17_day_streak(tmp_path):
+    """실측 재현 — NVDA 가 reasons 토씨 하나 안 바뀐 채 17개 세션 연속
+    선정 원장에 올랐을 때, load_midterm_history 가 전부 돌려주고
+    reasons_age_days 가 그 스트릭을 그대로 센다."""
+    reasons = ["호재 마커 5건"]
+    dates = [f"2026-08-{d:02d}" for d in range(18, 31)] + [f"2026-09-{d:02d}" for d in range(1, 5)]
+    assert len(dates) == 17
+    rows = [
+        {"schema": 1, "date": d, "market": "US", "symbol": "NVDA",
+         "producer": report_cli._MIDTERM_PRODUCER, "reasons": reasons, "outcome_filled": False}
+        for d in dates
+    ]
+    _write_jsonl(tmp_path / "data" / "ledger" / "selections.jsonl", rows)
+
+    history = report_midterm.load_midterm_history(tmp_path, "US", days=30)
+    nvda_rows = [h for h in history if h["symbol"] == "NVDA"]
+    assert len(nvda_rows) == 17
+    assert all(h["reasons"] == reasons for h in nvda_rows)
+
+    from quant.analyze.midterm_watch import reasons_age_days
+
+    assert reasons_age_days("NVDA", reasons, history) == 17
+
+
+def test_load_midterm_history_filters_by_market_and_producer(tmp_path):
+    rows = [
+        {"schema": 1, "date": "2026-08-30", "market": "KR", "symbol": "005930",
+         "producer": report_cli._MIDTERM_PRODUCER, "reasons": ["국내"]},
+        {"schema": 1, "date": "2026-08-30", "market": "US", "symbol": "NVDA",
+         "producer": report_cli._MIDTERM_PRODUCER, "reasons": ["미국 중기"]},
+        {"schema": 1, "date": "2026-08-30", "market": "US", "symbol": "NVDA",
+         "producer": report_cli._INTRADAY_PRODUCER, "reasons": ["다른 producer"]},
+    ]
+    _write_jsonl(tmp_path / "data" / "ledger" / "selections.jsonl", rows)
+
+    history = report_midterm.load_midterm_history(tmp_path, "US")
+
+    assert history == [{"date": "2026-08-30", "symbol": "NVDA", "reasons": ["미국 중기"]}]
+
+
+def test_load_midterm_history_missing_ledger_returns_empty(tmp_path):
+    assert report_midterm.load_midterm_history(tmp_path, "US") == []
+
+
+def test_load_midterm_history_caps_to_most_recent_days(tmp_path):
+    rows = [
+        {"schema": 1, "date": f"2026-08-{d:02d}", "market": "US", "symbol": "NVDA",
+         "producer": report_cli._MIDTERM_PRODUCER, "reasons": [f"r{d}"]}
+        for d in range(1, 21)
+    ]
+    _write_jsonl(tmp_path / "data" / "ledger" / "selections.jsonl", rows)
+
+    history = report_midterm.load_midterm_history(tmp_path, "US", days=5)
+
+    assert sorted({h["date"] for h in history}) == [f"2026-08-{d:02d}" for d in range(16, 21)]
+
+
+def test_build_midterm_watch_view_wires_history_into_reasons_age_days(tmp_path, monkeypatch):
+    """`_build_midterm_watch_view`가 `load_midterm_history`를 실제로 불러
+    `build_midterm_watch(history=...)`에 넘기는지 — 배선 자체의 회귀 테스트."""
+    monkeypatch.setattr(report_midterm, "load_table", lambda cache_dir: [("삼성전자", "005930")])
+    monkeypatch.setattr(report_midterm, "load_name_map", lambda cache_dir, market: {"005930": "삼성전자"})
+    telegram_msgs = [
+        _telegram_row("tazastock", "1", "삼성전자 강세"),
+        _telegram_row("tazastock", "2", "삼성전자 추가 매수세"),
+    ]
+    out_no_history = report_cli._build_midterm_watch_view(
+        tmp_path, "KR", _payload(), telegram_msgs, date(2026, 8, 17),
+    )
+    reasons = out_no_history[0]["reasons"]
+    # 과거 3세션 연속 같은 reasons 를 원장에 심어 두면, 다음 빌드는 그 history
+    # 를 실제로 읽어 reasons_age_days 에 반영해야 한다.
+    _write_jsonl(tmp_path / "data" / "ledger" / "selections.jsonl", [
+        {"schema": 1, "date": d, "market": "KR", "symbol": "005930",
+         "producer": report_cli._MIDTERM_PRODUCER, "reasons": reasons}
+        for d in ("2026-08-14", "2026-08-15", "2026-08-16")
+    ])
+
+    out = report_cli._build_midterm_watch_view(
+        tmp_path, "KR", _payload(), telegram_msgs, date(2026, 8, 17),
+    )
+    assert out[0]["reasons_age_days"] == 3
+
+
 # ── _build_midterm_prose / _apply_midterm_prose ──────────────────────────
 
 def _set_key(monkeypatch, value) -> None:
@@ -201,6 +288,22 @@ def test_apply_midterm_prose_fills_matching_symbols():
     out = report_cli._apply_midterm_prose(view, {"005930": "전망 좋음."})
     assert out[0]["prose"] == "전망 좋음."
     assert out[1]["prose"] is None
+
+
+def test_apply_midterm_prose_redacts_flow_direction_contradiction(capsys):
+    """실측 재현(2026-08-25 373220 LG에너지솔루션) — LLM 응답이 그날 실제
+    기관 수급(순매수)과 반대(순매도)로 썼을 때 `_apply_midterm_prose`가
+    (payload 를 넘기면) `redact_prose`로 걸러낸다는 배선을 확인한다."""
+    view = [_candidate("373220")]
+    payload = {
+        "symbols": [{"symbol": "373220", "change_pct": -3.33}],
+        "features": {"institution_net_100m_krw": 11708, "foreign_net_100m_krw": -38136},
+    }
+    out = report_cli._apply_midterm_prose(
+        view, {"373220": "오늘 기관 순매도가 이어지며 주가가 눌렸다."}, payload,
+    )
+    assert out[0]["prose"] is None  # 문장 전체가 근거 부족으로 치환 -> 섹션 생략
+    assert "direction_contradiction" in capsys.readouterr().err
 
 
 # ── _usnews_titles / _usnews_headlines / _build_us_news_kr_view ─────────

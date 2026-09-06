@@ -119,9 +119,42 @@ def collect_numeric_facts(payload: dict) -> frozenset[float]:
     return frozenset(facts)
 
 
-def _unsupported_numbers(sentence: str, facts: frozenset[float]) -> list[float]:
+# 실측(2026-09-07, data/ledger/report_lint.jsonl) 오탐 두 가지 — (a) 종목명
+# 뒤 괄호 안 6자리 코드("LG전자(066570)")가 숫자 주장으로 오인됐다: 아래
+# `_unsupported_numbers`의 `known_codes` 인자가 처리한다(6자리 그대로 —
+# float 변환 시 선행 0이 사라지므로 원문 문자열 그대로 비교). (b) "503개
+# 종목 중 신고가 7개" 같은 개수(단위: 개/건/명/종목/주/회) 표현은 숫자
+# 필드가 아니라 뉴스 제목·근거·텔레그램 원문 같은 **텍스트**에만 등장하는
+# 경우가 많다 — `text_facts`(payload 문자열 전체를 재귀로 훑어 뽑은 숫자,
+# `collect_text_numeric_facts`)에 그 숫자가 있으면 봐준다. 통화·등락률처럼
+# 방향/크기가 중요한 소수는 여전히 숫자 리프(`facts`)만 근거로 인정한다 —
+# 안 그러면 아무 뉴스 제목에나 우연히 박힌 숫자로 진짜 환각(예: "기관
+# -1.2조 순매도")까지 다 봐주게 돼 검사기 자체가 무력화된다.
+_COUNT_SUFFIXES = ("개", "건", "명", "종목", "주", "회")
+
+
+def _is_count_number(sentence: str, raw: str, end: int) -> bool:
+    """정수(소수점 없음) 뒤에 개수 단위가 바로 붙는지 — "503개"/"7건" 등."""
+    if "." in raw:
+        return False
+    return sentence[end:end + 3].startswith(_COUNT_SUFFIXES)
+
+
+def _unsupported_numbers(
+    sentence: str, facts: frozenset[float], known_codes: frozenset[str] = frozenset(),
+    text_facts: frozenset[float] = frozenset(),
+) -> list[float]:
     bad = []
-    for n in _numbers_in(sentence):
+    for m in _NUM_RE.finditer(sentence):
+        raw = m.group(0).replace(",", "")
+        if raw in ("", "-", "+", "."):
+            continue
+        if re.fullmatch(r"\d{6}", raw) and raw in known_codes:
+            continue  # 종목코드 — 숫자 주장이 아니라 식별자다.
+        try:
+            n = float(raw)
+        except ValueError:
+            continue
         if n in _SKIP_NUMBERS:
             continue
         if round(n, 0) in facts or round(n, 1) in facts or round(n, 2) in facts:
@@ -129,8 +162,31 @@ def _unsupported_numbers(sentence: str, facts: frozenset[float]) -> list[float]:
         # 상대오차 1%(최소 0.05) 허용 — 서로 다른 소수 자릿수로 반올림된 값.
         if any(abs(n - f) <= max(0.05, abs(f) * 0.01) for f in facts):
             continue
+        if _is_count_number(sentence, raw, m.end()) and round(n, 0) in text_facts:
+            continue
         bad.append(n)
     return bad
+
+
+def collect_text_numeric_facts(payload: dict) -> frozenset[float]:
+    """`collect_numeric_facts`(숫자 리프 전용)와 별도로, payload 의 **문자열**
+    값을 재귀로 훑어 그 안에 박힌 숫자까지 뽑는다(뉴스 제목·reasons·텔레그램
+    원문 등). `_unsupported_numbers`가 개수(카운트) 표현에만 이 확장 근거를
+    쓴다 — 모듈 상단 주석 참고."""
+    facts: set[float] = set()
+
+    def walk(obj: object) -> None:
+        if isinstance(obj, str):
+            facts.update(_numbers_in(obj))
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                walk(v)
+        elif isinstance(obj, (list, tuple)):
+            for v in obj[:2000]:
+                walk(v)
+
+    walk(payload)
+    return frozenset(facts)
 
 
 # ──────────────────────────────────────────────────────────── (b) 종목/개체
@@ -192,6 +248,14 @@ _UP_WORDS = ("상승", "급등", "올랐", "오르는", "오름세", "강세", "
 # 오판하기 쉽다(2026-09-07 감사에서 실측 오탐 확인). "내림세"는 관용구
 # 충돌이 없어 그대로 둔다.
 _DOWN_WORDS = ("하락", "급락", "내림세", "약세", "순매도", "매도 우위")
+# 주가 방향 전용 어휘(순매수/순매도는 수급 어휘라 뺀다) + 문장 주어 판별용 어휘(2026-09-07).
+_PRICE_UP_WORDS = ("상승", "급등", "올랐", "오르는", "오름세", "강세")
+_PRICE_DOWN_WORDS = ("하락", "급락", "내림세", "약세")
+_NON_PRICE_SUBJECTS = (
+    "외국인", "기관", "수급", "순매수", "순매도", "이탈", "유입", "추세 점수", "매도세", "매수세",
+    "호재", "악재", "뉴스", "실적", "점수", "라벨",
+)
+_PRICE_SUBJECTS = ("주가", "종가", "등락", "마감", "시초가", "장중")
 
 
 def _mentions_any(sentence: str, words: tuple[str, ...]) -> bool:
@@ -220,8 +284,19 @@ def _direction_contradiction(
     """`direction`(bullish/bearish)·`change_pct`(등락률)와 문장의 방향 단어가
     반대면, 또는 "기관"/"외국인" 순매수·순매도 주장이 각자의 실제 부호와
     반대면 메시지를 돌려준다."""
-    up = _mentions_any(sentence, _UP_WORDS)
-    down = _mentions_any(sentence, _DOWN_WORDS)
+    # 주가 방향 판정은 **주가를 말하는 문장**에만 건다(2026-09-07 로컬 실빌드에서 확인한 오탐:
+    # "외국인 추세 점수 8/28, 이탈 추세" 처럼 수급·뉴스 어조를 말하는 문장이 그 종목의
+    # 등락률과 반대라는 이유로 치환됐다 — 수급 문장은 아래 `_flow_contradiction` 이 실제
+    # 수급 부호와 대조한다). 수급·뉴스·점수가 주어인 문장은 주가 단어(주가/종가/등락/마감)를
+    # 명시할 때만 주가 방향을 판정한다.
+    flow_or_news_subject = _mentions_any(sentence, _NON_PRICE_SUBJECTS)
+    price_subject = _mentions_any(sentence, _PRICE_SUBJECTS)
+    if flow_or_news_subject and not price_subject:
+        return _flow_contradiction(sentence, "기관", institution_net) or _flow_contradiction(
+            sentence, "외국인", foreign_net
+        )
+    up = _mentions_any(sentence, _PRICE_UP_WORDS)
+    down = _mentions_any(sentence, _PRICE_DOWN_WORDS)
     if up != down:  # 둘 다 없거나 둘 다 있으면(예: "상승 후 하락") 판정하지 않는다
         if direction == "bullish" and down:
             return "direction=bullish인데 문장은 하락/순매도 어조"
@@ -307,11 +382,12 @@ def _check_sentence(
     own_symbol: str | None, direction: str | None,
     change_pct: float | None, institution_net: float | None, foreign_net: float | None,
     stance: dict, evidence_texts: tuple[str, ...],
+    text_facts: frozenset[float] = frozenset(),
 ) -> list[tuple[str, str]]:
     """`(severity, category: message)` 목록을 돌려준다."""
     out: list[tuple[str, str]] = []
 
-    bad_numbers = _unsupported_numbers(sentence, numeric_facts)
+    bad_numbers = _unsupported_numbers(sentence, numeric_facts, known_codes, text_facts)
     if bad_numbers:
         out.append((WARN, f"unsupported_number: 근거 없는 숫자 {bad_numbers}"))
 
@@ -341,6 +417,7 @@ def _check_block_raw(
     own_symbol: str | None = None, direction: str | None = None,
     change_pct: float | None = None, institution_net: float | None = None,
     foreign_net: float | None = None, evidence_texts: tuple[str, ...] = (),
+    text_facts: frozenset[float] = frozenset(),
 ) -> list[tuple[Finding, str]]:
     """`(Finding, 그 근거가 된 문장)` 목록 — `redact_prose`가 문장 단위
     치환에 쓰려고 원문 문장을 함께 돌려준다(공개 API인 `check_prose`는
@@ -351,7 +428,7 @@ def _check_block_raw(
     out: list[tuple[Finding, str]] = []
     for sentence in split_sentences(text):
         for severity, message in _check_sentence(
-            sentence, numeric_facts=numeric_facts, known_codes=known_codes,
+            sentence, numeric_facts=numeric_facts, known_codes=known_codes, text_facts=text_facts,
             own_symbol=own_symbol, direction=direction,
             change_pct=change_pct, institution_net=institution_net,
             foreign_net=foreign_net, stance=stance,
@@ -391,6 +468,7 @@ def check_prose(payload: dict) -> list[Finding]:
     numeric_facts = collect_numeric_facts(payload)
     known_codes, known_names = collect_known_names(payload)
     del known_names  # 현재 검사(코드/티커 기반)는 이름 집합을 쓰지 않는다 — 향후 확장용으로 수집만.
+    text_facts = collect_text_numeric_facts(payload)
 
     findings: list[Finding] = []
 
@@ -398,7 +476,7 @@ def check_prose(payload: dict) -> list[Finding]:
     if isinstance(money_flow, dict):
         raw = _check_block_raw(
             "money_flow.prose", money_flow.get("prose"), payload,
-            numeric_facts=numeric_facts, known_codes=known_codes,
+            numeric_facts=numeric_facts, known_codes=known_codes, text_facts=text_facts,
             evidence_texts=_flatten_reasons(money_flow),
         )
         findings.extend(f for f, _ in raw)
@@ -406,7 +484,7 @@ def check_prose(payload: dict) -> list[Finding]:
     stance = payload.get("stance") or {}
     raw = _check_block_raw(
         "stance_prose", payload.get("stance_prose"), payload,
-        numeric_facts=numeric_facts, known_codes=known_codes,
+        numeric_facts=numeric_facts, known_codes=known_codes, text_facts=text_facts,
         evidence_texts=tuple((stance.get("positives") or []) + (stance.get("negatives") or [])),
     )
     findings.extend(f for f, _ in raw)
@@ -415,7 +493,7 @@ def check_prose(payload: dict) -> list[Finding]:
     if isinstance(holiday, dict):
         raw = _check_block_raw(
             "holiday_synthesis.prose", holiday.get("prose"), payload,
-            numeric_facts=numeric_facts, known_codes=known_codes,
+            numeric_facts=numeric_facts, known_codes=known_codes, text_facts=text_facts,
         )
         findings.extend(f for f, _ in raw)
 
@@ -424,7 +502,7 @@ def check_prose(payload: dict) -> list[Finding]:
         for part in ("market", "flow", "catalyst"):
             raw = _check_block_raw(
                 f"exec_summary.{part}", exec_summary.get(part), payload,
-                numeric_facts=numeric_facts, known_codes=known_codes,
+                numeric_facts=numeric_facts, known_codes=known_codes, text_facts=text_facts,
             )
             findings.extend(f for f, _ in raw)
 
@@ -433,7 +511,7 @@ def check_prose(payload: dict) -> list[Finding]:
         for part in ("domestic_prose", "us_prose"):
             raw = _check_block_raw(
                 f"digest_prose.{part}", digest_prose.get(part), payload,
-                numeric_facts=numeric_facts, known_codes=known_codes,
+                numeric_facts=numeric_facts, known_codes=known_codes, text_facts=text_facts,
             )
             findings.extend(f for f, _ in raw)
 
@@ -442,7 +520,7 @@ def check_prose(payload: dict) -> list[Finding]:
         for part in ("supply", "sentiment", "technical", "liquidity"):
             raw = _check_block_raw(
                 f"section_advice.{part}", section_advice.get(part), payload,
-                numeric_facts=numeric_facts, known_codes=known_codes,
+                numeric_facts=numeric_facts, known_codes=known_codes, text_facts=text_facts,
             )
             findings.extend(f for f, _ in raw)
 
@@ -453,7 +531,7 @@ def check_prose(payload: dict) -> list[Finding]:
         sym_row = _symbol_row(payload, symbol)
         raw = _check_block_raw(
             f"agent_interpret_view[{symbol}]", item.get("prose"), payload,
-            numeric_facts=numeric_facts, known_codes=known_codes,
+            numeric_facts=numeric_facts, known_codes=known_codes, text_facts=text_facts,
             own_symbol=symbol, direction=item.get("direction"),
             change_pct=(sym_row or {}).get("change_pct"),
         )
@@ -467,7 +545,7 @@ def check_prose(payload: dict) -> list[Finding]:
         features = payload.get("features") or {}
         raw = _check_block_raw(
             f"midterm_watch[{symbol}]", item.get("prose"), payload,
-            numeric_facts=numeric_facts, known_codes=known_codes,
+            numeric_facts=numeric_facts, known_codes=known_codes, text_facts=text_facts,
             own_symbol=symbol, change_pct=(sym_row or {}).get("change_pct"),
             institution_net=features.get("institution_net_100m_krw"),
             foreign_net=features.get("foreign_net_100m_krw"),
@@ -502,8 +580,9 @@ def redact_prose(
         return text, []
     numeric_facts = collect_numeric_facts(payload)
     known_codes, _ = collect_known_names(payload)
+    text_facts = collect_text_numeric_facts(payload)
     raw = _check_block_raw(
-        section, text, payload, numeric_facts=numeric_facts, known_codes=known_codes,
+        section, text, payload, numeric_facts=numeric_facts, known_codes=known_codes, text_facts=text_facts,
         own_symbol=own_symbol, direction=direction, change_pct=change_pct,
         institution_net=institution_net, foreign_net=foreign_net,
         evidence_texts=evidence_texts,

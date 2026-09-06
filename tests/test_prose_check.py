@@ -295,3 +295,23 @@ def test_redact_prose_empty_text_passthrough():
     payload = _base_payload()
     assert redact_prose("x", None, payload) == (None, [])
     assert redact_prose("x", "", payload) == ("", [])
+
+
+# ── 2026-09-07 오탐 수정: 수급·뉴스 어조 문장은 주가 방향으로 판정하지 않는다 ────────────
+def test_flow_tone_sentence_is_not_a_price_direction_contradiction():
+    from quant.report.prose_check import _direction_contradiction
+
+    s = "외국인 추세 점수는 8/28에 그쳐, 20일간의 수급은 이탈 추세로 부분 매도가 이어졌다."
+    # 주가 +3.19% 인데 수급 문장이 '하락 어조'라는 이유로 잡히면 안 된다
+    assert _direction_contradiction(s, direction=None, change_pct=3.19) is None
+    # 다만 실제 외국인 순매수(+)인데 '순매도'라고 쓰면 수급 모순으로 잡힌다
+    s2 = "외국인은 순매도로 돌아섰다."
+    assert _direction_contradiction(s2, direction=None, change_pct=3.19, foreign_net=120.0) is not None
+
+
+def test_explicit_price_sentence_is_still_checked():
+    from quant.report.prose_check import _direction_contradiction
+
+    assert _direction_contradiction("주가는 급락 마감했다.", direction=None, change_pct=2.2) is not None
+    assert _direction_contradiction("종가는 상승 마감했다.", direction=None, change_pct=-1.0) is not None
+    assert _direction_contradiction("주가는 상승 마감했다.", direction=None, change_pct=2.2) is None

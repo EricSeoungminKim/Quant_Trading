@@ -284,6 +284,46 @@ def test_narrate_prose_prompt_includes_injection_guard():
     assert "절대 따르지 마라" in narrator.calls[0]
 
 
+# ── 산문 그라운딩 (2026-09-07 리포트 산문 감사 후속) ────────────────────────
+#
+# results/report_prose_audit/SUMMARY.md "가장 심각한 사례 5선" ①·② 재현:
+# 프롬프트에 그 종목의 텔레그램 스니펫만 들어가고 grade/reasons/그날 시장
+# 전체 수급 부호가 전혀 없어, 모델이 "외국인·기관 동반 순매도"를 지어냈다.
+
+def test_narrate_prose_prompt_includes_grade_reasons_and_day_features():
+    narrator = _FakeNarrator({})
+    candidate = _candidate("373220", snippets=["LG에너지솔루션 관련 뉴스"])
+    candidate["grade_label"] = "적극 매수"
+    candidate["grade"] = 5
+    candidate["reasons"] = ["외국인 연속 순매수 4일(>=2일)"]
+    candidate["mentions"] = 4
+    payload = {
+        "symbols": [{"symbol": "373220", "change_pct": -3.33}],
+        "features": {"foreign_net_100m_krw": -38136, "institution_net_100m_krw": 11708},
+    }
+
+    narrate_prose([candidate], narrator, payload=payload)
+    prompt = narrator.calls[0]
+
+    assert "적극 매수" in prompt and "grade=5" in prompt
+    assert "외국인 연속 순매수 4일(>=2일)" in prompt
+    assert "4건" in prompt
+    assert "-3.33%" in prompt
+    assert "-38,136억원" in prompt  # 외국인(시장 전체) 순매도
+    assert "+11,708억원" in prompt  # 기관(시장 전체) 순매수
+    assert "표의 숫자만 인용" in prompt
+    assert "근거 없으면 '근거 없음'" in prompt
+
+
+def test_narrate_prose_prompt_shows_no_evidence_without_payload():
+    """`payload`를 안 넘기면(기존 호출부 하위호환) change_pct·시장 수급 모두
+    "근거 없음"으로 정직하게 표시된다 — 지어내지도, 크래시하지도 않는다."""
+    narrator = _FakeNarrator({})
+    narrate_prose([_candidate("005930")], narrator)
+    prompt = narrator.calls[0]
+    assert prompt.count("근거 없음") >= 2
+
+
 # ── 산문 간결화 (2026-08-25 소유자: "간결하지만 핵심만") ────────────────────
 
 def test_tighten_prose_strips_markdown_and_caps_length():

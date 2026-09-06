@@ -291,7 +291,7 @@ def _strip_label(paragraph: str) -> str:
     return _TWO_PARA_LABEL_RE.sub("", paragraph).strip()
 
 
-def summarize_digest(digest: dict, narrator) -> dict | None:
+def summarize_digest(digest: dict, narrator, features: dict | None = None) -> dict | None:
     """다이제스트 제목만으로 국내/미국발 2문단 요약을 만든다(스펙 §2, LLM
     허용 — 리포트 평면, ADR-0002 는 거래 핫패스만 금지).
 
@@ -303,6 +303,14 @@ def summarize_digest(digest: dict, narrator) -> dict | None:
 
     본문(article body)은 프롬프트에 넣지 않는다 — 제목만으로 "사실 나열,
     투자 권유 금지, 3문장 이내" 짧은 요약을 요청한다.
+
+    `features`(선택, 2026-09-07 리포트 산문 감사 후속 —
+    `results/report_prose_audit/SUMMARY.md` 그라운딩 갭 ①: "프롬프트에
+    뉴스 제목만 들어가고 등락률·수급 등 숫자는 전혀 없어, 결과에 등장하는
+    숫자는 정의상 전부 모델이 지어낸 것") — 그날 `payload["features"]`를
+    그대로 넘기면 코스피/코스닥 등락률·외국인/기관 순매수를 프롬프트에
+    함께 실어 인용 가능한 숫자를 준다. 안 넘기면(기존 호출부·테스트)
+    수치 없이 제목만 나열하던 기존 동작 그대로다.
 
     `narrator.narrate` 가 실패(`None`)하거나 응답을 정확히 두 문단으로
     쪼갤 수 없으면 `None` — 호출부는 결정론 목록만으로 이미 완전하다
@@ -317,10 +325,28 @@ def summarize_digest(digest: dict, narrator) -> dict | None:
         "다음은 오늘 한국 증시 관련 뉴스 제목이다. 사실만 나열하고 투자",
         "권유·추천은 하지 말 것. 각 문단은 3문장 이내로 짧게 쓸 것.",
         "미국발 제목은 원문이 영어일 수 있다 — 그래도 반드시 한국어로만",
-        "답하라(영어·중국어 등 다른 언어를 섞지 마라).",
+        "답하라(영어·중국어 등 다른 언어를 섞지 마라). 아래 [시장 지표]에",
+        "실제로 적힌 숫자만 인용하라 — 표의 숫자만 인용, 표에 없는 수치·",
+        "방향 주장 금지, 근거 없으면 '근거 없음'.",
         "",
-        f"국내 {len(domestic)}건:",
+        "[시장 지표]",
     ]
+    f = features or {}
+    if f.get("kospi_change_pct") is not None:
+        lines.append(f"- 코스피 등락률: {f['kospi_change_pct']:+.2f}%")
+    if f.get("kosdaq_change_pct") is not None:
+        lines.append(f"- 코스닥 등락률: {f['kosdaq_change_pct']:+.2f}%")
+    if f.get("foreign_net_100m_krw") is not None:
+        lines.append(f"- 외국인 순매수: {f['foreign_net_100m_krw']:+,}억원")
+    if f.get("institution_net_100m_krw") is not None:
+        lines.append(f"- 기관 순매수: {f['institution_net_100m_krw']:+,}억원")
+    if not any(f.get(k) is not None for k in (
+        "kospi_change_pct", "kosdaq_change_pct", "foreign_net_100m_krw",
+        "institution_net_100m_krw",
+    )):
+        lines.append("- (근거 없음)")
+
+    lines += ["", f"국내 {len(domestic)}건:"]
     lines += [f"- {item.get('title', '')}" for item in domestic]
     lines += ["", f"미국발 {len(us_impact)}건:"]
     lines += [f"- {item.get('title', '')}" for item in us_impact]

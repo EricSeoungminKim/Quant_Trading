@@ -346,7 +346,9 @@ def _emit_close(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         _record_agent_interpret_selections(
             agent_interpret_view, payload, root, producer=_AGENT_INTERPRET_PRODUCER_CLOSE,
         )
-    midterm_view = _apply_midterm_prose(midterm_view, _build_midterm_prose(midterm_view), payload)
+    midterm_view = _apply_midterm_prose(
+        midterm_view, _build_midterm_prose(midterm_view, payload=payload), payload,
+    )
     if record_ledger:
         _record_midterm_selections(midterm_view, payload, root, producer=_MIDTERM_PRODUCER_CLOSE)
     us_news_kr_view = (
@@ -571,7 +573,9 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
     t0 = time.monotonic()
     midterm_narrator = make_quality_narrator(model=TOOL_MODEL)
     midterm_view = _apply_midterm_prose(
-        midterm_view, _build_midterm_prose(midterm_view, narrator=midterm_narrator), payload,
+        midterm_view,
+        _build_midterm_prose(midterm_view, narrator=midterm_narrator, payload=payload),
+        payload,
     )
     print(f"품질 레인(중기 관심종목 산문) {time.monotonic() - t0:.1f}초 "
          f"(narrator={midterm_narrator.name})")

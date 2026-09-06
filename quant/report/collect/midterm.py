@@ -28,6 +28,7 @@ from quant.analyze.midterm_watch import (
     narrate_prose as midterm_narrate_prose,
 )
 from quant.collect.sources.telegram_channels import load_ledger as load_telegram_ledger
+from quant.control import selections as selections_ledger
 from quant.report.collect.agent_interpret import _build_agent_foreign_flow, _build_agent_news_items
 from quant.report.collect.telegram import _usnews_titles
 from quant.report.paths import _paths
@@ -38,6 +39,42 @@ _MIDTERM_PRODUCER_CLOSE = "midterm_watch_v1_close"
 # 후보 호재/악재 판정 입력 창(일) — 20일 외국인 수급 창(_build_agent_foreign_flow)
 # 과 같은 폭으로 맞춘다(둘 다 "최근 한 달가량의 활동"을 보는 창).
 _MIDTERM_BULLISH_WINDOW_DAYS = 20
+
+# reasons_age_days 의 history 창(세션 수) — STALE_REASONS_DAYS(7, midterm_watch.py)
+# 보다 넉넉히 잡아, 연속 정체가 7일을 막 넘긴 경계 케이스도 놓치지 않는다.
+_MIDTERM_HISTORY_DAYS = 14
+
+
+def load_midterm_history(root: Path, market: str, days: int = _MIDTERM_HISTORY_DAYS) -> list[dict]:
+    """`midterm_watch.reasons_age_days`가 요구하는 `history`(`{"date","symbol",
+    "reasons"}` 행) — 선정 원장(`selections.jsonl`)에서 이 시장의 중기 관심
+    종목 producer(`_MIDTERM_PRODUCER`/`_MIDTERM_PRODUCER_CLOSE`) 행 중 가장
+    최근 `days`개 세션 날짜분만 뽑는다(2026-09-07 후속 — `midterm_watch.py`
+    모듈 docstring §근거 갱신 추적 "배선 완료" 참고).
+
+    순수 조회다 — `midterm_watch.py`는 여전히 파일 I/O를 하지 않는다는 원칙을
+    지키기 위해 읽기는 호출부(이 모듈)의 몫으로 둔다. 오늘 세션 자신의 행은
+    빌드 도중(기록은 그 뒤) 원장에 아직 없으므로 자연히 빠진다 — 호출부가
+    "오늘 자신을 넣지 않는다"를 따로 신경 쓸 필요가 없다.
+
+    읽기 실패/원장 부재는 빈 리스트로 폴백한다(다른 `_load_*` 헬퍼와 같은
+    관례) — `reasons_age_days`가 `history=[]`를 이미 "항상 0"으로 정직하게
+    처리하므로, 과거를 모르는 것을 "오래됐다"로도 "방금 새로워졌다"로도
+    위장하지 않는다."""
+    try:
+        rows = selections_ledger.load(root / "data" / "ledger" / "selections.jsonl")
+    except Exception as e:  # noqa: BLE001
+        print(f"중기 관심 종목 이력 원장 읽기 건너뜀: {type(e).__name__}: {e}", file=sys.stderr)
+        return []
+
+    producers = {_MIDTERM_PRODUCER, _MIDTERM_PRODUCER_CLOSE}
+    history = [
+        {"date": r.get("date"), "symbol": r.get("symbol"), "reasons": r.get("reasons") or []}
+        for r in rows
+        if r.get("market") == market and r.get("producer") in producers and r.get("date")
+    ]
+    recent_dates = set(sorted({h["date"] for h in history}, reverse=True)[:days])
+    return [h for h in history if h["date"] in recent_dates]
 
 
 def _load_midterm_telegram_msgs(root: Path) -> list[dict]:
@@ -107,16 +144,19 @@ def _build_midterm_watch_view(
         frgn_rows = _build_agent_foreign_flow(root, symbols) if market == "KR" else {}
         bullish = _build_midterm_bullish(root, symbols, session)
         name_by_symbol = _midterm_name_by_symbol(root, market, payload)
+        history = load_midterm_history(root, market)
         return build_midterm_watch(
             market, telegram_msgs, frgn_rows, bullish, entities,
-            name_by_symbol=name_by_symbol, now=now,
+            name_by_symbol=name_by_symbol, now=now, history=history,
         )
     except Exception as e:  # noqa: BLE001
         print(f"중기 관심 종목 생략: {type(e).__name__}: {e}", file=sys.stderr)
         return []
 
 
-def _build_midterm_prose(candidates: list[dict], narrator=None) -> dict[str, str]:
+def _build_midterm_prose(
+    candidates: list[dict], narrator=None, payload: dict | None = None,
+) -> dict[str, str]:
     """중기 후보 전망 산문(선택, LLM, 종목당 1콜) — narrator 를 안 넘기면
     (마감판 `_emit_close` 등 기존 호출부) 모델은 U(툴콜링 해석 에이전트)가
     실측한 1순위(`narrate.TOOL_MODEL`)를 명시 지정한다. 단순 요약 1콜이면
@@ -128,13 +168,20 @@ def _build_midterm_prose(candidates: list[dict], narrator=None) -> dict[str, str
     `TOOL_MODEL` 지정은 적용되지 않는다 — 품질 레인은 Claude CLI 가 1순위라
     OpenRouter 모델 선택 자체가 폴백 경로에서만 의미가 있고, 그 폴백 모델은
     호출부(`_emit`)가 `make_quality_narrator(model=TOOL_MODEL)`로 직접
-    지정한다."""
+    지정한다.
+
+    `payload`(선택, 2026-09-07 리포트 산문 감사 후속) — `midterm_watch.
+    narrate_prose`에 그대로 넘긴다. 있으면 프롬프트가 후보의 `change_pct`와
+    그날 `features`(외국인·기관 순매수)를 함께 인용한다 — 모듈 상단 docstring
+    §근거 갱신 추적과 짝을 이루는 그라운딩 수리."""
     if not candidates:
         return {}
     try:
         from quant.adapters.narrate import TOOL_MODEL, make_narrator
 
-        return midterm_narrate_prose(candidates, narrator or make_narrator(model=TOOL_MODEL))
+        return midterm_narrate_prose(
+            candidates, narrator or make_narrator(model=TOOL_MODEL), payload=payload,
+        )
     except Exception as e:  # noqa: BLE001
         print(f"중기 관심 종목 AI 전망 생략: {type(e).__name__}: {e}", file=sys.stderr)
         return {}

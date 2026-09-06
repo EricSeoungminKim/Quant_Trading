@@ -45,11 +45,12 @@ I/O 금지, 위 adapters 절) 과거 이력을 스스로 읽지 않는다 — �
 (기본값, 호출부 하위호환)이면 항상 0 — 과거를 모르는 것을 "오래됐다"로
 위장하지 않는다.
 
-**아직 배선되지 않았다** — 호출부(`quant.apps.report_cli`)가 `history`를
-채워 넘기려면 선정 원장(`data/ledger/selections.jsonl`, producer=midterm)에
-`reasons` 필드를 추가로 기록해야 하는데, 그 원장 작성(`quant.report.collect.
-ledger._record_midterm_selections`)과 호출부 배선은 이 모듈 소유 범위 밖이다.
-계산 로직과 정렬 규칙은 여기 준비돼 있다 — 배선은 후속 변경으로 남긴다.
+**배선 완료(2026-09-07 후속)** — `quant.report.collect.ledger._record_midterm_selections`가
+이제 `reasons`를 선정 원장에 함께 기록하고, `quant.report.collect.midterm.
+load_midterm_history`(순수 조회, 읽기 실패/원장 부재는 빈 리스트)가 그 원장을
+읽어 `history`를 만들어 `_build_midterm_watch_view`에 넘긴다 — `reasons_age_days`가
+실제 값을 낸다. 이 모듈 자신은 여전히 파일 I/O를 하지 않는다(순수 함수 원칙
+그대로) — 읽기는 호출부 몫이다.
 
 ## US 뉴스 → KR 수혜주 — `build_us_news_kr_map`
 
@@ -257,16 +258,44 @@ def build_us_news_kr_map(
     return out
 
 
-def _prose_prompt(candidate: dict) -> str:
+# 산문 근거 그라운딩(2026-09-07 리포트 산문 감사, results/report_prose_audit/
+# SUMMARY.md "가장 심각한 사례 5선" ①·②) — 종전 프롬프트는 이 종목의 텔레그램
+# 스니펫만 주고 그날 실제 외국인·기관 수급 부호는 전혀 주지 않아, 지수가
+# 급락한 날 모델이 "외국인·기관 동반 순매도"를 습관적으로 지어냈다(실제로는
+# 순매수인 날에도). 아래 지시문은 그 사고를 그대로 재현한 회귀 테스트에
+# 쓴다 — 문구를 바꾸려면 `tests/test_midterm_watch.py`도 같이 봐야 한다.
+_GROUNDING_INSTRUCTION = "표의 숫자만 인용, 표에 없는 수치·방향 주장 금지, 근거 없으면 '근거 없음'."
+
+
+def _fmt_signed_eok(value) -> str:
+    return f"{value:+,.0f}억원" if value is not None else "근거 없음"
+
+
+def _prose_prompt(
+    candidate: dict, change_pct: float | None = None, features: dict | None = None,
+) -> str:
+    features = features or {}
+    reasons = candidate.get("reasons") or []
     lines = [
         f"종목: {candidate['name']} ({candidate['symbol']})",
         _INJECTION_GUARD,
+        "",
+        "다음은 이 종목·오늘 시장에 대해 확인된 사실이다(아래 표에 없는 수치·",
+        "방향은 존재하지 않는 것으로 취급하라):",
+        f"- 진입 등급: {candidate.get('grade_label', '알수없음')}(grade={candidate.get('grade')})",
+        f"- 등급 근거: {'; '.join(reasons) if reasons else '근거 없음'}",
+        f"- 텔레그램 언급: {candidate.get('mentions', 0)}건",
+        "- 오늘 이 종목 등락률: "
+        + (f"{change_pct:+.2f}%" if change_pct is not None else "근거 없음"),
+        f"- 오늘 외국인 순매수(시장 전체): {_fmt_signed_eok(features.get('foreign_net_100m_krw'))}",
+        f"- 오늘 기관 순매수(시장 전체): {_fmt_signed_eok(features.get('institution_net_100m_krw'))}",
         "",
         "다음은 이 종목과 관련된 텔레그램 메시지다:",
     ]
     for snippet in candidate.get("telegram_snippets") or []:
         lines.append(f"- {snippet}")
     lines.append("")
+    lines.append(_GROUNDING_INSTRUCTION)
     lines.append(
         "위 자료로 이 종목 전망을 **정확히 두 줄**로 써라(2026-08-25 소유자 지시:"
         " 리포트가 길어 핵심만). 형식 외 텍스트·마크다운(별표 등) 금지:\n"
@@ -298,16 +327,31 @@ def tighten_prose(text: str) -> str:
     return cut.strip()
 
 
-def narrate_prose(candidates: list[dict], narrator, budget: int = PROSE_BUDGET) -> dict[str, str]:
+def narrate_prose(
+    candidates: list[dict], narrator, budget: int = PROSE_BUDGET, payload: dict | None = None,
+) -> dict[str, str]:
     """후보마다 narrator 를 1회 호출해 2~3문장 전망 산문을 만든다(선택, LLM).
 
     `PROSE_BUDGET`(8)개까지만 부른다 — 종목당 1콜, 초과분은 건너뛴다. 종목
     1건의 실패(narrator 가 `None`)는 그 종목만 빠진다(전멸 방지, `describe_
     sector_images`와 같은 관례). 반환 `{symbol: 산문}` — 실패한 종목은 키
-    자체가 없다(호출부가 `.get(symbol)`로 `None` 폴백)."""
+    자체가 없다(호출부가 `.get(symbol)`로 `None` 폴백).
+
+    `payload`(선택, 2026-09-07 리포트 산문 감사 후속 — 모듈 상단 `_prose_prompt`
+    참고) — engine.json 조립 중인 payload(또는 그 사본)를 넘기면 후보의
+    `change_pct`(`payload["symbols"]`에서 조회)와 그날 `features`(시장 전체
+    외국인·기관 순매수)를 프롬프트에 함께 싣는다. 안 넘기면(기존 호출부·
+    테스트) `_prose_prompt`가 두 값 모두 "근거 없음"으로 정직하게 표시한다
+    — 크래시도, 위장도 없다."""
+    features = (payload or {}).get("features") or {}
+    sym_rows = {
+        s.get("symbol"): s for s in (payload or {}).get("symbols") or [] if s.get("symbol")
+    }
     out: dict[str, str] = {}
     for candidate in candidates[:budget]:
-        text = narrator.narrate(_prose_prompt(candidate))
+        sym_row = sym_rows.get(candidate["symbol"]) or {}
+        prompt = _prose_prompt(candidate, sym_row.get("change_pct"), features)
+        text = narrator.narrate(prompt)
         if text:
             out[candidate["symbol"]] = tighten_prose(text).strip()
     return out

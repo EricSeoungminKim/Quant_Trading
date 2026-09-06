@@ -512,6 +512,11 @@ def _record_midterm_selections(
                 "outcome_filled": False,
                 "grade": item.get("grade"),
                 "mentions": item.get("mentions"),
+                # reasons(2026-09-07 후속, 리포트 정확도 감사 §근거 갱신 추적) —
+                # midterm_watch.load_midterm_history 가 이 필드를 읽어
+                # reasons_age_days 의 history 를 구성한다. 옛 행(이 필드 도입
+                # 전)은 이 키 자체가 없다 — 하위호환(`.get("reasons")` 폴백).
+                "reasons": item.get("reasons") or [],
             })
         path = root / "data" / "ledger" / "selections.jsonl"
         added = selections.append(rows, path)

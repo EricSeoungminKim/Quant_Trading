@@ -242,19 +242,21 @@ def _build_digest_prose(digest: dict, narrator=None, payload: dict | None = None
     등 기존 호출부) 기존과 동일하게 기본 무료 레인을 스스로 만든다.
 
     `payload`(선택, 2026-09-07 리포트 산문 감사 세션) — `_build_exec_summary`
-    와 같은 근거 검증(`quant.report.prose_check.redact_prose`). `summarize_digest`
-    프롬프트는 뉴스 제목만 주고 등락률·수급 숫자를 전혀 주지 않는다
-    (`results/report_prose_audit/SUMMARY.md` 그라운딩 갭 ①) — 그 결과로
-    나온 숫자는 정의상 전부 근거가 없다. `payload`를 안 넘기면(테스트 등
-    기존 호출부) 검증 없이 그대로 돌려준다. 템플릿이 `domestic_prose`/
-    `us_prose`를 각각 개별로 `{% if %}` 가드하므로 한쪽만 지워도 안전하다."""
+    와 같은 근거 검증(`quant.report.prose_check.redact_prose`). **후속
+    수리(같은 날 뒤)**: 그라운딩 갭 ① 자체(프롬프트에 등락률·수급 숫자가
+    아예 없던 것)는 `market_digest.summarize_digest`가 이제 `features`
+    인자로 받는다 — 여기서 `payload["features"]`를 그대로 넘긴다.
+    `payload`를 안 넘기면(테스트 등 기존 호출부) 숫자 없이 제목만 요약하던
+    기존 동작 그대로다. 템플릿이 `domestic_prose`/`us_prose`를 각각 개별로
+    `{% if %}` 가드하므로 한쪽만 지워도 안전하다."""
     if not (digest.get("domestic") or digest.get("us_impact")):
         return None
 
     from quant.adapters.narrate import make_narrator
     from quant.analyze.market_digest import summarize_digest
 
-    result = summarize_digest(digest, narrator or make_narrator())
+    features = (payload or {}).get("features")
+    result = summarize_digest(digest, narrator or make_narrator(), features=features)
     if result is None or payload is None:
         return result
 
