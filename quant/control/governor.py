@@ -146,6 +146,7 @@ ALLOWED_KILL_SWITCH: dict[str, int] = {
     "strategies.news_momentum.enabled": 5,
     "strategies.frgn_accumulate.enabled": 5,
     "strategies.close_bet.enabled": 5,
+    "strategies.news_accumulate.enabled": 5,  # 2026-09-07 — frgn_accumulate 와 같은 클래스(EVENT 태그 갈래), 빠져 있던 누락
     "strategies.overnight_drift.enabled": 5,
     "strategies.pullback_impulse.enabled": 5,
     "strategies.mr_vwap_quiet.enabled": 5,

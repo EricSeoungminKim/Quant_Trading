@@ -610,3 +610,7 @@
 # 시각: 선정 적재가 끝난 뒤(KR 16:10 적재 후 16:33, US 07:10 적재 후 07:33).
 33 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.cli shadow-judge --date $(TZ=Asia/Seoul date +\%F) --market KR >> data/shadow.log 2>&1
 33 7 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.cli shadow-judge --date $(TZ=Asia/Seoul date -d yesterday +\%F) --market US >> data/shadow.log 2>&1
+
+# 매일 08:00 KST — 관찰 레인 판정일 알림(2026-09-07 결정 1). settings.yaml 의
+# validation.review_by 가 도래한 enabled 전략이 있을 때만 제어실 레인에 한 줄.
+0 8 * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/lane_review_reminder.sh >> data/lane_review.log 2>&1

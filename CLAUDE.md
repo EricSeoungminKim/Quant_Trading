@@ -30,6 +30,9 @@ KR+US 정규장에서 17개 전략을 동시 운용하는 개인 자동매매 �
   소유자 최종 결정("final form" 자동 레인)으로 재활성
 - **close_bet** — 종가배팅(오후장 매수 → 익일 아침 매도), 오버나이트 허용
   (KR 0.2 / US 0.0) — frgn_accumulate와 같은 날 같은 이유로 재활성
+  — **2026-09-07 결정 1 적용**: frgn_accumulate·close_bet·news_accumulate 는 백테스트
+  근거가 없어(NO_GO) "최종 자동 레인"이 아니라 **관찰 레인**이다. `validation.review_by:
+  2026-10-06`(에폭 이후 한 달)에 스코어보드로 판정, 그때까지 페이퍼 측정만
 - **news_accumulate**(신규, 2026-09-06) — frgn_accumulate와 **같은 클래스**를
   재사용, 태그만 EVENT/EVENT_EXIT(긍정뉴스 촉매 적립) (KR 0.1 / US 0.0) —
   EVENT_EXIT 생산자가 없어 `exit_when_tag_absent_days`로 부재 기반 청산도 겸함

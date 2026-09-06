@@ -647,6 +647,14 @@ strategies:
       US: 0.0
     validation:
       status: burn_in # 신규 전략 — 백테스트 미검증. paper 원장 20거래일 이후 승격 판단(§4)
+      # 2026-09-07 소유자 결정 1 적용(전략 판단 위임): 다년 백테스트에서 근거 없음
+      # (외인 추종 12조합·실제 태그 규칙 모두 NO_GO, 종가배팅 핵심 가설 NO_GO —
+      # docs/vault/변경기록.md 2026-09-06). "최종 자동 레인"이 아니라 **관찰 레인**으로
+      # 에폭(09-07) 이후 한 달 페이퍼 측정만 한다. review_by 에 에폭 이후 스코어보드로
+      # 판정: 순 기대값 ≤ 0 이거나 n < 20 이면 enabled: false (governor 사망 판정 경로와
+      # 별개로 사람이 확인 — 크론 알림 2026-10-06 08:00 제어실).
+      review_by: "2026-10-06"
+      evidence: "backtest NO_GO (2026-09-06) — 관찰 레인"
     universe: watchlist # tags_of(FRGN/FRGN_EXIT)도 관심종목 파일에서 함께 읽는다
     symbols: []
     params:
@@ -685,6 +693,14 @@ strategies:
       US: 0.0
     validation:
       status: burn_in # 신규 레인 — 백테스트 미검증, paper 원장으로 판정
+      # 2026-09-07 소유자 결정 1 적용(전략 판단 위임): 다년 백테스트에서 근거 없음
+      # (외인 추종 12조합·실제 태그 규칙 모두 NO_GO, 종가배팅 핵심 가설 NO_GO —
+      # docs/vault/변경기록.md 2026-09-06). "최종 자동 레인"이 아니라 **관찰 레인**으로
+      # 에폭(09-07) 이후 한 달 페이퍼 측정만 한다. review_by 에 에폭 이후 스코어보드로
+      # 판정: 순 기대값 ≤ 0 이거나 n < 20 이면 enabled: false (governor 사망 판정 경로와
+      # 별개로 사람이 확인 — 크론 알림 2026-10-06 08:00 제어실).
+      review_by: "2026-10-06"
+      evidence: "backtest NO_GO (2026-09-06) — 관찰 레인"
     universe: watchlist # tags_of(EVENT/EVENT_EXIT)도 관심종목 파일에서 함께 읽는다
     symbols: []
     params:
@@ -728,6 +744,14 @@ strategies:
       US: 0.0
     validation:
       status: burn_in # 백테스트 [미검증] — 표본은 experiments 루프가 판정
+      # 2026-09-07 소유자 결정 1 적용(전략 판단 위임): 다년 백테스트에서 근거 없음
+      # (외인 추종 12조합·실제 태그 규칙 모두 NO_GO, 종가배팅 핵심 가설 NO_GO —
+      # docs/vault/변경기록.md 2026-09-06). "최종 자동 레인"이 아니라 **관찰 레인**으로
+      # 에폭(09-07) 이후 한 달 페이퍼 측정만 한다. review_by 에 에폭 이후 스코어보드로
+      # 판정: 순 기대값 ≤ 0 이거나 n < 20 이면 enabled: false (governor 사망 판정 경로와
+      # 별개로 사람이 확인 — 크론 알림 2026-10-06 08:00 제어실).
+      review_by: "2026-10-06"
+      evidence: "backtest NO_GO (2026-09-06) — 관찰 레인"
     universe: watchlist
     symbols: []
     params:
