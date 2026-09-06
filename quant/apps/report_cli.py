@@ -346,7 +346,7 @@ def _emit_close(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         _record_agent_interpret_selections(
             agent_interpret_view, payload, root, producer=_AGENT_INTERPRET_PRODUCER_CLOSE,
         )
-    midterm_view = _apply_midterm_prose(midterm_view, _build_midterm_prose(midterm_view))
+    midterm_view = _apply_midterm_prose(midterm_view, _build_midterm_prose(midterm_view), payload)
     if record_ledger:
         _record_midterm_selections(midterm_view, payload, root, producer=_MIDTERM_PRODUCER_CLOSE)
     us_news_kr_view = (
@@ -514,15 +514,15 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
 
     t0 = time.monotonic()
     quality_narrator = make_quality_narrator()
-    digest_prose = _build_digest_prose(digest, narrator=quality_narrator)
+    digest_prose = _build_digest_prose(digest, narrator=quality_narrator, payload=payload)
     news_flow = _build_news_flow(snap)
     exec_summary = _build_exec_summary(digest, news_flow, payload, foreign_view,
                                        narrator=quality_narrator)
-    section_advice = _build_section_advice(snap, narrator=quality_narrator)
+    section_advice = _build_section_advice(snap, narrator=quality_narrator, payload=payload)
     # 엔진 예측 헤드라인 근거 밀도 보강(P0, 2026-08-19) — view(stance) 자체는
     # `_derive`가 이미 결정론으로 정했다(채점 계약 불변). 여기선 그 판정을
     # 뒷받침할 매크로 근거 문단만 추가로 얹는다.
-    stance_prose = _build_stance_prose(snap, view, narrator=quality_narrator)
+    stance_prose = _build_stance_prose(snap, view, narrator=quality_narrator, payload=payload)
     print(f"품질 레인(exec/digest/section) {time.monotonic() - t0:.1f}초 "
          f"(narrator={quality_narrator.name})")
     # 돈의 흐름(money_flow, 2026-08-31 소유자 지시) — 유가·금리·환율·VIX
@@ -571,7 +571,7 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
     t0 = time.monotonic()
     midterm_narrator = make_quality_narrator(model=TOOL_MODEL)
     midterm_view = _apply_midterm_prose(
-        midterm_view, _build_midterm_prose(midterm_view, narrator=midterm_narrator),
+        midterm_view, _build_midterm_prose(midterm_view, narrator=midterm_narrator), payload,
     )
     print(f"품질 레인(중기 관심종목 산문) {time.monotonic() - t0:.1f}초 "
          f"(narrator={midterm_narrator.name})")

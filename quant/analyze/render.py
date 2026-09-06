@@ -47,9 +47,40 @@ _TEMPLATES = Path(__file__).resolve().parent / "templates"
 MIN_ARTICLES = 2
 MIN_STREAK = 2
 
+# 직전 세션 급락 거부권(2026-09-07 리포트 정확도 감사, results/report_review
+# 아카이브 재분석 — 범위는 ③(ranking_bullish)만이다, 아래 참고).
+#
+# `quote["change_pct"]`(=`sym_quotes[symbol]["change_pct"]`)는 이 리포트가
+# 빌드되는 시점(KR 07:35 KST, 장 시작 전)에 이미 확정된 **직전 세션**의
+# 등락률이다 — "당일"이 아니다. 오늘 세션은 아직 시작하지 않았다.
+#
+# 최초 가설(139건 전수 거부)은 기각됐다. 아카이브 538개 심볼의 실제 가격을
+# yfinance 로 재구성해 "직전 세션 -3% 넘게 급락한 채 승격된 후보(거부 대상
+# 139건 중 105건 해소)" vs "그 외 승격 후보(932건 중 해소 713~932건)"의
+# 실제 성과를 비교하면:
+#
+#   D+0(리포트 대상일) 시가→종가: 거부 대상 평균 +107.5bp/중앙값 +40.1bp/
+#     적중 54.3%(n=105) vs 그 외 평균 -17.3bp/중앙값 -5.7bp/적중 47.4%
+#     (n=932) — 거부 대상이 **더 낫다**(과매도 반등).
+#   D+1 종가→종가: 거부 대상 +88.6bp/적중 58.6%(n=87) vs 그 외 -33.6bp/
+#     적중 42.4%(n=713, 95% CI 두 하락률이 겹치지 않는다: [48.1%,68.4%] vs
+#     [38.8%,46.0%]).
+#
+# 즉 "제목에 악재 키워드가 없는데 직전 세션에 급락"은 그 자체로 나쁜 신호가
+# 아니다 — NEWS/STREAK 근거가 있다면 오히려 반등 후보로 남겨야 한다(전면
+# 거부는 2026-09-07 최초 커밋에서 되돌렸다). 하지만 `ranking_bullish=True`
+# (랭킹 스냅샷 시점엔 상승이었다는 뜻)인데 이 리포트의 최종 change_pct 가
+# 급락인 15건은 **표본이 작아도(n=14, CI [45.4%,88.3%])** 성과 문제가
+# 아니라 **라벨 정합성 문제**다 — "매수세가 실제로 몰린다"는 ③ 고유의
+# 주장 자체가 같은 리포트 안에서 이미 반박됐으므로, 성과와 무관하게 그
+# 태그만은 달지 않는다. NEWS/STREAK 경로는 그대로 열어 둔다(같은 종목이
+# 뉴스 근거로 후보가 되는 것은 막지 않는다) — CLOSE_BET_MIN_CHANGE_PCT
+# (quant.report.collect.close, 3.0)와 대칭되는 값을 문턱으로 그대로 썼다.
+PRICE_BEARISH_VETO_PCT = -3.0
 
-def bearish_markers(c: dict) -> list[str]:
-    """오늘 이 종목 기사에서 발견된 명백한 악재 표지.
+
+def _title_bearish_markers(c: dict) -> list[str]:
+    """오늘 이 종목 기사 제목에서 발견된 명백한 악재 표지(가격은 안 본다).
 
     `mentions.continuity` 가 채운 `titles`(오늘치만)를 본다. 제목만 읽고 본문은
     읽지 않는다 — 좁고 정밀한 거부권이지 감성 분석이 아니다.
@@ -58,7 +89,36 @@ def bearish_markers(c: dict) -> list[str]:
     return news_direction.scan(titles)
 
 
-def is_candidate(c: dict) -> bool:
+def _price_crash_marker(quote: dict | None) -> str | None:
+    """`quote`(`sym_quotes[symbol]`)의 `change_pct`(직전 세션 등락률)가
+    `PRICE_BEARISH_VETO_PCT` 이하면 표지 문자열을, 아니면(결측 포함) `None`을
+    낸다. **③(ranking_bullish) 전용 거부권**이다 — 위 상수 주석의 실측
+    근거로 NEWS/STREAK 근거는 이 마커의 영향을 받지 않는다(`is_candidate`
+    참고)."""
+    change_pct = (quote or {}).get("change_pct")
+    if change_pct is not None and change_pct <= PRICE_BEARISH_VETO_PCT:
+        return f"직전 세션 급락 {change_pct:+.1f}%"
+    return None
+
+
+def bearish_markers(c: dict, quote: dict | None = None) -> list[str]:
+    """오늘 이 종목 기사에서 발견된 명백한 악재 표지 + 직전 세션 가격 급락.
+
+    표시용 통합 목록(payload의 `bearish_markers` 필드 — 후보가 왜 거부/승격
+    됐는지 사람이 읽을 근거)이다. `quote`(선택)를 안 주면(호출부 하위호환)
+    기존과 동일하게 제목 스캔 결과만 반환한다. **NEWS 태그·NEWS/STREAK
+    후보 자격 판정은 이 통합 목록이 아니라 `_title_bearish_markers`만 쓴다**
+    — 직전 세션 급락은 ③(ranking_bullish)에만 거부권을 행사한다(위
+    `PRICE_BEARISH_VETO_PCT` 주석의 실측 근거, `is_candidate` docstring).
+    """
+    markers = _title_bearish_markers(c)
+    price_marker = _price_crash_marker(quote)
+    if price_marker:
+        markers = [*markers, price_marker]
+    return markers
+
+
+def is_candidate(c: dict, quote: dict | None = None) -> bool:
     """후보 자격. 셋 중 하나면 근거가 있다고 본다.
 
     ① 오늘 여러 건 언급 ② 며칠 연속 등장 ③ 거래 랭킹 상위(돈이 실제로 몰림).
@@ -68,21 +128,35 @@ def is_candidate(c: dict) -> bool:
     ③ 은 `in_ranking` 이 아니라 `ranking_bullish` 를 본다 (2026-08-13). 하락률
     보드 편입은 "돈이 몰린다"가 아니라 "팔리고 있다"이고, 우리 전략은 전부 롱
     온리다. 뉴스도 연속성도 없이 하락률 보드 하나로 후보가 되면 안 된다.
+
+    제목 기반 악재 표지는 ①②만 막는다 — ③은 예외다: "매수세가 실제로 몰리는
+    것은 별개 사실"이라 랭킹 근거를 뉴스 헤드라인 하나로 뒤집지 않는다
+    (2026-08-13 결정 그대로).
+
+    **직전 세션 급락 거부권은 ③만 막는다**(2026-09-07, 위
+    `PRICE_BEARISH_VETO_PCT` 주석) — ①②는 예외다: 아카이브 실측(538개 심볼
+    yfinance 재구성)에서 "제목엔 악재가 없지만 직전 세션 급락"한 뒤 승격된
+    후보가 그 외 후보보다 오히려 **성과가 더 좋았다**(D+0 평균 +107.5bp
+    vs -17.3bp, D+1 평균 +88.6bp vs -33.6bp — 과매도 반등, 전면 거부는
+    성과를 깎는 방향이라 되돌렸다). ③ 만은 예외로 남긴다 — 랭킹 편입
+    시점엔 상승이었어도(`ranking_bullish=True`) 이 리포트가 실제로 보여주는
+    `quote` 기준 change_pct 가 급락이면 "매수세가 몰린다"는 ③의 주장
+    자체가 같은 리포트 안에서 이미 반박된 것이라, 이건 성과가 아니라 라벨
+    정합성 문제이기 때문이다.
     """
-    # 뉴스 근거(①②)는 악재 표지가 있으면 인정하지 않는다. ③ 거래 랭킹은 그대로
-    # 둔다 — 매수세가 실제로 몰리는 것은 별개 사실이고, 그쪽은 Phase 2 의
-    # ranking_bullish 가 이미 방향을 본다.
-    news_ok = not bearish_markers(c)
+    news_ok = not _title_bearish_markers(c)
+    ranking_ok = not _price_crash_marker(quote)
     return (
         (news_ok and (c.get("today_articles") or 0) >= MIN_ARTICLES)
         or (news_ok and (c.get("streak_days") or 0) >= MIN_STREAK)
-        or bool(c.get("ranking_bullish", c.get("in_ranking")))
+        or (ranking_ok and bool(c.get("ranking_bullish", c.get("in_ranking"))))
     )
 
 
 def candidates_line(
     cont: dict[str, dict], anchors: dict[str, dict],
     volume_watch: list[str] | None = None,
+    sym_quotes: dict[str, dict] | None = None,
 ) -> str:
     """기존 파이프라인 호환 한 줄: `AUTO_WATCH: SYMBOL[:TAG[+TAG]] ...`
 
@@ -98,12 +172,19 @@ def candidates_line(
     등장한 종목이다 — 새 태그를 만들지 않고 기존 RANK 를 재사용한다(RANK→TREND
     번역이 이미 있다). cont/anchors 에 이미 토큰이 있는 심볼은 건너뛴다(중복 방지).
     기본 None 이면 동작이 완전히 그대로다.
+
+    sym_quotes(`machine_payload`의 그 인자, 2026-09-07 리포트 정확도 감사)는
+    `is_candidate`의 직전 세션 급락 거부권에 쓰인다 — **RANK(③, ranking_bullish)
+    태그에만** 영향을 준다(`PRICE_BEARISH_VETO_PCT` 주석의 실측 근거: NEWS/STREAK
+    후보는 급락 여부와 무관하게 그대로 승격된다). 기본 None 이면 거부권이
+    발동하지 않아 기존과 동일하다(호출부 하위호환).
     """
     tokens: list[str] = []
     for symbol, c in sorted(
         cont.items(), key=lambda kv: (-kv[1]["today_articles"], -kv[1]["streak_days"], kv[0])
     ):
-        if not is_candidate(c):
+        quote = (sym_quotes or {}).get(symbol)
+        if not is_candidate(c, quote):
             continue
         tags = []
         # NEWS 는 엔진 어휘의 EVENT 로 번역되고, news_momentum 은 EVENT 종목을
@@ -111,12 +192,18 @@ def candidates_line(
         # 명백한 악재 표지(목표가 하향·어닝쇼크·유상증자…)가 있으면 태그를 주지
         # 않는다. 호재 여섯 건이 있어도 목표가 하향 한 건이면 "방향이 분명한
         # 촉매"가 아니다 (news_direction 모듈 docstring, 대신증권 실측 사례).
-        if (c.get("today_articles") or 0) > 0 and not bearish_markers(c):
+        # 제목 스캔만 본다(`_title_bearish_markers`) — 직전 세션 급락은 이
+        # 태그를 막지 않는다(2026-09-07 실측, `PRICE_BEARISH_VETO_PCT` 주석:
+        # 급락 뒤 NEWS 후보가 오히려 더 좋은 성과를 냈다).
+        if (c.get("today_articles") or 0) > 0 and not _title_bearish_markers(c):
             tags.append("NEWS")
         # in_ranking 이 아니라 ranking_bullish 를 본다 — 하락률 보드 편입은 RANK
         # 근거가 아니다. 이 태그가 엔진 어휘의 TREND 로 번역돼 롱 온리 전략의
         # 진입 우선순위를 정하기 때문이다 (mentions.mark_origin docstring).
-        if c.get("ranking_bullish", c.get("in_ranking")):
+        # 직전 세션에 급락했으면(`_price_crash_marker`) 이 태그를 달지 않는다
+        # — "매수세가 몰린다"는 이 태그의 주장 자체가 같은 리포트 안에서
+        # 이미 반박됐기 때문이다(2026-09-07, `PRICE_BEARISH_VETO_PCT` 주석).
+        if c.get("ranking_bullish", c.get("in_ranking")) and not _price_crash_marker(quote):
             tags.append("RANK")
         if (c.get("streak_days") or 0) >= MIN_STREAK:
             tags.append("STREAK")
@@ -135,6 +222,7 @@ def candidates_line(
 
 def rejection_reasons(
     cont: dict[str, dict], candidate_symbols: set[str],
+    sym_quotes: dict[str, dict] | None = None,
 ) -> tuple[dict[str, str], dict[str, int]]:
     """`is_candidate()`를 통과하지 못한 종목마다 "왜 승격되지 않았나" 사유
     코드를 낸다(2026-09-07 Phase 2 §5, `results/report_review/SUMMARY.md`
@@ -154,6 +242,10 @@ def rejection_reasons(
     반환: `(그 심볼의 사유 코드, 사유별 건수)`. 후보(candidate_symbols)에
     있는 심볼은 어느 dict에도 나타나지 않는다 — `rejection_summary`가
     `passed`인 결과는 건너뛰는 것과 동일 규약.
+
+    sym_quotes(선택, 2026-09-07)는 `is_candidate`와 같은 당일 가격 급락
+    거부권을 사유 문구에도 반영한다 — 없으면(호출부 하위호환) 제목 스캔
+    사유만 나온다.
     """
     from quant.analyze.watch_scorer import ScoreResult, rejection_summary
 
@@ -162,7 +254,7 @@ def rejection_reasons(
         passed = symbol in candidate_symbols
         reasons: list[str] = []
         if not passed:
-            markers = bearish_markers(c)
+            markers = bearish_markers(c, (sym_quotes or {}).get(symbol))
             if markers:
                 reasons = [f"악재 표지: {', '.join(markers)}"]
             else:
@@ -267,6 +359,7 @@ def machine_payload(
     for symbol, c in sorted(
         cont.items(), key=lambda kv: (-kv[1]["today_articles"], -kv[1]["streak_days"], kv[0])
     ):
+        q = sym_quotes.get(symbol)
         entry = {
             "symbol": symbol,
             "name": c["name"],
@@ -279,9 +372,10 @@ def machine_payload(
             "ranking_bullish": c.get("ranking_bullish", c.get("in_ranking", False)),
             # 왜 뉴스 근거가 인정되지 않았는지 — 빈 목록이 "악재 없음"이다.
             # "점수가 낮아서"는 사람이 검증할 수 없고 규칙이 틀렸을 때 고칠 수도 없다.
-            "bearish_markers": bearish_markers(c),
+            # q(당일 시세)를 함께 넘겨 가격 급락 거부권도 반영한다(위
+            # PRICE_BEARISH_VETO_PCT 주석, 2026-09-07).
+            "bearish_markers": bearish_markers(c, q),
         }
-        q = sym_quotes.get(symbol)
         if q:
             entry["close"] = q.get("close")
             entry["change_pct"] = q.get("change_pct")
@@ -376,7 +470,7 @@ def machine_payload(
         "missing": snap.missing(),
         "features": features,
         "symbols": symbols,
-        "auto_watch": candidates_line(cont, anchors, volume_watch),
+        "auto_watch": candidates_line(cont, anchors, volume_watch, sym_quotes),
         "stance": view or {},
         "news_diversity": outlet_diversity(news_data) if news_data else None,
     }

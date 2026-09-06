@@ -46,6 +46,7 @@ from datetime import date, datetime
 from quant.analyze.briefing import STANCE_LABEL
 from quant.analyze.scoring import label_100
 from quant.report.model import CloseReportModel, ReportModel
+from quant.report.prose_check import check_prose
 
 ERROR = "error"
 WARN = "warn"
@@ -492,6 +493,21 @@ def lint_report(model_or_payload: ReportModel | CloseReportModel | dict) -> list
             f"lint_report는 ReportModel/CloseReportModel/dict만 받는다 — {type(model_or_payload)!r}"
         )
 
+    # 산문 근거 검증(2026-09-07 리포트 산문 감사, results/report_prose_audit/SUMMARY.md).
+    # check_prose 는 payload 의 산문 블록(money_flow.prose / midterm_watch[].prose /
+    # holiday_synthesis.prose)을 보고, ReportModel 경로에서는 렌더 전용 모델 필드
+    # (exec_summary/digest_prose/section_advice/stance_prose/agent_interpret_view — payload 에
+    # 없다는 간극은 감사에서 확인)를 사본에 얹어 함께 본다. payload 자체는 건드리지 않는다.
+    check_payload = payload
+    if isinstance(model, ReportModel):
+        check_payload = {
+            **payload, "exec_summary": model.exec_summary, "digest_prose": model.digest_prose,
+            "section_advice": model.section_advice, "stance_prose": model.stance_prose,
+            "agent_interpret_view": model.agent_interpret_view,
+        }
+    elif isinstance(model, CloseReportModel):
+        check_payload = {**payload, "agent_interpret_view": model.agent_interpret_view}
+
     findings: list[Finding] = []
     findings.extend(_scan_leaks("payload", payload))
     findings.extend(_scan_ranges("payload", payload))
@@ -503,6 +519,13 @@ def lint_report(model_or_payload: ReportModel | CloseReportModel | dict) -> list
     findings.extend(_lint_symbol_completeness(payload))
     findings.extend(_lint_accuracy_box(payload))
     findings.extend(_lint_telegram_correspondence(payload))
+    # 산문 findings 는 **첫 주(2026-09-14 까지) 관찰 모드** — 생산자(news/midterm/agent_interpret)
+    # 가 error 문장을 이미 "근거 부족으로 생략"으로 치환한 뒤라 여기서 error 가 남는 건 생산자
+    # 밖 블록(money_flow/holiday_synthesis)뿐이고, 방향 판정은 휴리스틱이라 오탐이 발행을
+    # 막으면 안 된다. 전부 warn 으로 내려 report_lint.jsonl 에 쌓고, 일주일 치를 보고 승격한다.
+    findings.extend(
+        Finding(WARN, f.section, f"[prose:{f.severity}] {f.message}") for f in check_prose(check_payload)
+    )
 
     if isinstance(model, ReportModel):
         findings.extend(_lint_sector_daily_order(model.sector_daily))

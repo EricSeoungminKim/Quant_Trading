@@ -316,7 +316,7 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
     from quant.report.collect.intraday import _candidate_symbols as _raw_candidate_symbols
 
     reject_by_symbol, _reject_counts = rejection_reasons(
-        cont, _raw_candidate_symbols(payload),
+        cont, _raw_candidate_symbols(payload), sym_quotes,
     )
     for row in payload["symbols"]:
         reason = reject_by_symbol.get(row.get("symbol"))

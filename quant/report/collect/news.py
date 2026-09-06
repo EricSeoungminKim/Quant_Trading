@@ -227,7 +227,7 @@ def _build_news_flow(snap) -> list[dict]:
     return build_news_flow(feeds)
 
 
-def _build_digest_prose(digest: dict, narrator=None) -> dict | None:
+def _build_digest_prose(digest: dict, narrator=None, payload: dict | None = None) -> dict | None:
     """시황 다이제스트 LLM 요약(스펙 §2, 사용자 명시 허용 — 리포트 평면).
 
     다이제스트가 비어 있으면(오늘 econ 큐레이션을 통과한 사건 없음)
@@ -240,14 +240,34 @@ def _build_digest_prose(digest: dict, narrator=None) -> dict | None:
     `narrator`(선택) — 아침판(`_emit`)이 품질 레인(`make_quality_narrator`)을
     4곳에서 공유하려고 주입한다(2026-08-18). 안 넘기면(마감판 `_emit_close`
     등 기존 호출부) 기존과 동일하게 기본 무료 레인을 스스로 만든다.
-    """
+
+    `payload`(선택, 2026-09-07 리포트 산문 감사 세션) — `_build_exec_summary`
+    와 같은 근거 검증(`quant.report.prose_check.redact_prose`). `summarize_digest`
+    프롬프트는 뉴스 제목만 주고 등락률·수급 숫자를 전혀 주지 않는다
+    (`results/report_prose_audit/SUMMARY.md` 그라운딩 갭 ①) — 그 결과로
+    나온 숫자는 정의상 전부 근거가 없다. `payload`를 안 넘기면(테스트 등
+    기존 호출부) 검증 없이 그대로 돌려준다. 템플릿이 `domestic_prose`/
+    `us_prose`를 각각 개별로 `{% if %}` 가드하므로 한쪽만 지워도 안전하다."""
     if not (digest.get("domestic") or digest.get("us_impact")):
         return None
 
     from quant.adapters.narrate import make_narrator
     from quant.analyze.market_digest import summarize_digest
 
-    return summarize_digest(digest, narrator or make_narrator())
+    result = summarize_digest(digest, narrator or make_narrator())
+    if result is None or payload is None:
+        return result
+
+    from quant.report.prose_check import redact_prose
+
+    out: dict = {}
+    for key in ("domestic_prose", "us_prose"):
+        text, findings = redact_prose(f"digest_prose.{key}", result.get(key), payload)
+        for f in findings:
+            print(f"시황 다이제스트 산문 근거 검증: {f}", file=sys.stderr)
+        if text:
+            out[key] = text
+    return out or None
 
 
 def _build_exec_summary(
@@ -263,13 +283,39 @@ def _build_exec_summary(
     리포트 발행 자체는 막지 않는다. 실패 시 `None` — 호출부(템플릿)는
     기존 스탠스+시황 다이제스트만으로 완전하다(무LLM 폴백).
 
-    `narrator`(선택) — `_build_digest_prose`와 같은 관례(품질 레인 공유 주입)."""
+    `narrator`(선택) — `_build_digest_prose`와 같은 관례(품질 레인 공유 주입).
+
+    근거 검증(2026-09-07 리포트 산문 감사 세션,
+    `results/report_prose_audit/SUMMARY.md`) — `market`/`flow`/`catalyst`
+    세 문단을 `quant.report.prose_check.redact_prose`로 검사한다. 템플릿
+    (`report.html.j2` 741~750행)이 세 문단을 개별 가드 없이 그대로 찍으므로
+    (`{{ exec_summary.market }}` 등), 한 문단이라도 전부 근거 부족으로
+    지워지면 개별 필드를 `None`으로 만들지 않고 **Executive Summary 섹션
+    전체를 생략**한다 — 그래야 렌더가 `None`을 문자열로 새기지 않는다."""
     try:
         from quant.adapters.narrate import make_narrator
         from quant.analyze.exec_summary import gather_evidence, summarize
 
         evidence = gather_evidence(digest, news_flow, payload.get("features"), foreign_view)
-        return summarize(evidence, narrator or make_narrator())
+        result = summarize(evidence, narrator or make_narrator())
+        if result is None:
+            return None
+
+        from quant.report.prose_check import redact_prose
+
+        checked = dict(result)
+        for key in ("market", "flow", "catalyst"):
+            text, findings = redact_prose(f"exec_summary.{key}", result.get(key), payload)
+            for f in findings:
+                print(f"Executive Summary 산문 근거 검증: {f}", file=sys.stderr)
+            if text is None:
+                print(
+                    f"Executive Summary 생략 — '{key}' 문단이 전부 근거 부족으로 지워짐",
+                    file=sys.stderr,
+                )
+                return None
+            checked[key] = text
+        return checked
     except Exception as e:  # noqa: BLE001 — Executive Summary 실패가 리포트를 막지 않는다
         print(f"Executive Summary 생략: {type(e).__name__}: {e}", file=sys.stderr)
         return None
@@ -283,7 +329,7 @@ def _source_data(snap, key: str) -> dict | None:
     return r.data if r is not None and r.ok and r.data else None
 
 
-def _build_section_advice(snap, narrator=None) -> dict | None:
+def _build_section_advice(snap, narrator=None, payload: dict | None = None) -> dict | None:
     """섹션 AI 해석(리포트 UX 3차, 2026-08-17 사용자 피드백) — 수급 체력/
     시장 심리/기술적 지표/유동성·금리 각 섹션이 이미 보여주는 숫자를 조건부
     서술로 재해석한다.
@@ -292,7 +338,13 @@ def _build_section_advice(snap, narrator=None) -> dict | None:
     블록 전체가 실패해도 리포트 발행 자체는 막지 않는다. 실패/전 섹션 결측
     시 `None` — 템플릿은 숫자 카드만으로 이미 완전하다(무LLM 폴백).
 
-    `narrator`(선택) — `_build_digest_prose`와 같은 관례(품질 레인 공유 주입)."""
+    `narrator`(선택) — `_build_digest_prose`와 같은 관례(품질 레인 공유 주입).
+
+    `payload`(선택, 2026-09-07 리포트 산문 감사 세션) — 4섹션 각각을
+    `quant.report.prose_check.redact_prose`로 검증한다. 템플릿이 4섹션을
+    각각 개별 `{% if section_advice and section_advice.X %}`로 가드하므로
+    (`report.html.j2` 2318~2493행), `exec_summary`와 달리 한 섹션만 지워도
+    안전하다 — 그 섹션만 결측 처리한다."""
     try:
         from quant.adapters.narrate import make_narrator
         from quant.analyze.section_advice import advise, gather_section_numbers
@@ -305,13 +357,28 @@ def _build_section_advice(snap, narrator=None) -> dict | None:
             sectors=_source_data(snap, "sectors"),
             breadth=_source_data(snap, "breadth"),
         )
-        return advise(numbers, narrator or make_narrator())
+        result = advise(numbers, narrator or make_narrator())
+        if result is None or payload is None:
+            return result
+
+        from quant.report.prose_check import redact_prose
+
+        out: dict = {}
+        for key, text in result.items():
+            checked, findings = redact_prose(f"section_advice.{key}", text, payload)
+            for f in findings:
+                print(f"섹션 AI 해석 산문 근거 검증: {f}", file=sys.stderr)
+            if checked:
+                out[key] = checked
+        return out or None
     except Exception as e:  # noqa: BLE001 — 섹션 AI 해석 실패가 리포트를 막지 않는다
         print(f"섹션 AI 해석 생략: {type(e).__name__}: {e}", file=sys.stderr)
         return None
 
 
-def _build_stance_prose(snap, view: dict, narrator=None) -> str | None:
+def _build_stance_prose(
+    snap, view: dict, narrator=None, payload: dict | None = None,
+) -> str | None:
     """엔진 예측 헤드라인 근거 밀도 보강(P0, 2026-08-19).
 
     `briefing.stance()`의 점수·라벨·요인(`view`)은 채점에 쓰이므로 절대
@@ -324,7 +391,11 @@ def _build_stance_prose(snap, view: dict, narrator=None) -> str | None:
     매크로 맥락이 하나도 없으면(전부 결측) narrator 를 부르지 않는다 —
     `view.line`과 다를 게 없는 문장을 LLM에 요청하는 낭비를 막는다.
     실패/무LLM 이면 `None` — 호출부(템플릿)는 `view.line`만으로 이미
-    완전하다(무LLM 폴백)."""
+    완전하다(무LLM 폴백).
+
+    `payload`(선택, 2026-09-07 리포트 산문 감사 세션) — 있으면
+    `quant.report.prose_check.redact_prose`로 근거 검증한다. 안 넘기면
+    (기존 호출부·테스트) 검증 없이 그대로 돌려준다."""
     try:
         from quant.adapters.narrate import make_narrator
         from quant.analyze.briefing import stance_macro_context
@@ -372,7 +443,16 @@ def _build_stance_prose(snap, view: dict, narrator=None) -> str | None:
         text = text.strip()
         if text.startswith("스탠스 근거"):
             text = text.split(":", 1)[-1].strip() if ":" in text else text
-        return text or None
+        text = text or None
+        if text is None or payload is None:
+            return text
+
+        from quant.report.prose_check import redact_prose
+
+        checked, findings = redact_prose("stance_prose", text, payload)
+        for f in findings:
+            print(f"엔진 예측 AI 서술 근거 검증: {f}", file=sys.stderr)
+        return checked
     except Exception as e:  # noqa: BLE001 — 스탠스 AI 해석 실패가 리포트를 막지 않는다
         print(f"엔진 예측 AI 서술 생략: {type(e).__name__}: {e}", file=sys.stderr)
         return None

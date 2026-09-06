@@ -140,9 +140,39 @@ def _build_midterm_prose(candidates: list[dict], narrator=None) -> dict[str, str
         return {}
 
 
-def _apply_midterm_prose(view: list[dict], prose_by_symbol: dict[str, str]) -> list[dict]:
+def _apply_midterm_prose(
+    view: list[dict], prose_by_symbol: dict[str, str], payload: dict | None = None,
+) -> list[dict]:
+    """`prose_by_symbol`을 각 후보에 얹는다. `payload`(engine.json, 선택)가
+    있으면 싣기 전에 `quant.report.prose_check.redact_prose`로 문장 단위
+    근거 검증을 한다(2026-09-07 리포트 산문 감사 세션 —
+    `results/report_prose_audit/SUMMARY.md` "가장 심각한 사례 5선" ①·②가
+    바로 이 산문이다: `_prose_prompt`가 그 종목의 텔레그램 스니펫만 보고
+    그날 실제 외국인/기관 수급 부호를 몰라, 지수가 급락한 날은 "외국인·기관
+    동반 순매도"라고 습관적으로 지어냈다). `payload`가 없으면(과거 호출부
+    호환) 검증 없이 그대로 얹는다."""
+    from quant.report.prose_check import redact_prose
+
     for item in view:
-        item["prose"] = prose_by_symbol.get(item["symbol"])
+        prose = prose_by_symbol.get(item["symbol"])
+        if payload is not None and prose:
+            sym_row = next(
+                (s for s in payload.get("symbols") or [] if s.get("symbol") == item["symbol"]),
+                None,
+            )
+            features = payload.get("features") or {}
+            prose, findings = redact_prose(
+                f"midterm_watch[{item['symbol']}]", prose, payload,
+                own_symbol=item["symbol"], change_pct=(sym_row or {}).get("change_pct"),
+                institution_net=features.get("institution_net_100m_krw"),
+                foreign_net=features.get("foreign_net_100m_krw"),
+                evidence_texts=tuple(
+                    (item.get("reasons") or []) + (item.get("telegram_snippets") or [])
+                ),
+            )
+            for f in findings:
+                print(f"중기 관심 종목 산문 근거 검증: {f}", file=sys.stderr)
+        item["prose"] = prose
     return view
 
 

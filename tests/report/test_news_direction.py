@@ -105,3 +105,71 @@ def test_payload_records_why_it_was_vetoed():
     """'점수가 낮아서'는 사람이 검증할 수 없다 — 표지 이름을 남긴다."""
     assert bearish_markers(_cont(["이마트 적자전환"])) == ["적자"]
     assert bearish_markers(_cont(REAL_NEUTRAL)) == []
+
+
+# ── 직전 세션 급락 거부권 — ③(ranking_bullish) 전용 (2026-09-07) ───────────
+#
+# 최초 가설(제목에 악재가 없어도 직전 세션 -3% 급락이면 NEWS/STREAK/RANK
+# 전부 거부)은 아카이브 538개 심볼의 실제 가격(yfinance)으로 검증한 결과
+# 기각됐다 — 거부 대상이었던 139건 중 105/87건을 D+0/D+1 로 가격 매칭하니
+# 그 외 승격 후보보다 **성과가 더 좋았다**(과매도 반등):
+#   D+0 시가→종가: 거부 대상 평균 +107.5bp·적중 54.3%(n=105) vs
+#                  그 외 평균 -17.3bp·적중 47.4%(n=932)
+#   D+1 종가→종가: 거부 대상 평균 +88.6bp·적중 58.6%(n=87) vs
+#                  그 외 평균 -33.6bp·적중 42.4%(n=713, 95%CI 비중첩)
+# 그래서 NEWS/STREAK 는 급락 여부와 무관하게 그대로 승격한다. 다만
+# `ranking_bullish=True`(랭킹 스냅샷 시점엔 상승)인데 이 리포트의 최종
+# change_pct 가 급락인 사례(n=14, 예: SK스퀘어 402340 2026-08-20 -11.5%)는
+# 표본이 작아 성과 판단은 못하지만(CI [45.4%,88.3%]) **"매수세가 실제로
+# 몰린다"는 ③ 고유의 주장 자체가 같은 리포트 안에서 반박된 라벨 정합성
+# 문제**라 그 태그만은 계속 막는다.
+
+def test_price_crash_does_not_veto_news_or_streak_candidacy():
+    """제목에 악재 표지가 없으면 직전 세션 급락도 NEWS/STREAK 후보 자격을
+    막지 않는다(2026-09-07 실측 반영 — 급락 뒤 반등이 오히려 우세했다)."""
+    c = _cont(REAL_NEUTRAL[:2], streak_days=3)
+    quote = {"change_pct": -9.7}
+    assert is_candidate(c) is True
+    assert is_candidate(c, quote) is True
+    line = candidates_line({"005930": c}, {}, sym_quotes={"005930": quote})
+    assert "NEWS" in line
+
+
+def test_price_crash_vetoes_ranking_bullish_only():
+    """랭킹 편입 시점엔 상승이었어도(ranking_bullish=True), 이 리포트가 실제로
+    보여주는 change_pct 가 급락이면 '매수세가 몰린다'는 ③의 주장이 깨진다 —
+    ③ 단독 근거일 때만 후보 자격 자체가 막힌다(실측: SK스퀘어 -11.5%)."""
+    c = _cont([], ranking_bullish=True)
+    quote = {"change_pct": -11.5}
+    assert is_candidate(c, quote) is False
+    line = candidates_line({"402340": c}, {}, sym_quotes={"402340": quote})
+    assert "402340" not in line
+
+
+def test_price_crash_drops_only_the_rank_tag_when_news_also_qualifies():
+    """③(RANK) 태그만 라벨 정합성 문제로 빠진다 — 뉴스 근거가 따로 있으면
+    NEWS/STREAK 경로로는 그대로 후보가 된다(태그만 RANK 가 빠진다)."""
+    c = _cont(REAL_NEUTRAL[:2], streak_days=3, ranking_bullish=True)
+    quote = {"change_pct": -9.7}
+    line = candidates_line({"005930": c}, {}, sym_quotes={"005930": quote})
+    assert "005930" in line
+    assert "RANK" not in line
+    assert "NEWS" in line and "STREAK" in line
+
+
+def test_mild_decline_does_not_veto():
+    """-3%에 못 미치는 하락은 급락 거부권 대상이 아니다(경계값)."""
+    c = _cont([], ranking_bullish=True)
+    assert is_candidate(c, {"change_pct": -2.9}) is True
+    assert is_candidate(c, {"change_pct": None}) is True
+    assert is_candidate(c, None) is True
+
+
+def test_bearish_markers_reports_the_price_crash():
+    """payload 의 bearish_markers 필드에 급락 표지가 사람이 읽을 수 있게 남는다
+    (정보 표시용 — NEWS/STREAK 후보 자격 판정에는 쓰이지 않는다, 위 참고)."""
+    assert bearish_markers(_cont([]), {"change_pct": -9.747}) == ["직전 세션 급락 -9.7%"]
+    # 제목 표지와 함께 있으면 둘 다 남는다(순서: 제목 → 가격).
+    assert bearish_markers(_cont(["이마트 적자전환"]), {"change_pct": -5.0}) == [
+        "적자", "직전 세션 급락 -5.0%",
+    ]

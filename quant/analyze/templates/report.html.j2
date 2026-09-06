@@ -2002,7 +2002,13 @@ html{overflow-x:hidden}
     규칙(entry_grade)이 정하고, AI는 전망 산문만 보탠다.
   </p>
   {% for it in midterm_view %}
-  <div class="sym">
+  {# 근거 정체 배지(2026-09-07 리포트 정확도 감사) — reasons_age_days 는
+     quant.analyze.midterm_watch.build_midterm_watch 가 history 를 받았을
+     때만 0보다 크다(아직 호출부 배선 전엔 항상 0 → 배지 자체가 생략된다,
+     "정보 없음"을 "방금 갱신됨"으로 위장하지 않는다). STALE_REASONS_DAYS(7,
+     같은 모듈)와 아래 7 을 맞춰 둔다 — 아카이브 실측 NVDA 17일·AMZN 10일
+     연속 동일 reasons 근거. #}
+  <div class="sym"{% if it.reasons_age_days and it.reasons_age_days >= 7 %} style="opacity:.6"{% endif %}>
     <div>
       <span style="color:var(--mute);font-size:var(--fs-xs);margin-right:6px">{{ loop.index }}</span>
       <a class="sym-link" href="{{ sym_link(it.symbol) }}" target="_blank" rel="noopener"><span class="sym-nm">{{ it.name }}</span><span class="sym-cd">{{ it.symbol }}</span></a>
@@ -2013,6 +2019,9 @@ html{overflow-x:hidden}
     <div class="sym-meta">
       <span class="chip">언급 {{ it.mentions }}건</span>
       {% for reason in it.reasons %}<span class="chip">{{ reason }}</span>{% endfor %}
+      {% if it.reasons_age_days %}
+      <span class="chip" style="opacity:.7">근거 갱신 {{ it.reasons_age_days }}일 전</span>
+      {% endif %}
     </div>
     {% if it.prose %}
     <p class="watch-prose">{{ it.prose }}</p>

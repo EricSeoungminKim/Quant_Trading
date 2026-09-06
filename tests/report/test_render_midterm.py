@@ -61,6 +61,32 @@ def test_render_midterm_section_omitted_when_empty():
     assert "중기 관심 종목" not in html
 
 
+def test_render_midterm_section_no_staleness_chip_without_field():
+    """reasons_age_days 필드가 아예 없으면(하위호환, history 미배선 상태)
+    "근거 갱신" 배지 자체가 안 나온다 — 정보 없음을 "방금 갱신됨"으로
+    위장하지 않는다(2026-09-07)."""
+    html = render(_snap(), midterm_view=_midterm_view())
+    assert "근거 갱신" not in html
+
+
+def test_render_midterm_section_shows_staleness_chip_and_dims_stale_row():
+    """reasons_age_days>=7 이면 "근거 갱신 N일 전" 배지가 뜨고 카드가 흐려진다
+    (아카이브 실측: NVDA 17일 연속 동일 reasons, 2026-09-07)."""
+    view = _midterm_view()
+    view[0]["reasons_age_days"] = 9
+    html = render(_snap(), midterm_view=view)
+    assert "근거 갱신 9일 전" in html
+    assert "opacity:.6" in html
+
+
+def test_render_midterm_section_fresh_row_not_dimmed():
+    view = _midterm_view()
+    view[0]["reasons_age_days"] = 2
+    html = render(_snap(), midterm_view=view)
+    assert "근거 갱신 2일 전" in html
+    assert "opacity:.6" not in html
+
+
 def test_render_us_news_kr_section_shows_sector_and_beneficiary():
     html = render(_snap(), us_news_kr_view=_us_news_kr_view())
 

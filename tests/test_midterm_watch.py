@@ -11,6 +11,7 @@ from quant.analyze.midterm_watch import (
     build_us_news_kr_map,
     mention_counts,
     narrate_prose,
+    reasons_age_days,
 )
 
 NOW = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
@@ -116,6 +117,88 @@ def test_build_midterm_watch_uses_name_by_symbol():
         "KR", msgs, {}, {}, KR_TABLE, name_by_symbol={"005930": "삼성전자우"}, now=NOW,
     )
     assert out[0]["name"] == "삼성전자우"
+
+
+# ── reasons_age_days / 근거 갱신 추적 (2026-09-07 리포트 정확도 감사) ───────
+#
+# results/report_review 아카이브(61장, 2026-08-13~09-05) 재분석: NVDA 가
+# reasons 문자열 그대로 17개 리포트 연속(2026-08-18~09-04) 올라왔다 —
+# AMZN 10일·AMD 8일·AAPL/AVGO 7일이 뒤를 이었다.
+
+def test_reasons_age_days_zero_without_history():
+    """history 를 안 주면(호출부 하위호환) 항상 0 — 오래됐다고 지어내지 않는다."""
+    assert reasons_age_days("NVDA", ["호재 마커 5건"], None) == 0
+    assert reasons_age_days("NVDA", ["호재 마커 5건"], []) == 0
+
+
+def test_reasons_age_days_counts_consecutive_identical_streak():
+    """실측(NVDA) 재현: 과거 3일 연속 동일 reasons -> age=3."""
+    history = [
+        {"date": "2026-08-30", "symbol": "NVDA", "reasons": ["호재 마커 5건"]},
+        {"date": "2026-08-29", "symbol": "NVDA", "reasons": ["호재 마커 5건"]},
+        {"date": "2026-08-28", "symbol": "NVDA", "reasons": ["호재 마커 5건"]},
+        {"date": "2026-08-27", "symbol": "NVDA", "reasons": ["다른 근거"]},
+    ]
+    assert reasons_age_days("NVDA", ["호재 마커 5건"], history) == 3
+
+
+def test_reasons_age_days_stops_at_first_change():
+    history = [
+        {"date": "2026-08-30", "symbol": "NVDA", "reasons": ["호재 마커 5건"]},
+        {"date": "2026-08-29", "symbol": "NVDA", "reasons": ["다른 근거"]},
+        {"date": "2026-08-28", "symbol": "NVDA", "reasons": ["호재 마커 5건"]},
+    ]
+    assert reasons_age_days("NVDA", ["호재 마커 5건"], history) == 1
+
+
+def test_reasons_age_days_ignores_other_symbols():
+    history = [{"date": "2026-08-30", "symbol": "AMD", "reasons": ["호재 마커 5건"]}]
+    assert reasons_age_days("NVDA", ["호재 마커 5건"], history) == 0
+
+
+def test_build_midterm_watch_exposes_reasons_age_days():
+    msgs = [_row("tazastock", "1", "삼성전자 강세"), _row("tazastock", "2", "삼성전자 추가 매수세")]
+    out = build_midterm_watch("KR", msgs, {}, {}, KR_TABLE, now=NOW)
+    assert out[0]["reasons_age_days"] == 0  # history 없이 부르면(하위호환) 0
+
+    history = [
+        {"date": d, "symbol": "005930", "reasons": out[0]["reasons"]}
+        for d in ("2026-08-10", "2026-08-11", "2026-08-12")
+    ]
+    out2 = build_midterm_watch("KR", msgs, {}, {}, KR_TABLE, now=NOW, history=history)
+    assert out2[0]["reasons_age_days"] == 3
+
+
+def test_build_midterm_watch_demotes_stale_entries_below_stale_threshold():
+    """근거가 STALE_REASONS_DAYS(7)일 넘게 그대로인 종목은 grade 가 더 높아도
+    뒤로 밀린다 — 새 근거 없이 우려먹은 종목이 상위 슬롯을 계속 차지하지
+    않게 한다(2026-09-07, NVDA 17일 연속 실측 반영)."""
+    msgs = [
+        _row("tazastock", "stale-1", "000001 관련 소식"),
+        _row("tazastock", "stale-2", "000001 추가 소식"),
+        _row("tazastock", "fresh-1", "000002 관련 소식"),
+        _row("tazastock", "fresh-2", "000002 추가 소식"),
+    ]
+    table = [("000001", "000001"), ("000002", "000002")]
+    frgn = {"000001": _foreign_series("000001"), "000002": _foreign_series("000002")}
+    bullish = {sym: {"bullish_types": ["수주/공급계약"], "bearish": False} for sym in ("000001", "000002")}
+
+    out = build_midterm_watch("KR", msgs, frgn, bullish, table, now=NOW)
+    reasons_by_symbol = {c["symbol"]: c["reasons"] for c in out}
+    # 두 종목이 원래 같은 grade 를 받는지 확인(그래야 정체 여부만의 효과다).
+    assert out[0]["grade"] == out[1]["grade"]
+
+    history = [
+        {"date": f"2026-08-{d:02d}", "symbol": "000001", "reasons": reasons_by_symbol["000001"]}
+        for d in range(1, 10)
+    ]  # 9일 연속 동일 -> STALE_REASONS_DAYS(7) 이상
+    stale_first = build_midterm_watch("KR", msgs, frgn, bullish, table, now=NOW)
+    assert [c["symbol"] for c in stale_first][0] in ("000001", "000002")  # 정체 전: grade 순서만
+
+    demoted = build_midterm_watch("KR", msgs, frgn, bullish, table, now=NOW, history=history)
+    assert demoted[0]["symbol"] == "000002"  # 신선한 쪽이 앞으로
+    assert demoted[-1]["symbol"] == "000001"  # 정체된 쪽이 뒤로(원장엔 남는다)
+    assert demoted[-1]["reasons_age_days"] == 9
 
 
 # ── build_us_news_kr_map ─────────────────────────────────────────────────

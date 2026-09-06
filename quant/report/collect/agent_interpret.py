@@ -151,6 +151,37 @@ def _build_track_record(root: Path) -> dict[str, dict]:
     return out
 
 
+def _redact_agent_interpret_prose(results: list[dict], payload: dict) -> list[dict]:
+    """narrator 응답을 `payload`(engine.json)에 싣기 전 문장 단위 근거 검증
+    (`quant.report.prose_check.redact_prose`, 2026-09-07 리포트 산문 감사
+    세션 — `results/report_prose_audit/SUMMARY.md`). 방향 모순·환각
+    종목코드가 있는 문장은 "근거 부족으로 생략"으로 치환한다 — 통째로
+    버리지 않는 이유는 `interpret_candidates`의 다른 관례와 같다: 구조화
+    출력 일부가 깨졌다고 사람이 읽을 해석 전체를 버리지 않는다
+    (`_parse_judgment` docstring 참고). 문장이 전부 치환되면(=근거 있는
+    내용이 하나도 안 남으면) 그 후보 카드 자체를 뺀다."""
+    from quant.report.prose_check import redact_prose
+
+    kept: list[dict] = []
+    for item in results:
+        symbol = item.get("symbol")
+        sym_row = next(
+            (s for s in payload.get("symbols") or [] if s.get("symbol") == symbol), None,
+        )
+        new_prose, findings = redact_prose(
+            f"agent_interpret_view[{symbol}]", item.get("prose"), payload,
+            own_symbol=symbol, direction=item.get("direction"),
+            change_pct=(sym_row or {}).get("change_pct"),
+        )
+        for f in findings:
+            print(f"AI 심층 해석 산문 근거 검증: {f}", file=sys.stderr)
+        if new_prose is None:
+            continue
+        item["prose"] = new_prose
+        kept.append(item)
+    return kept
+
+
 def _build_agent_interpret(
     root: Path, snap, payload: dict, intraday_view: list[dict], midterm_view: list[dict],
     telegram_mentions: dict[str, dict], time_budget_seconds: float | None = None,
@@ -221,6 +252,7 @@ def _build_agent_interpret(
                                        time_budget_seconds=time_budget_seconds)
         for item in results:
             item["source"] = source
+        results = _redact_agent_interpret_prose(results, payload)
         elapsed = monotonic() - t0
         print(
             f"AI 심층 해석 {len(results)}/{len(candidates)}건 성공 "
