@@ -158,7 +158,7 @@ def test_production_settings_yaml_passes_the_gate_as_intended():
     # 전환과 동시) — frgn_accumulate/close_bet(외국인 수급 적립·종가배팅, 오버나이트
     # 허용)를 다시 켜고 news_accumulate(긍정뉴스 적립, 같은 클래스)를 새로 추가했다.
     kr_lanes = ("news_momentum", "news_scalp",
-                "scalp_1m", "scalp_1m_cat", "vol_breakout", "vol_breakout_cat",
+                "scalp_1m", "scalp_1m_cat", "vol_breakout", "vol_breakout_cat", "news_momentum_cat",
                 "llm_trader", "frgn_accumulate", "close_bet", "news_accumulate")
     # intraday_momentum 은 2026-09-05 비활성됐다가(소유자 위임 결정 — 원장 9트립
     # 0승 −65bp, 같은 계열 10년 walk-forward 전부 음수; 변경기록 2026-09-05)

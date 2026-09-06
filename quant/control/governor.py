@@ -158,6 +158,7 @@ ALLOWED_KILL_SWITCH: dict[str, int] = {
     # scalp_1m 계열은 아래처럼 통째로 뺀다(보호 상속).
     "strategies.pullback_impulse_cat.enabled": 5,
     "strategies.vol_breakout_cat.enabled": 5,
+    "strategies.news_momentum_cat.enabled": 5,  # 2026-09-06 A/B 짝(뉴스+트렌딩 확인)
     "strategies.news_scalp.enabled": 5,      # 2026-09-03 재활성 — 이제 끌 대상이 있다
     # 문헌 기반 일중 3종(2026-09-03). 지금은 enabled: false 라 끌 것이 없지만,
     # 번인으로 켜지는 순간 사망 판정 자동 비활성 경로가 함께 살아 있어야 한다 —

@@ -151,7 +151,7 @@ def test_enabled_in_real_config_now_that_tag_wiring_is_done():
         "pullback_impulse", "mr_vwap_quiet",
         "vol_breakout", "gap_fade",
         "llm_trader", "news_scalp",
-        "scalp_1m_cat", "pullback_impulse_cat", "vol_breakout_cat",
+        "scalp_1m_cat", "pullback_impulse_cat", "vol_breakout_cat", "news_momentum_cat",
         "frgn_accumulate", "close_bet", "news_accumulate",
         "intraday_momentum", "letf_pair_qqq", "letf_pair_sox",
     }, "활성 전략 목록이 바뀌었다 — 늘리려면 소유자 결정 + 시행 횟수 재신고"

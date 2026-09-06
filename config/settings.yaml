@@ -516,7 +516,7 @@ strategies:
       status: burn_in # 백테스트 미검증 — 스코어보드 30건 + 유의(양) 전까지 승격 금지
     universe: watchlist # tags_of(EVENT)도 관심종목 파일에서 함께 읽는다 — assembly.rebuild_strategies 참고
     symbols: []
-    params:
+    params: &news_momentum_params
       # 봉 간격 선언(2026-09-03 감사 C4). 이 전략의 실제 봉은 1m다(news_momentum.py
       # `history(symbol, "1m", ...)`). 손절 쿨다운 봉 카운팅과 과거데이터 프로브가 읽는다 —
       # 선언이 없으면 조용히 폴백 15m로 해석됐다. 실효 쿨다운 표는 risk 블록 주석 참고.
@@ -551,6 +551,24 @@ strategies:
       risk_budget_pct: 1.0
       max_leverage: 1.0
       flatten_before_close_minutes: 1
+
+  # A/B 짝(2026-09-06, 소유자 위임 결정): 리포트 정확도 감사에서 **뉴스+트렌딩 동시 확인**
+  # (origin both) 종목이 D+1 +278bp(n=166) vs 뉴스 단독 +28bp(n=920) 였다(변경기록 2026-09-06).
+  # 같은 규칙·같은 파라미터로 유니버스만 "EVENT 와 TREND 태그를 모두 가진 종목" 으로 좁혀
+  # 확인 효과를 페이퍼에서 잰다. fixed_dual 이라 자기 계좌 1,000만원. `run scoreboard --ab` 로 판정.
+  news_momentum_cat:
+    class: news_momentum
+    enabled: true
+    capital_fraction:
+      KR: 0.1
+      US: 0.0
+    validation:
+      status: burn_in
+    universe: watchlist
+    symbols: []
+    universe_filter:
+      KR: {require_all: [EVENT, TREND]}
+    params: *news_momentum_params
 
   news_scalp:
     class: news_scalp
