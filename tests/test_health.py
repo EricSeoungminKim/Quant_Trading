@@ -166,6 +166,53 @@ def test_ops_judge_monday_morning_before_that_days_run_is_not_alert():
     assert job_findings(snap, now=now) == []
 
 
+# ── 웨어하우스 적재(ingest) — ops-judge와 같은 주말 오경보 (2026-09-07 실측) ──
+#
+# systemd 타이머: 월~금 16:10 + 화~토 07:10 KST. 일반 30시간 TTL로는 토요일
+# 새벽 런 뒤 일요일/월요일 아침 점검에서 "최근 성공이 없다"가 거짓으로 났다 —
+# ops-judge와 같은 이유로 JOB_SCHEDULE에 같은 근사("weekday", 1영업일)를 쓴다.
+
+def test_ingest_sunday_morning_after_saturday_success_is_not_alert():
+    snap = {"available": True,
+            "jobs": {"ingest": {
+                "fresh": False, "ok": True,
+                "last": "2026-09-04T22:16:00+00:00",  # = 2026-09-05 07:16 KST(토)
+                "last_ok": "2026-09-04T22:16:00+00:00",
+            }}}
+    now = datetime(2026, 9, 5, 18, 0, tzinfo=UTC)  # = 2026-09-06 03:00 KST(일)
+
+    assert job_findings(snap, now=now) == []
+
+
+def test_ingest_monday_morning_after_saturday_success_is_not_alert():
+    snap = {"available": True,
+            "jobs": {"ingest": {
+                "fresh": False, "ok": True,
+                "last": "2026-09-04T22:16:00+00:00",  # = 2026-09-05 07:16 KST(토)
+                "last_ok": "2026-09-04T22:16:00+00:00",
+            }}}
+    now = datetime(2026, 9, 6, 21, 0, tzinfo=UTC)  # = 2026-09-07 06:00 KST(월)
+
+    assert job_findings(snap, now=now) == []
+
+
+def test_ingest_wednesday_after_only_monday_success_is_still_alert():
+    """주말을 낀 관대함이 아니라 진짜 결근(수요일까지 월요일 이후 성공 없음)은
+    그대로 잡는다."""
+    snap = {"available": True,
+            "jobs": {"ingest": {
+                "fresh": False, "ok": True,
+                "last": "2026-09-07T07:10:00+00:00",  # = 2026-09-07 16:10 KST(월)
+                "last_ok": "2026-09-07T07:10:00+00:00",
+            }}}
+    now = datetime(2026, 9, 9, 7, 10, tzinfo=UTC)  # = 2026-09-09 16:10 KST(수)
+
+    findings = job_findings(snap, now=now)
+
+    assert _levels(findings) == [ALERT]
+    assert "ingest" in findings[0].detail
+
+
 # ── 피드 ─────────────────────────────────────────────────────────────────
 
 def test_no_stale_feeds_is_ok():

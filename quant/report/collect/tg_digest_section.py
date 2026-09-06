@@ -16,30 +16,10 @@ from datetime import datetime
 from quant.analyze import tg_digest
 from quant.analyze.delta import previous_snapshot
 from quant.analyze.entities import load_table, load_us_table
+from quant.analyze.regime_state import load_regime_for_market
 from quant.collect.sources.telegram_channels import load_window
 from quant.report.collect.snapshot import news_since_for
 from quant.report.paths import _paths
-
-
-def _load_regime_for_report(root, market: str) -> dict | None:
-    """`data/state/regime.json`에서 `market`(KR/US) sub-dict(label/risk_multiplier/
-    reasons)만 뽑는다 — `cli._tg_digest_load_regime`과 같은 로직(공유 유틸
-    없이 각자 짧게 두는 이유는 `_fetch_telegram_briefs`의 ledger_path 인라인
-    구성과 같은 관례). 실패는 예외가 아니라 `None`(`Digest.
-    program_stance_display()`가 정직하게 "판정 불가"로 보여준다)."""
-    import json as _json
-
-    path = root / "data" / "state" / "regime.json"
-    if not path.exists():
-        return None
-    try:
-        payload = _json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    state = (payload.get("markets") or {}).get(market)
-    if not isinstance(state, dict) and market == "US":
-        state = payload if "label" in payload else None
-    return state if isinstance(state, dict) else None
 
 
 def _channel_digest_stance_call():
@@ -90,7 +70,7 @@ def _build_channel_digest_view(
         _, _, cache_dir, _ = _paths(root)
         name_table = load_table(cache_dir) if snap.market == "KR" else load_us_table(cache_dir)
 
-        regime = _load_regime_for_report(root, snap.market)
+        regime = load_regime_for_market(root, snap.market)
         llm_call = narrator.narrate if narrator is not None else None
         # 스탠스 전용 마이크로프롬프트(2026-09-05, tg_digest 모듈 docstring
         # "LLM 스탠스" 절)는 마감판(narrator=None)엔 절대 붙이지 않는다 —

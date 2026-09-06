@@ -323,6 +323,39 @@ def test_regressions_does_not_excuse_non_news_disappearance_even_with_today(tmp_
     assert any("state/trades.jsonl" in p for p in problems)
 
 
+# ── 로그 정리(prune)와 회귀 구분(2026-09-07) ────────────────────────────────
+#
+# 실측: 매주 일요일 03:00 KST 로그 정리 크론(`find data -name "*.log"
+# -mtime +7 -delete`)이 `data/state/tg_rate_ops.log`처럼 ARTIFACTS 아래 있는
+# 로그 파일을 지우면, 30분 뒤(03:30) 도는 `cli backup`이 이걸 회귀로 오판해
+# `jobs alert backup`을 냈다 — 번들 자체(생성 + 복원 리허설)는 정상이었다.
+
+def test_regressions_treats_missing_log_file_as_expected_prune(tmp_path: Path):
+    """`.log` 파일이 사라진 것은 매주 일요일 로그 정리 크론이 지운 것이다 —
+    `today=`를 준 경우에만 회귀에서 뺀다."""
+    _seed(tmp_path)
+    (tmp_path / "data" / "state" / "tg_rate_ops.log").write_text("2026-08-01 ok\n", encoding="utf-8")
+    prev = manifest(tmp_path)
+    (tmp_path / "data" / "state" / "tg_rate_ops.log").unlink()
+
+    problems = regressions(manifest(tmp_path), prev, today=date(2026, 9, 7))
+
+    assert problems == []
+
+
+def test_regressions_without_today_still_flags_missing_log_file(tmp_path: Path):
+    """`today`를 안 주면(기본값) 기존 동작 그대로 — `.log` 실종도 회귀로 본다
+    (하위 호환, 뉴스 보존기간 예외와 같은 opt-in 규칙)."""
+    _seed(tmp_path)
+    (tmp_path / "data" / "state" / "tg_rate_ops.log").write_text("2026-08-01 ok\n", encoding="utf-8")
+    prev = manifest(tmp_path)
+    (tmp_path / "data" / "state" / "tg_rate_ops.log").unlink()
+
+    problems = regressions(manifest(tmp_path), prev)
+
+    assert any("tg_rate_ops.log" in p for p in problems)
+
+
 # ── 도우미 ────────────────────────────────────────────────────────────────
 
 def _rewrite(src: Path, dst: Path, member: str, body: bytes | None) -> None:

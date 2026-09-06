@@ -89,3 +89,19 @@ def test_gate_missing_symbol_metadata_falls_back_to_symbol_order():
                              diagnostic_score100=None, top_n=8)
     assert out["capped"] is True
     assert len(out["watch_only"]) == 1
+
+
+# ── auto_watch_symbols (2026-09-07, intraday._candidate_symbols와 공유) ──────
+
+def test_auto_watch_symbols_parses_tokens():
+    assert cg.auto_watch_symbols("AUTO_WATCH: 005930:NEWS 000660:RANK") == {"005930", "000660"}
+
+
+def test_auto_watch_symbols_empty_when_no_watch():
+    assert cg.auto_watch_symbols("AUTO_WATCH: 없음") == set()
+
+
+def test_auto_watch_symbols_empty_without_prefix():
+    """접두사 없는 문자열은 원문으로 취급하지 않는다 — 엄격 검증
+    (`_parse_auto_watch`의 관대한 폴백과 다르다, 함수 docstring 참고)."""
+    assert cg.auto_watch_symbols("005930:NEWS") == set()

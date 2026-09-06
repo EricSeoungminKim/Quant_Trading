@@ -16,6 +16,7 @@ from quant.analyze.candidate_gate import GATE_REASON_LABEL, gate_candidates
 from quant.analyze.delta import compare, previous_snapshot
 from quant.analyze.entities import load_market_map, load_name_map, load_table, load_us_table
 from quant.analyze.mentions import append_ledger, collect_mentions, continuity, load_ledger, mark_origin
+from quant.analyze.regime_state import load_regime_for_market
 from quant.analyze.render import machine_payload, rank, rejection_reasons
 from quant.analyze.symbol_score import score_all
 from quant.analyze.watch_scorer import _rvol as watch_scorer_rvol
@@ -28,27 +29,6 @@ from quant.report.paths import _load_artifact, _paths
 # 외국인 수급 상세 조회 상한(2026-09-07 Phase 2 §5) — `_derive` 아래 호출부
 # 주석 참고. 20(옛 값)에서 3배 확대.
 FOREIGN_FLOW_FETCH_CAP = 60
-
-
-def _load_regime_for_stance(root: Path, market: str) -> dict | None:
-    """`data/state/regime.json`에서 `market`(KR/US) sub-dict(label/risk_multiplier/
-    reasons)만 뽑는다 — `quant/report/collect/tg_digest_section.py::
-    _load_regime_for_report`와 같은 로직(공유 유틸 없이 각자 짧게 두는 이유도
-    그 함수 docstring과 동일). 실패는 예외가 아니라 `None`
-    (`briefing.regime_stance`가 정직하게 "판정 불가"로 보여준다)."""
-    import json as _json
-
-    path = root / "data" / "state" / "regime.json"
-    if not path.exists():
-        return None
-    try:
-        payload = _json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    state = (payload.get("markets") or {}).get(market)
-    if not isinstance(state, dict) and market == "US":
-        state = payload if "label" in payload else None
-    return state if isinstance(state, dict) else None
 
 
 def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
@@ -276,7 +256,7 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
     # `view`는 그대로 `payload["stance"]`가 되므로(아래 machine_payload 호출)
     # 같은 dict에 키를 더하는 것만으로 하위호환 소비자(report_accuracy.
     # extract_open_claims 의 label/score100 읽기 등)를 건드리지 않는다.
-    view["regime"] = regime_stance(_load_regime_for_stance(root, snap.market))
+    view["regime"] = regime_stance(load_regime_for_market(root, snap.market))
     scores = score_all(cont, details, trending)
     # 최근 거래량 몰림 감시(2026-08-25 소유자 지시: "최근 거래량이 몰렸던 종목들도
     # 계속 감시 리스트로") — 최근 5일 거래대금 보드 상위에 2회 이상 등장한 KR

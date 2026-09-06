@@ -70,38 +70,28 @@ from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 from quant.control.cost_model import round_trip_bp_from_settings
+
+# 2026-09-06 오너 결정(전략별 독립 모의계좌 재시작, "paper_epoch" 절 참고) —
+# `PAPER_EPOCH_MARKER`/`paper_epoch_ts`/`strategy_start_capital`는 `quant.
+# control.ledger`가 낸다. `_build_paper_epoch`는 `paper_epoch_ts`가
+# `NotImplementedError`를 내는 경우도 여전히 방어한다(테스트 `test_performance_
+# paper_epoch.py::test_paper_epoch_empty_when_dependency_not_landed` — 이
+# 함수 하나 때문에 payload 전체가 깨지면 안 된다는 계약 자체는 착륙 후에도
+# 유효하다).
 from quant.control.ledger import (
     MIN_TRIPS_FOR_JUDGEMENT,
+    PAPER_EPOCH_MARKER,
     SEEDING_LIQUIDATION_MARKER,  # noqa: F401 — tests/test_performance.py가 performance.SEEDING_LIQUIDATION_MARKER로 재수출 참조
     _verdict,
     _wilson_ci,
     base_strategy_id,
     is_seeding_liquidation,
+    paper_epoch_ts,
     round_trips,
+    strategy_start_capital,
 )
 from quant.control.strategy_help import build_strategy_help
 from quant.core.models import trading_day
-
-# 2026-09-06 오너 결정(전략별 독립 모의계좌 재시작, "paper_epoch" 절 참고) —
-# `PAPER_EPOCH_MARKER`/`paper_epoch_ts`/`strategy_start_capital`는
-# `quant.control.ledger`에 병행 작업 중이다(다른 워커). 착륙 전에는 아래 폴백이
-# `NotImplementedError`를 내고, `_build_paper_epoch`가 그걸 잡아 빈 dict를
-# 낸다 — 이 모듈의 기존 기능·테스트가 그 의존성 하나 때문에 깨지면 안 된다.
-# TODO(2026-09-06): 착륙하면 이 try/except를 지우고 평범한 import 한 줄로 바꿔라.
-try:
-    from quant.control.ledger import PAPER_EPOCH_MARKER, paper_epoch_ts, strategy_start_capital
-except ImportError:  # pragma: no cover — 착륙 전 임시 경로
-    PAPER_EPOCH_MARKER = "__PAPER_EPOCH_MARKER_NOT_LANDED__"
-
-    def paper_epoch_ts(trades: list[dict] | None = None) -> datetime:  # type: ignore[misc]
-        raise NotImplementedError(
-            "quant.control.ledger.paper_epoch_ts 미착륙 — 2026-09-06 병행 작업 대기"
-        )
-
-    def strategy_start_capital(strategy_id: str) -> dict[str, float]:  # type: ignore[misc]
-        raise NotImplementedError(
-            "quant.control.ledger.strategy_start_capital 미착륙 — 2026-09-06 병행 작업 대기"
-        )
 
 __all__ = ["build_performance_payload"]
 

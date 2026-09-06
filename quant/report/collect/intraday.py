@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from quant.analyze.bullish_markers import classify_titles, classify_titles_dated
+from quant.analyze.candidate_gate import auto_watch_symbols
 from quant.analyze.foreign_flow_v2 import foreign_score_v2
 from quant.analyze.intraday_score import rank_intraday
 from quant.analyze.news_cluster import dedup_with_counts
@@ -53,12 +54,9 @@ def _candidate_symbols(payload: dict) -> set[str]:
     (`_build_intraday_view`)이 이 파싱을 공유한다 — 따로 두면 두 producer가
     서로 다른 후보 집합을 보게 될 수 있다.
     """
-    auto = str(payload.get("auto_watch") or "")
-    body = auto.split(":", 1)[1] if auto.startswith("AUTO_WATCH:") else ""
-    body = body.strip()
-    if not body or body == "없음":
-        return set()
-    return {t.split(":", 1)[0] for t in body.split()}
+    # 2026-09-07: 파서를 quant.analyze.candidate_gate.auto_watch_symbols 로 통합(3벌 중복
+    # 제거 — candidate_gate / intraday / market_brief 가 같은 토큰 규칙을 각자 갖고 있었다).
+    return auto_watch_symbols(str(payload.get("auto_watch") or ""))
 
 
 def _theme_change_pct(symbol: str, relations: dict | None, themes: dict | None) -> float | None:

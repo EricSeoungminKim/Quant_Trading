@@ -277,16 +277,38 @@ def _is_expected_news_prune(key: str, cutoff: date) -> bool:
     return file_date < cutoff
 
 
+def _is_expected_log_prune(key: str) -> bool:
+    """`key`가 `.log` 파일인가 — 그러면 사라진 게 아니라 매주 일요일 03:00
+    크론(`server/crontab.txt`: `find data -name "*.log" -mtime +7 -delete`,
+    03:30 백업보다 30분 앞선다)이 지운 것이다.
+
+    이 확인이 없어서 실제로 다쳤다(2026-09-07): `data/state/tg_rate_ops.log`
+    같이 `ARTIFACTS`(state/ledger/news) 아래 있는 로그 파일이 `_discover_files`
+    의 `rglob("*")`에 걸려 매니페스트에 들어가는데, 저 크론이 지우고 30분 뒤
+    백업이 돌면 "사라졌다"로 오판됐다 — 실제 백업(번들+복원 리허설)은 정상이었다.
+
+    매니페스트가 파일 mtime을 담지 않아 크론의 `-mtime +7`(7일)처럼 정확한
+    경계를 여기서 재현할 수 없다 — 그래서 `.log` 확장자면 나이를 따지지 않고
+    예외로 둔다(크론의 `-name "*.log"` 조건 자체와 대응). 로그는 운영 진단용이지
+    되찾을 수 없는 데이터가 아니다(module docstring 원칙과 같은 이유) — 원장·
+    뉴스 jsonl은 이 예외 대상이 아니다."""
+    return key.endswith(".log")
+
+
 def regressions(cur: dict[str, Entry], prev: dict[str, Entry],
                 today: date | None = None) -> list[str]:
     """지난 번들 대비 **줄어든** 것. 원장·뉴스는 append-only 이므로 줄어들면 사고다.
 
     이 검사가 없으면 망가진 소스를 그대로 백업해 지난 백업까지 덮어쓴다.
 
-    `today`(2026-09-06 신규, 선택)를 주면 `news/{KR,US}/YYYY-MM-DD.jsonl` 중
-    보존 기간(`RETENTION_DAYS`=7일)보다 오래된 날짜가 사라진 것은 **의도된
-    정리**(`collector.prune()`, 매일 뉴스 수집 사이클마다 돈다)로 보고 회귀에서
-    뺀다. 실측(2026-09-06): `cli backup`이 정리로 사라진 파일을 매일 회귀로
+    `today`(2026-09-06 신규, 선택)를 주면 다음 둘은 **의도된 정리**로 보고
+    회귀에서 뺀다:
+    - `news/{KR,US}/YYYY-MM-DD.jsonl` 중 보존 기간(`RETENTION_DAYS`=7일)보다
+      오래된 날짜(`collector.prune()`, 매일 뉴스 수집 사이클마다 돈다).
+    - 임의의 `.log` 파일(`_is_expected_log_prune` — 매주 일요일 03:00 로그
+      정리 크론, 2026-09-07 추가).
+
+    실측(2026-09-06/07): `cli backup`이 이 두 정리로 사라진 파일을 회귀로
     오판해 `jobs alert backup`을 냈다 — 실제 백업(번들+복원 리허설)은 정상이었다.
 
     `today`를 안 주면(기본값) **기존 동작 그대로** — 모든 실종을 회귀로 본다.
@@ -305,7 +327,9 @@ def regressions(cur: dict[str, Entry], prev: dict[str, Entry],
             continue
         now = cur.get(key)
         if now is None:
-            if cutoff is not None and _is_expected_news_prune(key, cutoff):
+            if cutoff is not None and (
+                _is_expected_news_prune(key, cutoff) or _is_expected_log_prune(key)
+            ):
                 continue
             problems.append(f"{key}: 지난 백업에 있었는데 사라졌다")
             continue

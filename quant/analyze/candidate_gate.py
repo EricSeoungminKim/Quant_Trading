@@ -28,10 +28,11 @@ from the ledger — only from the promoted list").
 
 ## 계약
 
-이 모듈은 순수 함수만 담는다. `AUTO_WATCH:` 문자열 파싱은
-`quant/report/collect/intraday.py::_candidate_symbols`와 같은 규칙이지만
-독립적으로 다시 구현한다 — `quant/analyze/`가 `quant/report/`를 임포트하면
-의존 방향이 뒤집힌다(report가 analyze 위에 얹히는 계층이다).
+이 모듈은 순수 함수만 담는다. `AUTO_WATCH:` 문자열에서 심볼만 뽑는
+`auto_watch_symbols`는 `quant/report/collect/intraday.py::_candidate_symbols`가
+가져다 쓴다(2026-09-07 통합 — report가 analyze 위에 얹히는 계층이라 이
+방향의 의존은 허용된다; 거꾸로 `quant/analyze/`가 `quant/report/`를
+임포트하는 건 금지다).
 """
 from __future__ import annotations
 
@@ -52,6 +53,21 @@ def _parse_auto_watch(auto_watch: str) -> tuple[str, list[str]]:
     if not body or body == "없음":
         return prefix, []
     return prefix, body.split()
+
+
+def auto_watch_symbols(auto_watch: str) -> set[str]:
+    """`"AUTO_WATCH: SYM:TAG SYM2:TAG2 ..."` 문자열에서 태그를 버리고 심볼만
+    뽑는다. 접두사(`"AUTO_WATCH:"`)가 없으면 빈 set(엄격 검증 — `_parse_auto_watch`
+    와 달리 접두사 없는 문자열을 원문 그대로로 취급하지 않는다).
+
+    `quant/report/collect/intraday.py::_candidate_symbols`와 `quant/report/
+    collect/core.py`가 이 파싱을 공유한다(2026-09-07 통합 전에는 intraday.py가
+    독립적으로 재구현했었다 — 이제 report → analyze 방향으로 가져다 쓴다)."""
+    body = auto_watch.split(":", 1)[1] if auto_watch.startswith("AUTO_WATCH:") else ""
+    body = body.strip()
+    if not body or body == "없음":
+        return set()
+    return {t.split(":", 1)[0] for t in body.split()}
 
 
 def is_defensive_stance(regime_label: str | None, diagnostic_score100: int | None) -> bool:
