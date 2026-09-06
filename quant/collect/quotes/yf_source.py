@@ -33,6 +33,13 @@ _MAX_LOOKBACK_DAYS: dict[str, int | None] = {
     "1d": None,  # 상장 이후 전체 히스토리 — 리밋 없음
 }
 
+# 저장 심볼과 Yahoo 조회 심볼이 다른 경우의 명시적 매핑(2026-09-06, VIX 국면
+# 게이트 추가). Yahoo에서 VIX는 지수 심볼 "^VIX"로만 조회된다 — 저장/반환 심볼은
+# "VIX"를 유지한다(data/history/VIX/1d, quant/trade/regime/provider.py가 그
+# 경로로 읽는다). KR 6자리 숫자 심볼의 ".KS" 매핑과 같은 이유로 조회 시점에만
+# 적용하고 symbol 변수 자체는 바꾸지 않는다.
+_YAHOO_TICKER_OVERRIDES: dict[str, str] = {"VIX": "^VIX"}
+
 
 def _as_utc(ts: datetime) -> pd.Timestamp:
     t = pd.Timestamp(ts)
@@ -73,7 +80,12 @@ class YFinanceCandleSource:
         # "{symbol}.KS"로만 조회된다. 저장·반환 심볼은 원래 6자리를 유지해야
         # 개장일 판정 앵커 경로(data/history/069500/1d)와 일치하므로, 이 매핑은
         # yf.Ticker 질의에만 적용하고 symbol 변수 자체는 바꾸지 않는다.
-        yahoo_symbol = f"{symbol}.KS" if symbol.isdigit() and len(symbol) == 6 else symbol
+        if symbol in _YAHOO_TICKER_OVERRIDES:
+            yahoo_symbol = _YAHOO_TICKER_OVERRIDES[symbol]
+        elif symbol.isdigit() and len(symbol) == 6:
+            yahoo_symbol = f"{symbol}.KS"
+        else:
+            yahoo_symbol = symbol
         df = yf.Ticker(yahoo_symbol).history(
             start=start_utc.to_pydatetime(), end=end_utc.to_pydatetime(),
             interval=self.native_interval,

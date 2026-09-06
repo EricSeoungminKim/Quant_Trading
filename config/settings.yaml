@@ -1876,6 +1876,20 @@ regime:
   # INDICATOR_SOURCE 매핑). 상관된 신호 2개가 독립 표 2개인 것처럼 카운트되면
   # 1.5배 레버리지를 정당화 못 하는 근거로 정당화하게 된다. kr_trend(KR_TREND)/
   # kr_flow(KR_FLOW)는 이미 서로 다른 원천이라 KR에서는 이 요건이 항상 충족된다.
+  us:
+    vix:
+      # VIX 스트레스 게이트(2026-09-06, 방어 전용) — quant-backtest
+      # results/letf/SUMMARY_vix_regime.md(사전등록 리서치, report-only): VIX
+      # 레벨/20일선 대비가 기존 qqq_volatility_score와 상관은 있으나(Spearman
+      # 0.27~0.36) 겹치지 않고, 고-VIX일의 72%가 기존 변동성 플래그를 못
+      # 건드린다. 기간구조(VIX3M)는 채택하지 않는다 — 야후 공급이 2026-07-17
+      # 이후 끊겼고(라이브 피드 불가), 메타라벨 피처중요도에서도 기여가
+      # 없었다(MDA 음수). **risk_multiplier를 절대 올리지 않는다** — aggressive
+      # 승격을 막거나(중립으로 상한) neutral/aggressive를 defensive로 강등하는
+      # 데만 쓴다(quant/trade/regime/provider.py의 _apply_vix_gate).
+      enabled: true
+      level_max: 25 # VIX 종가가 이 값 이상이면 스트레스
+      sma20_ratio_max: 1.2 # VIX 종가/20일 이평이 이 배수 이상이면 스트레스
 
 ai_trader:
   # 신입사원 AI 트레이더(수습) — 2단계 태그 소스 승격 스위치 (2026-08-26).

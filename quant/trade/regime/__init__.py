@@ -5,7 +5,7 @@
 해석 가능(ML 없음). 통합 지점은 risk_multiplier() 하나뿐 — risk/·app/·brokers/
 배선은 이 패키지 밖(오케스트레이터) 책임이다. 설계 배경은 docs/adr/0009 참고.
 """
-from quant.trade.regime.indicators import IndicatorResult
+from quant.trade.regime.indicators import IndicatorResult, vix_stress
 from quant.trade.regime.interfaces import BitcoinPriceAdapter, MarketIndicatorClient
 from quant.trade.regime.models import RegimeState
 from quant.trade.regime.provider import DEFAULT_MULTIPLIERS, RegimeProvider
@@ -17,4 +17,5 @@ __all__ = [
     "BitcoinPriceAdapter",
     "IndicatorResult",
     "DEFAULT_MULTIPLIERS",
+    "vix_stress",
 ]

@@ -2358,6 +2358,12 @@ async def run_paper_loop(
                             f"🇺🇸 미국 시장: {labels.get(state.label, state.label)}"
                             f" (투자 비중 {state.risk_multiplier:.2f}배)",
                         ]
+                        # VIX 스트레스 게이트(2026-09-06, 방어 전용) 사유 한 줄 — state.reasons에
+                        # "VIX ..."로 시작하는 항목이 있으면 노출한다(quant/trade/regime/
+                        # provider.py._apply_vix_gate). 없으면(데이터 없음/낡음/비활성화) 조용히 생략.
+                        vix_reason = next((r for r in state.reasons if r.startswith("VIX ")), None)
+                        if vix_reason is not None:
+                            parts.append(f"    {vix_reason}")
                         kr = getattr(regime, "kr_state", lambda: None)()
                         if kr is not None:
                             parts.append(

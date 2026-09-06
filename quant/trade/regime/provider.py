@@ -19,10 +19,12 @@ import json
 import logging
 import math
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 
 from quant.trade.regime.indicators import (
@@ -32,6 +34,7 @@ from quant.trade.regime.indicators import (
     kospi_score,
     qqq_trend_score,
     qqq_volatility_score,
+    vix_stress,
 )
 from quant.trade.regime.interfaces import BitcoinPriceAdapter, MarketIndicatorClient
 from quant.trade.regime.models import RegimeState
@@ -88,6 +91,32 @@ INDICATOR_SOURCE: dict[str, str] = {
 # 없는 가드다.** 2026-08-13 실측 사고(마지막 봉 07-31, 13일 경과)는 여유롭게 잡힌다.
 STALE_DAILY_BARS_AFTER = timedelta(days=6)
 
+# ── 2026-09-06 추가: VIX 스트레스 게이트(방어 전용) ──────────────────────────
+#
+# quant-backtest results/letf/SUMMARY_vix_regime.md(사전등록 리서치, report-only):
+# VIX 레벨/20일선 대비가 기존 qqq_volatility_score("실현변동성 vs 60일" 비율)와
+# 상관은 있지만(Spearman 0.27~0.36) 겹치지는 않고, 고-VIX일의 72%가 기존 변동성
+# 플래그에 안 걸린다. 기간구조(VIX3M)는 채택하지 않는다 — 같은 리서치에서 야후
+# 공급이 2026-07-17 이후 끊긴 게 실측됐고(라이브 피드로 못 씀), 메타라벨
+# 피처중요도에서도 기여가 없었다(MDA 음수).
+#
+# **방어 전용(defensive-only)이다** — risk_multiplier를 절대 올리지 않는다.
+# 그래서 이 지표는 다른 지표들(+1/0/-1, _finalize의 점수 합산)에 넣지 않고
+# _apply_vix_gate에서 후처리로만 적용한다 — 점수에 넣으면 aggressive_min_valid_ratio
+# 로스터 크기(len(results))가 바뀌어 기존 게이트 동작이 조용히 흔들린다.
+DEFAULT_VIX_ENABLED = True
+DEFAULT_VIX_LEVEL_MAX = 25.0
+DEFAULT_VIX_SMA20_RATIO_MAX = 1.20
+
+# VIX 일봉이 이보다 낡으면(거래일 기준) 지표를 건너뛴다 — 절대 거래를 막지
+# 않는다("Missing/stale VIX data → indicator skipped ... never blocking"). 달력일이
+# 아니라 거래일(세션) 수로 잰다 — QQQ의 STALE_DAILY_BARS_AFTER(달력일 6일)와
+# 다른 단위를 쓰는 이유는 연구 지시가 "3세션"으로 명시했기 때문이다. 백필
+# 스크립트(server/scripts/backfill_us_daily.sh)도 같은 상수를 임포트해서 쓴다 —
+# 숫자를 따로 적으면 언젠가 갈라지고, 갈라진 쪽이 조용한 쪽이 된다(QQQ 상수와
+# 같은 원칙, 위 STALE_DAILY_BARS_AFTER 주석 참고).
+STALE_VIX_SESSIONS_AFTER = 3
+
 _KST = ZoneInfo("Asia/Seoul")
 
 
@@ -124,6 +153,16 @@ class RegimeProvider:
             "aggressive_min_valid_ratio", DEFAULT_AGGRESSIVE_MIN_VALID_RATIO
         )
         self._aggressive_min_sources = regime_cfg.get("aggressive_min_sources", DEFAULT_AGGRESSIVE_MIN_SOURCES)
+        # VIX 스트레스 게이트 설정(US 전용, 방어 전용) — settings.yaml의
+        # regime.us.vix가 기본값 위에 병합된다. KR에는 적용하지 않는다(VIX는
+        # 미국 지수 변동성이라 KR 국면과 무관 — docs/adr/0009의 KR/US 분리 원칙).
+        vix_cfg_override = ((regime_cfg.get("us") or {}).get("vix") or {})
+        self._vix_cfg = {
+            "enabled": DEFAULT_VIX_ENABLED,
+            "level_max": DEFAULT_VIX_LEVEL_MAX,
+            "sma20_ratio_max": DEFAULT_VIX_SMA20_RATIO_MAX,
+            **vix_cfg_override,
+        }
         self._indicator_client = indicator_client
         self._bitcoin_adapter = bitcoin_adapter
         self._history_dir = Path(history_dir)
@@ -195,7 +234,37 @@ class RegimeProvider:
             self._kospi_indicator(),
             self._bitcoin_indicator(),
         ]
-        return self._finalize(results, self._now_fn())
+        state = self._finalize(results, self._now_fn())
+        return self._apply_vix_gate(state, results)
+
+    def _apply_vix_gate(self, state: RegimeState, results: list[IndicatorResult]) -> RegimeState:
+        """VIX 스트레스 후처리 게이트(방어 전용, US만) — `_finalize`의 점수 합산
+        **뒤에** 적용한다. 점수에 섞지 않는 이유는 위 STALE_VIX_SESSIONS_AFTER
+        주석 참고.
+
+        - 스트레스 아님/판단 불가(데이터 없음·낡음·비활성화): 아무것도 바꾸지
+          않는다 — reasons에 사유 한 줄만 더한다. **절대 거래를 막지 않는다.**
+        - 스트레스: aggressive는 neutral로 강등(공격 금지) — 무조건 적용.
+        - 스트레스 + 기존 변동성 위험회피 신호(qqq_volatility_score == -1,
+          SUMMARY_vix_regime.md가 "기존 vol 플래그"라 부르는 그 지표)까지 함께
+          뜨면 defensive로 강등 — 서로 다른 두 지표가 독립적으로 위험회피에
+          동의했을 때만 방어로 간다(비대칭 설계: 방어 강화는 절대 raise하지
+          않으므로 조건을 좁게 잡을 이유가 없다 — 정보가 있으면 쓴다).
+        """
+        vix_reason, stress = self._vix_indicator()
+        reasons = [*state.reasons, vix_reason]
+        label = state.label
+        if stress:
+            if label == "aggressive":
+                label = "neutral"
+            vol_score = next((r.score for r in results if r.name == "qqq_volatility"), None)
+            if vol_score == -1:
+                label = "defensive"
+        if label == state.label:
+            return replace(state, reasons=reasons)
+        return replace(
+            state, label=label, risk_multiplier=self._multipliers.get(label, 1.0), reasons=reasons,
+        )
 
     def _finalize(self, results: list[IndicatorResult], computed_at: datetime) -> RegimeState:
         """점수 합산 + 두 단계 게이트를 적용해 RegimeState 를 만든다. US/KR 공용
@@ -389,6 +458,83 @@ class RegimeProvider:
         if df.empty or "close" not in df.columns:
             return None
         return df["close"]
+
+    # ------------------------------------------------------------------ VIX 스트레스 게이트(방어 전용, US만)
+
+    def _vix_indicator(self) -> tuple[str, bool | None]:
+        """(사유 문자열, stress) 반환. stress=None은 "판단 못 함"(비활성화/데이터
+        없음/낡음) — `_apply_vix_gate`는 None을 False와 동일하게 취급해 게이트를
+        건너뛴다(절대 거래를 막지 않는다). 점수(+1/0/-1)가 아니라 방어 게이트라
+        IndicatorResult가 아닌 튜플을 쓴다 — _finalize의 점수 합산에 섞이지
+        않는다는 신호이기도 하다."""
+        if not self._vix_cfg.get("enabled", DEFAULT_VIX_ENABLED):
+            return "VIX 지표 비활성화(설정) — 제외", None
+        closes = self._load_vix_daily_closes()
+        if closes is None:
+            reason = "VIX 일봉 데이터 없음 — 지표 제외"
+            logger.warning("regime: %s", reason)
+            return reason, None
+        stale = self._vix_staleness(closes)
+        if stale is not None:
+            logger.warning("regime: %s", stale)
+            return stale, None
+        result = vix_stress(
+            closes,
+            level_max=float(self._vix_cfg.get("level_max", DEFAULT_VIX_LEVEL_MAX)),
+            sma20_ratio_max=float(self._vix_cfg.get("sma20_ratio_max", DEFAULT_VIX_SMA20_RATIO_MAX)),
+        )
+        if result["level"] is None:
+            return result["reason"], None
+        return result["reason"], result["stress"]
+
+    def _load_vix_daily_closes(self) -> pd.Series | None:
+        """`data/history/VIX/1d` 파티션 로드 — `_load_qqq_daily_closes`와 동일한
+        방어 로직(빈 파일 버림, dedup, close 컬럼 확인). server/scripts/
+        backfill_us_daily.sh가 yfinance("^VIX")로 채운다(quant/collect/quotes/
+        yf_source.py의 심볼 매핑 — 저장 심볼은 "VIX", 조회 심볼만 "^VIX")."""
+        sym_dir = self._history_dir / "VIX" / "1d"
+        if not sym_dir.exists():
+            return None
+        parts = sorted(sym_dir.glob("*/*.parquet"))
+        if not parts:
+            return None
+        try:
+            frames = [d for d in (pd.read_parquet(p) for p in parts) if not d.empty]
+            if not frames:
+                return None
+            df = pd.concat(frames)
+        except Exception:
+            logger.warning("regime: VIX 일봉 파티션 로드 실패", exc_info=True)
+            return None
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+        if df.empty or "close" not in df.columns:
+            return None
+        return df["close"]
+
+    def _vix_staleness(self, closes: pd.Series) -> str | None:
+        """낡았으면(거래일 기준 STALE_VIX_SESSIONS_AFTER 세션 초과) 사람이 읽을
+        사유, 신선하면 None. QQQ의 `_staleness`(달력일)와 달리 거래일(세션) 수로
+        재는 이유는 위 STALE_VIX_SESSIONS_AFTER 주석 참고 — `numpy.busday_count`는
+        공휴일 캘린더가 없어 주말만 뺀 근사치다(이 저장소의 다른 거래일 근사,
+        예: collect/quotes/backfill.py의 `_find_gaps`와 같은 한계)."""
+        last = closes.index.max()
+        if not isinstance(last, pd.Timestamp) or pd.isna(last):
+            return "VIX 일봉 인덱스가 시각이 아님 — 파티션 파손 의심, 지표 제외"
+        last_date = (last.tz_convert("UTC") if last.tzinfo is not None else last).date()
+        now_ts = pd.Timestamp(self._now_fn())
+        now_date = (now_ts.tz_convert("UTC") if now_ts.tzinfo is not None else now_ts).date()
+        # busday_count(A, B)는 반개구간 [A, B) 의 평일 수 — last_date 자신은 이미
+        # 받은 봉이므로 그 다음 날부터, now_date는 아직 열리지 않은(오늘 세션이
+        # 아직 없는) 날이므로 그 날 자체는 세지 않는다. 예: 월요일 봉으로 화요일
+        # 아침(현재 시각) 판단 → busday_count(화, 화) = 0 (정상, 0세션 누락).
+        # 월요일 봉으로 금요일 아침 판단 → busday_count(화, 금) = 화수목 = 3세션.
+        missed = int(np.busday_count(last_date + timedelta(days=1), now_date))
+        if missed <= STALE_VIX_SESSIONS_AFTER:
+            return None
+        return (
+            f"VIX 일봉이 낡음 — 마지막 봉 {last_date}, 거래일 기준 {missed}세션 경과"
+            f"(임계 {STALE_VIX_SESSIONS_AFTER}세션). 백필 확인 필요 — 지표 제외"
+        )
 
     def _bond_yield_indicator(self) -> IndicatorResult:
         # 2026-08-28: KR_BOND_10Y(Toss 미구현, 항상 None)에서 US_BOND_10Y(FRED

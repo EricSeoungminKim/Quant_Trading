@@ -113,6 +113,53 @@ def kospi_score(change_pct: float | None, band_pct: float = 0.5) -> IndicatorRes
     return IndicatorResult(name, 0, f"코스피 {change_pct:+.2f}% — 변화 미미")
 
 
+def vix_stress(
+    vix_close_series: pd.Series | None,
+    level_max: float = 25.0,
+    sma20_ratio_max: float = 1.20,
+    sma_window: int = 20,
+) -> dict:
+    """VIX 레벨/20일선 대비 스트레스 게이트 — **방어 전용**.
+
+    다른 지표(qqq_trend_score 등)와 달리 +1/0/-1 점수 체계에 넣지 않는다 —
+    risk_multiplier를 올리는 근거로 절대 쓰이지 않고, RegimeProvider가 aggressive
+    승격을 막거나(공격 금지) neutral/aggressive를 defensive로 강등하는 후처리
+    게이트로만 쓴다(quant/trade/regime/provider.py._apply_vix_gate).
+
+    사전등록 임계(quant-backtest `results/letf/SUMMARY_vix_regime.md`, report-only
+    리서치 — VIX 레벨/20일선 대비만 채택, 기간구조·5일변화는 기각):
+    stress = level >= level_max(기본 25) OR level/20일 이평 >= sma20_ratio_max(기본
+    1.20). 정확히 임계값과 같으면(>=) 스트레스로 본다 — 경계를 걸치는 날 방어
+    누락보다 방어 과다가 낫다는 판단.
+
+    `vix_close_series`의 **마지막 값을 "어제 종가"로 취급**한다 — 다른 로컬
+    지표(qqq_trend_score 등)와 같은 관례로, 오늘 미완결 봉을 걸러 이 함수에
+    넘기지 않는 것은 호출부(RegimeProvider) 책임이다(no look-ahead). 이 함수
+    자체는 순수 함수라 주어진 마지막 값을 그대로 "가장 최근 완결 종가"로 쓴다 —
+    시리즈에 아직 열리지 않은 오늘 봉을 얹어 넘기면 그 값이 그대로 반영된다.
+
+    데이터가 sma_window 미만이면 판단을 보류한다(stress=False, level/vs_sma20=
+    None) — 억지로 정상/스트레스 어느 쪽으로도 단정하지 않는다."""
+    if vix_close_series is None or len(vix_close_series) < sma_window:
+        return {
+            "level": None,
+            "vs_sma20": None,
+            "stress": False,
+            "reason": f"VIX 일봉 {sma_window}개 미만 — 판단 불가",
+        }
+    level = float(vix_close_series.iloc[-1])
+    sma20 = float(vix_close_series.tail(sma_window).mean())
+    if sma20 == 0 or pd.isna(sma20) or pd.isna(level):
+        return {"level": None, "vs_sma20": None, "stress": False, "reason": "VIX 이평선/종가 계산 불가"}
+    ratio = level / sma20
+    stress = level >= level_max or ratio >= sma20_ratio_max
+    if stress:
+        reason = f"VIX {level:.1f} ({ratio:.2f}배) — 스트레스: 공격 금지"
+    else:
+        reason = f"VIX {level:.1f} (20일선 대비 {ratio:.2f}) — 정상"
+    return {"level": level, "vs_sma20": ratio, "stress": stress, "reason": reason}
+
+
 def bitcoin_score(change_pct: float | None, band_pct: float = 2.0) -> IndicatorResult:
     """비트코인 가격 등락률(%, 전일 대비 또는 최근 24시간).
 

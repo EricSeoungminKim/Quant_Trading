@@ -82,6 +82,79 @@ SPY_OUT="$(timeout 300 "$PY" -m quant.apps.cli fetch \
 [ $? -ne 0 ] && log "SPY 백필 종료코드 비정상 — 확률 표본이 낡을 수 있다"
 printf '%s\n' "$SPY_OUT" >> "$LOG"
 
+# --- VIX 일봉 (2026-09-06 추가) ---
+#
+# 소비자: quant/trade/regime/indicators.py::vix_stress — 국면(regime)의 **방어
+# 전용** 스트레스 게이트(risk_multiplier를 절대 올리지 않는다, aggressive 승격을
+# 막거나 defensive로 강등하는 데만 쓴다). quant-backtest
+# results/letf/SUMMARY_vix_regime.md(사전등록 리서치)가 근거 — VIX 레벨/20일선
+# 대비가 기존 qqq_volatility_score와 겹치지 않는 정보를 담고 있다.
+#
+# QQQ와 같은 소스(yfinance, 인증 불필요, 일봉 전체 히스토리)를 쓴다. Yahoo에서
+# VIX는 지수 심볼 "^VIX"로만 조회되지만, 저장 심볼은 "VIX"로 고정한다
+# (quant/collect/quotes/yf_source.py의 _YAHOO_TICKER_OVERRIDES가 조회 시점에만
+# "^VIX"로 바꾼다) — data/history/VIX/1d/가 provider.py._load_vix_daily_closes가
+# 읽는 경로다.
+#
+# 되짚기는 QQQ와 같은 패턴(fetch 성공을 못 믿고 coverage()로 재확인)이되, 임계는
+# 국면 가드의 상수(STALE_VIX_SESSIONS_AFTER, provider.py)를 그대로 import해
+# 쓴다 — 여기 숫자를 따로 적으면 언젠가 갈라진다(QQQ 블록과 같은 원칙, 위 참고).
+# **QQQ와 달리 실패해도 exit 하지 않는다** — VIX는 방어 전용이라 낡아도 코드
+# 가드(_vix_indicator)가 그냥 건너뛴다(공격 금지 게이트 없이 정상 운행), 크론
+# 자체를 실패로 표시할 이유가 없다. 그래서 이 블록은 QQQ의 최종 되짚기/exit
+# 이전(SPY 다음)에 둔다 — QQQ가 STALE/UNKNOWN으로 exit 1 하기 전에 VIX 알림이
+# 먼저 나가야 한다.
+log "백필 시작: VIX $INTERVAL from $START"
+VIX_OUT="$(timeout 300 "$PY" -m quant.apps.cli fetch \
+  --symbol VIX --interval "$INTERVAL" --source yfinance --start "$START" 2>&1)"
+VIX_RC=$?
+printf '%s\n' "$VIX_OUT" >> "$LOG"
+
+VIX_VERDICT="$(timeout 60 "$PY" - <<'PYEOF' 2>>"$LOG"
+from datetime import datetime, timedelta, timezone
+import numpy as np
+import pandas as pd
+from quant.adapters.olap import coverage
+from quant.trade.regime.provider import STALE_VIX_SESSIONS_AFTER
+
+cov = coverage("VIX", "1d")
+if cov is None or cov.last_ts is None:
+    print("UNKNOWN 커버리지를 읽지 못했다 (duckdb 미설치 또는 파티션 없음)")
+else:
+    last = pd.Timestamp(cov.last_ts)
+    last_date = (last.tz_convert("UTC") if last.tzinfo is not None else last).date()
+    now_date = datetime.now(timezone.utc).date()
+    missed = int(np.busday_count(last_date + timedelta(days=1), now_date))
+    state = "OK" if missed <= STALE_VIX_SESSIONS_AFTER else "STALE"
+    print(f"{state} 마지막 봉 {last_date}, 거래일 기준 {missed}세션 경과 "
+          f"(임계 {STALE_VIX_SESSIONS_AFTER}세션), 봉 {cov.n_bars}개")
+PYEOF
+)"
+log "되짚기(VIX): ${VIX_VERDICT:-<판정 실패>}"
+
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  echo "[DRY_RUN] fetch VIX rc=$VIX_RC"
+  echo "[DRY_RUN] 되짚기(VIX): ${VIX_VERDICT:-<판정 실패>}"
+else
+  case "${VIX_VERDICT%% *}" in
+    OK)
+      [ "$VIX_RC" -ne 0 ] && notify_defer "backfill_us_daily" "⚠️ VIX 일봉 백필 종료코드 ${VIX_RC} — 다만 봉은 최신이다(${VIX_VERDICT#* }). data/fetch_us_daily.log 확인"
+      ;;
+    STALE)
+      notify_defer "backfill_us_daily" "⚠️ VIX 일봉이 백필 후에도 낡았다 — ${VIX_VERDICT#* }
+국면(regime)의 VIX 스트레스 게이트(방어 전용)가 이 파일을 읽는다. 낡으면
+코드 가드가 그 지표를 건너뛰므로(공격 금지/방어 강등 게이트 없이 정상 운행)
+손실 방향은 아니지만, 그 하루는 VIX 기반 방어 신호가 통째로 빠진다.
+yfinance 응답·네트워크 확인: tail -40 data/fetch_us_daily.log"
+      ;;
+    *)
+      notify_defer "backfill_us_daily" "⚠️ VIX 일봉 백필 검증 불가 — ${VIX_VERDICT:-판정 실패} (fetch rc=${VIX_RC})
+'봉이 최신인지 모른다'는 상태다 — 방어 전용 지표라 거래는 막지 않는다.
+data/fetch_us_daily.log 확인"
+      ;;
+  esac
+fi
+
 # --- 되짚기: 받았다고 믿지 않는다 ---
 #
 # exit 0 이 "봉이 최신이 됐다"를 뜻하지 않는다. 벤더가 빈 응답을 주면 fetch는
