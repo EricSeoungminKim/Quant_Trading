@@ -248,3 +248,51 @@ def test_send_lane_html_fallback_preserves_thread_id(tmp_path: Path):
     assert first_json["message_thread_id"] == 7
     assert second_json["message_thread_id"] == 7
     assert "parse_mode" not in second_json
+
+
+# ── 발송 실패 원장 (2026-09-06 라이브 준비 4단계) ──────────────────────────
+# server/scripts/lib/notify.sh 의 _notify_record_failure 와 같은 파일·스키마를
+# 공유한다 — quant.control.health.notify_failure_findings 가 출처를 가리지
+# 않고 오늘 치 총합을 센다.
+
+def test_failed_send_is_recorded_in_shared_failure_ledger(tmp_path, monkeypatch):
+    import quant.adapters.notify.telegram as tg
+
+    failures = tmp_path / "data" / "ledger" / "notify_failures.jsonl"
+    monkeypatch.setattr(tg, "_FAILURE_LEDGER_PATH", failures)
+    monkeypatch.setattr(tg, "_LEDGER_PATH", tmp_path / "data" / "ledger" / "notifications.jsonl")
+
+    n = TelegramNotifier("tkn", "chat", lanes_path=tmp_path / "missing.json")
+    with patch("quant.adapters.notify.telegram.httpx.post", side_effect=Exception("network down")):
+        n.send("실패할 메시지", lane="ops")
+
+    rows = [json.loads(ln) for ln in failures.read_text(encoding="utf-8").splitlines() if ln]
+    assert len(rows) == 1
+    assert rows[0]["source"] == "engine"
+    assert rows[0]["lane"] == "ops"
+    assert "실패할 메시지" in rows[0]["text"]
+    assert "network down" in rows[0]["error"]
+
+
+def test_successful_send_does_not_touch_failure_ledger(tmp_path, monkeypatch):
+    import quant.adapters.notify.telegram as tg
+
+    failures = tmp_path / "data" / "ledger" / "notify_failures.jsonl"
+    monkeypatch.setattr(tg, "_FAILURE_LEDGER_PATH", failures)
+    monkeypatch.setattr(tg, "_LEDGER_PATH", tmp_path / "data" / "ledger" / "notifications.jsonl")
+
+    with patch("quant.adapters.notify.telegram.httpx.post", return_value=_ok_response()):
+        TelegramNotifier("tkn", "chat").send("정상 발송")
+
+    assert not failures.exists()
+
+
+def test_failure_ledger_write_failure_does_not_raise(tmp_path, monkeypatch):
+    """원장이 알림을 막으면 본말전도다 — _record 와 같은 원칙."""
+    import quant.adapters.notify.telegram as tg
+
+    monkeypatch.setattr(tg, "_FAILURE_LEDGER_PATH", tmp_path / "nope" / "x.jsonl")
+    monkeypatch.setattr(tg.Path, "mkdir", lambda *a, **k: (_ for _ in ()).throw(OSError("ro fs")))
+
+    with patch("quant.adapters.notify.telegram.httpx.post", side_effect=Exception("boom")):
+        TelegramNotifier("tkn", "chat").send("실패해도 죽지 않는다")  # 예외가 새면 실패

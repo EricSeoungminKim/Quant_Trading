@@ -93,7 +93,7 @@ try:
 except ImportError:  # pragma: no cover — 착륙 전 임시 경로
     PAPER_EPOCH_MARKER = "__PAPER_EPOCH_MARKER_NOT_LANDED__"
 
-    def paper_epoch_ts() -> datetime:  # type: ignore[misc]
+    def paper_epoch_ts(trades: list[dict] | None = None) -> datetime:  # type: ignore[misc]
         raise NotImplementedError(
             "quant.control.ledger.paper_epoch_ts 미착륙 — 2026-09-06 병행 작업 대기"
         )
@@ -868,7 +868,12 @@ def _build_paper_epoch(trades: list[dict], strategies_cfg: dict | None) -> dict:
     "마커가 없으면 None") — `NotImplementedError`와 같은 대우로 빈 dict다."""
     strategies_cfg = strategies_cfg or {}
     try:
-        epoch_ts = paper_epoch_ts()
+        # 인자로 받은 `trades`로 마커를 찾는다 — 인자 없이 부르면 ledger.py가
+        # 기본 원장 파일(DEFAULT_LEDGER_PATH)을 새로 읽어, 호출부가 다른 원장을
+        # 넘겼을 때(예: performance-xcheck --ledger, 테스트용 합성 원장) 이
+        # 함수만 조용히 엉뚱한 파일을 보는 순수함수 위반이 생긴다(2026-09-06
+        # Phase 5 교차대조 작업 중 발견).
+        epoch_ts = paper_epoch_ts(trades)
     except NotImplementedError:
         return {}
     if epoch_ts is None:

@@ -56,6 +56,23 @@ def _channel_digest_stance_call():
     return lambda prompt: stance_only(prompt, key)
 
 
+def _close_lookup(sym_quotes: dict):
+    """`tg_digest.build_digest(quotes_lookup=...)`의 계약은 `symbol -> float | None`
+    (`_verify_price_value`가 `claimed / current`로 나눈다)인데, 리포트의 `sym_quotes`는
+    `symbol -> {"close", "date", ...}` 레코드다. 2026-09-07 로컬 E2E 빌드에서
+    `sym_quotes.get`을 그대로 넘겨 매번 `TypeError: float / dict`로 채널 브리핑 종합이
+    통째로 생략되고 있던 것을 발견(EC2 report.log에도 같은 줄 2회 — 운영에서도 죽어
+    있었다). 레코드에서 `close`만 꺼내고, 레코드가 없거나 dict가 아니면 `None`
+    (= "미확인", 0으로 위장하지 않는다)."""
+    def lookup(symbol: str) -> float | None:
+        rec = sym_quotes.get(symbol)
+        if not isinstance(rec, dict):
+            return None
+        c = rec.get("close")
+        return float(c) if isinstance(c, (int, float)) and not isinstance(c, bool) else None
+    return lookup
+
+
 def _build_channel_digest_view(
     snap, root, snap_root, sym_quotes: dict, narrator=None,
 ) -> tg_digest.Digest | None:
@@ -81,7 +98,7 @@ def _build_channel_digest_view(
         stance_llm_call = _channel_digest_stance_call() if narrator is not None else None
         return tg_digest.build_digest(
             messages, snap.market, until, since=since, name_table=name_table,
-            quotes_lookup=sym_quotes.get, llm_call=llm_call,
+            quotes_lookup=_close_lookup(sym_quotes), llm_call=llm_call,
             stance_llm_call=stance_llm_call, regime=regime,
         )
     except Exception as e:  # noqa: BLE001 — 채널 브리핑 종합 실패가 리포트를 막지 않는다

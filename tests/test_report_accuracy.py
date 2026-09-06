@@ -259,3 +259,173 @@ def test_build_scorecard_and_render_markdown_smoke():
     md = ra.render_markdown(card)
     assert "리포트 정확도 스코어카드" in md
     assert "판단 불가" in md  # 표본이 20 미만이라 모든 지평이 판단 불가여야 한다
+
+
+# ── Phase 2 §1: 국면(regime) 기반 방향콜 ────────────────────────────────
+
+def test_regime_direction_bucket_maps_labels():
+    assert ra.regime_direction_bucket("aggressive") == "bull"
+    assert ra.regime_direction_bucket("defensive") == "bear"
+    assert ra.regime_direction_bucket("neutral") == "neutral"
+    assert ra.regime_direction_bucket(None) is None
+    assert ra.regime_direction_bucket("unknown_label") is None
+
+
+def test_extract_open_claims_captures_regime_direction_when_measured():
+    payload = {
+        "session_date": "2026-09-07", "market": "US", "generated_at": "2026-09-07T19:30:00+09:00",
+        "stance": {
+            "label": "지수 모멘텀(참고, 적중 35%)", "score100": 60,
+            "regime": {"label": "aggressive", "label_kr": "공격", "risk_multiplier": 1.5,
+                       "reasons": ["QQQ 20일선 상회"], "line": "공격(1.5x) — QQQ 20일선 상회",
+                       "measured": True},
+        },
+        "symbols": [{"symbol": "NVDA", "name": "Nvidia", "ai_score100": 57, "origin": "news"}],
+    }
+    row = ra.extract_open_claims(payload, candidate_symbols={"NVDA"})
+    assert row["regime_direction"] == {
+        "label": "aggressive", "risk_multiplier": 1.5, "reasons": ["QQQ 20일선 상회"],
+    }
+    assert row["generated_at"] == "2026-09-07T19:30:00+09:00"
+    assert row["late_regeneration"] is False
+
+
+def test_extract_open_claims_regime_direction_none_when_unmeasured():
+    payload = {
+        "session_date": "2026-09-07", "market": "US", "generated_at": "2026-09-07T19:30:00+09:00",
+        "stance": {"label": "x", "score100": 50, "regime": {"measured": False}},
+        "symbols": [],
+    }
+    row = ra.extract_open_claims(payload, candidate_symbols=set())
+    assert row["regime_direction"] is None
+
+
+def test_extract_open_claims_flags_late_regeneration():
+    payload = {
+        "session_date": "2026-09-07", "market": "KR",
+        # KR 정상 창은 05~09시 KST — 17시는 늦은 오후 재생성.
+        "generated_at": "2026-09-07T17:54:00+09:00",
+        "stance": {"label": "x", "score100": 50}, "symbols": [],
+    }
+    row = ra.extract_open_claims(payload, candidate_symbols=set())
+    assert row["late_regeneration"] is True
+
+
+def test_extract_close_claims_late_regeneration_always_false():
+    payload = {
+        "session_date": "2026-09-07", "market": "KR", "generated_at": "2026-09-07T14:52:00+09:00",
+        "close_bet_view": [{"symbol": "005930", "name": "삼성전자", "score": 5, "change_pct": 4.0}],
+    }
+    row = ra.extract_close_claims(payload)
+    assert row["late_regeneration"] is False
+    assert row["regime_direction"] is None
+
+
+def test_score_regime_direction_claims_scores_like_direction():
+    cal = {"US": ["2026-08-12", "2026-08-13", "2026-08-14"]}
+    claims = [
+        {"market": "US", "date": "2026-08-13",
+         "regime_direction": {"label": "aggressive"}, "late_regeneration": False},
+    ]
+    idx = {("US", "2026-08-12"): 100.0, ("US", "2026-08-13"): 105.0}
+    out = ra.score_regime_direction_claims(claims, cal, idx)
+    assert out[1]["n"] == 1 and out[1]["hits"] == 1
+
+
+def test_score_regime_direction_claims_excludes_late_builds():
+    cal = {"KR": ["2026-08-12", "2026-08-13", "2026-08-14"]}
+    claims = [
+        {"market": "KR", "date": "2026-08-13",
+         "regime_direction": {"label": "defensive"}, "late_regeneration": True},
+    ]
+    idx = {("KR", "2026-08-12"): 100.0, ("KR", "2026-08-13"): 90.0}
+    out = ra.score_regime_direction_claims(claims, cal, idx)
+    assert out[1]["n"] == 0
+
+
+def test_score_direction_claims_also_excludes_late_builds():
+    """옛 점수 기반 방향콜도 late_regeneration 표본은 뺀다(Phase 2 §6)."""
+    cal = {"KR": ["2026-08-12", "2026-08-13", "2026-08-14"]}
+    claims = [
+        {"market": "KR", "date": "2026-08-13",
+         "direction": {"label": "약한 하락 신호", "score100": 40},
+         "late_regeneration": True},
+    ]
+    idx = {("KR", "2026-08-12"): 100.0, ("KR", "2026-08-13"): 90.0}
+    out = ra.score_direction_claims(claims, cal, idx)
+    assert out[1]["n"] == 0
+
+
+# ── Phase 2 §3: 트렌딩 점수 IC + 후보 표 캡션 ────────────────────────────
+
+def test_score_candidate_claims_computes_trending_ic_separately():
+    cal = {"US": ["2026-08-12", "2026-08-13"]}
+    claims = [
+        {"market": "US", "date": "2026-08-13",
+         "candidates": [
+             {"symbol": "AAA", "origin": "news", "score": 80, "trending_score100": 20},
+             {"symbol": "BBB", "origin": "news", "score": 20, "trending_score100": 80},
+         ]},
+    ]
+    price = {
+        ("US", "AAA", "2026-08-12"): (10.0, 10.0), ("US", "AAA", "2026-08-13"): (10.0, 9.0),
+        ("US", "BBB", "2026-08-12"): (10.0, 10.0), ("US", "BBB", "2026-08-13"): (10.0, 11.0),
+    }
+    out = ra.score_candidate_claims(claims, cal, price)
+    # score(ai) 높은 쪽(AAA=80)이 떨어지고 trending 높은 쪽(BBB=80)이 올랐다
+    # -> ai IC 음수, trending IC 양수 방향.
+    assert out["ic"][1] < 0
+    assert out["trending_ic"][1] > 0
+    assert out["trending_ic_n"][1] == 2
+
+
+def test_candidate_horizon_line_measured_and_unmeasured():
+    assert ra.candidate_horizon_line({"measured": True, "value": 0.1857, "n": 1064}, horizon=1) == \
+        "D+1 종가 IC +0.19 (n=1,064)"
+    assert ra.candidate_horizon_line({"measured": False, "n": 5}) == "미검증"
+    assert ra.candidate_horizon_line(None) == "미검증"
+
+
+def test_report_summary_exposes_regime_direction_and_trending_ic():
+    latest = {
+        "as_of": "2026-09-07", "n_claims": 50, "min_n": 20,
+        "direction": {"1": {"n": 30, "rate": 0.5, "ci_lo": 0.3, "ci_hi": 0.7}},
+        "regime_direction": {"1": {"n": 25, "rate": 0.6, "ci_lo": 0.4, "ci_hi": 0.8}},
+        "candidates": {
+            "horizons": {}, "ic": {}, "ic_n": {},
+            "trending_ic": {"1": 0.186}, "trending_ic_n": {"1": 1064},
+        },
+    }
+    box = ra.report_summary(latest)
+    assert box["regime_direction"][1] == {"n": 25, "measured": True, "rate": 0.6,
+                                          "ci_lo": 0.4, "ci_hi": 0.8}
+    assert box["trending_ic"][1] == {"n": 1064, "measured": True, "value": 0.186}
+
+
+def test_report_summary_none_latest_includes_new_unmeasured_keys():
+    box = ra.report_summary(None)
+    for h in ra.HORIZONS:
+        assert box["regime_direction"][h] == {"n": 0, "measured": False}
+        assert box["trending_ic"][h] == {"n": 0, "measured": False}
+
+
+def test_extract_open_claims_carries_candidate_gate_field():
+    payload = {
+        "session_date": "2026-09-07", "market": "KR", "generated_at": "2026-09-07T07:30:00+09:00",
+        "stance": {"label": "x", "score100": 20},
+        "symbols": [{"symbol": "005930", "name": "삼성전자", "ai_score100": 50, "origin": "news"}],
+        "candidate_gate": {"auto_watch": "AUTO_WATCH: 005930:NEWS", "watch_only": ["000660"],
+                           "capped": True, "gate_reason": "방어 국면 — ..."},
+    }
+    row = ra.extract_open_claims(payload, candidate_symbols={"005930"})
+    assert row["candidate_gate"]["capped"] is True
+    assert row["candidate_gate"]["watch_only"] == ["000660"]
+
+
+def test_extract_open_claims_candidate_gate_absent_is_none():
+    payload = {
+        "session_date": "2026-09-07", "market": "KR", "generated_at": "t",
+        "stance": {"label": "x", "score100": 50}, "symbols": [],
+    }
+    row = ra.extract_open_claims(payload, candidate_symbols=set())
+    assert row["candidate_gate"] is None

@@ -257,6 +257,44 @@ def test_consume_cut_counts_valid_rows_not_raw_lines(tmp_path):
     assert _wrap_deferred(tmp_path, ON, consume=True) == []
 
 
+# ── 소비 중 크래시에도 유실은 없다 (2026-09-06, 라이브 준비 4단계) ─────────
+#
+# 예전엔 같은 fd 를 seek(0)+write+truncate 로 제자리에서 고쳐 썼다 — write()
+# 도중 프로세스가 죽으면 파일이 반토막나 줄이 깨지거나 유실될 수 있었다. 이제
+# 새 내용을 임시 파일에 통째로 쓰고 os.replace() 로 바꿔치기한다: 그 replace
+# 호출 자체가 실패해도(디스크 꽉 참 등, 아래 테스트가 흉내낸다) 원본 큐 파일은
+# 손대지 않은 채로 남아야 한다 — 최악의 경우 다음 리포트에 같은 줄이 한 번 더
+# 나올 뿐, 유실은 없다.
+
+def test_crash_during_replace_leaves_original_queue_intact(tmp_path, monkeypatch):
+    import quant.apps.cli as cli_mod
+
+    q = _q(tmp_path, _line("2026-08-28T10:00:00+0900", text="a"),
+           _line("2026-08-28T11:00:00+0900", text="b"))
+    original = q.read_text(encoding="utf-8")
+    rows = _wrap_deferred(tmp_path, ON, consume=True)
+
+    def _boom(*_a, **_k):
+        raise OSError("디스크 꽉 참(흉내)")
+
+    monkeypatch.setattr(cli_mod.os, "replace", _boom)
+    _wrap_consume_queue(tmp_path, len(rows))  # 예외가 새면 안 된다(리포트는 이미 발행됨)
+
+    # 원본 큐는 그대로다 — replace 가 실패했으니 옛 내용이 안전하게 남아 있다.
+    assert q.read_text(encoding="utf-8") == original
+    # 다음 리포트가 같은 줄을 다시 본다(유실이 아니라 중복 — 문서화된 최악의 경우).
+    assert [r["text"] for r in _wrap_deferred(tmp_path, ON, consume=True)] == ["a", "b"]
+
+
+def test_consume_leaves_no_stray_temp_files(tmp_path):
+    _q(tmp_path, _line("2026-08-28T10:00:00+0900", text="a"))
+    rows = _wrap_deferred(tmp_path, ON, consume=True)
+    _wrap_consume_queue(tmp_path, len(rows))
+
+    leftovers = list((tmp_path / "data").glob("notify_queue.jsonl.tmp*"))
+    assert leftovers == []
+
+
 def test_changes_section_omitted_when_git_unreadable():
     """`commits=None`("git 을 못 읽었다")이면 4절 자체가 없다.
     빈 리스트("오늘 배포 없음")와 뭉개지 않는다."""

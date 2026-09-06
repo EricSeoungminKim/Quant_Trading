@@ -133,6 +133,54 @@ def candidates_line(
     return "AUTO_WATCH: " + (" ".join(tokens) if tokens else "없음")
 
 
+def rejection_reasons(
+    cont: dict[str, dict], candidate_symbols: set[str],
+) -> tuple[dict[str, str], dict[str, int]]:
+    """`is_candidate()`를 통과하지 못한 종목마다 "왜 승격되지 않았나" 사유
+    코드를 낸다(2026-09-07 Phase 2 §5, `results/report_review/SUMMARY.md`
+    §⑤ — "이 종목이 왜 승격 안 됐는지를 재구성할 근거 자체가 부족하다").
+
+    `watch_scorer.rejection_summary()`(확신도 엔진 `watch-score`가 매기는
+    ScoreResult의 탈락 사유 집계)를 그대로 재사용한다 — 새 분류 로직을
+    만들지 않는다. 이 리포트는 `watch_scorer.score_symbol()`을 직접 돌리지
+    않는다(그건 네트워크 클라이언트가 필요한 별도 배치, `own_brief.sh`가
+    장 시작 전에 따로 돈다 — 루트 CLAUDE.md "거래 핫패스에 네트워크 호출
+    금지"와 같은 이유로 리포트 빌드 안에 넣지 않는다). 대신 이 리포트
+    자체의 승격 게이트(`is_candidate()`)를 `ScoreResult`로 감싸
+    `_reject_reason_category()`의 "콜론/em dash 접두어" 분류 규칙만
+    재사용한다 — 악재 표지가 있으면 하드 게이트 실패로, 그 외 미달이면
+    "언급·랭킹 부족"으로 분류된다.
+
+    반환: `(그 심볼의 사유 코드, 사유별 건수)`. 후보(candidate_symbols)에
+    있는 심볼은 어느 dict에도 나타나지 않는다 — `rejection_summary`가
+    `passed`인 결과는 건너뛰는 것과 동일 규약.
+    """
+    from quant.analyze.watch_scorer import ScoreResult, rejection_summary
+
+    results = []
+    for symbol, c in cont.items():
+        passed = symbol in candidate_symbols
+        reasons: list[str] = []
+        if not passed:
+            markers = bearish_markers(c)
+            if markers:
+                reasons = [f"악재 표지: {', '.join(markers)}"]
+            else:
+                today = c.get("today_articles") or 0
+                streak = c.get("streak_days") or 0
+                reasons = [
+                    f"언급·랭킹 부족: 오늘 {today}건(최소 {MIN_ARTICLES}) / "
+                    f"연속 {streak}일(최소 {MIN_STREAK}) / 랭킹 미편입",
+                ]
+        results.append(ScoreResult(
+            symbol=symbol, score=0, passed=passed, tags=[], reasons=reasons,
+            prereq_ok=not reasons,
+        ))
+    counts, entries = rejection_summary(results, max_entries=len(results))
+    by_symbol = dict(e.split(":", 1) for e in entries)
+    return by_symbol, counts
+
+
 def machine_payload(
     snap: Snapshot,
     cont: dict[str, dict],
@@ -147,11 +195,19 @@ def machine_payload(
     sectors: dict[str, str] | None = None,
     baselines: dict[str, int] | None = None,
     volume_watch: list[str] | None = None,
+    extra_relative_volume: dict[str, float] | None = None,
 ) -> dict:
     """엔진이 파싱할 정규화 피처. 산문 없음 — 숫자와 열거값만.
 
     sym_quotes 는 뉴스로 발굴된 종목의 시세(6자리 종목코드 기준)다. 없으면
     기존과 동일하게 뉴스 종목엔 close/change_pct 가 안 붙는다(호출부 하위호환).
+
+    `extra_relative_volume`(2026-09-07 Phase 2 §5, SUMMARY.md §⑤) —
+    `quant.report.collect.core._derive`가 `sym_quotes[symbol]["ohlcv"]`로
+    `watch_scorer._rvol`을 재계산해 넘긴 값. 트렌딩 기반 `relative_volume`
+    (토스 랭킹 보드 편입 필요 — 대부분 None)이 없을 때만 **폴백**으로 채운다
+    — 랭킹 보드 값이 있으면 그대로 우선한다(트렌딩 점수 factors와의 정합성
+    유지, 값을 덮어쓰면 그 계산에 쓰인 breakdown과 어긋난다).
 
     baselines 는 호출부(`report_cli`)가 sym_quotes 의 `ohlcv` 로
     `quant.analyze.baseline.baseline_score` 를 미리 돌려 낸 {심볼: 점수} 다 —
@@ -257,6 +313,16 @@ def machine_payload(
         bl = (baselines or {}).get(symbol)
         if bl is not None:
             entry["baseline_score100"] = bl
+        # 상대 거래량 폴백(2026-09-07 Phase 2 §5) — 위 `tr`(트렌딩) 블록이
+        # relative_volume 을 못 채웠으면(랭킹 보드 미편입 — 대부분의 경우,
+        # SUMMARY.md §⑤) OHLCV 기반 값으로 채운다. `relative_volume_source`
+        # 로 어느 계산인지 구분한다 — 트렌딩 보드 값은 이 필드를 안 남긴다
+        # (기존 계약 불변, 이 필드는 폴백일 때만 존재).
+        if entry.get("relative_volume") is None:
+            extra_rvol = (extra_relative_volume or {}).get(symbol)
+            if extra_rvol is not None:
+                entry["relative_volume"] = extra_rvol
+                entry["relative_volume_source"] = "ohlcv_v1"
         rels = sorted(
             (r for r in (relations or {}).get(symbol, [])
              if r.get("evidence_score", 0) >= MIN_EVIDENCE),

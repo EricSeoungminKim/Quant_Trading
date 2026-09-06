@@ -162,9 +162,11 @@ def paper_epoch_ts(trades: list[dict] | None = None) -> datetime | None:
     여러 번 돌리면(예: 다음 달 또 리셋) 항상 **가장 최근** 리셋이 경계다.
 
     `trades`를 생략하면(None) `load_trades()`(기본 경로 `data/state/trades.jsonl`)로
-    직접 읽는다 — `round_trips(trades)`처럼 이미 들고 있는 목록을 순수하게
-    재사용하는 호출부와, `quant/control/performance.py`처럼 원장 경로만 알고
-    별도로 읽지 않는 호출부를 둘 다 지원한다."""
+    직접 읽는다 — 모든 실제 호출부(`round_trips_since_epoch`, `cli scoreboard`,
+    `performance._build_paper_epoch`)는 이미 들고 있는 `trades` 리스트를 그대로
+    넘긴다(2026-09-06 수정 전엔 `_build_paper_epoch`가 인자 없이 불러 이 함수
+    자체 파일 I/O에 조용히 의존했다 — Phase 5 교차대조 작업 중 발견). 이 기본값은
+    `trades` 자체가 없는 드문 호출부(있다면)를 위한 폴백일 뿐이다."""
     if trades is None:
         trades = load_trades()
     best: datetime | None = None

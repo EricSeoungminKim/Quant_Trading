@@ -112,10 +112,9 @@ def test_top_five_cut_keeps_highest_scored(tmp_path):
     assert symbols == sorted(symbols, key=lambda s: -board[int(s) - 1]["change_pct"])
 
 
-def test_empty_when_trading_amount_board_missing(tmp_path):
-    """거래대금 보드가 없으면(랭킹 실패든 다른 보드만 있든) 빈 리스트 — 1차
-    필터 자체가 성립하지 않으므로 채점을 시도하지 않는다."""
-    snap = _snap([], board_name="상승률")  # 거래대금 보드 없음, 다른 보드만 존재
+def test_empty_when_both_source_boards_missing_or_empty(tmp_path):
+    """거래대금·상승률 두 보드 모두 없거나 비어 있으면 빈 리스트."""
+    snap = _snap([], board_name="하락률")  # 후보 소스가 아닌 보드만 존재
     out = _build_close_bet_view(snap, tmp_path, cont={})
     assert out == []
 
@@ -123,6 +122,55 @@ def test_empty_when_trading_amount_board_missing(tmp_path):
         results={"toss_rankings": types.SimpleNamespace(ok=False, data=None)},
     )
     assert _build_close_bet_view(snap_no_data, tmp_path, cont={}) == []
+
+
+def test_gainers_board_alone_produces_candidates(tmp_path):
+    """2026-09-07 Phase 2 §4 수정(SUMMARY.md §④) — 거래대금 보드가 비어도
+    상승률(TOP_GAINERS) 보드에 +3% 이상 종목이 있으면 후보가 나와야 한다.
+    옛 코드는 거래대금 보드 존재를 1차 필터로 강제해 이 경우 항상 빈
+    리스트였다(초대형주 위주 거래대금 보드는 잔잔한 날에도 상시 상위권이라
+    "거래대금 최상위 & +3%"의 교집합이 거의 안 생겼다 — 실측: 정규 거래일
+    17일 중 12일이 후보 0건)."""
+    snap = types.SimpleNamespace(results={
+        "toss_rankings": types.SimpleNamespace(
+            ok=True,
+            data={"boards": {
+                "거래대금": [],
+                "상승률": [
+                    {"symbol": "900001", "name": "급등주", "change_pct": 8.5,
+                     "rank": 1, "trading_amount": 500},
+                ],
+            }},
+        ),
+    })
+    out = _build_close_bet_view(snap, tmp_path, cont={})
+    assert len(out) == 1
+    assert out[0]["symbol"] == "900001"
+    assert any("상승률 1위" in r for r in out[0]["reasons"])
+
+
+def test_symbol_in_both_boards_counted_once_with_first_board_reason(tmp_path):
+    """두 보드에 같은 심볼이 뜨면 한 번만 후보가 되고, 근거 문구는 먼저
+    나열된 보드(거래대금)의 순위를 쓴다(`CLOSE_BET_SOURCE_BOARDS` 순서)."""
+    snap = types.SimpleNamespace(results={
+        "toss_rankings": types.SimpleNamespace(
+            ok=True,
+            data={"boards": {
+                "거래대금": [
+                    {"symbol": "000900", "name": "양쪽", "change_pct": 4.0,
+                     "rank": 2, "trading_amount": 9000},
+                ],
+                "상승률": [
+                    {"symbol": "000900", "name": "양쪽", "change_pct": 4.0,
+                     "rank": 1, "trading_amount": 9000},
+                ],
+            }},
+        ),
+    })
+    out = _build_close_bet_view(snap, tmp_path, cont={})
+    assert len(out) == 1
+    assert any("거래대금 2위" in r for r in out[0]["reasons"])
+    assert not any("상승률" in r for r in out[0]["reasons"])
 
 
 def test_missing_frgn_flow_file_does_not_raise(tmp_path):

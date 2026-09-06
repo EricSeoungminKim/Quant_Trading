@@ -51,7 +51,12 @@ def _format_summary(payload: dict) -> str:
             f"{s.get('name') or s.get('symbol')}({s['baseline_score100']})"
             for s in top3
         )
-        lines.append(f"상위: {names}")
+        # "D+1 기준"(2026-09-06 Phase 2 §3 horizon framing) — 이 줄의 점수는
+        # "오늘"이 아니라 리포트 정확도 감사가 실제로 검증한 지평(D+1 종가)
+        # 기준이라는 것을 매번 밝힌다. `results/report_review/SUMMARY.md` §③:
+        # 리포트가 "오늘 이 종목을 보라"는 프레임인데 트렌딩 점수의 실측
+        # 예측력은 D+1 종가에서만 나타났다 — 지평이 안 맞는다는 오류 수정.
+        lines.append(f"상위(D+1 기준): {names}")
 
     line = _channel_digest_line(payload.get("channel_digest_summary"))
     if line:

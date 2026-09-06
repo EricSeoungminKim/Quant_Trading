@@ -30,6 +30,7 @@ from quant.control.health import (
     ledger_findings,
     ledger_portfolio_findings,
     llm_health_findings,
+    notify_failure_findings,
     positions_from_trades,
     regime_findings,
     report_findings,
@@ -876,6 +877,30 @@ def test_unreadable_telegram_ledger_is_unknown():
     assert _levels(findings) == [UNKNOWN]
 
 
+# ── 텔레그램 발송 실패 원장 (2026-09-06 라이브 준비 4단계) ─────────────────
+#
+# data/ledger/notify_failures.jsonl(셸 게이트 + 엔진 노티파이어 공유)의 오늘
+# 치 건수가 임계를 넘으면 alert. 임계 이하는 침묵 — 발송 실패는 드물게는
+# 있을 수 있고, 거짓 경보가 오는 감시는 꺼진다.
+
+def test_failures_at_or_below_threshold_is_ok():
+    assert notify_failure_findings(0) == []
+    assert notify_failure_findings(3) == []
+
+
+def test_failures_over_threshold_is_alert():
+    findings = notify_failure_findings(4)
+
+    assert _levels(findings) == [ALERT]
+    assert "4건" in findings[0].detail
+    assert "notify_failures.jsonl" in findings[0].detail
+
+
+def test_failure_threshold_is_configurable():
+    assert notify_failure_findings(5, threshold=10) == []
+    assert _levels(notify_failure_findings(11, threshold=10)) == [ALERT]
+
+
 # ── 외국인 수급 원장 퇴화 ────────────────────────────────────────────────
 #
 # 유래: 상류 파싱 필드가 개편되면 0으로 조용히 채워지는 유형(연합뉴스 피드
@@ -1013,9 +1038,12 @@ def test_unreadable_intake_tags_is_unknown():
 # 유래: 2026-08-14 결측 사고도 engine.json 의 missing 에 이미 기록돼 있었는데
 # 읽는 사람이 없었다 — 이 축은 후보 수·AI 해석 상태가 조용히 나빠지는 걸 본다.
 
-def _summary(candidates=10, midterm=5, agent_interpret="ok", missing=0) -> dict:
-    return {"candidates": candidates, "midterm": midterm,
-            "agent_interpret": agent_interpret, "missing": missing}
+def _summary(candidates=10, midterm=5, agent_interpret="ok", missing=0, mentioned=None) -> dict:
+    out = {"candidates": candidates, "midterm": midterm,
+          "agent_interpret": agent_interpret, "missing": missing}
+    if mentioned is not None:
+        out["mentioned"] = mentioned
+    return out
 
 
 def test_steady_candidates_and_ok_status_is_fine():
@@ -1132,6 +1160,73 @@ def test_candidates_already_near_zero_median_does_not_alert_on_zero():
     trailing = [_summary(candidates=c) for c in (0, 0, 1)]
 
     assert report_quality_findings("KR", _summary(candidates=0), trailing) == []
+
+
+# ── 언급 종목 급증/급감 (2026-09-07 Phase 2 §6, SUMMARY.md §⑦) ────────────
+
+def test_mentioned_surge_over_3x_median_is_alert():
+    """실측: 08월 평균 20~30건대였던 언급 종목 수가 09-03~09-05 US에서
+    122~172건으로 튀었다 — 아무도 감시하지 않던 축."""
+    trailing = [_summary(mentioned=m) for m in (25, 30, 20)]
+    findings = report_quality_findings("US", _summary(mentioned=130), trailing)
+
+    assert _levels(findings) == [ALERT]
+    assert "언급 종목" in findings[0].detail and "급증" in findings[0].detail
+
+
+def test_mentioned_under_3x_median_is_fine():
+    trailing = [_summary(mentioned=m) for m in (25, 30, 20)]
+
+    assert report_quality_findings("US", _summary(mentioned=60), trailing) == []
+
+
+def test_mentioned_zero_from_healthy_median_is_also_alert():
+    """mentioned도 candidates/midterm과 같은 급감(0건) 검사를 받는다."""
+    trailing = [_summary(mentioned=m) for m in (25, 30, 20)]
+    findings = report_quality_findings("KR", _summary(mentioned=0), trailing)
+
+    assert _levels(findings) == [ALERT]
+    assert "급감" in findings[0].detail
+
+
+def test_mentioned_key_absent_is_silently_skipped():
+    """옛 trailing 행(mentioned 키 없음)이 섞여 있어도 예외 없이 건너뛴다 —
+    호출부가 이 필드를 아직 안 채워도 다른 검사들은 그대로 동작한다."""
+    trailing = [_summary(candidates=c) for c in (10, 12, 9)]  # mentioned 키 자체가 없다
+
+    assert report_quality_findings("KR", _summary(candidates=11), trailing) == []
+
+
+# ── 종가배팅 후보 0건 + watchlist 태그 잔존 (2026-09-07 Phase 2 §4) ────────
+
+from quant.control.health import close_bet_watchlist_findings  # noqa: E402
+
+
+def test_close_bet_zero_with_enough_watchlist_tags_is_alert():
+    findings = close_bet_watchlist_findings(0, watchlist_close_bet_tags=3)
+
+    assert _levels(findings) == [ALERT]
+    assert "close_bet_view" in findings[0].detail
+
+
+def test_close_bet_zero_with_few_tags_is_fine():
+    """태그가 3개 미만이면(min_tags 기본값) 정상 현상일 수 있다 — 조용."""
+    assert close_bet_watchlist_findings(0, watchlist_close_bet_tags=2) == []
+
+
+def test_close_bet_nonzero_is_fine_regardless_of_tags():
+    assert close_bet_watchlist_findings(3, watchlist_close_bet_tags=10) == []
+
+
+def test_close_bet_unreadable_engine_json_is_not_evaluated():
+    """그날 KR_close_engine.json을 못 읽으면(None) 판단하지 않는다 —
+    report_findings가 이미 그 결측을 별도로 본다(이중 알림 방지)."""
+    assert close_bet_watchlist_findings(None, watchlist_close_bet_tags=10) == []
+
+
+def test_close_bet_custom_min_tags_threshold():
+    assert close_bet_watchlist_findings(0, watchlist_close_bet_tags=5, min_tags=5) != []
+    assert close_bet_watchlist_findings(0, watchlist_close_bet_tags=4, min_tags=5) == []
 
 
 # ── LLM 호출 계측 ─────────────────────────────────────────────────────────

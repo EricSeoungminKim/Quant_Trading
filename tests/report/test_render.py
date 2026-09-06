@@ -2809,3 +2809,108 @@ def test_news_window_header_shows_placeholder_on_old_snapshot_without_counts():
     assert "집계 정보 없음 — 구 스냅샷" in m.group(0)
     assert "None" not in m.group(0)
     assert "누적 저장소" not in m.group(0)
+
+
+# ── 상대 거래량 폴백 (2026-09-07 Phase 2 §5, SUMMARY.md §⑤) ────────────
+
+def test_machine_payload_relative_volume_fallback_when_trending_missing():
+    """트렌딩 자체가 없으면(랭킹 미가용) OHLCV 기반 값이 폴백으로 채워진다."""
+    payload = machine_payload(_snap(), _cont(), {}, [],
+                              extra_relative_volume={"005930": 3.2})
+    sym = payload["symbols"][0]
+    assert sym["relative_volume"] == 3.2
+    assert sym["relative_volume_source"] == "ohlcv_v1"
+
+
+def test_machine_payload_relative_volume_fallback_when_trending_value_is_none():
+    """트렌딩은 있지만 그 안의 relative_volume이 None(랭킹 보드 미편입)이면
+    폴백이 채운다 — SUMMARY.md §⑤가 지적한 정확히 그 경우(440건 중 2건만
+    채워졌던 원인)."""
+    trending = {"005930": {"score": 0, "score100": 50, "label": "중립",
+                           "factors": [], "boards": {}, "relative_volume": None,
+                           "baseline_days": 0}}
+    payload = machine_payload(_snap(), _cont(), {}, [], trending=trending,
+                              extra_relative_volume={"005930": 1.8})
+    sym = payload["symbols"][0]
+    assert sym["relative_volume"] == 1.8
+    assert sym["relative_volume_source"] == "ohlcv_v1"
+
+
+def test_machine_payload_relative_volume_trending_value_wins_over_fallback():
+    """트렌딩이 이미 실제 값을 냈으면(랭킹 보드 편입) 폴백으로 덮어쓰지
+    않는다 — 트렌딩 factors/breakdown과의 정합성을 깨지 않는다."""
+    payload = machine_payload(_snap(), _cont(), {}, [], trending=_trending(),
+                              extra_relative_volume={"005930": 99.0})
+    sym = payload["symbols"][0]
+    assert sym["relative_volume"] == 2.5  # _trending()의 값, 폴백(99.0) 아님
+    assert "relative_volume_source" not in sym
+
+
+def test_machine_payload_relative_volume_no_fallback_data_stays_absent():
+    """폴백 데이터도 없으면(OHLCV 부족 등) 기존과 동일하게 결측 — 0으로
+    위장하지 않는다."""
+    payload = machine_payload(_snap(), _cont(), {}, [])
+    sym = payload["symbols"][0]
+    assert "relative_volume" not in sym
+    assert "relative_volume_source" not in sym
+
+
+# ── 승격 거부 사유 코드 (2026-09-07 Phase 2 §5, SUMMARY.md §⑤) ─────────
+
+from quant.analyze.render import rejection_reasons  # noqa: E402
+
+
+def _weak_cont_entry(**over):
+    base = {"name": "약함", "today_articles": 1, "streak_days": 1, "titles": []}
+    base.update(over)
+    return base
+
+
+def test_rejection_reasons_skips_candidates():
+    cont = {"005930": _weak_cont_entry(today_articles=5, streak_days=3)}
+    by_symbol, counts = rejection_reasons(cont, candidate_symbols={"005930"})
+    assert by_symbol == {}
+    assert counts == {}
+
+
+def test_rejection_reasons_categorizes_weak_mentions():
+    cont = {"000660": _weak_cont_entry()}
+    by_symbol, counts = rejection_reasons(cont, candidate_symbols=set())
+    assert by_symbol["000660"] == "언급·랭킹 부족"
+    assert counts == {"언급·랭킹 부족": 1}
+
+
+def test_rejection_reasons_categorizes_bearish_markers_separately():
+    cont = {"035420": _weak_cont_entry(
+        today_articles=5, titles=[{"title": "목표가 하향"}],
+    )}
+    by_symbol, counts = rejection_reasons(cont, candidate_symbols=set())
+    assert by_symbol["035420"] == "악재 표지"
+    assert counts == {"악재 표지": 1}
+
+
+def test_rejection_reasons_reuses_watch_scorer_rejection_summary(monkeypatch):
+    """실제로 watch_scorer.rejection_summary를 호출한다는 것을 증명 — 재구현이
+    아니라 재사용이라는 계약을 고정한다."""
+    calls = []
+    import quant.analyze.watch_scorer as ws
+
+    real = ws.rejection_summary
+
+    def spy(results, max_entries=20):
+        calls.append((results, max_entries))
+        return real(results, max_entries=max_entries)
+
+    monkeypatch.setattr(ws, "rejection_summary", spy)
+    cont = {"000660": _weak_cont_entry()}
+    rejection_reasons(cont, candidate_symbols=set())
+    assert len(calls) == 1
+
+
+def test_rejection_reasons_counts_aggregate_across_many_symbols():
+    cont = {
+        f"{i:06d}": _weak_cont_entry() for i in range(25)
+    }
+    by_symbol, counts = rejection_reasons(cont, candidate_symbols=set())
+    assert len(by_symbol) == 25  # max_entries 상한(기본 20)에 잘리지 않는다
+    assert counts["언급·랭킹 부족"] == 25

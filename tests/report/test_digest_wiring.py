@@ -54,3 +54,23 @@ def test_build_digest_failed_news_source_returns_empty_lists():
     digest = report_cli._build_digest(snap)
 
     assert digest == {"domestic": [], "us_impact": []}
+
+
+# ── quotes_lookup 계약(2026-09-07) — 레코드가 아니라 종가 float 를 넘긴다 ─────────
+def test_close_lookup_returns_close_float_not_record():
+    from quant.report.collect.tg_digest_section import _close_lookup
+
+    lookup = _close_lookup({"005930": {"close": 71200, "date": "2026-09-05"}, "bad": "x", "nan": {"close": None}})
+    assert lookup("005930") == 71200.0
+    assert lookup("bad") is None
+    assert lookup("nan") is None
+    assert lookup("missing") is None
+
+
+def test_close_lookup_feeds_verify_price_value_without_type_error():
+    from quant.analyze.tg_digest import _verify_price_value
+    from quant.report.collect.tg_digest_section import _close_lookup
+
+    lookup = _close_lookup({"005930": {"close": 71200}})
+    assert _verify_price_value(71000.0, "005930", lookup) == "✓"
+    assert _verify_price_value(71000.0, "000660", lookup) == "미확인"

@@ -680,6 +680,27 @@ def telegram_silence_findings(newest_by_channel: dict[str, str | None] | None,
     return []
 
 
+# ── 텔레그램 발송 실패 원장 ──────────────────────────────────────────────
+
+def notify_failure_findings(today_failure_count: int, threshold: int = 3) -> list[Finding]:
+    """`data/ledger/notify_failures.jsonl`(2026-09-06 라이브 준비 4단계) 오늘치
+    행 수 — 셸 게이트(`server/scripts/lib/notify.sh`)의 `_notify_record_failure`
+    와 엔진 노티파이어(`quant.adapters.notify.telegram.TelegramNotifier.
+    _record_failure`)가 공유하는 같은 파일이다. 둘 중 하나라도 HTML+평문 재시도
+    까지 다 실패하면 한 줄이 남는다 — 발송 실패는 소유자에게 "침묵"으로만
+    드러나므로, 하루 누적이 임계(기본 3건)를 넘으면 그 자체가 이상이다.
+
+    호출부(`cmd_health`)가 오늘 KST 날짜에 해당하는 행만 세어 `today_failure_
+    count`로 넘긴다 — 이 함수는 그 숫자만 판정한다(순수 함수 원칙, 파일 I/O는
+    여기서 하지 않는다). 0~임계 이하는 "발송 실패가 드물게는 있을 수 있다"로
+    보고 침묵한다 — 거짓 경보가 오는 감시는 꺼진다."""
+    if today_failure_count > threshold:
+        return [Finding("notify_failures", ALERT,
+                        f"오늘 텔레그램 발송 실패 {today_failure_count}건"
+                        f"(임계 {threshold}건 초과) — data/ledger/notify_failures.jsonl 확인")]
+    return []
+
+
 # ── 외국인 수급 원장 퇴화 ────────────────────────────────────────────────
 
 def frgn_flow_degenerate_findings(recent_rows: list[dict]) -> list[Finding]:
@@ -881,14 +902,24 @@ def report_quality_findings(market: str, today: dict | None,
     거짓 경보가 된다.
 
     `today`/`trailing` 원소는 `{"candidates": int, "midterm": int,
-    "agent_interpret": str|None, "missing": int}` — 그날 engine.json 을 못
-    읽으면 그 날은 애초에 `trailing` 에 넣지 않는다(호출부 책임,
-    `flow_anomaly_findings` 와 같은 관례). trailing 표본이 3일 미만이면
+    "mentioned": int, "agent_interpret": str|None, "missing": int}` — 그날
+    engine.json 을 못 읽으면 그 날은 애초에 `trailing` 에 넣지 않는다(호출부
+    책임, `flow_anomaly_findings` 와 같은 관례). trailing 표본이 3일 미만이면
     **UNKNOWN 도 내지 않고 빈 목록**이다(신규 설치 직후 소음 방지 —
     `flow_anomaly_findings`/`telegram_silence_findings` 와 동일 규율. 이
     창에서는 agent_interpret 실패 감지도 함께 미뤄지는데, LLM 호출 자체의
     실패율은 `llm_health_findings` 가 표본 요구 없이 독립적으로 보고 있어
     첫날부터의 안전망은 이미 있다).
+
+    `mentioned`(2026-09-07 Phase 2 §6, `results/report_review/SUMMARY.md`
+    §⑦) — `len(payload["symbols"])`(그날 뉴스/랭킹에 잡힌 전체 언급 종목
+    수). 실측: 08-13~08-31 KR/US 평균 20~30건대였는데 09-03 US 138건·09-04
+    US 172건·09-05 US 122건·09-04 KR 72건으로 튀었다(원인 미상 — 후보 필터
+    완화/유니버스 확대/회귀 중 하나일 수 있으나 이 카드들만으로는 못 밝힌다,
+    SUMMARY.md §⑦). 이 급증을 아무도 감시하지 않고 있었다 — 아래 "급증"
+    검사(직전 중앙값의 3배 초과)가 그 공백을 메운다. `candidates`/`midterm`
+    과 달리 "급감"(0건) 검사도 함께 받는다 — 언급 자체가 0건이면 그날 종목
+    추출·랭킹 파이프라인이 통째로 죽었을 가능성이 크다.
 
     `today_is_trading_day=False`(2026-09-06 신규) — 오늘이 그 시장의 휴장일로
     이미 판정돼 리포트 빌드 자체가 의도적으로 생략됐으면(`quant.apps.
@@ -905,23 +936,63 @@ def report_quality_findings(market: str, today: dict | None,
         return [Finding("report_quality", UNKNOWN,
                         f"{market}: 오늘 engine.json 요약치를 읽지 못했다")]
     out: list[Finding] = []
-    labels = {"candidates": "전체 후보(auto_watch)", "midterm": "중기 관심 종목"}
+    labels = {"candidates": "전체 후보(auto_watch)", "midterm": "중기 관심 종목",
+             "mentioned": "언급 종목"}
     for key, label in labels.items():
         counts = [t[key] for t in trailing if isinstance(t.get(key), int)]
         if len(counts) < 3:
             continue
         median = statistics.median(counts)
         today_n = today.get(key)
-        if isinstance(today_n, int) and median >= 1 and today_n == 0:
+        if not isinstance(today_n, int):
+            continue
+        if median >= 1 and today_n == 0:
             out.append(Finding("report_quality", ALERT,
                                f"{market}: {label} 수가 0 — 직전 {len(counts)}개 개장일 "
                                f"중앙값 {median:g}건에서 급감"))
+        # 급증(2026-09-07 Phase 2 §6) — "mentioned"만 본다. candidates/midterm
+        # 은 확신도 엔진(watch-score)이 뒤에서 한 번 더 거르므로 급증해도
+        # 실제 승격 규모는 안정적이지만, mentioned(뉴스+랭킹 원시 유니버스)
+        # 급증은 그 자체가 파이프라인 이상(필터 완화/유니버스 확대/회귀)
+        # 신호다 — SUMMARY.md §⑦.
+        if key == "mentioned" and median > 0 and today_n > median * 3:
+            out.append(Finding("report_quality", ALERT,
+                               f"{market}: {label} 수가 {today_n}건 — 직전 {len(counts)}개 "
+                               f"개장일 중앙값({median:g}건)의 3배 초과, 급증"))
     status = str(today.get("agent_interpret") or "")
     if status.startswith("failed"):
         out.append(Finding("report_quality", ALERT,
                            f"{market}: agent_interpret 상태가 {status!r} — "
                            "AI 심층 해석이 실패했다"))
     return out
+
+
+# ── 종가배팅 후보 0건인데 watchlist에 태그가 쌓여 있나 ───────────────────
+
+def close_bet_watchlist_findings(
+    close_bet_candidates: int | None, watchlist_close_bet_tags: int, min_tags: int = 3,
+) -> list[Finding]:
+    """마감 리포트 종가배팅(`close_bet_view`) 후보가 0건인데, `data/
+    watchlist.yaml`에 CLOSE_BET 태그가 이미 `min_tags`(기본 3)개 이상
+    쌓여 있으면 ALERT(2026-09-07 Phase 2 §4, `results/report_review/
+    SUMMARY.md` §④).
+
+    태그는 과거 어느 날 종가배팅 후보로 실제 승격돼 `own_brief.sh`가
+    watchlist에 등록한 흔적이다 — 그 축이 여전히 살아있는데(태그 3개 이상)
+    오늘 마감판 후보 생성기가 0건을 낸다면 정상 현상("오늘은 조건을 만족
+    하는 종목이 드물다")과 파이프라인 결함("생성기가 조용히 죽었다")을
+    구분하기 어렵다는 신호다. `close_bet_candidates`가 `None`이면(그날
+    KR_close_engine.json을 못 읽음) 이 검사는 판단하지 않는다 — 그 결측은
+    `report_findings`가 이미 별도로 본다(이중 알림 방지)."""
+    if close_bet_candidates is None:
+        return []
+    if close_bet_candidates == 0 and watchlist_close_bet_tags >= min_tags:
+        return [Finding(
+            "report_quality", ALERT,
+            f"종가배팅(close_bet_view) 후보 0건인데 watchlist에 CLOSE_BET 태그 "
+            f"{watchlist_close_bet_tags}개 — 마감판 후보 생성 실패 의심",
+        )]
+    return []
 
 
 # ── 국면(regime) 강등 지속 ───────────────────────────────────────────────

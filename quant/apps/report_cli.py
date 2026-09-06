@@ -132,6 +132,7 @@ from quant.report.collect.telegram import (
 )
 from quant.report.collect.tg_digest_section import _build_channel_digest_view
 from quant.report.collect.uswrap import build_us_wrap, gather_kr_wrap, load_latest_us_wrap, write_us_wrap
+from quant.report.lint import lint_report
 from quant.report.model import CloseReportModel, ReportModel
 from quant.report.paths import (
     _close_engine_json_path,
@@ -163,6 +164,60 @@ def _print_summary(market: str, root: Path, session: date, session_kind: str = "
     if payload is None:
         return
     print(_format_summary(payload))
+
+
+def _lint_and_gate(model: ReportModel | CloseReportModel, root: Path) -> None:
+    """리포트·텔레그램·사이트 실전화 계획(2026-09-06) 3단계 — 모델이 다
+    채워진 뒤, 렌더(`write_open_report`/`write_close_report`, 이 함수 호출부
+    바로 다음 줄) **전에** `quant.report.lint.lint_report`를 돌린다. 아직
+    아무 파일도 안 쓴 시점이라 error가 있으면 렌더 자체를 건너뛸 수 있다.
+
+    error 등급이 하나라도 있으면 예외를 던져 빌드를 중단시킨다(`report build`
+    가 0이 아닌 종료 코드로 끝나 `run_report.sh`/`run_close_report.sh`의 기존
+    "빌드 실패" 알림이 나간다) — 그와 별개로 여기서 NOTIFY_LANE=ops 로 구체적
+    결함(첫 3건)을 바로 알린다(일반 실패 알림은 "로그를 보라"고만 하지 findings
+    를 담지 않는다). warn 등급은 발행을 막지 않고 `report_lint.jsonl`에 남긴다
+    — 둘 다 알림/원장 쓰기 실패가 이 함수의 본 목적(게이트)을 방해하면 안
+    되므로 예외를 삼킨다(`_notify_holiday_skip`과 같은 관례)."""
+    findings = lint_report(model)
+    errors = [f for f in findings if f.severity == "error"]
+    warns = [f for f in findings if f.severity == "warn"]
+    payload = model.payload
+
+    if warns:
+        print(f"리포트 린트 경고 {len(warns)}건:", file=sys.stderr)
+        for f in warns:
+            print(f"  {f}", file=sys.stderr)
+        try:
+            import json as _json
+
+            path = root / "data" / "ledger" / "report_lint.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as fh:
+                for f in warns:
+                    fh.write(_json.dumps({
+                        "date": payload.get("session_date"), "market": payload.get("market"),
+                        "session": payload.get("session", "open"),
+                        "severity": f.severity, "section": f.section, "message": f.message,
+                    }, ensure_ascii=False) + "\n")
+        except Exception as e:  # noqa: BLE001 — 원장 기록 실패가 발행을 막지 않는다
+            print(f"리포트 린트 원장 기록 실패: {type(e).__name__}: {e}", file=sys.stderr)
+
+    if not errors:
+        return
+    print(f"리포트 린트 오류 {len(errors)}건 — 발행 중단:", file=sys.stderr)
+    for f in errors:
+        print(f"  {f}", file=sys.stderr)
+    try:
+        from quant.adapters.notify.telegram import TelegramNotifier
+
+        head = "\n".join(f"- [{f.section}] {f.message}" for f in errors[:3])
+        more = f"\n(+{len(errors) - 3}건 더)" if len(errors) > 3 else ""
+        text = f"🚨 {payload.get('market')} 리포트 린트 오류 {len(errors)}건 — 발행 중단\n{head}{more}"
+        TelegramNotifier.from_env().send(text, lane="ops")
+    except Exception:  # noqa: BLE001 — 알림 실패가 아래 예외 전파를 막지 않는다
+        pass
+    raise RuntimeError(f"리포트 린트 오류 {len(errors)}건 — 발행 중단 (첫 건: {errors[0]})")
 
 
 def _emit_close(snap, root: Path, out_root: Path, snap_root: Path) -> None:
@@ -325,6 +380,7 @@ def _emit_close(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         us_news_kr_view=us_news_kr_view, usnews_headlines=usnews_headlines,
         channel_digest=channel_digest,
     )
+    _lint_and_gate(model, root)
     hp, jp = write_close_report(model, snap, out_root)
     print(f"HTML(마감) {hp}\n엔진(마감) {jp}")
     if snap.missing():
@@ -600,6 +656,7 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         # 가 표시한다(index_outlook/holiday_synthesis 와 같은 관례).
         report_accuracy=payload.get("report_accuracy"),
     )
+    _lint_and_gate(model, root)
     hp, jp, cp = write_open_report(model, snap, out_root)
     print(f"HTML   {hp}\n엔진   {jp}\n후보   {cp}")
     if snap.missing():
@@ -772,6 +829,349 @@ def cmd_accuracy(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review(a: argparse.Namespace) -> int:
+    """`report review --date --market [--session open|close] [--out]` — 리포트
+    한 건(날짜×시장×세션)의 회고 카드를 만든다(2026-09-06, 소유자 지시 —
+    리포트·텔레그램·사이트 실전화 계획 1단계). `quant.control.report_review`
+    (순수 함수)에 가격만 채워 넘긴다 — `cmd_accuracy`와 같은 관례로
+    `fetch_symbol_quotes`(야후 무인증)를 재사용하고 새 시세 어댑터를 만들지
+    않는다.
+
+    `--out`(기본 `results/report_review`)은 `--root`와 **분리된 인자**다 —
+    과거 아카이브를 다른 `--root`(예: EC2에서 옮겨온 스냅샷 디렉터리)로 읽어도
+    카드는 항상 저장소의 `results/`에 쌓이게 하려는 의도. `--root`를 출력
+    경로로 겸용하면 과거 아카이브를 가리킬 때마다 카드가 엉뚱한 곳에 쌓인다.
+    """
+    from quant.analyze.entities import load_market_map, load_name_map
+    from quant.collect.sources.market import fetch_symbol_quotes
+    from quant.control import report_review
+    from quant.control.outcomes import to_yahoo_us_symbol
+
+    root = Path(a.root)
+    _, out_root, cache_dir, _ = _paths(root)
+    d = date.fromisoformat(a.date)
+    market = a.market
+    session = a.session
+
+    open_payload = _load_artifact(_engine_json_path(out_root, market, d))
+    close_payload = (
+        _load_artifact(_close_engine_json_path(out_root, market, d))
+        if session == "close" else None
+    )
+    if session == "open" and open_payload is None:
+        print(f"엔진 JSON 없음: {_engine_json_path(out_root, market, d)}", file=sys.stderr)
+        return 1
+    if session == "close" and close_payload is None:
+        print(f"마감 엔진 JSON 없음: {_close_engine_json_path(out_root, market, d)}", file=sys.stderr)
+        return 1
+
+    candidate_symbols = _candidate_symbols(open_payload) if open_payload else set()
+    # 유니버스(§4)는 그날 오전판이 실제로 훑은 종목 집합이다 — 마감판을
+    # 리뷰할 때도 오전판이 있으면 같은 날 유니버스를 그대로 쓴다(오전판이
+    # 없으면 빈 리스트 — report_review 모듈 docstring의 recall 한계 그대로).
+    universe_symbols = (open_payload or {}).get("symbols") or []
+
+    try:
+        market_map = load_market_map(cache_dir)
+    except Exception:  # noqa: BLE001 — KIND 캐시가 없어도 .KS 폴백으로 계속한다
+        market_map = {}
+    try:
+        names = load_name_map(cache_dir, market)
+    except Exception:  # noqa: BLE001 — 이름은 표시용 장식, 없어도 채점엔 지장 없다
+        names = {}
+
+    def yahoo_of(symbol: str) -> str:
+        if market == "US":
+            return to_yahoo_us_symbol(symbol)
+        return market_map.get(symbol) or f"{symbol}.KS"
+
+    from quant.control.report_accuracy import INDEX_SYMBOL
+
+    index_yahoo = yahoo_of(INDEX_SYMBOL[market])
+    wanted_symbols = {row.get("symbol") for row in universe_symbols if row.get("symbol")}
+    wanted_symbols |= candidate_symbols
+    # 마감판(close_bet_view) 후보는 오전판 유니버스/AUTO_WATCH에 없을 수 있다
+    # (마감 직전 거래대금·등락률로 새로 뽑힌 종목) — 빠뜨리면 그 종목 가격을
+    # 아예 조회하지 않아 카드에 "결측"으로 잘못 찍힌다(실측: 2026-08-25 KR
+    # 마감판, 034020/010120 이 오전 후보에 없어 결측 처리됐던 버그).
+    if close_payload:
+        wanted_symbols |= {
+            row.get("symbol") for row in close_payload.get("close_bet_view") or []
+            if row.get("symbol")
+        }
+    reverse_map: dict[str, str] = {}
+    for sym in wanted_symbols:
+        reverse_map[yahoo_of(sym)] = sym
+
+    yahoo_syms = sorted({index_yahoo, *reverse_map})
+    quotes = fetch_symbol_quotes(yahoo_syms)
+
+    index_ohlcv = (quotes.get(index_yahoo) or {}).get("ohlcv")
+    if index_ohlcv is None:
+        print(f"지수 프록시({INDEX_SYMBOL[market]}) 시세 없음 — 계산 불가", file=sys.stderr)
+        return 1
+    calendar = [ts.date().isoformat() for ts in index_ohlcv.index]
+    index_prices = {
+        dstr: (float(row["open"]), float(row["close"]))
+        for dstr, (_, row) in zip(calendar, index_ohlcv.iterrows())
+    }
+
+    price_by_symbol: dict[str, dict[str, tuple]] = {}
+    for y, sym in reverse_map.items():
+        ohlcv = (quotes.get(y) or {}).get("ohlcv")
+        if ohlcv is None:
+            continue
+        price_by_symbol[sym] = {
+            ts.date().isoformat(): (float(row["open"]), float(row["close"]))
+            for ts, row in ohlcv.iterrows()
+        }
+
+    card = report_review.build_card(
+        date=a.date, market=market, session=session,
+        open_payload=open_payload, close_payload=close_payload,
+        candidate_symbols=candidate_symbols, calendar=calendar,
+        index_prices=index_prices, universe_symbols=universe_symbols,
+        price_by_symbol=price_by_symbol, names=names,
+    )
+    md = report_review.render_markdown(card)
+
+    out_dir = Path(a.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    suffix = "" if session == "open" else "_close"
+    md_path = out_dir / f"{a.date}_{market}{suffix}.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    print(md)
+    print(f"저장: {md_path}")
+    return 0
+
+
+# ── 재발 방지 루프 자동화 (Phase 6, 2026-09-06) ─────────────────────────────
+#
+# `review`(위)는 사람이 손으로 날짜 하나씩 감사하는 커맨드다(출력 `results/
+# report_review/`, 결측/실패를 stderr·exit 1로 시끄럽게 알린다 — 대화형이라
+# 괜찮다). `review-daily`는 크론 전용 자동화라 계약이 다르다: 항상 `data/
+# report_review/`(운영 산출물)에 쓰고, 이미 있으면 조용히 스킵하며(멱등),
+# 가격을 못 구해도 카드를 결측투성이로 쓰는 대신 아무것도 쓰지 않고 다음
+# 실행에 넘긴다(재시도는 `server/scripts/report_review_daily.sh`가 최근 며칠을
+# 다시 훑는 방식으로 구현한다 — 이 함수 자체엔 재시도 상태가 없다). 이래서
+# `cmd_review`를 그대로 재사용하지 않고 별도 함수로 둔다 — 두 계약을 하나의
+# 반환값 체계로 섞으면(성공/스킵/재시도가능 실패/영구실패를 전부 exit code
+# 하나로 표현해야 한다) 오히려 더 헷갈린다.
+
+
+def _append_review_ledger(path: Path, row: dict) -> bool:
+    """행 하나를 `report_review.jsonl`에 append. 이미 같은 (date, market,
+    session) 행이 있으면 아무것도 쓰지 않는다(멱등 — 카드 파일 존재 여부와
+    별개의 두번째 방어선: 카드 파일은 지웠는데 원장엔 남아 있는 어긋남을
+    막는다). 반환값은 실제로 새로 썼는지 여부."""
+    import json
+
+    key = (row.get("date"), row.get("market"), row.get("session"))
+    if path.exists():
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    existing = json.loads(line)
+                except ValueError:
+                    continue
+                if (existing.get("date"), existing.get("market"), existing.get("session")) == key:
+                    return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return True
+
+
+def cmd_review_daily(a: argparse.Namespace) -> int:
+    """`report review-daily --market --date [--session] [--root] [--out]
+    [--ledger]` (또는 `--weekly`) — 회고 카드 자동화 진입점. `--weekly`가
+    있으면 날짜/시장/세션은 전부 무시하고 `_cmd_review_weekly`로 넘긴다.
+
+    나머지 인자·계약은 위 "재발 방지 루프 자동화" 절 참고. `cmd_review`와
+    카드 조립 로직(가격 조회 → `report_review.build_card`)은 같지만, 여기선
+    (a) 카드 파일이 이미 있으면 네트워크 호출 전에 즉시 스킵하고 (b) 리포트
+    엔진 JSON 자체가 없거나(휴장일 등, 영구적) 지수 가격을 못 구하면(레이트
+    리밋 등, 일시적) 둘 다 카드를 쓰지 않고 exit 0으로 조용히 넘어간다(호출부
+    셸이 로그로만 구분한다) — 대화형 `cmd_review`처럼 exit 1로 시끄럽게 알리지
+    않는다(자동화가 휴장일마다 "실패" 알림을 내면 안 된다).
+
+    새 카드를 만들면 원장에 압축 행을 append 하고, 텔레그램 한 줄을 stdout에
+    **그것만** 낸다(성공+신규일 때만 비어있지 않다) — 발송 자체는 호출 셸
+    (`report_review_daily.sh`)이 `notify_auto`로 한다(이 저장소 관례: CLI는
+    텍스트만 내고 셸이 장중/장외 게이트를 거쳐 보낸다)."""
+    if getattr(a, "weekly", False):
+        return _cmd_review_weekly(a)
+
+    if not a.market:
+        print("review-daily: --market 필요 (--weekly 가 아니면)", file=sys.stderr)
+        return 2
+
+    from quant.analyze.entities import load_market_map, load_name_map
+    from quant.collect.sources.market import fetch_symbol_quotes
+    from quant.control import report_review
+    from quant.control.outcomes import to_yahoo_us_symbol
+
+    root = Path(a.root)
+    _, out_root, cache_dir, _ = _paths(root)
+    market = a.market
+    session = a.session
+    out_dir = Path(a.out)
+    suffix = "" if session == "open" else "_close"
+    md_path = out_dir / f"{a.date}_{market}{suffix}.md"
+
+    if md_path.exists():
+        print(f"스킵(이미 존재): {md_path}", file=sys.stderr)
+        return 0
+
+    d = date.fromisoformat(a.date)
+    open_payload = _load_artifact(_engine_json_path(out_root, market, d))
+    close_payload = (
+        _load_artifact(_close_engine_json_path(out_root, market, d))
+        if session == "close" else None
+    )
+    if session == "open" and open_payload is None:
+        print(f"엔진 JSON 없음(휴장일 등) — 스킵: {_engine_json_path(out_root, market, d)}",
+              file=sys.stderr)
+        return 0
+    if session == "close" and close_payload is None:
+        print(f"마감 엔진 JSON 없음(휴장일 등) — 스킵: "
+              f"{_close_engine_json_path(out_root, market, d)}", file=sys.stderr)
+        return 0
+
+    candidate_symbols = _candidate_symbols(open_payload) if open_payload else set()
+    universe_symbols = (open_payload or {}).get("symbols") or []
+
+    try:
+        market_map = load_market_map(cache_dir)
+    except Exception:  # noqa: BLE001 — KIND 캐시가 없어도 .KS 폴백으로 계속한다
+        market_map = {}
+    try:
+        names = load_name_map(cache_dir, market)
+    except Exception:  # noqa: BLE001 — 이름은 표시용 장식, 없어도 채점엔 지장 없다
+        names = {}
+
+    def yahoo_of(symbol: str) -> str:
+        if market == "US":
+            return to_yahoo_us_symbol(symbol)
+        return market_map.get(symbol) or f"{symbol}.KS"
+
+    from quant.control.report_accuracy import INDEX_SYMBOL
+
+    index_yahoo = yahoo_of(INDEX_SYMBOL[market])
+    wanted_symbols = {row.get("symbol") for row in universe_symbols if row.get("symbol")}
+    wanted_symbols |= candidate_symbols
+    if close_payload:
+        wanted_symbols |= {
+            row.get("symbol") for row in close_payload.get("close_bet_view") or []
+            if row.get("symbol")
+        }
+    reverse_map: dict[str, str] = {}
+    for sym in wanted_symbols:
+        reverse_map[yahoo_of(sym)] = sym
+
+    yahoo_syms = sorted({index_yahoo, *reverse_map})
+    quotes = fetch_symbol_quotes(yahoo_syms)
+
+    index_ohlcv = (quotes.get(index_yahoo) or {}).get("ohlcv")
+    if index_ohlcv is None:
+        print(f"지수 프록시({INDEX_SYMBOL[market]}) 시세 없음 — 스킵(다음 실행이 재시도)",
+              file=sys.stderr)
+        return 0
+
+    calendar = [ts.date().isoformat() for ts in index_ohlcv.index]
+    index_prices = {
+        dstr: (float(row["open"]), float(row["close"]))
+        for dstr, (_, row) in zip(calendar, index_ohlcv.iterrows())
+    }
+
+    price_by_symbol: dict[str, dict[str, tuple]] = {}
+    for y, sym in reverse_map.items():
+        ohlcv = (quotes.get(y) or {}).get("ohlcv")
+        if ohlcv is None:
+            continue
+        price_by_symbol[sym] = {
+            ts.date().isoformat(): (float(row["open"]), float(row["close"]))
+            for ts, row in ohlcv.iterrows()
+        }
+
+    card = report_review.build_card(
+        date=a.date, market=market, session=session,
+        open_payload=open_payload, close_payload=close_payload,
+        candidate_symbols=candidate_symbols, calendar=calendar,
+        index_prices=index_prices, universe_symbols=universe_symbols,
+        price_by_symbol=price_by_symbol, names=names,
+    )
+    md = report_review.render_markdown(card)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    md_path.write_text(md, encoding="utf-8")
+
+    generated_at = datetime.now(KST).isoformat()
+    row = report_review.review_summary_row(card, generated_at=generated_at)
+    _append_review_ledger(Path(a.ledger), row)
+
+    print(report_review.format_daily_telegram(row))
+    print(f"저장: {md_path}", file=sys.stderr)
+    return 0
+
+
+def _cmd_review_weekly(a: argparse.Namespace) -> int:
+    """`report review-daily --weekly [--root] [--out] [--ledger] [--days]` —
+    트레일링 `--days`일(기본 7)의 원장 행을 모아 주간 집계를 낸다. 순수 집계는
+    `report_review.aggregate_weekly`/`render_weekly_markdown`/
+    `format_weekly_telegram`이 하고, 여기선 파일 읽기/쓰기만 한다.
+
+    원장에 그 구간 행이 하나도 없으면(자동화가 아직 하루도 안 돌았거나, 이번
+    주 성숙한 세션이 아직 없거나) 조용히 스킵(exit 0, stdout 비움) — 매주
+    금요일 "표본 없음" 알림을 반복하지 않는다."""
+    import json
+
+    from quant.control import report_review
+
+    ledger_path = Path(a.ledger)
+    if not ledger_path.exists():
+        print("주간 회고: 원장이 아직 없음 — 스킵", file=sys.stderr)
+        return 0
+
+    days = getattr(a, "days", 7) or 7
+    today = date.today()
+    since = (today - timedelta(days=days)).isoformat()
+    until = today.isoformat()
+
+    rows = []
+    with ledger_path.open(encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            d = row.get("date") or ""
+            if since <= d <= until:
+                rows.append(row)
+
+    if not rows:
+        print(f"주간 회고: {since}~{until} 구간에 집계할 행 없음 — 스킵", file=sys.stderr)
+        return 0
+
+    agg = report_review.aggregate_weekly(rows)
+    week_label = f"{since} ~ {until}"
+    md = report_review.render_weekly_markdown(agg, week_label)
+
+    out_dir = Path(a.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    iso_year, iso_week, _ = today.isocalendar()
+    md_path = out_dir / f"WEEK_{iso_year}-W{iso_week:02d}.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    print(report_review.format_weekly_telegram(agg, week_label))
+    print(f"저장: {md_path}", file=sys.stderr)
+    return 0
+
+
 # ── 개장일 판정 — 휴장일엔 빌드를 생략한다(2026-09-06) ──────────────────────
 #
 # 유래: market-report@.timer 는 주말·공휴일 포함 매일 발행된다(휴장 기간에도
@@ -916,6 +1316,31 @@ def main(argv: list[str] | None = None) -> int:
     sa.add_argument("--since", default=(date.today() - timedelta(days=30)).isoformat())
     sa.add_argument("--until", default=date.today().isoformat())
     sa.add_argument("--root", default=".")
+    # review(2026-09-06, 소유자 지시 — 리포트·텔레그램·사이트 실전화 계획 1단계)
+    # — 리포트 한 건(날짜×시장×세션)의 날짜별 회고 카드. `--out`은 `--root`와
+    # 분리(위 cmd_review docstring 참고) — 과거 아카이브를 `--root`로 읽어도
+    # 카드는 저장소 `results/`에 쌓인다.
+    sr = sub.add_parser("review")
+    sr.add_argument("--market", choices=["KR", "US"], required=True)
+    sr.add_argument("--date", required=True)
+    sr.add_argument("--session", choices=["open", "close"], default="open")
+    sr.add_argument("--root", default=".")
+    sr.add_argument("--out", default="results/report_review")
+    # review-daily(2026-09-06, Phase 6 재발 방지 루프) — 크론 전용 자동화.
+    # `review`와 출력 위치가 다르다(`data/report_review/` — 운영 산출물,
+    # `results/`의 1단계 수동 감사 산출물과 분리) + 멱등 + 원장 append.
+    # `--weekly`면 --market/--date/--session은 쓰지 않고(둘 다 선택 인자로
+    # 둔다 — required=True로 하면 `--weekly`만 줄 때 argparse가 먼저 죽는다)
+    # 트레일링 `--days`일 원장을 집계한다 — cmd_review_daily 참고.
+    srd = sub.add_parser("review-daily")
+    srd.add_argument("--weekly", action="store_true")
+    srd.add_argument("--market", choices=["KR", "US"])
+    srd.add_argument("--date", default=date.today().isoformat())
+    srd.add_argument("--session", choices=["open", "close"], default="open")
+    srd.add_argument("--root", default=".")
+    srd.add_argument("--out", default="data/report_review")
+    srd.add_argument("--ledger", default="data/ledger/report_review.jsonl")
+    srd.add_argument("--days", type=int, default=7)
     a = p.parse_args(argv)
     # accuracy 는 --date 가 없다(--since/--until 구간) — 다른 서브커맨드처럼
     # 무조건 date.fromisoformat(a.date) 를 부르면 여기서 AttributeError 로 죽는다.
@@ -924,6 +1349,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.cmd == "accuracy":
         return cmd_accuracy(a)
+
+    if a.cmd == "review":
+        return cmd_review(a)
+
+    if a.cmd == "review-daily":
+        return cmd_review_daily(a)
 
     if a.cmd == "uswrap":
         root = Path(a.root)

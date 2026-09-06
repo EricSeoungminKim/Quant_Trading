@@ -43,10 +43,13 @@ def gate(tmp_path: Path):
 
     queue = tmp_path / "queue.jsonl"
     curl_log = tmp_path / "curl.log"
+    failure_ledger = tmp_path / "notify_failures.jsonl"
+    rate_dir = tmp_path / "rate"
 
     class Gate:
         queue_path = queue
         curl_log_path = curl_log
+        failure_ledger_path = failure_ledger
 
         def run(self, snippet: str, *, token: bool = True, **env_extra):
             env = {
@@ -60,6 +63,12 @@ def gate(tmp_path: Path):
                 "NOTIFY_ENV_FILE": "/dev/null",
                 # curl 은 스텁이라 도달하지 않지만, 혹시라도 새면 죽는 주소로.
                 "TELEGRAM_API_BASE": "http://127.0.0.1:1",
+                # 발송 실패 원장 + 레이트 리밋 상태를 실제 저장소 밖으로 격리한다
+                # (2026-09-06) — 안 그러면 테스트가 실제 data/ledger·data/state 를
+                # 건드리고, 레이트 리밋 상태가 테스트 실행 사이에 누적된다.
+                "NOTIFY_FAILURE_LEDGER": str(failure_ledger),
+                "NOTIFY_RATE_DIR": str(rate_dir),
+                "NOTIFY_RATE_SLEEP": "0",  # 테스트에서는 실제로 쉬지 않는다
             }
             if token:
                 env["TELEGRAM_BOT_TOKEN"] = "TESTTOKEN"
@@ -77,6 +86,11 @@ def gate(tmp_path: Path):
             if not queue.exists():
                 return []
             return [json.loads(l) for l in queue.read_text(encoding="utf-8").splitlines() if l]
+
+        def failures(self) -> list[dict]:
+            if not failure_ledger.exists():
+                return []
+            return [json.loads(l) for l in failure_ledger.read_text(encoding="utf-8").splitlines() if l]
 
         def sends(self) -> list[str]:
             if not curl_log.exists():
@@ -137,6 +151,86 @@ def test_now_reports_send_failure(gate, tmp_path):
     bad.chmod(0o755)
     r = gate.run('notify_now "🚨 이상" && echo SENT || echo FAILED', **OFF_HOURS)
     assert "FAILED" in r.stdout
+
+
+# ── 발송 실패 원장 (2026-09-06 라이브 준비 4단계) ──────────────────────────
+# HTML+평문 재시도까지 다 실패하면 data/ledger/notify_failures.jsonl 에 한 줄
+# 남는다 — quant.control.health.notify_failure_findings 가 하루 총합을 센다.
+# quant/adapters/notify/telegram.py 의 엔진 노티파이어도 같은 파일·스키마를 쓴다.
+
+def test_send_failure_is_recorded_in_failure_ledger(gate, tmp_path):
+    bad = tmp_path / "bin" / "curl"
+    bad.write_text('#!/usr/bin/env bash\nprintf \'{"ok":false}\'\n', encoding="utf-8")
+    bad.chmod(0o755)
+    r = gate.run('notify_now "🚨 이상"', NOTIFY_LANE="ops", **OFF_HOURS)
+    assert r.returncode != 0
+    rows = gate.failures()
+    assert len(rows) == 1
+    assert rows[0]["lane"] == "ops"
+    assert "이상" in rows[0]["text"]
+
+
+def test_successful_send_does_not_touch_failure_ledger(gate):
+    r = gate.run('notify_now "정상"', **OFF_HOURS)
+    assert r.returncode == 0
+    assert gate.failures() == []
+
+
+def test_queued_notification_does_not_touch_failure_ledger(gate):
+    """큐에만 쌓이는 것(notify_defer/장중 notify_auto)은 발송 시도 자체가 없다
+    — 실패 원장과 무관해야 한다."""
+    r = gate.run('notify_defer "x" "본문"', **IN_HOURS)
+    assert r.returncode == 0
+    assert gate.failures() == []
+
+
+# ── 레인별 레이트 리밋 (2026-09-06) ─────────────────────────────────────────
+# 텔레그램 실측 한도(~20건/분/챗)에 안전마진을 두고, 최근 60초 안에 같은 레인
+# 으로 15건을 넘겨 보내면 짧게 쉰다.
+
+def _stub_sleep(tmp_path: Path) -> Path:
+    log = tmp_path / "sleep.log"
+    stub = tmp_path / "bin" / "sleep"
+    stub.write_text(
+        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$1" >> "$SLEEP_LOG"\n',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return log
+
+
+def test_rate_limit_sleeps_after_15_sends_in_same_lane(gate, tmp_path):
+    sleep_log = _stub_sleep(tmp_path)
+    cmds = "; ".join(f'notify_now "체결 {i}"' for i in range(16))
+    r = gate.run(cmds, SLEEP_LOG=str(sleep_log), NOTIFY_LANE="trades",
+                NOTIFY_RATE_SLEEP="7", **OFF_HOURS)
+    assert r.returncode == 0, r.stderr
+    assert len(gate.sends()) == 16, "리밋에 걸려도 결국은 다 보낸다 — 막지 않고 늦출 뿐"
+    assert sleep_log.exists(), "15건을 넘기면 쉬어야 한다"
+    assert sleep_log.read_text(encoding="utf-8").strip() == "7"
+
+
+def test_rate_limit_does_not_sleep_under_15_sends(gate, tmp_path):
+    sleep_log = _stub_sleep(tmp_path)
+    cmds = "; ".join(f'notify_now "체결 {i}"' for i in range(10))
+    r = gate.run(cmds, SLEEP_LOG=str(sleep_log), NOTIFY_LANE="trades", **OFF_HOURS)
+    assert r.returncode == 0, r.stderr
+    assert not sleep_log.exists(), "한도 안이면 쉬지 않는다"
+
+
+def test_rate_limit_is_scoped_per_lane(gate, tmp_path):
+    """레인 A 가 한도를 채워도 레인 B 는 영향받지 않는다(레인별 상태 파일 분리)."""
+    sleep_log = _stub_sleep(tmp_path)
+    cmds_a = "; ".join(f'notify_now "매매 {i}"' for i in range(16))
+    r = gate.run(cmds_a, SLEEP_LOG=str(sleep_log), NOTIFY_LANE="trades", **OFF_HOURS)
+    assert r.returncode == 0, r.stderr
+    assert sleep_log.exists()
+    n_after_trades = len(sleep_log.read_text(encoding="utf-8").splitlines())
+
+    r = gate.run('notify_now "운영 알림"', SLEEP_LOG=str(sleep_log), NOTIFY_LANE="ops", **OFF_HOURS)
+    assert r.returncode == 0, r.stderr
+    n_after_ops = len(sleep_log.read_text(encoding="utf-8").splitlines())
+    assert n_after_ops == n_after_trades, "다른 레인은 쉬지 않는다"
 
 
 # ── ⑤ 토큰이 없으면 셋 다 조용히 성공 ─────────────────────────────────────

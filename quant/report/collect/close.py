@@ -81,20 +81,40 @@ CLOSE_BET_TOP = 5
 # 단타에 물리는 개미가 된다(소유자 지시 그대로).
 CLOSE_BET_MIN_CHANGE_PCT = 3.0
 
+# 후보 풀 소스 보드(2026-09-07 Phase 2 §4 — SUMMARY.md §④ 원인 수정).
+#
+# ## 왜 "거래대금" 보드만으로는 후보가 거의 안 나왔는가 (실측 근거)
+#
+# 옛 코드는 `boards["거래대금"]`(Toss `MARKET_TRADING_AMOUNT`, 시장 전체 거래
+# 대금 절대값 상위 — 삼성전자·SK하이닉스 같은 초대형주가 상시 상위권을 차지
+# 한다)만 후보 풀로 삼고 그 안에서 `change_pct >= 3.0%`을 걸렀다. 초대형주는
+# 등락이 잔잔한 날에도 거래대금 자체는 항상 크다(원화 절대액 기준이라 시가총액
+# 이 거래량을 압도한다) — 그래서 "거래대금 최상위 & 당일 +3% 이상"의 교집합이
+# 거의 항상 비었다. `results/report_review/SUMMARY.md` §④ 실측: 정규 거래일
+# 17일 중 후보가 1건이라도 나온 날은 5일뿐(70%가 0건). "종가배팅은 이미 강한
+# 종목의 관성을 사는 기법"(위 CLOSE_BET_MIN_CHANGE_PCT 주석)이라는 설계 의도에
+# 정말 맞는 소스는 거래대금이 아니라 "상승률"(Toss `TOP_GAINERS` — 오늘 실제로
+# 급등 중인 종목)이다. 두 보드 다 같은 파서(`toss._parse_ranking_item`)를 거쳐
+# `rank`/`trading_amount`/`change_pct`를 동일하게 갖고 있어(2026-09-07 코드
+# 확인) 합치는 데 새 필드가 필요 없다.
+CLOSE_BET_SOURCE_BOARDS = ("거래대금", "상승률")
+
 
 def _build_close_bet_view(snap, root, cont: dict, top: int = CLOSE_BET_TOP) -> list[dict]:
     """종가배팅 후보(2026-08-25, 전략 4종 체제 ③) — **결정론 채점**.
 
-    재료는 전부 이미 수집된 것: 거래대금 랭킹(toss_rankings, 하루 종일 상위권
-    = 수급이 도는 종목), 당일 등락(같은 보드), 외국인 수급 추세(frgn_flow.jsonl,
-    agent_interpret 와 같은 로더), 뉴스 지속성(cont — 오늘 언급 종목). 새 크롤
-    없음.
+    재료는 전부 이미 수집된 것: 거래대금·상승률 랭킹(toss_rankings — 위
+    `CLOSE_BET_SOURCE_BOARDS` 주석 참고), 당일 등락(같은 보드), 외국인 수급
+    추세(frgn_flow.jsonl, agent_interpret 와 같은 로더), 뉴스 지속성(cont —
+    오늘 언급 종목). 새 크롤 없음.
 
     채점(각 축 가중치는 근거의 질 순서 — 수급 > 등락 > 뉴스):
       +3 외국인 추세 라벨이 매수 계열
       +2 당일 등락 >= {CLOSE_BET_MIN_CHANGE_PCT}% (하한 미달은 아예 제외)
       +1 오늘 뉴스 언급 있음
-    거래대금 보드 밖 종목은 후보가 아니다(1차 필터가 곧 "수급전광판 상위").
+    `CLOSE_BET_SOURCE_BOARDS`(거래대금 ∪ 상승률) 밖 종목은 후보가 아니다 —
+    두 보드 모두에 뜨면 심볼당 한 번만 센다(먼저 등장한 보드의 순위를 근거에
+    남긴다, 순서는 위 튜플 순서).
 
     마감 강도·양봉 정밀 확인은 여기서 **하지 않는다** — 그건 1분봉을 보는
     전략(close_bet)의 몫이다(역할 분담: 리포트=수급·뉴스, 전략=차트·시각).
@@ -103,8 +123,14 @@ def _build_close_bet_view(snap, root, cont: dict, top: int = CLOSE_BET_TOP) -> l
     ranking = snap.results.get("toss_rankings")
     if ranking is None or not ranking.ok or not ranking.data:
         return []
-    board = (ranking.data.get("boards") or {}).get("거래대금") or []
-    if not board:
+    boards = ranking.data.get("boards") or {}
+    pool: dict[str, dict] = {}
+    for board_name in CLOSE_BET_SOURCE_BOARDS:
+        for item in boards.get(board_name) or []:
+            sym = item.get("symbol")
+            if sym and sym not in pool:
+                pool[sym] = {**item, "_board": board_name}
+    if not pool:
         return []
 
     from quant.analyze.foreign_trend import classify
@@ -112,13 +138,13 @@ def _build_close_bet_view(snap, root, cont: dict, top: int = CLOSE_BET_TOP) -> l
 
     flow_path = root / "data" / "ledger" / "frgn_flow.jsonl"
     out: list[dict] = []
-    for item in board:
+    for item in pool.values():
         sym = item.get("symbol")
         change = item.get("change_pct")
         if not sym or change is None or change < CLOSE_BET_MIN_CHANGE_PCT:
             continue
         score = 2
-        reasons = [f"당일 +{change:.1f}%", f"거래대금 {item.get('rank')}위"]
+        reasons = [f"당일 +{change:.1f}%", f"{item['_board']} {item.get('rank')}위"]
         try:
             series = frgn_flow_ledger.load_series(flow_path, sym, days=20)
             label = (classify(series) or {}).get("label") or ""

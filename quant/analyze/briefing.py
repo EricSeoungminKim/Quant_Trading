@@ -42,17 +42,66 @@ ANCHOR_STRONG_PCT = 3.0
 # 가점 가능한 요인 5개(지수 모멘텀, 외국인, 기관계, VIX, 앵커)의 고정 분모.
 STANCE_SPAN = 5
 
-# 방향콜 라벨 문구(2026-09-06 리포트 정확도 감사, 소유자 지시 priority-1 §2).
-# 실측(2026-08-13~09-05 KR+US): 방향콜(bull/bear) D+3 적중률 25.9%(CI
-# [13.2%, 44.7%], n=27) — 50%를 배제하는 신뢰구간으로, 방향콜이 여러 날짜에
-# 걸친 확신을 주장할 근거가 못 됐다. "강한 상승 신호"처럼 세기(강한/약한)와
-# 방향을 함께 내세우는 옛 문구 대신, 당일 한정·참고용임을 못박는 고정 문구로
-# 바꾼다 — 세기 구분은 score100 숫자 자체가 이미 담고 있으므로 라벨에서
-# 반복하지 않는다. `direction_bucket`(quant.control.report_accuracy)은
-# score100 임계 폴백이 있어 이 문구 변경으로 방향 채점이 깨지지 않는다.
-STANCE_LABEL = "당일 스탠스(참고)"
+# 방향콜 라벨 문구(2026-09-06 리포트 정확도 감사, 소유자 지시 priority-1 §2,
+# 2026-09-06 Phase 2 §1 갱신). 실측(2026-08-13~09-05 KR+US): 방향콜(bull/bear)
+# D+3 적중률 25.9%(CI [13.2%, 44.7%], n=27) — 50%를 배제하는 신뢰구간으로,
+# 방향콜이 여러 날짜에 걸친 확신을 주장할 근거가 못 됐다. "강한 상승 신호"처럼
+# 세기(강한/약한)와 방향을 함께 내세우는 옛 문구 대신, 당일 한정·참고용임을
+# 못박는 고정 문구로 바꾼다 — 세기 구분은 score100 숫자 자체가 이미 담고
+# 있으므로 라벨에서 반복하지 않는다. `direction_bucket`(quant.control.
+# report_accuracy)은 score100 임계 폴백이 있어 이 문구 변경으로 방향 채점이
+# 깨지지 않는다.
+#
+# Phase 2 §1(2026-09-06, `results/report_review/SUMMARY.md` §① 오류 수정):
+# 리포트의 **1차** 스탠스 자리는 이제 이 함수(지수 모멘텀 점수)가 아니라
+# 엔진 국면(`quant.trade.regime`, `regime_stance()` 아래)이 차지한다 — 방향콜
+# 전체 적중률이 34.8%(n=23, 위 §종합 수치)로 동전던지기 이하였고, 특히
+# "직전 세션의 이미 실현된 등락을 그대로 연장"하는 패턴이 관찰됐다(SUMMARY
+# §① 08-25 KR/08-26~28 US 사례). 이 함수의 출력은 격하되지 않고 그대로
+# 남지만(계산·필드 불변, 기존 소비자 하위호환), 리포트 표시 계층
+# (`quant/report/collect/core.py`가 `view["regime"]`을 덧붙이고, 템플릿이
+# 그 줄을 1차로, 이 줄을 진단용 2차로 보여준다)에서 "1차"가 아니라
+# **진단(참고)**으로 격하된 것을 라벨 문구가 스스로 밝힌다. 감사 시점의 적중률
+# (34.8%, n=23)은 라벨이 아니라 리포트의 정확도 표가 매일 다시 계산해 보여준다.
+STANCE_LABEL = "지수 모멘텀(참고)"  # 적중률 숫자는 리포트의 정확도 표가 매일 계산해 보여준다 — 라벨에 박으면 낡는다(2026-09-07)
 
 _MAIN_INDEX = {"KR": "^KS11", "US": "^GSPC"}
+
+# ── 국면(regime) 기반 1차 스탠스 (2026-09-06, Phase 2 §1) ───────────────────
+#
+# `quant.analyze.tg_digest.Digest.program_stance_display()`와 같은 어휘·같은
+# 문장 형태를 쓴다(소유자 지시: "tg_digest가 이미 렌더하는 그 '프로그램
+# 스탠스' 줄과 같은 것"). 두 모듈이 규칙을 공유하지 않고 각자 짧게 들고
+# 있는 이유는 `quant/report/collect/tg_digest_section.py::_load_regime_for_report`
+# docstring과 같다 — 이 저장소는 트리비얼한 로직의 공유 유틸보다 각자 복제를
+# 선호한다(변경이 한쪽에만 영향을 주게 하려는 의도).
+REGIME_LABEL_KR = {"defensive": "방어", "neutral": "중립", "aggressive": "공격"}
+
+
+def regime_stance(regime: dict | None) -> dict:
+    """`regime`(`data/state/regime.json`의 그 시장 sub-dict, 호출부가 읽어
+    주입 — 이 함수는 파일을 읽지 않는다) → 리포트 1차 스탠스로 번역.
+
+    `regime`이 없거나 `label`이 없으면(파일 없음/그 시장 상태 아직 없음)
+    `measured=False`와 함께 정직하게 "판정 불가"를 낸다 — `tg_digest.
+    Digest.program_stance_display()`의 "판정 불가" 관례와 동일.
+    """
+    if not isinstance(regime, dict) or not regime.get("label"):
+        return {
+            "label": None, "label_kr": None, "risk_multiplier": None,
+            "reasons": [], "line": "판정 불가 (regime.json 없음)", "measured": False,
+        }
+    label = regime["label"]
+    label_kr = REGIME_LABEL_KR.get(label, label)
+    mult = regime.get("risk_multiplier")
+    mult_str = f"{float(mult):.1f}x" if isinstance(mult, (int, float)) else "?x"
+    reasons = [str(r) for r in (regime.get("reasons") or [])]
+    reasons_str = ", ".join(reasons) if reasons else "근거 없음"
+    return {
+        "label": label, "label_kr": label_kr, "risk_multiplier": mult,
+        "reasons": reasons, "line": f"{label_kr}({mult_str}) — {reasons_str}",
+        "measured": True,
+    }
 
 
 INDEX_DAILY_LIMIT_PCT = 10.0

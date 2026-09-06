@@ -11,17 +11,44 @@ from pathlib import Path
 from quant.analyze import trending_score as trending_mod
 from quant.analyze.baseline import baseline_score
 from quant.analyze.briefing import build as build_brief
-from quant.analyze.briefing import stance
+from quant.analyze.briefing import regime_stance, stance
+from quant.analyze.candidate_gate import GATE_REASON_LABEL, gate_candidates
 from quant.analyze.delta import compare, previous_snapshot
 from quant.analyze.entities import load_market_map, load_name_map, load_table, load_us_table
 from quant.analyze.mentions import append_ledger, collect_mentions, continuity, load_ledger, mark_origin
-from quant.analyze.render import machine_payload, rank
+from quant.analyze.render import machine_payload, rank, rejection_reasons
 from quant.analyze.symbol_score import score_all
+from quant.analyze.watch_scorer import _rvol as watch_scorer_rvol
 from quant.collect.sources.market import fetch_symbol_quotes
 from quant.collect.sources.stock_detail import fetch_many
 from quant.report.collect.index_outlook import build_index_outlook
 from quant.report.collect.ledger import _log_overlap, _record_flows, _record_frgn_flow
 from quant.report.paths import _load_artifact, _paths
+
+# 외국인 수급 상세 조회 상한(2026-09-07 Phase 2 §5) — `_derive` 아래 호출부
+# 주석 참고. 20(옛 값)에서 3배 확대.
+FOREIGN_FLOW_FETCH_CAP = 60
+
+
+def _load_regime_for_stance(root: Path, market: str) -> dict | None:
+    """`data/state/regime.json`에서 `market`(KR/US) sub-dict(label/risk_multiplier/
+    reasons)만 뽑는다 — `quant/report/collect/tg_digest_section.py::
+    _load_regime_for_report`와 같은 로직(공유 유틸 없이 각자 짧게 두는 이유도
+    그 함수 docstring과 동일). 실패는 예외가 아니라 `None`
+    (`briefing.regime_stance`가 정직하게 "판정 불가"로 보여준다)."""
+    import json as _json
+
+    path = root / "data" / "state" / "regime.json"
+    if not path.exists():
+        return None
+    try:
+        payload = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    state = (payload.get("markets") or {}).get(market)
+    if not isinstance(state, dict) and market == "US":
+        state = payload if "label" in payload else None
+    return state if isinstance(state, dict) else None
 
 
 def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
@@ -146,7 +173,21 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
             try:
                 # 외국인 수급 추종에 일별 시계열이 필요해 확대, 페이지 2개×20종목
                 # = 기존 대비 +28요청/일 수준(서브프로젝트 I).
-                details = fetch_many([code for code, _ in rank(cont, limit=20)], limit=20)
+                #
+                # 2026-09-07 Phase 2 §5(SUMMARY.md §⑤): 뉴스 언급 440건 중
+                # 외국인 수급(foreign_buy_streak)이 채워진 건 43건(9.8%)뿐 —
+                # 상위 20건만 조회하면 나머지 언급 종목은 "왜 승격 안 됐나"를
+                # 사후에 재구성할 근거가 없다. 상한을 20→FOREIGN_FLOW_FETCH_CAP
+                # (60)으로 넓힌다 — 그날 뉴스에 걸린 종목 전부를 조회하는 게
+                # 이상적이지만(SUMMARY §⑤ 수정 제안) `fetch_many`가 심볼당
+                # 0.3초 슬립을 두는 순차 크롤이라(server/scripts 크론 예산
+                # 고려) 상한 없이 전부를 매일 조회하면 뉴스 폭주일(§⑦, 09-04
+                # US 172건 실측)에 빌드 시간이 통제 불능이 된다 — 60은 비용과
+                # 커버리지 사이의 절충값이다(20→60 = 3배 확대).
+                details = fetch_many(
+                    [code for code, _ in rank(cont, limit=FOREIGN_FLOW_FETCH_CAP)],
+                    limit=FOREIGN_FLOW_FETCH_CAP,
+                )
                 print(f"종목 상세 {len(details)}건 (수급·컨센서스)")
             except Exception as e:
                 print(f"종목 상세 조회 건너뜀: {type(e).__name__}: {e}", file=sys.stderr)
@@ -175,9 +216,67 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
         if score is not None:
             baselines[symbol] = score
 
+    # 상대 거래량 확장(2026-09-07 Phase 2 §5, SUMMARY.md §⑤) — 옛
+    # `trending_score.relative_volume`은 토스 랭킹 보드(top10)에 오늘
+    # 거래대금이 잡힌 종목만 계산 가능해, 뉴스 언급 440건 중 2건(0.5%)만
+    # 채워졌다(SUMMARY §종합 수치). 여기서는 이미 받아온 `sym_quotes[symbol]
+    # ["ohlcv"]`(baseline_score와 같은 데이터, 위 루프)로 `watch_scorer._rvol`
+    # (마지막 완결일 거래량 / 직전 14일 평균)을 재사용해 **cont 전체**(랭킹
+    # 보드 편입 여부 무관)에 대해 계산한다 — render.machine_payload가 이
+    # 값을 트렌딩 기반 relative_volume이 없을 때만 폴백으로 채운다(§4 오류
+    # 수정용 known_signal_flags가 실제 신호를 볼 수 있게).
+    #
+    # ## 회고 recall 실측 (2026-09-07, 이 계측이 배선되기 전 61장 회고 카드
+    # 재분석 — `results/report_review/*.md`의 "미언급 상위 등락" 440행을
+    # 그날짜 그 심볼의 실제 yfinance 일봉으로 재계산)
+    #
+    # RVOL(마지막 완결일 거래량/직전14일평균) >= 2.0을 "놓친 급등주를 미리
+    # 알렸을 신호"로 놓고 잰 결과:
+    #   - recall(440건 중 RVOL 데이터 확보 435건 기준) = 130/435 = **29.9%**
+    #     (Wilson 95% CI [25.8%, 34.3%]) — 소유자가 제시한 30% 문턱에 걸친다.
+    #   - 시장별: KR 37.0%(98/265) vs US 18.8%(32/170) — KR에서 더 잘 잡는다.
+    #   - precision(플래그된 130건 중 D+0 open→close>0 적중) = 65/130 = 50.0%
+    #     (CI [41.5%, 58.5%])인데, **플래그 안 된 305건의 적중률도 47.9%,
+    #     전체 440건 기준선도 48.5%(CI [43.8%, 53.2%])** — 세 구간이 전부
+    #     겹친다. 즉 recall은 문턱에 걸치지만 **precision은 통계적으로
+    #     구분되지 않는다**(현재 AUTO_WATCH 승격 리스트의 기존 적중률
+    #     48.8%, SUMMARY §종합 수치와도 사실상 동률).
+    #   - **결론(소유자 지시의 승격 조건 미충족)**: recall≥30%·precision이
+    #     기존 승격 리스트보다 나음 — 이 회고 재분석은 두 조건 중 뒤쪽이
+    #     성립하지 않는다(표본 130건짜리 CI가 기존 리스트 값을 가볍게
+    #     포함한다). 그래서 **가중치를 매기는 승격 입력으로 넣지 않고
+    #     계측(instrumentation)으로만 남긴다** — 위 `rvol_by_symbol`은
+    #     `selections.jsonl`에 쌓이기만 하고 `symbol_score.score_symbol`의
+    #     factors에는 아직 들어가지 않는다. 표본이 (이 계측 배선 이후) 실시간
+    #     으로 더 쌓이면 재평가한다.
+    #   - **외국인 수급(foreign net-buy) recall은 이 재분석에서 계산하지
+    #     않았다** — KRX 투자자 수급은 과거 임의 날짜·임의 종목에 대해
+    #     소급 조회할 수 있는 로컬 원장이 없다(`frgn_flow.jsonl`은 이
+    #     리포트가 그날 이미 추적하던 종목만, 그날부터 쌓는다 — "놓친"
+    #     종목은 정의상 그 원장에 없었다). 지어내지 않는다 — 이 축은
+    #     "판단 불가"로 남긴다.
+    rvol_by_symbol: dict[str, float] = {}
+    for symbol, q in sym_quotes.items():
+        ohlcv = q.get("ohlcv")
+        if ohlcv is None or len(ohlcv) < 15:
+            continue
+        try:
+            rvol_by_symbol[symbol] = round(float(watch_scorer_rvol(ohlcv)), 2)
+        except Exception as e:  # noqa: BLE001 — 한 심볼 실패가 전체를 죽이면 안 된다
+            print(f"상대거래량(OHLCV) 계산 건너뜀({symbol}): {type(e).__name__}: {e}",
+                  file=sys.stderr)
+
     delta = compare(snap, previous_snapshot(snap.market, snap.session_date, snap_root))
     brief = build_brief(snap, cont, delta)
     view = stance(snap, cont, delta)
+    # 국면(regime) 기반 1차 스탠스(2026-09-06, Phase 2 §1 — SUMMARY.md §①
+    # "방향콜이 직전 세션의 이미 실현된 등락을 그대로 연장" 오류 수정).
+    # `view`(위 stance() 결과)는 이제 진단(참고)으로 격하되고, `view["regime"]`
+    # 가 리포트의 1차 스탠스가 된다 — `report.html.j2`가 이 키를 우선 그린다.
+    # `view`는 그대로 `payload["stance"]`가 되므로(아래 machine_payload 호출)
+    # 같은 dict에 키를 더하는 것만으로 하위호환 소비자(report_accuracy.
+    # extract_open_claims 의 label/score100 읽기 등)를 건드리지 않는다.
+    view["regime"] = regime_stance(_load_regime_for_stance(root, snap.market))
     scores = score_all(cont, details, trending)
     # 최근 거래량 몰림 감시(2026-08-25 소유자 지시: "최근 거래량이 몰렸던 종목들도
     # 계속 감시 리스트로") — 최근 5일 거래대금 보드 상위에 2회 이상 등장한 KR
@@ -227,7 +326,47 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
     payload = machine_payload(
         snap, cont, delta, brief, sym_quotes, details, view, scores, trending,
         relations, sectors, baselines, volume_watch=merged_watch,
+        extra_relative_volume=rvol_by_symbol,
     )
+    # 승격 거부 사유(2026-09-07 Phase 2 §5, SUMMARY.md §⑤) — 후보 게이트
+    # (아래)가 목록을 더 줄이기 **전** 원래 `is_candidate()` 판정 기준으로
+    # 계산한다. 방어 국면 게이트로 관망(watch_status)이 된 종목은 애초에
+    # 후보였던 것이므로 여기서 "거부"로 잘못 표시하면 안 된다 — 두 사유는
+    # 서로 다른 단계다.
+    from quant.report.collect.intraday import _candidate_symbols as _raw_candidate_symbols
+
+    reject_by_symbol, _reject_counts = rejection_reasons(
+        cont, _raw_candidate_symbols(payload),
+    )
+    for row in payload["symbols"]:
+        reason = reject_by_symbol.get(row.get("symbol"))
+        if reason:
+            row["rejection_reason"] = reason
+    # 후보 게이트(2026-09-06 Phase 2 §2, SUMMARY.md §② "후보 리스트 크기가
+    # 스탠스 방향·강도와 무관하게 나간다" 수정) — 방어 국면(또는 진단 스탠스
+    # 강한 하락)일 때 승격 목록(AUTO_WATCH, own_brief.sh가 그대로 읽어
+    # 확신도 엔진에 태우는 값)을 top_n으로 줄인다. 원장(payload["symbols"])
+    # 에서는 아무것도 지우지 않는다 — 잘린 심볼엔 표시용 watch_status만
+    # 얹는다(candidate_gate.py 모듈독스트링). `_record_report_claims`(호출부,
+    # report_cli._run_open)가 이 이후의 payload["auto_watch"]를 읽으므로
+    # 청구 원장에도 게이트가 적용된 후보만 남는다 — "log the cap in claims".
+    gate = gate_candidates(
+        payload["auto_watch"], payload["symbols"],
+        regime_label=(view.get("regime") or {}).get("label"),
+        diagnostic_score100=view.get("score100"),
+    )
+    payload["candidate_gate"] = gate
+    # `view`(=payload["stance"], 같은 dict 참조)에도 얹는다 — report.html.j2가
+    # 스탠스 섹션 안에서 view.candidate_gate로 바로 읽는다(신규 템플릿 인자
+    # 스레딩 없이, view.regime과 같은 관례).
+    view["candidate_gate"] = gate
+    if gate["capped"]:
+        payload["auto_watch"] = gate["auto_watch"]
+        dropped = set(gate["watch_only"])
+        for row in payload["symbols"]:
+            if row.get("symbol") in dropped:
+                row["watch_status"] = GATE_REASON_LABEL
+        print(f"후보 게이트 발동: {gate['gate_reason']}")
     # 지수별 전망(코스피/코스닥, US=S&P500/나스닥) — 소유자 요청(2026-08-29).
     # 기존 stance(시장당 지수 1개)와 완전히 별개인 새 payload 키만 얹는다.
     # 실패해도 리포트 발행을 막지 않는다(이 파이프라인의 기존 관례와 동일).

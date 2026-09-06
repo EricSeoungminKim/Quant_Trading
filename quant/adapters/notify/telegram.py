@@ -40,6 +40,12 @@ _LANES_PATH = Path("data/state/tg_lanes.json")
 _LEDGER_PATH = Path("data/ledger/notifications.jsonl")
 
 
+# 발송 실패만 모으는 공유 원장(2026-09-06 라이브 준비 4단계) — 셸 게이트
+# (server/scripts/lib/notify.sh 의 `_notify_record_failure`)와 같은 파일·같은
+# 스키마다. `cli health`의 `notify_failure_findings`(quant/control/health.py)가
+# 셸/엔진 출처를 가리지 않고 오늘 치 총합을 세어 임계 초과 시 경보를 낸다.
+_FAILURE_LEDGER_PATH = Path("data/ledger/notify_failures.jsonl")
+
 class TelegramNotifier:
     """token/chat_id가 falsy면 self.enabled=False, send()는 no-op."""
 
@@ -117,7 +123,9 @@ class TelegramNotifier:
             self._record(text, ok=True)
         except Exception as e:
             self._consecutive_failures += 1
-            self._record(text, ok=False, error=f"{type(e).__name__}: {e}")
+            error = f"{type(e).__name__}: {e}"
+            self._record(text, ok=False, error=error)
+            self._record_failure(text, lane, error)
             logger.warning("Telegram 전송 실패 (연속 %d회): %s: %s",
                             self._consecutive_failures, type(e).__name__, e)
             if self._consecutive_failures >= _FAILURE_LIMIT:
@@ -152,3 +160,23 @@ class TelegramNotifier:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
         except Exception as e:  # noqa: BLE001
             logger.debug("알림 원장 기록 실패(무시): %s", e)
+
+    def _record_failure(self, text: str, lane: str | None, error: str) -> None:
+        """실패만 모으는 공유 원장(2026-09-06)에 남긴다 — `server/scripts/lib/
+        notify.sh`의 `_notify_record_failure`와 같은 파일·같은 스키마(`ts`,
+        `source`, `lane`, `text`). `quant.control.health.notify_failure_findings`
+        가 셸/엔진 출처를 가리지 않고 오늘 치 총합을 센다. `_record`와 마찬가지로
+        실패는 삼킨다 — 원장 쓰기가 알림 흐름을 막으면 안 된다."""
+        try:
+            row = {
+                "ts": datetime.now(UTC).isoformat(),
+                "source": "engine",
+                "lane": lane or "",
+                "text": text[:200],
+                "error": error,
+            }
+            _FAILURE_LEDGER_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with _FAILURE_LEDGER_PATH.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except Exception as e:  # noqa: BLE001
+            logger.debug("발송 실패 원장 기록 실패(무시): %s", e)

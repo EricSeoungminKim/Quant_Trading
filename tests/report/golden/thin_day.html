@@ -1,0 +1,764 @@
+<!doctype html>
+<html lang="ko" data-market="KR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>한국장 개장 전 브리핑 · 2026-09-05</title>
+<style>
+:root{
+  --paper:#F7F7F7; --card:#FFFFFF;
+  --ink:#0A0B0D; --body:#5B616E; --mute:#7C828A;
+  --hair:#EEF0F3; --rule:#DEE1E6;
+  --accent:#0052FF; --accent-active:#003ECC;
+  --up:#C1272D; --down:#2F5FC4; --alert:#A6570A; --flat:#7C828A;
+  --hm-up:#1E7D45; --hm-down:#D6294B;
+  /* 진입 등급 배지(서브프로젝트 W part 3) 4·5단계 전용 초록 — grade4는 연한,
+     grade5는 진한 초록(hm-up과 동일 색상, "적극 매수"가 히트맵 최대 상승과
+     같은 무게로 읽히도록). 1·2는 --mute, 3은 --accent 재사용(새 변수 없음). */
+  --grade4:#4C9A6B; --grade5:#1E7D45;
+  --shadow:0 4px 12px rgba(10,11,13,.04);
+  --radius-lg:24px; --radius-md:14px; --radius-pill:100px;
+  --fs-2xs:12px; --fs-xs:13px; --fs-sm:14px; --fs-base:15px; --fs-md:16px;
+  --fs-lg:17px; --fs-xl:19px; --fs-2xl:24px; --fs-display:30px;
+  --font-body:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",Pretendard,
+              "Noto Sans KR","Malgun Gothic",sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --paper:#111214; --card:#191B1F;
+  --ink:#EEF0F3; --body:#A7ADB8; --mute:#82868F;
+  --hair:#24262B; --rule:#32353B;
+  --accent:#4D84FF; --accent-active:#6FA0FF;
+  --up:#FF6B60; --down:#5B9BFF; --alert:#E8963C; --flat:#82868F;
+  --hm-up:#3DDC91; --hm-down:#FF6B7A;
+  --grade4:#5FCB93; --grade5:#3DDC91;
+  --shadow:0 4px 16px rgba(0,0,0,.4);
+}}
+*{margin:0;padding:0;box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:var(--font-body);
+  font-size:var(--fs-base); line-height:1.65; letter-spacing:-.003em;
+}
+.num,td.num,.mono{font-family:var(--font-mono);
+  font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1}
+.wrap{max-width:1160px;margin:0 auto;padding:40px 24px 96px}
+
+/* ── 헤더 ─────────────────────────────────────── */
+.masthead{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
+  padding-bottom:18px;border-bottom:2px solid var(--accent)}
+.masthead h1{font-size:var(--fs-display);font-weight:400;letter-spacing:-.01em;line-height:1.2}
+.eyebrow{font-family:var(--font-mono);font-size:var(--fs-2xs);font-weight:600;
+  letter-spacing:0;text-transform:uppercase;color:var(--mute)}
+.masthead .stamp{margin-left:auto;text-align:right}
+.stamp b{display:block;font-size:var(--fs-sm);font-variant-numeric:tabular-nums;font-weight:600}
+.stamp span{font-size:var(--fs-2xs);color:var(--mute)}
+
+/* ── 시간 척추 (시그니처) ───────────────────────── */
+.spine{display:grid;grid-template-columns:minmax(0,4fr) auto minmax(0,6fr);
+  gap:0;align-items:stretch;margin:24px 0 28px;background:var(--card);
+  border:1px solid var(--rule);border-radius:var(--radius-lg);overflow:hidden}
+.spine-past,.spine-future{padding:20px 24px;min-width:0}
+.spine-now{width:3px;background:var(--accent);position:relative;flex-shrink:0}
+.spine-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px}
+.trend-row{display:flex;align-items:center;gap:12px;padding:6px 0}
+.trend-row .nm{font-size:var(--fs-sm);color:var(--body);width:86px;flex-shrink:0;font-weight:550}
+.trend-row .vl{font-size:var(--fs-base);font-weight:700;width:100px;text-align:right;flex-shrink:0}
+.trend-row .pc{font-size:var(--fs-xs);width:70px;text-align:right;flex-shrink:0}
+.daybox{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
+.day{border:1px solid var(--hair);border-radius:var(--radius-md);padding:14px 16px;min-width:0}
+.day.has{border-color:var(--alert);background:color-mix(in srgb, var(--alert) 7%, transparent)}
+.day-h{font-size:var(--fs-base);font-weight:700;margin-bottom:8px;display:flex;
+  align-items:baseline;gap:5px;flex-wrap:wrap}
+.day-h span{font-family:var(--font-mono);font-size:var(--fs-2xs);
+  font-weight:500;color:var(--mute)}
+.day ul{margin:0;padding-left:14px}
+.day li{font-size:var(--fs-sm);line-height:1.5;margin-bottom:8px}
+.day li b{font-weight:650}
+.ev-meta{display:block;font-family:var(--font-mono);
+  font-size:var(--fs-2xs);color:var(--mute);margin-top:1px}
+.day-empty{font-size:var(--fs-xs);color:var(--mute)}
+.later{border-top:1px solid var(--hair);padding-top:8px}
+@media(max-width:640px){.daybox{grid-template-columns:1fr}}
+.ev-list{margin-top:6px}
+.ev{display:flex;gap:9px;align-items:baseline;padding:5px 0;border-top:1px solid var(--hair)}
+.ev:first-child{border-top:0}
+.dd{font-family:var(--font-mono);font-size:var(--fs-2xs);font-weight:700;
+  padding:3px 9px;border-radius:var(--radius-pill);background:var(--ink);color:var(--paper);
+  flex-shrink:0;min-width:46px;text-align:center;letter-spacing:0}
+.dd.hot{background:var(--alert)}
+.ev-nm{font-size:var(--fs-sm);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ev-dt{margin-left:auto;font-size:var(--fs-2xs);color:var(--mute);flex-shrink:0}
+
+/* ── 스탠스 (히어로) ──────────────────────────── */
+.stance-eyebrow{grid-column:1/-1;margin-bottom:-6px}
+.stance{background:var(--card);border:1px solid var(--rule);border-radius:var(--radius-lg);
+  padding:26px 30px;margin:24px 0 24px;box-shadow:var(--shadow);
+  display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:center}
+.stance-badge{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  min-width:88px;padding:14px 12px;border-radius:var(--radius-md);background:var(--flat);color:#fff}
+.stance[data-s="강한 상승 신호"] .stance-badge{background:var(--up)}
+.stance[data-s="약한 상승 신호"] .stance-badge{background:var(--up);opacity:.82}
+.stance[data-s="약한 하락 신호"] .stance-badge{background:var(--down);opacity:.82}
+.stance[data-s="강한 하락 신호"] .stance-badge{background:var(--down)}
+.stance-badge b{font-size:var(--fs-xl);text-align:center;font-weight:700;letter-spacing:0;line-height:1.25}
+.stance-badge span{font-family:var(--font-mono);font-size:var(--fs-2xs);
+  opacity:.85;margin-top:4px;letter-spacing:0}
+.stance-line{font-size:var(--fs-xl);line-height:1.62;font-weight:550;letter-spacing:-.005em}
+.stance-factors{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.fac{font-family:var(--font-mono);font-size:var(--fs-2xs);padding:3px 10px;
+  border-radius:var(--radius-pill);border:1px solid var(--rule);color:var(--body);
+  white-space:nowrap}
+.fac.p{border-color:var(--up);color:var(--up)}
+.fac.m{border-color:var(--alert);color:var(--alert)}
+@media(max-width:640px){.stance{grid-template-columns:1fr}
+  .stance-badge{flex-direction:row;gap:8px;min-width:0}}
+
+/* ── 컨센서스 ─────────────────────────────────── */
+.cons{display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-top:8px;
+  padding:10px 14px;background:var(--paper);border-radius:var(--radius-md)}
+.cons-item{display:flex;flex-direction:column;gap:1px}
+.cons-item .k{font-family:var(--font-mono);font-size:var(--fs-2xs);
+  letter-spacing:0;text-transform:uppercase;color:var(--mute)}
+.cons-item .v{font-size:var(--fs-base);font-weight:700;font-variant-numeric:tabular-nums}
+.opin{display:inline-block;padding:3px 11px;border-radius:var(--radius-pill);font-size:var(--fs-2xs);
+  font-weight:700;background:var(--flat);color:#fff}
+.opin[data-o="매수"],.opin[data-o="강력매수"]{background:var(--up)}
+.opin[data-o="매도"],.opin[data-o="강력매도"]{background:var(--down)}
+.idx-sub{font-family:var(--font-mono);font-size:var(--fs-2xs);color:var(--mute)}
+/* 관심 종목 카드의 AI 전망 산문(2026-08-18, 가독성 재정리) — 옛 마크업은 이
+   문단도 `.idx-sub`(작은 모노스페이스 회색)로 그려서, 결정론 근거 칩 바로
+   아래 붙은 산문이 "칩과 구분 안 되는 회색 텍스트 덩어리"로 읽혔다(사용자
+   피드백). 칩(짧은 근거)과 다른 시각 언어를 준다 — 본문 서체·기본 크기·
+   여유 줄간격 + 위쪽 구분선으로 "여긴 사람이 쓴 듯한 전망 문단"임을
+   드러낸다. 정보는 그대로다 — 재배치·재포맷만(삭제 없음). */
+.watch-prose{grid-column:1/-1;font-family:var(--font-body);font-size:var(--fs-sm);
+  line-height:1.6;color:var(--body);margin-top:8px;padding-top:10px;
+  border-top:1px solid var(--hair)}
+.opin.ai{background:var(--flat)}
+.opin.ai[data-a="강한 긍정 신호"]{background:var(--up)}
+.opin.ai[data-a="약한 긍정 신호"]{background:var(--up);opacity:.78}
+.opin.ai[data-a="약한 부정 신호"]{background:var(--down);opacity:.78}
+.opin.ai[data-a="강한 부정 신호"]{background:var(--down)}
+.facs{grid-column:1/-1;display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}
+
+/* ── 확인할 것 ───────────────────────────────── */
+.brief{display:grid;gap:10px;margin-bottom:28px}
+.bi{display:grid;grid-template-columns:auto 1fr;gap:14px;align-items:start;
+  background:var(--card);border:1px solid var(--rule);border-left:3px solid var(--mute);
+  border-radius:var(--radius-md);padding:16px 20px}
+.bi[data-l="risk"]{border-left-color:var(--alert);border-left-width:5px;
+  background:color-mix(in srgb, var(--alert) 5%, var(--card))}
+.bi[data-l="signal"]{border-left-color:var(--up);border-left-width:5px}
+.bi .tag{font-family:var(--font-mono);font-size:var(--fs-2xs);font-weight:700;
+  letter-spacing:0;text-transform:uppercase;color:var(--mute);padding-top:3px}
+.bi[data-l="risk"] .tag{color:var(--alert)}
+.bi[data-l="signal"] .tag{color:var(--up)}
+.bi b{font-size:var(--fs-md);font-weight:650;display:block;letter-spacing:-.005em}
+.bi p{font-size:var(--fs-sm);color:var(--body);margin-top:4px;line-height:1.55}
+
+/* ── 모듈 ────────────────────────────────────── */
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:24px}
+.mod{grid-column:span 12;background:var(--card);border:1px solid var(--rule);
+  border-radius:var(--radius-lg);padding:28px 32px;min-width:0}
+.mod.half{grid-column:span 6}
+@media(max-width:640px){
+  .wrap{padding:24px 16px 64px}
+  .cons{gap:10px 12px}
+  .cons-item .v{font-size:var(--fs-xs)}
+  .stance-line{font-size:var(--fs-md)}
+}
+/* 2026-08-29 실기기(iPhone) 확인: 위 .sym/.sym-scalp 1열 붕괴 규칙이 여기(파일
+   앞부분)에 있었지만 뒤(약 430행대)의 본 정의가 캐스케이드 동률 규칙(같은
+   우선순위면 나중 선언이 이긴다)에 따라 항상 이겨서 실제로는 한 번도 적용된
+   적이 없었다 — 미디어쿼리 자체는 매치돼도 무효화됐다. 본 정의보다 뒤에 있는
+   전용 모바일 블록(파일 끝부분, .sym/.sym-scalp 재정의 참고)으로 옮긴다. */
+@media(max-width:840px){.mod.half{grid-column:span 12}
+  .spine{grid-template-columns:1fr}.spine-now{width:auto;height:3px}
+  }
+.mod > h2,.mod > summary{font-size:var(--fs-md);font-weight:650;letter-spacing:0;
+  padding-bottom:14px;margin-bottom:18px;border-bottom:1px solid var(--rule);
+  display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.mod > h2 .sub,.mod > summary .sub{font-family:var(--font-mono);font-size:var(--fs-2xs);
+  font-weight:500;letter-spacing:0;text-transform:uppercase;color:var(--mute);
+  margin-left:auto}
+/* ── 섹션 요약(summary) 접힘 — details.mod (2026-09-02 소유자 지시) ──
+   섹션이 늘어나며 리포트가 길어진다는 피드백 — 알짜 요약(제목+결론 한 줄)만
+   보이고 나머지는 펼쳐서 본다. `.mod > h2`와 타이포는 완전히 공유하고(위 병합
+   셀렉터), summary 고유의 클릭 커서·마커·화살표만 여기서 얹는다(.appendix/
+   .engine/.sector 의 기존 접힘 패턴과 동일). 정보는 그대로다 — 접히는 것뿐. */
+.mod > summary{cursor:pointer;list-style:none}
+.mod > summary::-webkit-details-marker{display:none}
+.mod > summary::after{content:"▸";margin-left:8px;font-size:var(--fs-2xs);color:var(--mute)}
+details.mod[open] > summary::after{content:"▾"}
+.mod > summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+/* 결론 한 줄 — 제목(굵게)·부가 배지(.sub)와 다른 무게로, 항상 새 줄에(줄바꿈
+   강제는 flex-basis:100%) 읽힌다. 접혀 있어도 이 줄만으로 오해가 없어야 한다
+   (라벨 자기설명 원칙, 2026-08-29 개편과 동일). */
+.mod-tldr{flex-basis:100%;font-size:var(--fs-sm);font-weight:500;
+  color:var(--body);margin-top:2px}
+.exec-p{font-size:var(--fs-md);line-height:1.7;color:var(--body)}
+.exec-p + .exec-p{margin-top:12px}
+table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
+th{text-align:left;font-size:var(--fs-2xs);font-weight:700;letter-spacing:0;
+  color:var(--mute);padding:0 10px 10px 0;
+  border-bottom:1px solid var(--rule)}
+th.num,td.num{text-align:right}
+td{padding:11px 10px 11px 0;border-bottom:1px solid var(--hair);vertical-align:middle}
+tr:last-child td{border-bottom:0}
+.up{color:var(--up)}.down{color:var(--down)}.flat{color:var(--flat)}
+.spark{display:block;max-width:100%}
+svg{max-width:100%}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -4px;padding:0 4px}
+
+/* ── 모바일 세로 쌓기 (.stack) ────────────────────────────
+   좁은 화면에서 표를 옆으로 밀게 두면 "한눈에 본다"는 목적이 사라진다.
+   640px 아래에서는 한 행(=한 종목)을 카드로 바꾸고, 각 칸을
+   "항목명 ─ 값" 한 줄로 세운다. 항목명은 td 의 data-label 에서 온다.
+   가로 스크롤은 여전히 .tw 가 담당하므로 이 규칙이 실패해도 페이지가
+   가로로 밀리지는 않는다(두 겹 방어). */
+@media(max-width:640px){
+  .stack thead,.stack tr:first-child{display:none}
+  .stack,.stack tbody,.stack tr,.stack td{display:block;width:100%}
+  .stack tr{border:1px solid var(--rule);border-radius:var(--radius-md);
+    padding:14px 16px;margin-bottom:10px;background:var(--card)}
+  .stack td{display:flex;justify-content:space-between;align-items:baseline;
+    gap:12px;padding:5px 0;border:0;text-align:right}
+  .stack td::before{content:attr(data-label);color:var(--mute);
+    font-size:var(--fs-2xs);font-weight:600;text-align:left;flex-shrink:0}
+  /* 종목명 줄은 카드 제목이라 라벨도 정렬도 다르다 */
+  .stack td.stack-title{display:block;text-align:left;font-size:var(--fs-md);
+    font-weight:700;padding:0 0 8px;margin-bottom:6px;
+    border-bottom:1px solid var(--hair)}
+  .stack td.stack-title::before{content:none}
+  /* 스파크라인은 라벨 오른쪽에 그대로 둔다 — 폭이 남으므로 줄이지 않는다 */
+  .stack td[data-label="추이"]{align-items:center}
+  .stack td[data-label="추이"] svg{max-width:60%;height:auto}
+}
+.tw table{min-width:720px}
+.dbar-label{font-family:var(--font-body);font-size:11px;fill:var(--body)}
+.dbar-value{font-family:var(--font-mono);font-size:10.5px;font-weight:650}
+.streak{display:block}
+.cat{font-size:var(--fs-xs);font-weight:700;letter-spacing:0;color:var(--ink);
+  margin:26px 0 10px;padding-left:10px;border-left:3px solid var(--ink)}
+.cat:first-of-type{margin-top:2px}
+.foot{font-size:var(--fs-2xs);color:var(--mute);margin-top:16px;line-height:1.7;
+  padding-top:12px;border-top:1px dashed var(--hair)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px}
+.flow-line{font-size:var(--fs-lg);font-weight:600;line-height:1.55;margin-bottom:18px;
+  padding:14px 18px;background:var(--paper);border-radius:var(--radius-md);
+  border-left:3px solid var(--ink)}
+.themes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.theme{min-width:0}
+.theme-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
+  margin-bottom:6px}
+.theme-h b{font-size:var(--fs-sm);font-weight:700}
+.theme-h .num{font-size:var(--fs-2xs);color:var(--mute)}
+.bar{height:6px;background:var(--hair);border-radius:var(--radius-pill);overflow:hidden;margin-bottom:8px}
+.bar i{display:block;height:100%;background:var(--ink);border-radius:var(--radius-pill)}
+.theme ul{margin:0;padding-left:15px}
+.theme li{font-size:var(--fs-2xs);color:var(--body);line-height:1.45;margin-bottom:3px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rank-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
+.rank-col{min-width:0}
+.rank-col .cat{margin-top:0}
+.rank-list{list-style:none;margin:0;padding:0}
+.rank-list li{display:flex;align-items:baseline;gap:8px;padding:7px 0;
+  border-bottom:1px solid var(--hair);font-size:var(--fs-xs)}
+.rank-list li:last-child{border-bottom:0}
+.rank-list .rk{flex-shrink:0;width:16px;color:var(--mute);font-variant-numeric:tabular-nums}
+.rank-list a{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;font-weight:600}
+.rank-list .num{flex-shrink:0;font-variant-numeric:tabular-nums;font-weight:650}
+.card{background:var(--paper);border:1px solid var(--hair);border-radius:var(--radius-md);padding:18px 20px}
+.card.hero{border-color:var(--accent)}
+.card .k{font-size:var(--fs-2xs);color:var(--body);font-weight:650;margin-bottom:8px;
+  display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.card .v{font-size:var(--fs-2xl);font-weight:700;font-variant-numeric:tabular-nums;
+  font-family:var(--font-mono);letter-spacing:-.01em}
+.card .dlt{font-size:var(--fs-xs);font-variant-numeric:tabular-nums;
+  font-family:var(--font-mono);margin-top:3px}
+.card .note{font-size:var(--fs-2xs);color:var(--mute);margin-top:10px;line-height:1.55}
+.k b{font-size:var(--fs-2xs);font-weight:700;padding:1px 8px;border-radius:var(--radius-pill);letter-spacing:0}
+.tag-완화{background:var(--up);color:#fff}
+.tag-긴축{background:var(--down);color:#fff}
+.tag-중립{background:var(--rule);color:var(--body)}
+.sec-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:8px}
+.sec{border:1px solid var(--hair);border-radius:var(--radius-md);padding:10px 11px;text-align:center}
+.sec b{display:block;font-size:var(--fs-xs);font-weight:700}
+.sec .sym-cd{display:block;margin:1px 0 4px}
+.sec em{font-style:normal;font-size:var(--fs-md);font-weight:700;
+  font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.sec.up{background:color-mix(in srgb, var(--up) 9%, transparent);border-color:color-mix(in srgb, var(--up) 32%, transparent)}
+.sec.down{background:color-mix(in srgb, var(--down) 9%, transparent);border-color:color-mix(in srgb, var(--down) 32%, transparent)}
+.sec.up em{color:var(--up)} .sec.down em{color:var(--down)}
+.tk{display:inline-block;font-family:var(--font-mono);font-size:var(--fs-2xs);
+  font-weight:700;padding:1px 8px;border-radius:var(--radius-pill);margin:1px 3px 1px 0}
+.tk.up{background:color-mix(in srgb, var(--up) 16%, transparent);color:var(--up)}
+.tk.down{background:color-mix(in srgb, var(--down) 16%, transparent);color:var(--down)}
+
+/* ── 히트맵 타일(리포트 UX 2차, 업종/이월후보) ──────────────────────────
+   .hm 은 이름+등락률을 쌓은 기본 타일, .u1..u5/.d1..d5 는 강도(hm_class
+   매크로가 매긴다). 저강도(1~3단계)는 --card 와 섞어 배경만 옅게 물들이고
+   글자는 테마별 --ink 를 그대로 쓴다 — --ink 자체가 라이트/다크에서 이미
+   반전되므로 옅은 배경도 각 테마에서 자연히 대비가 난다. 강한 두 단계
+   (4~5)는 검정과 섞어 배경을 확실히 어둡게 고정한다 — 다크모드의 --hm-up/
+   --hm-down 은 원래 밝은 색이라 그냥 섞으면 흰 글씨가 안 읽힌다(2026-08-17
+   실측). 상승=초록(--hm-up)/하락=연분홍→빨강(--hm-down) — 회사 리포트 관례를
+   따른 것으로, "빨간색 상승은 잘 안 보인다"는 사용자 피드백에 따라 --up(KR
+   상승=빨강 텍스트, 리포트 전역에서 그대로 유지)과는 별개 변수를 쓴다 —
+   히트맵 타일만 반전, 등락 텍스트 색은 기존 그대로. */
+.hm{display:flex;flex-direction:column;justify-content:center;gap:2px;
+  min-height:44px;padding:9px 11px;border-radius:var(--radius-md);
+  text-decoration:none;color:var(--ink);border:1px solid var(--hair)}
+a.hm{cursor:pointer}
+.hm-nm{font-size:var(--fs-xs);font-weight:650;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.hm-pc{font-family:var(--font-mono);font-size:var(--fs-2xs);
+  font-variant-numeric:tabular-nums}
+.hm-cap{font-size:10px;opacity:.82;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;margin-top:1px}
+.hm-cap a{color:inherit}
+.hm .badge-carry{margin:2px 0 0;border-color:currentColor;color:inherit;
+  opacity:.85;align-self:flex-start}
+.hm.flat{background:var(--hair);border-color:var(--hair)}
+.hm.u1{background:color-mix(in srgb, var(--hm-up) 14%, var(--card));
+  border-color:color-mix(in srgb, var(--hm-up) 30%, var(--hair))}
+.hm.u2{background:color-mix(in srgb, var(--hm-up) 28%, var(--card));
+  border-color:color-mix(in srgb, var(--hm-up) 45%, var(--hair))}
+.hm.u3{background:color-mix(in srgb, var(--hm-up) 45%, var(--card));border-color:transparent}
+.hm.u4{background:color-mix(in srgb, var(--hm-up) 75%, black 25%);border-color:transparent;color:#fff}
+.hm.u5{background:color-mix(in srgb, var(--hm-up) 60%, black 40%);border-color:transparent;color:#fff}
+.hm.d1{background:color-mix(in srgb, var(--hm-down) 14%, var(--card));
+  border-color:color-mix(in srgb, var(--hm-down) 30%, var(--hair))}
+.hm.d2{background:color-mix(in srgb, var(--hm-down) 28%, var(--card));
+  border-color:color-mix(in srgb, var(--hm-down) 45%, var(--hair))}
+.hm.d3{background:color-mix(in srgb, var(--hm-down) 45%, var(--card));border-color:transparent}
+.hm.d4{background:color-mix(in srgb, var(--hm-down) 75%, black 25%);border-color:transparent;color:#fff}
+.hm.d5{background:color-mix(in srgb, var(--hm-down) 60%, black 40%);border-color:transparent;color:#fff}
+.hm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));
+  gap:8px;margin-bottom:14px}
+.hm-legend{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.hm-legend .up{color:var(--hm-up)}
+.hm-legend .down{color:var(--hm-down)}
+
+/* 종목 카드 */
+.sym{display:grid;grid-template-columns:1fr auto;gap:6px 16px;padding:17px 0;
+  border-bottom:1px solid var(--hair);min-width:0}
+.sym:last-child{border-bottom:0}
+.sym > div{min-width:0}
+/* 단타 후보 카드(2026-08-18, scalp_grade) — 등급 배지+순위+종목명+점수를
+   한 머리 줄(.scalp-head, flex-wrap)로, 근거 칩은 그 아래 별도 줄로 둔다.
+   2026-08-29 소유자가 실기기(iPhone, 375px)에서 확인: 예전엔 grid(auto 1fr
+   auto) 3칸이었는데, 좁은 화면에서 그리드를 1열로 붕괴시키는 미디어쿼리가
+   캐스케이드 동률 규칙에 밀려 한 번도 적용되지 않아 가운데 칸이 쥐어짜여
+   칩 글자가 한 자씩 줄바꿈됐다(실측 버그) — grid 자체를 버리고 모든 폭에서
+   똑같이 동작하는 flex-wrap 한 줄로 바꾼다(별도 모바일 오버라이드가 필요
+   없어져 이 종류의 버그 자체가 재발하지 않는다). */
+.sym-scalp{padding:17px 0;border-bottom:1px solid var(--hair)}
+.sym-scalp:last-child{border-bottom:0}
+.scalp-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.scalp-head .sym-link{display:inline-flex;align-items:baseline;gap:0;
+  flex:1 1 auto;min-width:0}
+.scalp-score{flex:0 0 auto;margin-left:auto;white-space:nowrap}
+.sym-scalp .sym-meta{margin-top:8px}
+.sym-nm{font-size:var(--fs-lg);font-weight:700;letter-spacing:-.005em;word-break:keep-all}
+.sym-nm-plain{font-size:var(--fs-sm);color:var(--body);word-break:keep-all}
+.sym-cd{font-family:var(--font-mono);font-size:var(--fs-2xs);color:var(--mute);margin-left:7px}
+.sym-link{color:inherit;text-decoration:none}
+.sym-link:hover .sym-nm{text-decoration:underline}
+.sym-meta{grid-column:1/-1;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+/* 칩/배지류(.chip/.grade-badge/.badge-carry/.fac 공용 원칙, 2026-08-29 실기기
+   확인) — 알약 배지는 한 줄로 읽혀야 한다. white-space:nowrap 이 없으면 좁은
+   flex 컨테이너 안에서 한글이 글자 단위로 줄바꿈된다(CJK 기본 줄바꿈 규칙).
+   flex-shrink:0 은 옆 요소(종목명 등)가 늘어나며 칩을 짓누르지 못하게 한다. */
+.chip{font-family:var(--font-mono);font-size:var(--fs-2xs);font-weight:700;
+  letter-spacing:0;padding:3px 10px;border-radius:var(--radius-pill);border:1px solid var(--rule);
+  color:var(--mute);white-space:nowrap;flex-shrink:0}
+.chip.on{background:var(--up);border-color:var(--up);color:#fff}
+.chip.down{background:var(--down);border-color:var(--down);color:#fff}
+.chip.anchor{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+/* 진입 시점 5단계 등급 배지(서브프로젝트 W part 3, entry_grade.py) —
+   1(관망)·2(기다림)=회색, 3(관심)=파랑, 4(분할 매수)=연한 초록, 5(적극 매수)=
+   진한 초록. 숫자가 클수록 진입 확신이 크다는 걸 색 농도로도 드러낸다. */
+.grade-badge{font-family:var(--font-mono);font-size:var(--fs-2xs);font-weight:700;
+  letter-spacing:0;padding:3px 10px;border-radius:var(--radius-pill);color:#fff;
+  background:var(--mute);white-space:nowrap;flex-shrink:0;display:inline-block}
+.grade-badge[data-g="3"]{background:var(--accent)}
+.grade-badge[data-g="4"]{background:var(--grade4)}
+.grade-badge[data-g="5"]{background:var(--grade5)}
+/* 당일 단타 3단계 행동 등급(scalp_grade.py, 2026-08-18) — 보류=회색/진입=
+   파랑/적극 진입=초록(사용자 지시). entry_grade의 `data-g`(1~5 숫자)와 다른
+   속성(`data-sg`, 등급 문자열)을 쓴다 — 두 등급 체계가 셀렉터를 공유하면
+   서로 오염된다. 보류는 `.grade-badge` 기본값(회색, --mute)을 그대로 쓴다. */
+.grade-badge[data-sg="단타 진입"]{background:var(--accent)}
+.grade-badge[data-sg="단타 적극 진입"]{background:var(--grade5)}
+/* 개장일 집계(G Task 3) — 휴장 기간에서 이월된 후보 표시 */
+.badge-carry{font-family:var(--font-mono);font-size:var(--fs-2xs);font-weight:700;
+  letter-spacing:0;padding:3px 10px;border-radius:var(--radius-pill);border:1px solid var(--rule);
+  color:var(--mute);margin-left:7px;white-space:nowrap;flex-shrink:0;display:inline-block}
+.sym-arts{grid-column:1/-1;margin-top:4px}
+.sym-arts a{display:block;font-size:var(--fs-xs);color:var(--accent);text-decoration:none;
+  padding:2px 0 2px 11px;border-left:2px solid var(--hair)}
+.sym-arts a:hover{color:var(--accent-active);border-left-color:var(--accent)}
+.sector{border:1px solid var(--hair);border-radius:var(--radius-md);padding:14px 18px;margin-bottom:10px}
+.sector summary{cursor:pointer;font-size:var(--fs-base);font-weight:650;list-style:none;
+  display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.sector summary::-webkit-details-marker{display:none}
+.sector summary::after{content:"▸";margin-left:auto;font-size:var(--fs-2xs);color:var(--mute)}
+.sector[open] summary::after{content:"▾"}
+.sector .sym{padding:12px 0 0}
+.rel-tree{grid-column:1/-1;margin-top:8px}
+.rel-tree summary{cursor:pointer;font-size:var(--fs-xs);font-weight:650;color:var(--body);
+  list-style:none;padding:2px 0}
+.rel-tree summary::-webkit-details-marker{display:none}
+.rel-item{padding:6px 0 6px 11px;border-left:2px solid var(--hair);margin-top:6px}
+.rel-item .why{font-size:var(--fs-xs);color:var(--body);margin-top:3px}
+
+.engine{background:var(--ink);color:var(--paper);border-radius:var(--radius-lg);padding:20px 24px;
+  grid-column:span 12}
+.engine h2{color:var(--paper);
+  border-bottom-color:color-mix(in srgb, var(--paper) 26%, var(--ink))}
+.engine h2 .sub{color:color-mix(in srgb, var(--paper) 58%, var(--ink))}
+/* 접힌 상태에서는 요약줄만 보인다. 색은 반드시 --paper/--ink 혼합으로 — 이 블록의
+   배경은 --ink 라서 다크모드에서 밝아진다(과거 흰 글씨가 흰 배경에 묻힌 원인). */
+.engine summary{color:var(--paper);font-size:var(--fs-md);font-weight:650;letter-spacing:0;
+  cursor:pointer;list-style:none;display:flex;align-items:baseline;gap:10px;
+  flex-wrap:wrap;padding-bottom:10px}
+.engine summary::-webkit-details-marker{display:none}
+.engine summary::after{content:"▸";margin-left:auto;font-size:var(--fs-2xs);
+  color:color-mix(in srgb, var(--paper) 58%, var(--ink))}
+.engine details[open] summary{border-bottom:1px solid
+  color-mix(in srgb, var(--paper) 26%, var(--ink));margin-bottom:14px}
+.engine details[open] summary::after{content:"▾"}
+.engine summary .sub{font-family:var(--font-mono);font-size:var(--fs-2xs);
+  font-weight:600;color:color-mix(in srgb, var(--paper) 58%, var(--ink))}
+.engine summary:focus-visible{outline:2px solid var(--paper);outline-offset:3px}
+.engine code{display:block;font-family:var(--font-mono);font-size:var(--fs-xs);
+  line-height:1.8;word-break:break-all;color:var(--paper)}
+.engine .note{font-size:var(--fs-xs);margin-top:10px;
+  color:color-mix(in srgb, var(--paper) 62%, var(--ink))}
+
+.miss{border-left:3px solid var(--alert)}
+.miss .why{font-family:var(--font-mono);font-size:var(--fs-2xs);color:var(--alert)}
+.src{font-size:var(--fs-2xs);color:var(--mute);margin-top:14px;opacity:.75;word-break:break-all;
+  font-family:var(--font-mono)}
+.legend{display:flex;gap:20px;flex-wrap:wrap;font-size:var(--fs-2xs);color:var(--mute);
+  margin-top:28px;padding-top:14px;border-top:1px solid var(--rule)}
+.legend b{font-weight:650}
+a{color:inherit}
+/* KR/US 고정 탭(CSS 전용, JS 없음 — 자립 HTML 유지) — 공개 채널 인사이트
+   섹션과 시황 채널 브리핑 섹션 공용(2026-08-18). 라디오 input 은 시각적으로
+   숨기고 label 클릭으로 :checked 를 바꿔 대응하는 패널만 보인다. */
+.mkt-tabs input[type="radio"]{position:absolute;opacity:0;pointer-events:none}
+.mkt-tab-bar{display:flex;gap:8px;margin-bottom:14px}
+.mkt-tab-bar label{font-family:var(--font-mono);font-size:var(--fs-2xs);font-weight:700;
+  padding:5px 14px;border-radius:var(--radius-pill);border:1px solid var(--rule);
+  color:var(--mute);cursor:pointer}
+.mkt-tab-panel{display:none}
+.mkt-tabs .mkt-tab-empty{color:var(--mute);font-size:var(--fs-xs)}
+#tg-kr:checked ~ .mkt-tab-bar label[for="tg-kr"],
+#tg-us:checked ~ .mkt-tab-bar label[for="tg-us"],
+#yt-kr:checked ~ .mkt-tab-bar label[for="yt-kr"],
+#yt-us:checked ~ .mkt-tab-bar label[for="yt-us"]{
+  background:var(--accent);border-color:var(--accent);color:#fff}
+#tg-kr:checked ~ #tg-panel-kr, #tg-us:checked ~ #tg-panel-us,
+#yt-kr:checked ~ #yt-panel-kr, #yt-us:checked ~ #yt-panel-us{display:block}
+@media print{
+  body{background:#fff;font-size:var(--fs-2xs)}
+  .mod,.spine,.bi,.stance{box-shadow:none;break-inside:avoid}
+  .wrap{max-width:100%;padding:0}
+  .engine{background:#fff;color:#000;border:1px solid #000}
+  .engine code,.engine h2{color:#000}
+  /* 접힌 details 요소도 인쇄에서는 전부 펼쳐서 찍는다 — 종이/PDF에서는 클릭이
+     안 되니 접힌 채로 나가면 그 섹션은 통째로 소실된 것과 같다(2026-09-02).
+     open 속성이 없어도 내용을 강제로 보이게 하고, 화살표 마커는 지운다. */
+  details:not([open]) > *:not(summary){display:block !important}
+  details > summary::after{content:none !important}
+}
+
+/* ── 챕터(읽는 흐름 재구성, 2026-08-29) ──────────────────────────────
+   28개 섹션이 데이터 소스 순으로 나열돼 흐름이 끊긴다는 소유자 피드백
+   (2026-08-29) — 위→아래 한 호흡으로 읽히도록 8장으로 묶고, 장 머리마다
+   번호+제목을 준다. 개별 .mod 섹션 마크업/데이터는 건드리지 않고 배치만
+   바꾼다(정보 소실 금지). */
+.toc{display:flex;gap:8px 16px;flex-wrap:wrap;align-items:center;font-size:var(--fs-xs);
+  padding:12px 18px;background:var(--card);border:1px solid var(--rule);
+  border-radius:var(--radius-md);margin:20px 0 0}
+.toc b{color:var(--mute);font-weight:650;margin-right:2px}
+.toc a{color:var(--accent);text-decoration:none;font-weight:600}
+.toc a:hover{text-decoration:underline}
+.chapter-head{display:flex;align-items:baseline;gap:12px;margin:44px 0 18px;
+  padding-bottom:10px;border-bottom:2px solid var(--ink);scroll-margin-top:16px}
+.chapter-head:first-of-type{margin-top:32px}
+.chapter-no{font-family:var(--font-mono);font-size:var(--fs-xl);font-weight:700;
+  color:var(--mute)}
+.chapter-title{font-size:var(--fs-xl);font-weight:700;letter-spacing:-.005em}
+/* ── 핵심 숫자 줄(1장, daily_wrap.py 의 .key 박스 스타일 차용) ── */
+.key{background:var(--paper);border:1px solid var(--rule);border-radius:var(--radius-md);
+  padding:14px 18px;margin:16px 0 8px;display:flex;flex-wrap:wrap;gap:10px 26px}
+.key .kv{display:flex;flex-direction:column;gap:2px}
+.key .kv .k{font-size:var(--fs-2xs);color:var(--mute);font-weight:650}
+.key .kv .v{font-size:var(--fs-md);font-weight:700;font-variant-numeric:tabular-nums}
+.key-note{flex-basis:100%;font-size:var(--fs-2xs);color:var(--mute)}
+/* 시세 스냅샷 기준 시각 캡션(2026-08-29 소유자 피드백) — 1장 핵심 숫자 줄·
+   6장 종목 후보 머리·부록 시세 표 머리 3곳에서 재사용한다. */
+.quote-time{font-size:var(--fs-2xs);color:var(--mute);font-family:var(--font-mono)}
+/* ── 지수별 전망 카드(3장, index_outlook) ── */
+.idx-outlook-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+  gap:16px;margin-top:14px}
+.idx-outlook-card .v{font-size:var(--fs-xl)}
+/* 상승/하락 확률 쌍 + 가로 게이지(2026-09-02, 확률 엔진 v2 필드 — up_prob/
+   down_prob 가 있을 때만 쓰인다. 없으면 기존 단일 상승확률 문구로 폴백). */
+.prob-pair{display:flex;gap:14px;font-size:var(--fs-sm);margin-bottom:5px}
+.prob-pair b{font-variant-numeric:tabular-nums}
+.prob-gauge{height:8px;border-radius:var(--radius-pill);overflow:hidden;
+  display:flex;background:var(--hair)}
+.prob-gauge i{display:block;height:100%}
+.prob-gauge i.up{background:var(--up)}
+.prob-gauge i.down{background:var(--down)}
+/* ── 부록(8장) 접힘 — .engine/.sector 의 기존 details 패턴 재사용 ── */
+.appendix{border:1px solid var(--rule);border-radius:var(--radius-lg);
+  padding:22px 26px;margin-top:8px}
+.appendix>summary{cursor:pointer;font-weight:650;font-size:var(--fs-md);
+  list-style:none;display:flex;align-items:baseline;gap:8px}
+.appendix>summary::-webkit-details-marker{display:none}
+.appendix>summary::after{content:"▸";margin-left:auto;font-size:var(--fs-2xs);color:var(--mute)}
+.appendix[open]>summary::after{content:"▾"}
+.appendix>.grid,.appendix>section{margin-top:18px}
+/* ── 점수 내역 접힘(6장 종목 후보 카드) ── */
+.score-breakdown{grid-column:1/-1;margin-top:6px}
+.score-breakdown summary{cursor:pointer;font-size:var(--fs-xs);font-weight:650;
+  color:var(--body);list-style:none}
+.score-breakdown summary::-webkit-details-marker{display:none}
+
+/* ── 뉴스 불릿 리스트(시황 다이제스트·뉴스 흐름 두 절 공용, 2026-08-29
+   소유자 피드백) ── 산문 덩어리로 붙어 읽히던 기사 나열을 기사 단위 불릿으로
+   쪼갠다. 데이터는 기존 두 절이 이미 받던 항목 그대로다(제목·링크·매체·시각·
+   중복배지) — 여기 더해지는 "관련 종목" 칩만 cont(뉴스 종목 사전)의 기존
+   링크를 역인덱스한 순수 조회(link_to_symbols, render.py)다. 추가 LLM 호출·
+   추가 수집 없음. */
+.news-list{list-style:none;margin:0;padding:0}
+.news-list li{padding:2px 0 10px 14px;border-left:2px solid var(--hair);margin-bottom:10px}
+.news-list li:last-child{margin-bottom:0}
+.news-meta{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:5px}
+/* 헤드라인 앵커는 클래스를 안 단다 — 오늘의 시황 테스트(test_render.py)가
+   `<a href="..." target="_blank" rel="noopener">제목</a>` 를 속성 추가 없이
+   그대로 단언한다. 대신 구조(li 바로 아래 a)로만 골라 스타일한다 — .news-syms
+   안의 종목 칩 a 는 div 한 겹 아래라 이 셀렉터에 안 걸린다. */
+.news-list li > a{display:block;font-size:var(--fs-sm);line-height:1.55;
+  color:var(--accent);text-decoration:none;overflow-wrap:anywhere}
+.news-list li > a:hover{color:var(--accent-active);text-decoration:underline}
+.news-syms{margin-top:6px;display:flex;gap:5px;flex-wrap:wrap}
+.news-syms a{font-family:var(--font-mono);font-size:var(--fs-2xs);padding:1px 8px;
+  border-radius:var(--radius-pill);border:1px solid var(--rule);color:var(--mute);
+  text-decoration:none}
+.news-syms a:hover{color:var(--accent);border-color:var(--accent)}
+
+/* ── 모바일 반응형 전면 재점검(2026-08-29 소유자 피드백) ── 375px 폭에서
+   페이지 가로 스크롤이 절대 없어야 한다. 원칙: (1) 넓은 표는 이미 .tw/.stack
+   이 자체 스크롤을 갖는다(daily_wrap.py 의 .scroll>table 관례와 동일 — 표만
+   옆으로 밀리고 페이지는 안 밀린다). (2) 다열 그리드는 auto-fit/auto-fill 로
+   이미 1열로 붕괴하지만, AAII 카드 하나만 인라인 스타일로 고정 2열
+   (grid-column span 을 2 로 강제)을 걸어 실제 가로 스크롤의 원인이었다 —
+   클래스로 옮겨 좁은 화면에서 1열로 되돌린다. (3) html 에 overflow-x:hidden 을 겹으로 걸어
+   두 번째 방어선을 둔다(위 규칙이 실패해도 스크롤바 자체가 생기지 않는다). */
+html{overflow-x:hidden}
+.mkt-tab-bar{flex-wrap:wrap}
+.chapter-head{flex-wrap:wrap}
+.card.card-wide{grid-column:span 2}
+@media(max-width:640px){
+  .card.card-wide{grid-column:span 1}
+  /* .sym 카드(뉴스 노출 상위·중기 관심·AI 심층 해석 등 여러 절이 공유하는
+     카드) 모바일 1열 붕괴 — 이 규칙은 본 정의(.sym, 위 434행 부근)보다 뒤에
+     있어야 캐스케이드 동률에서 이긴다(2026-08-29 실기기 확인, .sym-scalp 와
+     같은 원인의 버그를 같은 방식으로 고친다 — 자세한 사연은 .sym-scalp 규칙
+     옆 주석 참고). 1열이 되면 이름·가격·요인 칩(.sym-meta)·점수 내역 접힘이
+     모두 카드 전체 폭을 그대로 받아 좁은 화면에서도 칩이 쥐어짜이지 않는다. */
+  .sym{grid-template-columns:1fr}
+  .sym > div:nth-child(2){text-align:left !important}
+}
+@media(max-width:480px){
+  :root{--fs-display:24px;--fs-2xl:19px;--fs-xl:16px}
+  .wrap{padding:20px 12px 56px}
+  .mod{padding:20px 16px}
+  .appendix{padding:16px 14px}
+  .spine-past,.spine-future{padding:16px 14px}
+  .trend-row{gap:8px}
+  .trend-row .nm{width:56px;font-size:var(--fs-2xs)}
+  .trend-row .vl{width:76px;font-size:var(--fs-xs)}
+  .trend-row .pc{width:52px}
+  .key{padding:12px 14px;gap:8px 18px}
+  .toc{padding:10px 14px;gap:6px 12px}
+  .stance{padding:20px 18px}
+}
+</style>
+</head>
+<body><div class="wrap">
+<header class="masthead">
+  <div>
+    <div class="eyebrow">개장 60분 전 브리핑</div>
+    <h1>한국장 · 2026-09-05</h1>
+  </div>
+  <div class="stamp">
+    <b class="mono">08:00 KST</b>
+    <span>핵심 시세·뉴스 소스 정상· 스키마 v1
+    </span>
+  </div>
+</header>
+
+<nav class="toc">
+  <b>목차</b>
+  <a href="#ch1">1. 한눈 요약</a>
+  <a href="#ch3">3. 오늘의 지수 전망</a>
+  <a href="#ch4">4. 시장 흐름</a>
+  <a href="#ch6">6. 종목 후보</a>
+  <a href="#ch7">7. 우리 시스템의 대응</a>
+  <a href="#ch8">8. 부록</a>
+</nav>
+
+<div class="chapter-head" id="ch1"><span class="chapter-no">1</span><h2 class="chapter-title">한눈 요약</h2></div>
+
+<div class="key">
+  <div class="kv"><span class="k">오늘 스탠스</span>
+    <span class="v">지수 모멘텀(참고) · 50점</span></div>
+  <div class="kv"><span class="k">결측 시세·뉴스 소스</span>
+    <span class="v">없음</span></div>
+  <div class="key-note">리포트 생성 08:00 KST 기준</div>
+</div>
+
+
+
+
+<div class="chapter-head" id="ch3"><span class="chapter-no">3</span><h2 class="chapter-title">오늘의 지수 전망</h2></div>
+<section class="stance" data-s="중립">
+  <div class="stance-eyebrow eyebrow">엔진 예측</div>
+  <div class="stance-badge">
+    <b>지수 모멘텀(참고)</b><span>50점 / 100점 · 베타</span>
+  </div>
+  <div>
+    <div class="stance-line">임계를 넘긴 요인이 없다 — 참고용 스탠스</div>
+    <div class="stance-factors">
+    </div>
+  </div>
+</section>
+
+
+
+
+<div class="chapter-head" id="ch4"><span class="chapter-no">4</span><h2 class="chapter-title">시장 흐름</h2></div>
+<section class="spine">
+  <div class="spine-past">
+    <div class="spine-head"><span class="eyebrow">지난 1년</span></div>
+    <p class="mono" style="color:var(--mute);font-size:12px">시세 결측</p>
+  </div>
+
+  <div class="spine-now"></div>
+
+  <div class="spine-future">
+    <div class="spine-head">
+      <span class="eyebrow">다가오는 주요 지표 (KST)</span>
+    </div>
+
+    <div class="daybox">
+      <div class="day none">
+        <div class="day-h">오늘
+</div>
+        <p class="day-empty">예정 없음</p>
+      </div>
+      <div class="day none">
+        <div class="day-h">내일
+</div>
+        <p class="day-empty">예정 없음</p>
+      </div>
+      <div class="day none">
+        <div class="day-h">모레
+</div>
+        <p class="day-empty">예정 없음</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+<details class="mod">
+  <summary>🇺🇸 실시간 헤드라인<span class="sub">텔레그램 미국 뉴스 채널</span></summary>
+  <p class="mkt-tab-empty">채널 없음 — 등록된 usnews tier 채널이 없다(아래 "📡 채널 브리핑 종합" 참고)</p>
+</details>
+<div class="grid">
+</div>
+
+
+<div class="chapter-head" id="ch6"><span class="chapter-no">6</span><h2 class="chapter-title">종목 후보</h2></div>
+
+<p class="quote-time" style="margin:-10px 0 8px">리포트 생성 08:00 KST 기준</p>
+
+<p class="foot" style="margin:-6px 0 18px">
+  <b>점수는 이렇게 계산됩니다</b> — 아래 단타 스코어러 점수(100점 만점)는 뉴스 38 · 외국인 수급 28 ·
+  트렌딩 13 · 촉매(공시/테마) 13 · 텔레그램 8 로 나뉜 결정론 규칙 점수다(별도 채점기). 뉴스 노출
+  상위 종목의 "AI 점수"는 뉴스·수급·컨센서스에 "트렌딩 점수"(거래 랭킹 보드) 확인 여부를 더해
+  가중합한 것이다(2026-09-06 정확도 감사 반영 — 트렌딩 점수가 뉴스 건수보다 실측 예측력이 높아
+  더 무겁게 반영되고, 뉴스+트렌딩이 동시에 확인되면 최상위 등급 보너스가 붙는다) — "트렌딩 점수"는
+  그 입력이 된 원점수를 그대로 따로도 보여준다. 카드를 펼치면 요인별 가감을 확인할 수 있다.
+</p>
+<p class="foot" style="margin:-6px 0 18px">
+  <b>검증 지평</b> — 트렌딩 점수: 미검증  · AI 집계 점수: 미검증</p>
+<details class="mod" open>
+  <summary>뉴스 노출 상위 종목<span class="mod-tldr">1종목 · 노출 1위 삼성전자(오늘 1건)</span></summary>
+  <div class="sym">
+    <div>
+      <a class="sym-link" href="https://finance.naver.com/item/main.naver?code=005930" target="_blank" rel="noopener"><span class="sym-nm">삼성전자</span><span class="sym-cd">005930</span></a>
+    </div>
+    <div style="text-align:right">
+    </div>
+    <div class="sym-meta">
+      <span class="chip">뉴스 오늘 1건</span>
+    </div>
+    <div class="cons">
+      <div class="cons-item"><span class="k">엔진 점수</span>
+        <span class="v"><span class="opin ai" data-a="중립">중립</span>
+          <span class="idx-sub">50점 / 100점</span></span></div>
+      <div class="cons-item"><span class="k">수급</span><span class="v idx-sub">수급 미수집(랭킹 상위 6종목만 수집)</span></div>
+    </div>
+    
+  </div>
+  <p style="font-size:11.5px;color:var(--mute);margin-top:12px">
+    노출 빈도 순. 연속 등장은 <b>근거의 누적</b>을 뜻할 뿐 호재/악재 판정이 아니다 —
+    판정은 다음 단계에서 붙는다.</p>
+  <p class="foot">
+    <b>출처 표기</b> 네이버가 큐레이션한 테마 편입 사유(사실) ·
+    <b>근거점수</b> 최근 뉴스에서 두 종목이 함께 언급된 정도(0~100, 우리 추정) ·
+    <b>외</b>=외국인·<b>기</b>=기관 순매수(주식 수) ·
+    <b>N일치 축적</b> 우리 원장에 쌓인 실측 일수
+  </p>
+</details>
+<details class="mod">
+  <summary>🇺🇸→🇰🇷 미국발 섹터 수혜주<span class="sub">텔레그램 미국 헤드라인 · 섹터별 국내 수혜주</span></summary>
+  <p class="mkt-tab-empty">채널 없음 — 등록된 usnews tier 채널이 없다(아래 "📡 채널 브리핑 종합" 참고)</p>
+</details>
+
+<div class="chapter-head" id="ch7"><span class="chapter-no">7</span><h2 class="chapter-title">우리 시스템의 대응</h2></div>
+<section class="mod engine">
+  <details>
+    <summary>엔진 판독값<span class="sub">기계 판독용 · 눌러서 펼치기</span></summary>
+    <code>AUTO_WATCH: 없음</code>
+    <p class="note">
+      같은 디렉토리의 <b>KR_engine.json</b> 에 정규화 피처가 들어 있다
+      (종목별 AI 점수·트렌딩 점수·랭킹 보드 순위·뉴스 건수).
+      이 줄은 거래 엔진의 watch-score 확신도 엔진 입력 형식과 같고,
+      <b>08:12 KST 자동 편입 크론이 실제로 이 값을 읽는다</b>
+      — 통과한 종목만 관심종목에 등록된다.
+    </p>
+  </details>
+</section>
+
+<div class="chapter-head" id="ch8"><span class="chapter-no">8</span><h2 class="chapter-title">부록</h2></div>
+
+
+<div class="legend">
+  <span><b class="up">■</b> 상승 &nbsp; <b class="down">■</b> 하락 — 한국 관례(적=상승)를 따른다. 미국 표기와 반대다.</span>
+  <span><b>D-day</b> 개장일 기준 잔여일</span>
+  <span><b>연속</b> 뉴스 원장에 며칠 연달아 등장했는지</span>
+</div>
+
+</div></body></html>

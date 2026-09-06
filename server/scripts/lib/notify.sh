@@ -164,8 +164,16 @@ _notify_enqueue() {  # $1=source $2=text $3=level
     "$(_notify_json_escape "${NOTIFY_LANE:-}")")"
   # 크론이 겹치면 3900자 메시지 두 개가 섞여 JSON 이 깨진다(append 원자성은
   # PIPE_BUF 까지만). flock 이 있으면 쓴다 — 없으면(맥) 그냥 append.
+  #
+  # **락은 큐 파일 자신이 아니라 전용 `<큐>.lock` 파일에 건다**(2026-09-06 —
+  # 마감 리포트 소비 쪽을 크래시에도 안전하게 만들면서 생긴 짝 규칙). 소비 쪽
+  # (quant/apps/cli.py: `_wrap_consume_queue`)이 큐 파일을 `os.replace()`로
+  # 통째로 원자적 치환한다 — 락이 큐 파일 자신의 inode 에 걸려 있으면, 치환
+  # 직전에 이미 그 이름을 열어 락을 기다리던 이 함수가 풀린 뒤 **사라질 옛
+  # inode** 에 쓰게 돼 그 한 줄이 유실된다. 전용 lock 파일은 절대 치환되지
+  # 않으므로 그 문제가 없다 — 반드시 두 파일이 짝을 맞춰야 한다.
   if command -v flock >/dev/null 2>&1; then
-    ( flock 200; printf '%s\n' "$line" >&200 ) 200>>"$f" 2>/dev/null
+    ( flock 200; printf '%s\n' "$line" >> "$f" ) 200>>"${f}.lock" 2>/dev/null
     rc=$?
   else
     printf '%s\n' "$line" >> "$f" 2>/dev/null
@@ -224,6 +232,50 @@ else:
 ' "$lane" "$file" 2>/dev/null
 }
 
+# 발송 실패 원장(2026-09-06 라이브 준비 4단계) — HTML 재시도까지 전부 실패한
+# 경우에만 남긴다. `quant/adapters/notify/telegram.py`의 엔진 노티파이어도 같은
+# 파일·같은 스키마에 쓴다(TelegramNotifier._record_failure) — 셸 크론이든 엔진이든
+# 발송 실패는 한곳에서 셀 수 있어야 한다(단일 정의 원칙, tglanes.py 와 같은 이유).
+# `cli health`의 `notify_failure_findings`(quant/control/health.py)가 오늘 치를
+# 세어 임계(기본 3건) 초과 시 ops_watch.sh 경보로 올린다 — 이 파일 자체는 세지
+# 않는다. 쓰기 실패는 삼킨다(원장이 발송 흐름을 막으면 안 된다).
+_notify_record_failure() {  # $1=text
+  local f
+  f="${NOTIFY_FAILURE_LEDGER:-$_NOTIFY_ROOT/data/ledger/notify_failures.jsonl}"
+  mkdir -p "$(dirname "$f")" 2>/dev/null || true
+  printf '{"ts":"%s","source":"%s","lane":"%s","text":"%s"}\n' \
+    "$(date +%Y-%m-%dT%H:%M:%S%z)" \
+    "$(_notify_json_escape "$(basename "${0:-unknown}" .sh)")" \
+    "$(_notify_json_escape "${NOTIFY_LANE:-}")" \
+    "$(_notify_json_escape "${1:0:200}")" \
+    >> "$f" 2>/dev/null || true
+}
+
+# 레인별 레이트 리밋(2026-09-06) — 텔레그램 실측 한도(~20건/분/챗)에 안전마진을
+# 두고, 최근 60초 안에 같은 레인으로 15건을 넘겨 보냈으면 짧게 쉰다. 정밀한
+# 토큰버킷이 아니라 "너무 자주 부르면 잠깐 쉰다" 수준의 마지막 방어선이다 — 이
+# 저장소의 크론 시각은 애초에 몰리지 않게 흩어놨다(server/crontab.txt 상단 주석).
+# 상태 파일은 `NOTIFY_RATE_DIR`(테스트가 격리용으로 주입)이 없으면
+# `data/state/tg_rate_<레인>.log`에 최근 전송 시각(epoch 초)만 한 줄씩 쌓는다 —
+# 오래된 시각은 매 호출마다 걸러내 파일이 무한히 자라지 않는다.
+_notify_rate_limit() {  # $1=lane(비어 있을 수 있다)
+  local lane="${1:-_default}" f now cutoff kept count
+  f="${NOTIFY_RATE_DIR:-$_NOTIFY_ROOT/data/state}/tg_rate_${lane// /_}.log"
+  mkdir -p "$(dirname "$f")" 2>/dev/null || true
+  now="$(date +%s)"
+  cutoff=$((now - 60))
+  kept=""
+  if [ -f "$f" ]; then
+    kept="$(awk -v c="$cutoff" '$1 > c' "$f" 2>/dev/null)"
+  fi
+  count=0
+  [ -n "$kept" ] && count="$(printf '%s\n' "$kept" | wc -l | tr -d ' ')"
+  if [ "${count:-0}" -ge 15 ]; then
+    sleep "${NOTIFY_RATE_SLEEP:-4}"
+  fi
+  { [ -n "$kept" ] && printf '%s\n' "$kept"; printf '%s\n' "$now"; } > "$f" 2>/dev/null || true
+}
+
 # 실제 발송. 0=보냄(또는 토큰 없어 no-op), 1=발송 실패.
 #
 # **실패를 삼키지 않는다** — ops_watch.sh 가 `if tg ...; then mark; fi` 로 첫 알림
@@ -265,6 +317,7 @@ _notify_send() {  # $1=text
     printf '[DRY_RUN][TG]\n%s\n' "$text"
     return 0
   fi
+  _notify_rate_limit "$lane"
   local thread_args=()
   if [ -n "$thread_id" ]; then
     thread_args=(-d "message_thread_id=${thread_id}")
@@ -275,6 +328,7 @@ _notify_send() {  # $1=text
   resp="$(curl -s -m 15 "${TELEGRAM_API_BASE:-https://api.telegram.org}/bot${token}/sendMessage" \
     -d "chat_id=${chat_id}" "${thread_args[@]}" --data-urlencode "text=$text" 2>/dev/null)"
   case "$resp" in *'"ok":true'*) return 0 ;; esac
+  _notify_record_failure "$text"
   return 1
 }
 

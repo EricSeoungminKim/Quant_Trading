@@ -70,7 +70,18 @@ def _attributes(sym: dict) -> dict:
         "best_board_rank": min(boards.values()) if boards else None,
         "n_boards": len(boards),
         "relative_volume": sym.get("relative_volume"),
+        # 상대 거래량 계산 출처(2026-09-07 Phase 2 §5) — "ohlcv_v1"이면
+        # OHLCV 폴백(quant.analyze.render.machine_payload), 없으면(None
+        # 필드 자체가 없음) 트렌딩 랭킹 보드 기반 값이거나 relative_volume
+        # 자체가 결측이다.
+        "relative_volume_source": sym.get("relative_volume_source"),
         "trending_baseline_days": sym.get("trending_baseline_days"),
+        # 승격 거부 사유(2026-09-07 Phase 2 §5, SUMMARY.md §⑤) — 후보가
+        # 아닌 종목만 채워진다(quant.analyze.render.rejection_reasons).
+        # 후보 게이트(방어 국면)로 관망이 된 종목은 이 필드가 아니라
+        # `watch_status`로 별도 표시된다 — 서로 다른 단계의 서로 다른 사유.
+        "rejection_reason": sym.get("rejection_reason"),
+        "watch_status": sym.get("watch_status"),
         # --- 수급·컨센서스 ---
         "foreign_buy_streak": sym.get("foreign_buy_streak"),
         "inst_buy_streak": sym.get("inst_buy_streak"),

@@ -9,10 +9,15 @@
 # 재사용 금지 — 사고 시 폭발 반경을 공개 저장소로 한정).
 #
 # 발행 게이트(2026-09-06, 오너 요구사항: "공개 사이트는 유실되거나 틀린 데이터를
-# 절대 보여주면 안 된다") — push 하기 전에 `quant.apps.cli validate-performance`
-# 로 $SRC 를 검증한다. 지금 이미 공개 저장소에 올라가 있는 버전(덮어쓰기 전에
-# 미리 떠 둔다)을 `--previous`로 넘겨 체결 수 역행(데이터 유실)까지 본다.
-# 오류가 하나라도 있으면 push를 **하지 않고** ops 레인으로 알린다.
+# 절대 보여주면 안 된다") — push 하기 전에 두 단계를 통과해야 한다:
+# 1) `quant.apps.cli validate-performance` — $SRC 한 장의 내부 정합성(구조·
+#    타입·자기모순). 지금 이미 공개 저장소에 올라가 있는 버전(덮어쓰기 전에
+#    미리 떠 둔다)을 `--previous`로 넘겨 체결 수 역행(데이터 유실)까지 본다.
+# 2) `quant.apps.cli performance-xcheck`(Phase 5) — 원장에서 사이트 payload와
+#    스코어보드 "에폭 이후" 절을 독립 재계산해 대조(트립 수·승률·기대값·손익·
+#    전체 지분 합). 사이트가 보여줄 숫자가 텔레그램 스코어보드 숫자와 실제로
+#    같은지는 1)만으로는 못 잡는다.
+# 둘 중 하나라도 오류가 있으면 push를 **하지 않고** ops 레인으로 알린다.
 #
 # 크론: publish_performance.sh 직후(KR 16:25 / US 06:25).
 # 조용한 것이 기본값 — 검증 실패를 포함해 실패해도 exit 0(리포팅 레인이 엔진을
@@ -72,6 +77,24 @@ if [ "$VALIDATE_RC" -ne 0 ]; then
   FIRST3="$(printf '%s\n' "$VALIDATE_OUT" | grep '^error|' | head -3 | sed -E 's/^error\|([^|]*)\|(.*)$/• \1: \2/')"
   notify_now "🚨 공개 성과 JSON 검증 실패 — push 중단
 ${FIRST3}"
+  exit 0
+fi
+
+# 교차대조(2026-09-06, Phase 5) — payload 한 장의 내부 정합성(위 validate-performance)
+# 만으로는 "사이트가 보여줄 숫자가 텔레그램 스코어보드 숫자와 실제로 같은가"를
+# 못 잡는다. `performance-xcheck`는 원장에서 사이트 payload와 스코어보드 "에폭
+# 이후" 절을 독립 재계산해 대조한다(트립 수·승률·기대값·손익·전체 지분 합).
+# settings.yaml/원장 모두 기본 상대경로라 cwd가 ROOT여야 한다(위 validate 호출과
+# 같은 이유로 서브셸).
+XCHECK_OUT="$(cd "$ROOT" && "$VENV_PY" -m quant.apps.cli performance-xcheck 2>>"$LOG")"
+XCHECK_RC=$?
+printf '%s\n' "$XCHECK_OUT" >>"$LOG"
+
+if [ "$XCHECK_RC" -ne 0 ]; then
+  log "성과 교차대조 실패 — push 중단"
+  XFIRST3="$(printf '%s\n' "$XCHECK_OUT" | grep '^error|' | head -3 | sed -E 's/^error\|([^|]*)\|(.*)$/• \1: \2/')"
+  notify_now "🚨 공개 성과 교차대조 실패(사이트↔스코어보드 불일치) — push 중단
+${XFIRST3}"
   exit 0
 fi
 

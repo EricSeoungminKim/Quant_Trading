@@ -35,3 +35,10 @@ fi
 
 echo "$OUT"
 notify_auto "report_accuracy" "${OUT:0:3900}"
+
+# 회고 카드 자동화(2026-09-06, Phase 6 재발 방지 루프) — 정확도 스코어카드
+# 직후, 성숙한 세션(전날 KR 오전/마감·전날 US 오전)의 날짜별 회고 카드를
+# 만들어 텔레그램 브리핑 레인에 한 줄씩 보낸다. 이 파일의 성패와 무관하게
+# 독립 로그(data/report_review.log)로 실패를 격리한다 — 위 정확도 스코어카드
+# 발송은 이미 끝난 뒤라 아래에서 뭐가 터져도 위 알림엔 영향이 없다(`|| true`).
+./server/scripts/report_review_daily.sh >> data/report_review.log 2>&1 || true

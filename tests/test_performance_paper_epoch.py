@@ -54,7 +54,7 @@ def _fake_start_capital(strategy_id: str) -> dict[str, float]:
 
 
 def _patch_epoch(monkeypatch):
-    monkeypatch.setattr(performance_module, "paper_epoch_ts", lambda: EPOCH_TS)
+    monkeypatch.setattr(performance_module, "paper_epoch_ts", lambda trades=None: EPOCH_TS)
     monkeypatch.setattr(performance_module, "strategy_start_capital", _fake_start_capital)
 
 
@@ -104,7 +104,7 @@ def _ledger() -> list[dict]:
 def test_paper_epoch_empty_when_dependency_not_landed(monkeypatch):
     """`paper_epoch_ts`가 아직 없으면(ledger.py 착륙 전) 이 함수 하나 때문에
     payload 전체가 깨지면 안 된다 — `paper_epoch`는 빈 dict."""
-    def _not_landed():
+    def _not_landed(trades=None):
         raise NotImplementedError("landing pending")
 
     monkeypatch.setattr(performance_module, "paper_epoch_ts", _not_landed)

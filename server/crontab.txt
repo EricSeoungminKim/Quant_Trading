@@ -369,6 +369,17 @@
 # 매주 금 16:10 KST — 누적/주간 스코어보드 (전략별 승률·payoff·거래당 bps → 텔레그램).
 # 숫자가 자본 배분을 결정한다 — 주말에 전략을 끄고 켤 판단 근거.
 10 16 * * 5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/scoreboard_weekly.sh >> data/scoreboard.log 2>&1
+
+# 매주 금 16:23 KST — 리포트 회고 주간 집계(2026-09-06, Phase 6 재발 방지
+# 루프). 스코어보드(16:10) 뒤, 16:20 발행-사이트 크론(publish_performance.sh
+# 1-5)·16:25 shadow-judge(1-5)와 안 겹치게 3분 띄웠다. 그 주 원장(data/ledger/
+# report_review.jsonl, report_review_daily.sh가 06:4x에 매일 쌓는다) 행을
+# 모아 스탠스/언급 적중률·태그별 성과·IC 분포·recall·반복 미포착 상위 3을
+# 텔레그램 브리핑 레인 + data/report_review/WEEK_YYYY-Www.md 로 낸다. 집계할
+# 행이 없으면 조용히 스킵(scoreboard_weekly.sh 와 달리 "매주 반드시 뭔가 낸다"
+# 는 계약이 아니다 — 자동화가 갓 시작된 첫 몇 주는 표본이 비거나 적을 수 있다).
+23 16 * * 5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/report_review_daily.sh weekly >> data/report_review.log 2>&1
+
 # 자동 판정 루프(2026-08-24) — 파라미터 변경 감지 + 이중차분 효과 판정 + 전략
 # 사망 경보. **판정할 게 없으면 텔레그램을 보내지 않는다**(조용한 것이 기본값).
 # 매일 도는 이유: 판정은 표본이 차는 순간 나와야지 주 단위로 미루면 최대 6일

@@ -295,7 +295,10 @@ def test_stance_tier_matches_label_100_for_score100():
 def test_stance_label_is_generic_same_day_reference_wording():
     """2026-09-06 감사: 방향콜 D+3 적중률 25.9%(CI가 50%를 배제, n=27)라
     "강한 상승 신호"처럼 여러 날짜에 걸친 확신을 주장하는 문구를 쓰지 않는다
-    — score(음/양/중립) 어느 쪽이든 label은 고정 문구다."""
+    — score(음/양/중립) 어느 쪽이든 label은 고정 문구다. Phase 2 §1
+    (SUMMARY.md §① 전체 34.8%, n=23)로 "지수 모멘텀(참고, 적중 35%)"로
+    갱신 — 이 함수의 출력이 더 이상 리포트의 1차 스탠스가 아니라 진단(참고)
+    임을 라벨 스스로 밝힌다."""
     from quant.analyze.briefing import STANCE_LABEL
 
     bullish = stance(_snap(market=_quotes(**{"^KS11": 0.0, "^VIX": 12.0}),
@@ -305,9 +308,53 @@ def test_stance_label_is_generic_same_day_reference_wording():
                      {"quotes": {}, "flow": {}})
     neutral = stance(_snap(), {}, {"quotes": {}, "flow": {}})
     for s in (bullish, bearish, neutral):
-        assert s["label"] == STANCE_LABEL == "당일 스탠스(참고)"
+        assert s["label"] == STANCE_LABEL == "지수 모멘텀(참고)"
         assert "상승" not in s["label"] and "하락" not in s["label"]
         assert "강한" not in s["label"] and "약한" not in s["label"]
+
+
+# ── 국면(regime) 기반 1차 스탠스 (Phase 2 §1) ───────────────────────────
+
+from quant.analyze.briefing import REGIME_LABEL_KR, regime_stance  # noqa: E402
+
+
+def test_regime_stance_missing_is_honest_unmeasured():
+    out = regime_stance(None)
+    assert out["measured"] is False
+    assert out["label"] is None
+    assert "판정 불가" in out["line"]
+
+
+def test_regime_stance_missing_label_is_honest_unmeasured():
+    assert regime_stance({"risk_multiplier": 1.0})["measured"] is False
+
+
+def test_regime_stance_renders_label_multiplier_and_reasons():
+    out = regime_stance({
+        "label": "defensive", "risk_multiplier": 0.5,
+        "reasons": ["QQQ 20일선 대비 -2.1%", "VIX 스트레스"],
+    })
+    assert out["measured"] is True
+    assert out["label"] == "defensive"
+    assert out["label_kr"] == "방어"
+    assert out["line"] == "방어(0.5x) — QQQ 20일선 대비 -2.1%, VIX 스트레스"
+
+
+def test_regime_stance_covers_all_three_labels():
+    for label, kr in REGIME_LABEL_KR.items():
+        out = regime_stance({"label": label, "risk_multiplier": 1.0, "reasons": []})
+        assert out["label_kr"] == kr
+        assert "근거 없음" in out["line"]
+
+
+def test_regime_stance_unknown_label_falls_back_to_raw_text():
+    out = regime_stance({"label": "weird", "risk_multiplier": 1.0, "reasons": []})
+    assert out["label_kr"] == "weird"
+
+
+def test_regime_stance_missing_multiplier_is_honest_placeholder():
+    out = regime_stance({"label": "neutral", "reasons": []})
+    assert "?x" in out["line"]
 
 
 # ── 조사 처리 ────────────────────────────────────────────────

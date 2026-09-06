@@ -123,3 +123,32 @@ def test_append_same_producer_still_dedupes(tmp_path):
     assert added1 == 1
     assert added2 == 0
     assert len(load(path)) == 1
+
+
+# ── 상대 거래량 출처 + 승격 거부 사유 (2026-09-07 Phase 2 §5) ────────────
+
+def test_relative_volume_source_flows_when_present():
+    rows = build_rows(_payload(relative_volume=1.8, relative_volume_source="ohlcv_v1"),
+                      candidate_symbols=set())
+    assert rows[0]["relative_volume"] == 1.8
+    assert rows[0]["relative_volume_source"] == "ohlcv_v1"
+
+
+def test_relative_volume_source_absent_is_none():
+    rows = build_rows(_payload(relative_volume=2.0), candidate_symbols=set())
+    assert rows[0]["relative_volume_source"] is None
+
+
+def test_rejection_reason_flows_for_non_candidates():
+    rows = build_rows(_payload(rejection_reason="언급·랭킹 부족"), candidate_symbols=set())
+    assert rows[0]["rejection_reason"] == "언급·랭킹 부족"
+
+
+def test_rejection_reason_absent_for_candidates_is_none():
+    rows = build_rows(_payload(), candidate_symbols={"005930"})
+    assert rows[0]["rejection_reason"] is None
+
+
+def test_watch_status_flows_when_gated_by_defensive_stance():
+    rows = build_rows(_payload(watch_status="관망(방어 국면)"), candidate_symbols=set())
+    assert rows[0]["watch_status"] == "관망(방어 국면)"

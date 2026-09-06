@@ -2037,9 +2037,23 @@ def _wrap_consume_queue(root, n_consumed: int) -> None:
     읽은 개수만큼만(앞에서부터) 덜어낸다: 읽은 뒤 이 순간까지 크론이 새로
     append 했을 수 있고, 파일을 통째로 비우면 그 줄들을 읽지도 않고 잃는다.
 
-    락은 게이트(`_notify_enqueue`)와 같은 `flock` 을 같은 파일에 건다. 새
-    inode 로 교체(tmp-replace)하지 **않는다** — 교체하면 락을 기다리던 appender
-    가 사라질 옛 inode 에 쓰게 된다. 같은 inode 를 제자리에서 다시 쓴다.
+    2026-09-06(라이브 준비 4단계, `docs/plans/리포트-텔레그램-사이트-실전화-
+    2026-09-06.md`): **큐 파일 자체는 이제 제자리 수정(seek+write+truncate)
+    하지 않고 임시 파일에 새 내용을 통째로 쓴 뒤 `os.replace()`로 바꿔친다.**
+    이전 구현은 같은 fd 를 `seek(0)`으로 되감아 다시 썼는데, 그 `write()` 도중
+    프로세스가 죽으면(OOM kill·EC2 재부팅 등 진짜 "read 와 write 사이의
+    크래시") 파일이 "새 내용 일부 + 옛 내용 꼬리"로 반토막나 그 경계의 줄이
+    깨지거나(JSON 파싱 실패로 조용히 유실) 뒤따르던 아직 안 읽은 줄까지
+    잘려나갈 수 있었다. temp 파일에 전체를 쓰고 `fsync` 한 뒤 치환하면, 그
+    순간 이후 관측되는 것은 "옛 내용 전체" 아니면 "새 내용 전체" 둘 중
+    하나뿐이다(POSIX rename 의 원자성 — 중간 상태가 없다).
+
+    **락은 데이터 파일이 아니라 전용 `<큐>.lock` 파일에 건다** — 데이터
+    파일을 치환하면서 그 파일 자신에 락을 걸면, 치환 직전에 이미 그 이름을
+    열어 락을 기다리던 appender(게이트의 `_notify_enqueue`, 같은 `.lock`
+    파일을 잠근다 — 반드시 짝을 맞출 것)가 우리가 락을 푼 뒤 **사라질 옛
+    inode** 에 쓰게 돼 그 한 줄이 유실된다. 전용 lock 파일은 절대 치환되지
+    않으므로 이 문제가 없다.
 
     실패는 전부 삼킨다: 큐 정리 실패가 이미 만들어진 리포트를 되돌리지 않는다
     (최악의 경우 다음 리포트에 같은 줄이 한 번 더 나올 뿐이다).
@@ -2048,15 +2062,18 @@ def _wrap_consume_queue(root, n_consumed: int) -> None:
         return
     queue = root.joinpath(*NOTIFY_QUEUE_PATH)
     archive = root.joinpath(*NOTIFY_ARCHIVE_PATH)
+    lock_path = queue.with_name(queue.name + ".lock")
     try:
         import fcntl
 
-        with queue.open("r+", encoding="utf-8", errors="replace") as f:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as lockf:
             try:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
             except OSError:
                 pass  # 락을 못 걸어도 진행 — 개인 서버의 크론은 초 단위로 겹치지 않는다
-            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+            lines = [ln for ln in queue.read_text(encoding="utf-8", errors="replace").splitlines()
+                     if ln.strip()]
             # `n_consumed` 는 **유효 줄** 개수다 — 그 N번째 유효 줄까지 자른다
             # (사이에 낀 깨진 줄도 같이 아카이브로 간다).
             cut, seen = len(lines), 0
@@ -2071,9 +2088,15 @@ def _wrap_consume_queue(root, n_consumed: int) -> None:
                 archive.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open("a", encoding="utf-8") as a:
                     a.write("\n".join(moved) + "\n")
-            f.seek(0)
-            f.write("\n".join(rest) + ("\n" if rest else ""))
-            f.truncate()
+                    a.flush()
+                    os.fsync(a.fileno())
+            new_content = "\n".join(rest) + ("\n" if rest else "")
+            tmp = queue.with_name(f"{queue.name}.tmp{os.getpid()}")
+            with tmp.open("w", encoding="utf-8") as tf:
+                tf.write(new_content)
+                tf.flush()
+                os.fsync(tf.fileno())
+            os.replace(tmp, queue)
     except (OSError, ImportError) as e:
         logger.warning("알림 큐 정리 실패(리포트는 이미 발행됨): %s: %s", type(e).__name__, e)
 
@@ -3034,6 +3057,36 @@ def cmd_validate_performance(args: argparse.Namespace) -> None:
     raise SystemExit(1 if any(f.severity == "error" for f in findings) else 0)
 
 
+def cmd_performance_xcheck(args: argparse.Namespace) -> None:
+    """원장(`trades.jsonl`) 하나에서 사이트 payload와 스코어보드 "에폭 이후" 절을
+    **각자 독립 코드 경로로** 다시 계산해 서로 맞는지 대조한다(2026-09-06 Phase 5,
+    `docs/plans/리포트-텔레그램-사이트-실전화-2026-09-06.md` §5).
+
+    `validate-performance`는 payload 한 장의 내부 정합성만 본다 — 이 커맨드는
+    "사이트가 보여줄 숫자가 텔레그램 스코어보드(`cli scoreboard`)가 보여줄
+    숫자와 실제로 같은가"를 본다. 계산은 순수 함수
+    `quant.control.performance_xcheck.cross_check`에 있다(이 함수는 파일
+    I/O만 한다).
+
+    출력은 `validate-performance`와 같은 형식 — `<severity>|<path>|<message>`
+    한 줄씩(호출부가 `|`로 잘라 읽기 쉽게). 오류가 하나라도 있으면 종료코드 1 —
+    `server/scripts/publish_portfolio.sh`가 이걸로 push를 막는다."""
+    from quant.control.ledger import load_trades
+    from quant.control.performance_xcheck import cross_check
+
+    ledger_path = Path(args.ledger) if getattr(args, "ledger", None) else ledger_state_path()
+    trades = load_trades(ledger_path)
+    settings = load_settings()
+
+    findings = cross_check(trades, strategies_cfg=settings.strategies, execution_cfg=settings.execution)
+    findings.sort(key=lambda f: 0 if f.severity == "error" else 1)
+    for f in findings:
+        print(f"{f.severity}|{f.path}|{f.message}")
+    if not findings:
+        print("info|paper_epoch|사이트 payload와 스코어보드 에폭 절 일치 (또는 에폭 미도래)")
+    raise SystemExit(1 if any(f.severity == "error" for f in findings) else 0)
+
+
 def cmd_backup(args: argparse.Namespace) -> None:
     """백업 번들 생성/대조. JSON 을 stdout 으로 — 셸 스크립트와 감시가 파싱한다.
 
@@ -3864,6 +3917,9 @@ def cmd_health(args: argparse.Namespace) -> None:
     def _engine_json(market: str, d) -> dict | None:
         return _json_file(root / "out" / f"{d:%Y/%m/%d}" / f"{market}_engine.json")
 
+    def _close_engine_json_for_health(market: str, d) -> dict | None:
+        return _json_file(root / "out" / f"{d:%Y/%m/%d}" / f"{market}_close_engine.json")
+
     # 오늘이 그 시장의 개장일인가(2026-09-06) — `report_cli.py: build`가 이제
     # 휴장일엔 아예 빌드를 생략하므로(같은 판정을 재사용, `report_cli.
     # _is_trading_day`), engine.json 결측을 "발행 실패"로 오판하지 않으려면
@@ -3973,6 +4029,13 @@ def cmd_health(args: argparse.Namespace) -> None:
         return {
             "candidates": _auto_watch_token_count(payload.get("auto_watch")),
             "midterm": len(payload.get("midterm_watch") or []),
+            # 언급 종목(2026-09-07 Phase 2 §6, SUMMARY.md §⑦) — 그날 뉴스/
+            # 랭킹 파이프라인이 훑은 전체 종목 수(payload["symbols"], 후보로
+            # 승격됐든 안 됐든 전부 — quant.analyze.render.machine_payload
+            # 가 cont 전체로 이 리스트를 만든다). candidates(=auto_watch
+            # 토큰 수)와 다른 축이다: candidates는 확신도 엔진 전 단계의
+            # "승격된" 수, mentioned는 그 이전 원시 유니버스 크기다.
+            "mentioned": len(payload.get("symbols") or []),
             "agent_interpret": payload.get("agent_interpret"),
             "missing": len(payload.get("missing") or []),
         }
@@ -4002,6 +4065,34 @@ def cmd_health(args: argparse.Namespace) -> None:
             market, today_summary, trailing_summaries,
             today_is_trading_day=trading_today[market],
         )
+
+    # 종가배팅(close_bet_view) 후보 0건인데 watchlist에 CLOSE_BET 태그가
+    # 쌓여 있나(2026-09-07 Phase 2 §4, H.close_bet_watchlist_findings
+    # docstring — SUMMARY.md §④ "정규 거래일 17일 중 12일이 후보 0건"의
+    # 근본 원인은 quant/report/collect/close.py에서 별도로 고쳤다, 이건
+    # 운영 중 재발 감시). KR 전용 — close_bet 전략·토스 랭킹 소스가
+    # KR에만 있다(quant/apps/report_cli.py: `_build_close_bet_view(snap,
+    # root, cont) if snap.market == "KR" else []`).
+    if trading_today.get("KR"):
+        close_payload = _close_engine_json_for_health("KR", today)
+        close_bet_n = (
+            len(close_payload.get("close_bet_view") or [])
+            if close_payload is not None else None
+        )
+        watchlist_data = _read(root / "data" / "watchlist.yaml")
+        watchlist_close_bet_tags = 0
+        if watchlist_data:
+            try:
+                import yaml as _yaml
+
+                entries = (_yaml.safe_load(watchlist_data) or {}).get("symbols") or []
+                watchlist_close_bet_tags = sum(
+                    1 for e in entries
+                    if isinstance(e, dict) and "CLOSE_BET" in (e.get("tags") or [])
+                )
+            except Exception:  # noqa: BLE001 — 파싱 실패는 태그 0건으로(오탐 방지)
+                watchlist_close_bet_tags = 0
+        findings += H.close_bet_watchlist_findings(close_bet_n, watchlist_close_bet_tags)
 
     # 필수 시크릿이 **앱이 실제로 쓰는 경로로** 읽히나. "파일에 있나"가 아니다 —
     # 2026-08-14 에 그 차이가 사고를 만들었다(검증 도구는 자기 로더로 읽어 "완료",
@@ -4040,6 +4131,14 @@ def cmd_health(args: argparse.Namespace) -> None:
     # degraded 신호를 보는 사람이 없었다(H.regime_findings docstring).
     findings += H.regime_findings(
         _json_file(root / "data" / "state" / "regime.json"), now)
+
+    # 텔레그램 발송 실패 원장(2026-09-06 라이브 준비 4단계) — 셸 게이트와 엔진
+    # 노티파이어가 공유하는 data/ledger/notify_failures.jsonl. 오늘(KST) 치만
+    # 센다 — _tail_jsonl 은 이미 위에서 정의된 헬퍼를 재사용한다.
+    failure_rows = _tail_jsonl(ledger_root / "notify_failures.jsonl", 500)
+    today_kst_iso = now.astimezone(_KST_TZ).date().isoformat()
+    today_failures = sum(1 for r in failure_rows if str(r.get("ts", "")).startswith(today_kst_iso))
+    findings += H.notify_failure_findings(today_failures)
 
     summary = H.summarize(findings)
     summary["checked_at"] = now.isoformat(timespec="seconds")
@@ -6877,6 +6976,18 @@ def main() -> None:
         help="직전 발행본 JSON 경로 (선택 — 체결 수 역행/데이터 유실 검사용)",
     )
     p_validate_perf.set_defaults(func=cmd_validate_performance)
+
+    p_perf_xcheck = sub.add_parser(
+        "performance-xcheck",
+        help=(
+            "원장에서 사이트 payload/스코어보드 에폭 절을 독립 재계산해 대조 "
+            "(트립 수·승률·기대값·손익·전체 지분 합, 종료코드 1=불일치)"
+        ),
+    )
+    p_perf_xcheck.add_argument(
+        "--ledger", default=None, help="거래 원장 경로 (생략 시 data/state/trades.jsonl)",
+    )
+    p_perf_xcheck.set_defaults(func=cmd_performance_xcheck)
 
     p_seed_real = sub.add_parser(
         "seed-real",

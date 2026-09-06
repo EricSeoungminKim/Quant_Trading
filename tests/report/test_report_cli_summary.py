@@ -7,10 +7,11 @@ JSON 이 없거나 깨졌을 때도 CLI 자체는 exit 0 이어야 한다(실패
 
 출력은 stdout 3줄 이내:
   1행 `후보 N개` — `auto_watch` 문자열의 토큰 수("AUTO_WATCH: 없음" → 0).
-  2행 `상위: 이름(점수) · 이름(점수) · 이름(점수)` — `symbols` 를
+  2행 `상위(D+1 기준): 이름(점수) · 이름(점수) · 이름(점수)` — `symbols` 를
       `baseline_score100` 내림차순 상위 3, `None` 은 제외(0 위장 금지),
       동점은 심볼코드 오름차순(결정론). 채점된 종목이 하나도 없으면 2행 자체를
-      생략한다.
+      생략한다. "D+1 기준"(2026-09-06 Phase 2 §3)은 이 점수가 실제로 검증된
+      지평을 밝힌다 — `results/report_review/SUMMARY.md` §③ 참고.
 """
 from __future__ import annotations
 
@@ -57,7 +58,7 @@ def test_summary_prints_candidate_count_and_top3_by_baseline_score_desc(
 
     lines = out.split("\n")
     assert lines[0] == "후보 3개"
-    assert lines[1] == "상위: SK하이닉스(85) · 삼성전자(70) · 네이버(60)"
+    assert lines[1] == "상위(D+1 기준): SK하이닉스(85) · 삼성전자(70) · 네이버(60)"
     assert len(lines) == 2  # 3줄 이내(여기선 2줄)
 
 
@@ -161,4 +162,4 @@ def test_summary_tie_breaks_equal_scores_by_change_pct_then_symbol_code(tmp_path
     out = capsys.readouterr().out.strip("\n")
 
     # 점수가 먼저(40점 20% 상승이 50점들을 앞지르지 않는다), 동점 안에서만 등락률
-    assert out.split("\n")[1] == "상위: 상승동점(50) · 하락동점(50) · 무등락동점(50)"
+    assert out.split("\n")[1] == "상위(D+1 기준): 상승동점(50) · 하락동점(50) · 무등락동점(50)"
