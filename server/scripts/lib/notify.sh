@@ -300,6 +300,22 @@ _notify_rate_limit() {  # $1=lane(비어 있을 수 있다)
 # `chat_id`로 폴백하되, 매핑 파일에 **다른** 레인이라도 하나 바인딩돼 있으면
 # (`bound=1`) 그 레거시 채팅이 여러 레인이 섞이는 방이 되므로 한 줄 헤더를
 # 붙인다. `NOTIFY_LANE`이 비어 있으면(기존 호출부) 완전히 예전과 동일하다.
+_notify_record_sent() {  # $1=text — 성공 발송 기록(2026-09-07 감사성)
+  # 셸 발송 경로(tg_digest.sh·리포트 요약·운영 알림)는 curl 직송이라 엔진 알림기의
+  # `notifications.jsonl` 에 남지 않았다 — "무엇을 보냈는지" 사후 감사가 불가능했다
+  # (2026-09-07 리포트 정밀 감사에서 발견). 실패 원장과 같은 스키마로 성공만 따로
+  # 남긴다(본문은 1000자까지). 기록 실패는 발송 성공을 바꾸지 않는다.
+  local f text
+  text="${1:-}"
+  f="${NOTIFY_SENT_LEDGER:-$_NOTIFY_ROOT/data/ledger/notify_sent.jsonl}"
+  mkdir -p "$(dirname "$f")" 2>/dev/null || true
+  printf '{"ts":"%s","source":"%s","lane":"%s","text":"%s"}\n' \
+    "$(date +%Y-%m-%dT%H:%M:%S%z)" \
+    "$(_notify_json_escape "$(basename "${0:-unknown}" .sh)")" \
+    "$(_notify_json_escape "${NOTIFY_LANE:-}")" \
+    "$(_notify_json_escape "${text:0:1000}")" >> "$f" 2>/dev/null || true
+}
+
 _notify_send() {  # $1=text
   local token chat resp lane target t_chat t_thread t_bound chat_id thread_id text
   token="$(_notify_token)"
@@ -332,10 +348,10 @@ _notify_send() {  # $1=text
   fi
   resp="$(curl -s -m 15 "${TELEGRAM_API_BASE:-https://api.telegram.org}/bot${token}/sendMessage" \
     -d "chat_id=${chat_id}" "${thread_args[@]}" -d "parse_mode=HTML" --data-urlencode "text=$text" 2>/dev/null)"
-  case "$resp" in *'"ok":true'*) return 0 ;; esac
+  case "$resp" in *'"ok":true'*) _notify_record_sent "$text"; return 0 ;; esac
   resp="$(curl -s -m 15 "${TELEGRAM_API_BASE:-https://api.telegram.org}/bot${token}/sendMessage" \
     -d "chat_id=${chat_id}" "${thread_args[@]}" --data-urlencode "text=$text" 2>/dev/null)"
-  case "$resp" in *'"ok":true'*) return 0 ;; esac
+  case "$resp" in *'"ok":true'*) _notify_record_sent "$text"; return 0 ;; esac
   _notify_record_failure "$text"
   return 1
 }

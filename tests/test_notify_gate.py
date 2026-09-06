@@ -596,3 +596,27 @@ def test_notify_auto_in_hours_queue_carries_lane(gate):
     assert len(rows) == 1
     assert rows[0]["lane"] == "briefs"
     assert rows[0]["level"] == "auto"
+
+
+# ── 성공 발송 기록(2026-09-07) — 셸 경로도 "무엇을 보냈는지" 남긴다 ──────────────────
+def test_successful_send_is_recorded_in_sent_ledger(gate, tmp_path):
+    import json
+
+    sent = tmp_path / "notify_sent.jsonl"
+    r = gate.run('NOTIFY_LANE=briefs notify_now "테스트 발송 <b>굵게</b>"', NOTIFY_SENT_LEDGER=str(sent), **OFF_HOURS)
+    assert r.returncode == 0
+    rows = [json.loads(l) for l in sent.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len(rows) == 1
+    assert rows[0]["lane"] == "briefs" and "테스트 발송" in rows[0]["text"] and rows[0]["ts"]
+    assert gate.failures() == []
+
+
+def test_failed_send_is_not_recorded_in_sent_ledger(gate, tmp_path):
+    bad = tmp_path / "bin" / "curl"
+    bad.write_text('#!/usr/bin/env bash\nprintf \'{"ok":false}\'\n', encoding="utf-8")
+    bad.chmod(0o755)
+    sent = tmp_path / "notify_sent.jsonl"
+    r = gate.run('notify_now "실패"', NOTIFY_SENT_LEDGER=str(sent), **OFF_HOURS)
+    assert r.returncode != 0
+    assert not sent.exists() or sent.read_text(encoding="utf-8").strip() == ""
+    assert len(gate.failures()) == 1
