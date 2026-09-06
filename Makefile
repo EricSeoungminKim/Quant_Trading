@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install test test-fast backtest paper report fetch lint deploy ml
+.PHONY: help install test test-fast backtest paper report fetch lint deploy ml lake-pull-kr
 
 help: ## 사용 가능한 타겟 목록
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -34,3 +34,6 @@ deploy: ## EC2에 배포 (QT_SSH_HOST=ubuntu@<ElasticIP> make deploy). 절차: d
 
 ml: ## 로컬 맥 원버튼 ML 파이프라인 — EC2 동기화 → 표본 게이트 → (충족시) 학습 (local/ml/README.md)
 	./local/ml/run.sh
+
+lake-pull-kr: ## EC2 ~/qb_backfill의 KR 1분봉 연구 레이크를 로컬 quant-backtest로 동기화 (docs/runbooks/data-lake.md)
+	./local/lake/pull_kr_minute.sh
