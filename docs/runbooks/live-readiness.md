@@ -45,6 +45,7 @@
 | C6 | 적립형(오버나이트) 레인의 가격 손절 부재 → 포트폴리오 수준 최대손실 레일 | ✅ | `risk.accumulate_max_loss_pct: 15`, loop `_accumulate_max_loss_check`, tests/test_accumulate_max_loss_rail.py (2026-09-06) |
 | C7 | 마감 청산이 판단 주기와 무관하게 발동(§5 고전 결함) | ✅ | 감사: 활성 전략 전부 구조적으로 해결 |
 | C8 | 미체결 청산 요청 영속 + 개장 재시도 | ✅ | pending_flatten (09-04) |
+| C9 | VIX 스트레스 방어 게이트(US, 공격 금지·risk-off 동시면 방어; 결측 시 무차단) | ✅ | quant/trade/regime `_apply_vix_gate`, tests/test_regime_vix.py (2026-09-06) — 첫 라이브 판정은 화요일 US 세션에서 확인 |
 
 ## D. 브로커·회계
 
