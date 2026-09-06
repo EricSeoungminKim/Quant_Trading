@@ -59,6 +59,10 @@ def _format_summary(payload: dict) -> str:
         lines.append(f"상위(D+1 기준): {names}")
 
     line = _channel_digest_line(payload.get("channel_digest_summary"))
+    ns = payload.get("narration_status") or {}
+    if ns.get("lanes") and ns.get("failed") and len(ns["failed"]) >= len(ns["lanes"]):
+        # 산문 레인이 전부 실패한 날(2026-09-07 08:00 KR) — 요약에서도 조용히 넘기지 않는다.
+        lines.append("⚠️ AI 서술 없음 — 서술 레인 전부 실패(결정론 섹션만)")
     if line:
         lines.append(line)
 

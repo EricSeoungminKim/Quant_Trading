@@ -2914,3 +2914,18 @@ def test_rejection_reasons_counts_aggregate_across_many_symbols():
     by_symbol, counts = rejection_reasons(cont, candidate_symbols=set())
     assert len(by_symbol) == 25  # max_entries 상한(기본 20)에 잘리지 않는다
     assert counts["언급·랭킹 부족"] == 25
+
+
+# ── 2026-09-07: 산문 레인 실패는 리포트 상단에 드러난다 ────────────────────────────
+def test_narration_failure_notice_renders_only_when_present():
+    import inspect
+
+    from quant.analyze.render import render as _render
+
+    sig = inspect.signature(_render)
+    assert "narration_status" in sig.parameters
+    # 템플릿에 조건부 블록이 있다 — 상태 없으면 문구가 절대 안 나온다(골든 불변).
+    from pathlib import Path
+    tpl = Path("quant/analyze/templates/report.html.j2").read_text(encoding="utf-8")
+    assert "{% if narration_status and narration_status.failed %}" in tpl
+    assert "AI 서술 레인 실패" in tpl

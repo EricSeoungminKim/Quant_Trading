@@ -1069,6 +1069,7 @@ def render(
     news_flow: list[dict] | None = None,
     intraday_view: list[dict] | None = None,
     exec_summary: dict | None = None,
+    narration_status: dict | None = None,
     section_advice: dict | None = None,
     telegram_view_kr: list[dict] | None = None,
     telegram_view_us: list[dict] | None = None,
@@ -1208,6 +1209,7 @@ def render(
         # 실패/파싱 불가) 템플릿은 이 섹션 자체를 그리지 않는다 — 기존
         # 스탠스+시황 다이제스트 블록이 무LLM 폴백 역할을 그대로 한다.
         exec_summary=exec_summary,
+        narration_status=narration_status,
         # 섹션 AI 해석(리포트 UX 3차) — section_advice.advise 가 수급 체력/
         # 시장 심리/기술적 지표/유동성·금리 각 섹션의 숫자를 조건부 서술로
         # 바꾼 결과. 실패/결측이면 None — 템플릿은 숫자 카드만으로 완전하다.
@@ -1299,7 +1301,7 @@ def write_html(
     blog=None, top_movers=None, carried_candidates=None, disclosures=None, research=None,
     research_badges=None,
     foreign_view=None, digest=None, digest_prose=None, stance_prose=None, news_flow=None,
-    intraday_view=None, exec_summary=None, section_advice=None,
+    intraday_view=None, exec_summary=None, section_advice=None, narration_status=None,
     telegram_view_kr=None, telegram_view_us=None, telegram_prose=None, telegram_image_desc=None,
     agent_interpret_view=None, midterm_view=None, us_news_kr_view=None,
     usnews_headlines=None, us_kr_bridge=None, us_wrap=None,
@@ -1318,6 +1320,7 @@ def write_html(
                digest=digest, digest_prose=digest_prose, stance_prose=stance_prose,
                news_flow=news_flow,
                intraday_view=intraday_view, exec_summary=exec_summary,
+               narration_status=narration_status,
                section_advice=section_advice, telegram_view_kr=telegram_view_kr,
                telegram_view_us=telegram_view_us,
                telegram_prose=telegram_prose, telegram_image_desc=telegram_image_desc,

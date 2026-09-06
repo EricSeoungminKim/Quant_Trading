@@ -38,6 +38,7 @@ def write_open_report(model: ReportModel, snap: Snapshot, out_root: Path) -> tup
         digest_prose=model.digest_prose, stance_prose=model.stance_prose,
         news_flow=model.news_flow,
         intraday_view=model.intraday_view, exec_summary=model.exec_summary,
+        narration_status=model.payload.get("narration_status"),
         section_advice=model.section_advice, telegram_view_kr=model.telegram_view_kr,
         telegram_view_us=model.telegram_view_us, telegram_prose=model.telegram_prose,
         telegram_image_desc=model.telegram_image_desc,

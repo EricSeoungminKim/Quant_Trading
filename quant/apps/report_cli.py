@@ -166,6 +166,13 @@ def _print_summary(market: str, root: Path, session: date, session_kind: str = "
     print(_format_summary(payload))
 
 
+def _narration_status(lanes: dict[str, object], *, narrator: str) -> dict:
+    """산문 레인별 성공 여부 → `{"lanes": {name: bool}, "failed": [name...], "narrator": str}`.
+    비어 있는 dict/str/None 은 실패로 본다(생산자 계약: 실패 = None)."""
+    ok = {name: bool(value) for name, value in lanes.items()}
+    return {"lanes": ok, "failed": [n for n, v in ok.items() if not v], "narrator": narrator}
+
+
 def _lint_and_gate(model: ReportModel | CloseReportModel, root: Path) -> None:
     """리포트·텔레그램·사이트 실전화 계획(2026-09-06) 3단계 — 모델이 다
     채워진 뒤, 렌더(`write_open_report`/`write_close_report`, 이 함수 호출부
@@ -595,6 +602,16 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
     # engine.json 에는 Digest 객체 그대로가 아니라 직렬화 가능한 요약만 싣는다
     # (write_machine 이 json.dumps 로 그대로 찍는다 — dataclass 는 못 찍는다).
     # 텔레그램 발행 요약(_format_summary)이 이 키를 읽어 4번째 줄을 만든다.
+    # AI 서술 레인 상태(2026-09-07): 08:00 KR 리포트가 Claude CLI 15회·OpenRouter 429 로 산문
+    # 전부 없이 나갔는데 어디에도 표시가 없었다. 생산자마다 실패는 None 이므로 여기서 모아
+    # payload 에 싣고, 템플릿 상단 한 줄 + 텔레그램 요약 한 줄로 드러낸다(조용한 생략 금지).
+    payload["narration_status"] = _narration_status(
+        {
+            "exec_summary": exec_summary, "digest_prose": digest_prose,
+            "section_advice": section_advice, "stance_prose": stance_prose,
+        },
+        narrator=quality_narrator.name,
+    )
     payload["channel_digest_summary"] = (
         {
             "candidates": len(channel_digest.candidates),

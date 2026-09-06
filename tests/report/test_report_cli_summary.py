@@ -163,3 +163,22 @@ def test_summary_tie_breaks_equal_scores_by_change_pct_then_symbol_code(tmp_path
 
     # 점수가 먼저(40점 20% 상승이 50점들을 앞지르지 않는다), 동점 안에서만 등락률
     assert out.split("\n")[1] == "상위(D+1 기준): 상승동점(50) · 하락동점(50) · 무등락동점(50)"
+
+
+# ── 2026-09-07: 산문 레인 전부 실패한 날은 요약에도 드러낸다 ─────────────────────────
+def test_summary_marks_total_narration_failure():
+    from quant.report.render.telegram import _format_summary
+
+    base = {"market": "KR", "session_date": "2026-09-07", "auto_watch": "AUTO_WATCH: 005930:NEWS", "symbols": []}
+    failed = {**base, "narration_status": {"lanes": {"a": False, "b": False}, "failed": ["a", "b"], "narrator": "quality"}}
+    partial = {**base, "narration_status": {"lanes": {"a": True, "b": False}, "failed": ["b"], "narrator": "quality"}}
+    assert "AI 서술 없음" in _format_summary(failed)
+    assert "AI 서술 없음" not in _format_summary(partial)
+    assert "AI 서술 없음" not in _format_summary(base)
+
+
+def test_narration_status_helper():
+    from quant.apps.report_cli import _narration_status
+
+    st = _narration_status({"exec_summary": None, "digest_prose": {"x": 1}, "stance_prose": ""}, narrator="quality")
+    assert st["failed"] == ["exec_summary", "stance_prose"] and st["lanes"]["digest_prose"] is True and st["narrator"] == "quality"

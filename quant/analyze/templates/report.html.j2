@@ -738,6 +738,9 @@ html{overflow-x:hidden}
    근거로 세 문단(시장 흐름/수급/주요 재료)을 만든다. narrator 없음/실패/
    파싱 불가 → None(무LLM 폴백) — 그 경우 이 섹션 자체가 생략되고 바로
    아래 스탠스+시황 다이제스트가 기존처럼 그 역할을 한다. #}
+{% if narration_status and narration_status.failed %}
+<p class="foot" style="margin:6px 0 10px">⚠️ AI 서술 레인 실패 — {{ narration_status.failed|join(', ') }} 생략(서술기: {{ narration_status.narrator }}). 이 리포트는 결정론 섹션만 담고 있습니다 — 사유는 data/report.log.</p>
+{% endif %}
 {% if exec_summary %}
 <section class="mod exec-summary">
   <h2>Executive Summary<span class="sub">본문 근거 기반 AI 통합 요약</span></h2>

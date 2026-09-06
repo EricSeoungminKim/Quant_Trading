@@ -132,7 +132,13 @@ class ClaudeCliNarrator:
         import subprocess
 
         r = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout)
-        return r.stdout if r.returncode == 0 else None
+        if r.returncode != 0:
+            # 사유를 남긴다(2026-09-07): 08:00 KR 빌드에서 이 레인이 15회 연속 실패했는데 로그가
+            # "실패 — 폴백" 한 줄뿐이라 한도 초과인지 인증인지 알 수 없었다. stderr 첫 줄만.
+            head = (r.stderr or r.stdout or "").strip().splitlines()
+            log.warning("claude CLI 실패 rc=%s: %s", r.returncode, (head[0][:200] if head else "(출력 없음)"))
+            return None
+        return r.stdout
 
     def narrate(self, prompt: str) -> str | None:
         # 가드는 **포트 경계**에 둔다. transport 안에 두면 주입된 구현이 던질 때
