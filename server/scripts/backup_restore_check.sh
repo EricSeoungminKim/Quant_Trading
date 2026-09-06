@@ -73,6 +73,7 @@ from pathlib import Path
 
 work = Path(sys.argv[1])
 live = Path("data")
+PRUNED_LEDGERS = {"ledger/telegram_msgs.jsonl"}  # 보존 prune 대상 — 아래 "예외" 주석
 problems, checked = [], 0
 
 for path in sorted(work.rglob("*.jsonl")):
@@ -89,8 +90,15 @@ for path in sorted(work.rglob("*.jsonl")):
 
     # append-only 이므로 라이브가 같거나 더 길어야 한다. 백업이 더 길면 라이브가
     # 잘린 것이다 — 백업 문제가 아니라 더 큰 문제이므로 조용히 넘기지 않는다.
+    # 예외: 보존 기간 prune 으로 **의도적으로** 짧아지는 원장. telegram_msgs.jsonl 은
+    # `quant.collect.sources.telegram_channels.prune`(keep_days=14, tmp 로 다시 씀 —
+    # report_cli 가 리포트 빌드 때 부른다) 대상이라 새벽 백업(03:30) 뒤 prune 이
+    # 돌면 라이브 < 백업이 정상이다. 2026-09-07 첫 수동 리허설에서 4295 < 4423 로
+    # 오탐(라이브 마지막 행은 당일). 이 목록에 넣으려면 "누가 언제 줄이는지"를 적는다.
     live_file = live / rel
-    if live_file.exists():
+    if str(rel) in PRUNED_LEDGERS:
+        pass
+    elif live_file.exists():
         n_backup = sum(1 for x in path.read_text(encoding="utf-8").splitlines() if x.strip())
         n_live = sum(1 for x in live_file.read_text(encoding="utf-8").splitlines() if x.strip())
         if n_live < n_backup:
