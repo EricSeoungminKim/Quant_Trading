@@ -18,6 +18,7 @@ import sys
 import time
 from dataclasses import replace
 from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from pathlib import Path
 
 from quant.adapters.kv import make_kv
@@ -771,6 +772,116 @@ def cmd_accuracy(a: argparse.Namespace) -> int:
     return 0
 
 
+# ── 개장일 판정 — 휴장일엔 빌드를 생략한다(2026-09-06) ──────────────────────
+#
+# 유래: market-report@.timer 는 주말·공휴일 포함 매일 발행된다(휴장 기간에도
+# 그날 재료를 engine.json 으로 쌓아 다음 개장일 아침이 종목별 최신일 우선으로
+# 집계하게 하려는 설계, holiday_synthesis.py). 그런데 실측(2026-09-06 일요일):
+# 그 결과물이 후보 2건·중기 0건짜리 빈약한 engine.json 이었고, `cli health`가
+# 이걸 평일 중앙값과 비교해 "중기 관심 종목 수가 0" alert 를 냈다 — 애초에
+# 열리지 않은 시장을 채점 대상으로 삼은 것이 원인이다. 그래서 이제 휴장일엔
+# **빌드 자체를 생략**하고 "리포트 없음"만 한 줄 알린다 — holiday_synthesis 는
+# 원래도 결손 날짜(engine=None)를 건너뛰고 부분 집계하도록 설계돼 있어
+# (모듈 docstring) 이 변경으로 깨지지 않는다.
+
+def _report_session_calendar():
+    """빌드가 참조할 실거래 세션 캘린더. Toss 자격증명이 있으면 그 캘린더를
+    쓰고(내부에서 이미 조회 실패 시 정적 캘린더로 내려간다 — quant.core.session
+    모듈 docstring), 없으면 곧바로 정적 캘린더(주말만 판별, 개별 공휴일은
+    못 잡는다)로 시작한다."""
+    from quant.adapters.env import get_key
+    from quant.core.session import StaticSessionCalendar
+
+    client_id = get_key("TOSS_CLIENT_ID") or ""
+    client_secret = get_key("TOSS_CLIENT_SECRET") or ""
+    if not (client_id and client_secret):
+        return StaticSessionCalendar()
+    try:
+        from quant.adapters.brokers.toss.client import TossClient
+        from quant.core.session import TossSessionCalendar
+
+        client = TossClient(client_id=client_id, client_secret=client_secret,
+                            account_seq=get_key("TOSS_ACCOUNT_SEQ") or "", mode="paper")
+        return TossSessionCalendar(client)
+    except Exception:  # noqa: BLE001 — 클라이언트 생성 실패도 정적 캘린더로 내려간다
+        return StaticSessionCalendar()
+
+
+def _is_trading_day(market: str, day: date, calendar=None) -> bool:
+    """`day`(그 시장 로컬 날짜)가 개장일인가. 정오(그 시장 로컬시)로 물어
+    자정 근처 tz 변환에서 날짜가 밀리는 사고를 피한다(quant.analyze.opendays
+    가 UTC date 로 같은 문제를 피하는 것과 같은 이유, 다른 해법).
+
+    `calendar`를 주면(테스트) 그대로 쓰고, 안 주면 `_report_session_calendar()`
+    (Toss 우선, 정적 폴백)로 만든다."""
+    from quant.core.session import market_tz
+
+    cal = calendar if calendar is not None else _report_session_calendar()
+    now = datetime.combine(day, dtime(12, 0), tzinfo=market_tz(market))
+    return cal.session(market, now) is not None
+
+
+def _next_trading_day(market: str, after: date, calendar, cap: int = 10) -> date | None:
+    """`after` 다음날부터 최대 `cap`일 안에서 처음 만나는 개장일. 없으면 `None`
+    (긴 연휴 등 — 안전한 방향: 지어내지 않는다)."""
+    d = after
+    for _ in range(cap):
+        d = d + timedelta(days=1)
+        if _is_trading_day(market, d, calendar):
+            return d
+    return None
+
+
+def _notify_holiday_skip(market: str, session: date, calendar) -> None:
+    """휴장일 스킵 알림 — NOTIFY_LANE=briefs 한 줄. 알림 실패가 빌드 스킵
+    자체를 막으면 안 된다(다른 record_run 호출과 같은 관례로 전부 삼킨다)."""
+    try:
+        from quant.adapters.notify.telegram import TelegramNotifier
+
+        nxt = _next_trading_day(market, session, calendar)
+        date_str = nxt.isoformat() if nxt else "미확인"
+        text = f"📰 {market} 휴장일 — 리포트 없음(다음 개장 {date_str})"
+        TelegramNotifier.from_env().send(text, lane="briefs")
+    except Exception:  # noqa: BLE001 — 알림은 부가 기능, 빌드 스킵을 막지 않는다
+        pass
+
+
+# 휴장일 스킵 종료코드(2026-09-06). run_report.sh / run_close_report.sh 가 0(발행)·1(실패)과
+# 구분해 조용히 끝낸다 — 그렇지 않으면 죽은 링크가 달린 "📄 리포트 발행" 이 휴장일에도 나간다.
+EXIT_SKIPPED = 3
+
+
+def _skip_if_holiday(market: str, session: date, session_kind: str) -> bool:
+    """오늘(`session`)이 `market` 휴장일이면 빌드를 생략하고 알림 + 운영 상태
+    기록까지 마친다. `True`(생략했다) 를 반환하면 호출부는 `return 0` 한다.
+
+    판정 실패는 **안전한 방향(빌드 진행)**으로 fail-open 한다 — 오탐으로
+    스킵하면 그날 리포트가 통째로 안 나간다(과거 own_brief 경로 기본값이 옛
+    체크아웃을 가리켜 나흘간 조용히 편입이 실패했던 사고와 같은 카테고리).
+    `TossSessionCalendar` 자체는 조회 실패를 이미 정적 캘린더로 흡수하지만
+    (quant.core.session 모듈 docstring), 캘린더 객체 생성(자격증명 파싱 등)
+    까지 포함해 **어떤 예외도** 이 판정 때문에 빌드가 막히지 않게 한다.
+    """
+    try:
+        calendar = _report_session_calendar()
+        trading = _is_trading_day(market, session, calendar)
+    except Exception as e:  # noqa: BLE001 — 판정 실패는 빌드를 막지 않는다
+        print(f"개장일 판정 실패({type(e).__name__}: {e}) — 안전하게 발행을 진행한다",
+              file=sys.stderr)
+        return False
+    if trading:
+        return False
+    label = "마감 리포트" if session_kind == "close" else "리포트"
+    print(f"{market} 휴장일 — {label} 생략 (session={session.isoformat()})")
+    _notify_holiday_skip(market, session, calendar)
+    job = f"report_close:{market}" if session_kind == "close" else f"report:{market}"
+    try:
+        record_run(make_kv(), job, ok=True, detail="휴장일 — 스킵")
+    except Exception:  # noqa: BLE001 — 기록 실패가 리포트를 죽이지 않는다
+        pass
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="report")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -965,6 +1076,8 @@ def main(argv: list[str] | None = None) -> int:
         if a.market != "KR":
             print("마감 리포트(--session close)는 KR 전용입니다", file=sys.stderr)
             return 2
+        if _skip_if_holiday(a.market, session, session_kind):
+            return EXIT_SKIPPED  # 휴장일 스킵 — 래퍼가 '발행' 알림을 내지 않도록 0 과 구분
         morning_snap = _load_morning_snapshot(snap_root, a.market, session)
         news_since = close_news_since_for(morning_snap, datetime.now(KST))
         print(f"마감 뉴스 표본 시작: {news_since:%Y-%m-%d %H:%M %Z}"
@@ -983,6 +1096,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if a.cmd == "build":
+        if _skip_if_holiday(a.market, session, session_kind):
+            return EXIT_SKIPPED  # 휴장일 스킵 — 래퍼가 '발행' 알림을 내지 않도록 0 과 구분
         # 뉴스 표본의 시작점 = 직전 리포트 생성시각. 요일·공휴일을 하드코딩하지
         # 않으므로 주말·장애로 걸른 구간이 자동으로 메워진다(clock.session_window).
         prev = previous_snapshot(a.market, session, snap_root)

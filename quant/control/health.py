@@ -32,12 +32,18 @@ import hashlib
 import statistics
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from quant.control.selections import _natural_key as _selection_natural_key
 from quant.core.log_redact import redact
 
 ALERT = "alert"
 UNKNOWN = "unknown"
+
+# 영업일 계산은 이 시스템의 크론 스케줄과 같은 기준(KST)이어야 한다 — UTC
+# 그대로 날짜를 세면 KST 01:30(=전날 UTC 16:30) 같은 시각에서 요일이 하루
+# 어긋난다(job_findings 의 _business_days_elapsed 가 쓴다).
+_KST = ZoneInfo("Asia/Seoul")
 
 
 @dataclass(frozen=True)
@@ -50,26 +56,83 @@ class Finding:
         return {"check": self.check, "level": self.level, "detail": self.detail}
 
 
-def _age(then: str | datetime | None, now: datetime) -> timedelta | None:
-    if then is None:
+def _parse_dt(value: str | datetime | None) -> datetime | None:
+    """ISO 문자열/`datetime`을 tz-aware `datetime`으로. 파싱 실패·`None`은 `None`."""
+    if value is None:
         return None
-    if isinstance(then, str):
+    if isinstance(value, str):
         try:
-            then = datetime.fromisoformat(then)
+            value = datetime.fromisoformat(value)
         except ValueError:
             return None
-    if then.tzinfo is None:
-        then = then.replace(tzinfo=UTC)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value
+
+
+def _age(then: str | datetime | None, now: datetime) -> timedelta | None:
+    then = _parse_dt(then)
+    if then is None:
+        return None
     return now - then
 
 
 # ── 작업(크론·타이머)이 최근에 성공했나 ───────────────────────────────────
 
-def job_findings(snapshot: dict) -> list[Finding]:
+# 세션/영업일 스케줄로 신선도를 재는 잡. `opstate.JOB_HEARTBEAT_TTL`(캘린더
+# 시간 고정 TTL)은 "주말엔 원래 안 도는 잡"을 표현하지 못한다 — 실측(2026-09-06):
+# ops-judge 는 KR 평일 13:10 + US 화~토 01:30 에만 돈다. 금/토 마지막 성공과
+# 월요일 첫 성공 사이는 최대 약 60시간인데 TTL 은 20시간이라, 일요일 아침마다
+# "최근 성공이 없다"가 거짓으로 났다.
+#
+# 값 = (스케줄 종류, 허용 미실행 영업일 수). "영업일"은 월~금(주말 제외)만
+# 센다 — 시장별 실제 개장일 캘린더(공휴일 포함)까지는 안 간다. 이 모듈은
+# `quant.trade`를 모르고 네트워크도 하지 않는다(모듈 docstring "순수하다") —
+# 그 정도 근사로도 이 표가 잡으려는 실패(크론 삭제, 자격증명 만료로 계속
+# 실패하는 것)에는 충분하고, 공휴일 하루쯤의 오차는 `max_missed`가 흡수한다.
+# "daily"/"weekly"/"monthly" 스케줄(여기 없는 잡 전부, 기존 동작)은 그대로
+# `opstate` 의 TTL 기반 `fresh` 를 쓴다 — 그 잡들은 이미 자기 주기에 맞는 TTL 이
+# `opstate.JOB_HEARTBEAT_TTL` 에 개별로 잡혀 있다(예: equity-snapshot 은 주말
+# 3일 공백을 76시간 TTL 로 흡수).
+JOB_SCHEDULE: dict[str, tuple[str, int]] = {
+    # KR 평일(월~금) 13:10 + US 화~토 01:30. "weekday"(월~금 기대)로 근사하고
+    # 1영업일까지 허용한다 — 토요일 새벽 US 런이 이 표현으로는 "기대 밖"이 되지만
+    # 안전한 방향이다: 실제로 돌고 있는데 놓치는 쪽(하루 늦게 안다)이 잘못 울려
+    # 매주 거짓 경보를 내는 쪽보다 훨씬 낫다.
+    "ops-judge": ("weekday", 1),
+}
+
+
+def _business_days_elapsed(last: datetime, now: datetime) -> int:
+    """`last`(마지막 성공 시각) 다음날부터 `now` 날짜까지의 월~금 일수.
+
+    같은 날이면 0(아직 하루도 안 지났다) — 그날의 잡이 아직 시각이 안 돼 안
+    돈 것뿐일 수 있어서다. KST 로 변환된 값을 받는다고 가정한다(호출부 책임) —
+    이 시스템의 모든 크론 스케줄이 KST 기준이라, UTC 그대로 날짜를 세면 자정
+    근처 시각(예: KST 01:30 = 전날 UTC 16:30)에서 요일이 하루 어긋난다.
+    """
+    d = last.date() + timedelta(days=1)
+    end = now.date()
+    count = 0
+    while d <= end:
+        if d.weekday() < 5:
+            count += 1
+        d += timedelta(days=1)
+    return count
+
+
+def job_findings(snapshot: dict, now: datetime | None = None) -> list[Finding]:
     """`quant.control.opstate.snapshot()` 결과를 읽는다.
 
     `available: False` 는 **"이상 없음"이 아니다** — Redis 가 죽어 아무것도 모르는
     상태다. 그 자체를 하나의 `unknown` 으로 올린다.
+
+    `now`(2026-09-06 신규, 선택)를 주면 `JOB_SCHEDULE` 에 등재된 잡은 opstate 의
+    TTL 기반 `fresh` 대신 **영업일 수**로 신선도를 다시 판정한다 — `state`
+    에 `last_ok`(마지막 성공 ISO 시각, 2026-09-06 `opstate.snapshot` 확장)가
+    있어야 한다. `now`를 안 주거나 `last_ok`를 못 읽으면(구버전 snapshot, 시각
+    파싱 실패) 기존 TTL 기반 `fresh` 로 그대로 판정한다 — 안전한 방향(정보가
+    없으면 기존 동작을 그대로 유지, 새 판정으로 조용히 바뀌지 않는다).
     """
     if not snapshot.get("available"):
         return [Finding("jobs", UNKNOWN,
@@ -82,7 +145,21 @@ def job_findings(snapshot: dict) -> list[Finding]:
             # 오고, 거짓 경보가 오는 감시는 꺼진다.
             out.append(Finding("jobs", UNKNOWN,
                                f"{job}: 기록이 없다 — 계측 전이거나 한 번도 돌지 않았다"))
-        elif not state.get("fresh"):
+            continue
+        fresh = state.get("fresh")
+        schedule = JOB_SCHEDULE.get(job)
+        if schedule is not None and now is not None:
+            last_ok_dt = _parse_dt(state.get("last_ok"))
+            if last_ok_dt is not None:
+                kind, max_missed = schedule
+                if kind in ("weekday", "trading_session"):
+                    fresh = (
+                        _business_days_elapsed(
+                            last_ok_dt.astimezone(_KST), now.astimezone(_KST)
+                        )
+                        <= max_missed
+                    )
+        if not fresh:
             out.append(Finding("jobs", ALERT,
                                f"{job}: 최근 성공이 없다 (마지막 시도 {state['last']})"))
         elif not state.get("ok"):
@@ -781,7 +858,8 @@ def report_intake_findings(report_exists: dict[str, bool],
 # ── 리포트 품질 회귀 ─────────────────────────────────────────────────────
 
 def report_quality_findings(market: str, today: dict | None,
-                            trailing: list[dict]) -> list[Finding]:
+                            trailing: list[dict], *,
+                            today_is_trading_day: bool = True) -> list[Finding]:
     """오늘 리포트가 어제보다 빈약해졌나 — 매일 발행은 되지만 아무도 안 본다.
 
     유래: 2026-08-14 결측 사고도 engine.json 의 `missing` 에 이미 기록돼
@@ -811,7 +889,16 @@ def report_quality_findings(market: str, today: dict | None,
     창에서는 agent_interpret 실패 감지도 함께 미뤄지는데, LLM 호출 자체의
     실패율은 `llm_health_findings` 가 표본 요구 없이 독립적으로 보고 있어
     첫날부터의 안전망은 이미 있다).
-    """
+
+    `today_is_trading_day=False`(2026-09-06 신규) — 오늘이 그 시장의 휴장일로
+    이미 판정돼 리포트 빌드 자체가 의도적으로 생략됐으면(`quant.apps.
+    report_cli` build 의 개장일 판정, `_is_trading_day`) `today`가 `None`인
+    게 정상이다. **결측이 아니다** — UNKNOWN 조차 내지 않고 조용히 넘어간다
+    (호출부가 실제 개장일 판정을 넘겨준다. 실측: 2026-09-06 일요일에 빌드된
+    KR_engine.json이 후보 2건·중기 0건으로 "급감" alert를 냈다 — 애초에 열리지
+    않은 시장의 리포트를 평일 중앙값과 비교한 것이 원인이었다)."""
+    if not today_is_trading_day:
+        return []
     if len(trailing) < 3:
         return []
     if today is None:

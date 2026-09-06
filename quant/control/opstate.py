@@ -134,11 +134,17 @@ def snapshot(kv, jobs: list[str]) -> dict:
         return {"available": False, "jobs": {}}
     out = {}
     for job in jobs:
+        # last_ok 가 None 이면 HEARTBEAT_TTL 안에 성공한 적이 없다는 뜻이다.
+        last_ok = kv.get(f"run:{job}:last_ok")
         out[job] = {
             "last": kv.get(f"run:{job}:last"),
             "ok": kv.get(f"run:{job}:ok") == "1",
-            # last_ok 가 None 이면 HEARTBEAT_TTL 안에 성공한 적이 없다는 뜻이다
-            "fresh": kv.get(f"run:{job}:last_ok") is not None,
+            "fresh": last_ok is not None,
+            # 마지막 성공의 실제 시각(2026-09-06 신규) — TTL 기반 `fresh` 하나로는
+            # "주말엔 안 도는 잡"을 표현할 수 없다(캘린더 시간만 안다, 요일을
+            # 모른다). `quant.control.health.job_findings`가 이 값으로 영업일
+            # 수를 직접 세어 스케줄이 있는 잡(JOB_SCHEDULE)을 재판정한다.
+            "last_ok": last_ok,
             "detail": kv.get(f"run:{job}:detail"),
         }
     return {"available": True, "jobs": out}

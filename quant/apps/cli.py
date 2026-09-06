@@ -2873,7 +2873,11 @@ def cmd_backup(args: argparse.Namespace) -> None:
 
     # 회귀는 **경고가 아니라 실패**다. 망가진 소스를 그대로 백업하면 지난 백업까지
     # 덮어쓴다(보관 개수가 유한하므로).
-    problems = regressions(manifest(Path(args.root)), prev_manifest) if prev_manifest else []
+    # today=(2026-09-06) — 뉴스 보존기간(RETENTION_DAYS=7일) 지난 일별 파일이
+    # collector.prune()으로 사라진 것을 회귀와 구분한다(regressions() docstring).
+    # 호스트 TZ가 KST(서버 관례)이므로 _dt.now().date()가 곧 그 판정의 "오늘"이다.
+    problems = (regressions(manifest(Path(args.root)), prev_manifest, today=_dt.now().date())
+                if prev_manifest else [])
     stats["compared_to"] = str(previous[-1]) if previous else None
     stats["problems"] = problems
     # 운영 상태 기록 — 감시의 `backup` 항목이 이걸 읽는다. 없으면 "기록이 없다"만
@@ -3431,7 +3435,10 @@ def cmd_health(args: argparse.Namespace) -> None:
     jobs = ["collect:KR", "collect:US", "report:KR", "report:US", "ingest", "backup",
             "deepdive:KR", "deepdive:US", "close-report", "report_close:KR", "ops-judge",
             "experiments", "equity-snapshot"]
-    findings += H.job_findings(snapshot(kv, jobs))
+    # now=(2026-09-06) — H.JOB_SCHEDULE 에 등재된 잡(ops-judge)은 캘린더 시간
+    # TTL 대신 영업일 수로 신선도를 잰다(H.job_findings docstring) — 주말엔
+    # 원래 안 도는 잡을 20시간 TTL로 재면 일요일 아침마다 거짓 경보가 났다.
+    findings += H.job_findings(snapshot(kv, jobs), now=now)
     # 현재 설정된 피드 이름을 주입한다 — 없으면 개편으로 사라진 옛 이름이 영구히
     # "죽은 피드"로 경보된다(2026-08-13 실측: 연합뉴스·한경). 로스터를 못 구하면
     # None 을 넘겨 걸러내지 않는다.
@@ -3653,12 +3660,44 @@ def cmd_health(args: argparse.Namespace) -> None:
     def _engine_json(market: str, d) -> dict | None:
         return _json_file(root / "out" / f"{d:%Y/%m/%d}" / f"{market}_engine.json")
 
+    # 오늘이 그 시장의 개장일인가(2026-09-06) — `report_cli.py: build`가 이제
+    # 휴장일엔 아예 빌드를 생략하므로(같은 판정을 재사용, `report_cli.
+    # _is_trading_day`), engine.json 결측을 "발행 실패"로 오판하지 않으려면
+    # 여기서도 같은 질문을 던져야 한다(실측: 2026-09-06 일요일 빌드가 후보
+    # 2건·중기 0건으로 report_quality alert 를 냈다 — 애초에 안 열린 시장을
+    # 평일 기준과 비교한 게 원인).
+    #
+    # 판정 실패는 **안전한 방향(개장일로 간주 = 기존 동작 유지)**으로
+    # fail-open 한다 — `report_cli._skip_if_holiday`의 fail-open과 반대
+    # 방향인 이유는 위험 비대칭이 다르기 때문이다: 그쪽은 오탐이면 "그날
+    # 리포트가 통째로 안 나간다"이고, 여기는 오탐이어도 "소음이 하나 더
+    # 날 뿐"이다(이 감시는 아무것도 고치지 않는다).
+    from quant.core.session import StaticSessionCalendar
+
+    try:
+        from quant.apps.report_cli import _is_trading_day, _report_session_calendar
+
+        _live_calendar = _report_session_calendar()
+        trading_today = {market: _is_trading_day(market, today, _live_calendar)
+                         for market in ("KR", "US")}
+    except Exception:  # noqa: BLE001 — report_cli 임포트/판정 실패는 기존
+        # 동작(개장일로 간주)으로 fail-open한다 — report_cli 는 자체로도 무거운
+        # 모듈(LLM·네트워크 배선을 잔뜩 끌고 온다)이라, 그게 깨졌다고 나머지
+        # health 점검 전체가 죽으면 안 된다. 아래 trailing 루프도 이 이름을
+        # 그대로 쓰므로 항상 True 를 답하는 폴백으로 재정의해둔다(주말 필터링을
+        # 못 하게 될 뿐 — 이 변경 이전의 동작과 같다).
+        def _is_trading_day(market, day, calendar):  # type: ignore[no-redef]
+            return True
+
+        trading_today = {"KR": True, "US": True}
+
     engine_payload_by_market: dict[str, dict | None] = {
         market: _engine_json(market, today) for market in ("KR", "US")
     }
     missing_by_market: dict[str, list[str] | None] = {
         market: (None if payload is None else list(payload.get("missing") or []))
         for market, payload in engine_payload_by_market.items()
+        if trading_today[market]
     }
     findings += H.report_findings(missing_by_market, required=args.required_source or [])
 
@@ -3734,20 +3773,31 @@ def cmd_health(args: argparse.Namespace) -> None:
             "missing": len(payload.get("missing") or []),
         }
 
+    # 정적 캘린더(주말만 판별, 네트워크 없음)로 trailing 표본에서 휴장일
+    # 아티팩트를 뺀다(2026-09-06) — 최대 10일×2시장을 매번 실캘린더로 물으면
+    # 비용이 크고, 이 표본이 잡으려는 실패(공휴일 아티팩트가 낀 채 남는 것)는
+    # 개장일 판정이 report_cli 빌드 스킵으로 앞으로는 자연히 안 생기므로(과거
+    # 잔존분만 최대 10일 후 자연 배출) 주말만 걸러도 충분하다.
+    static_calendar = StaticSessionCalendar()
     for market in ("KR", "US"):
         today_summary = _report_summary(engine_payload_by_market[market])
         trailing_summaries: list[dict] = []
-        # 직전 최대 10 캘린더일을 훑어 실제로 발행된 개장일 것만 모은다(주말
-        # ·휴장일은 engine.json 자체가 없어 자연히 빠진다) — flow_anomaly_
-        # findings 처럼 "그 날은 trailing 에서 뺀다"관례.
+        # 직전 최대 10 캘린더일을 훑어 실제로 발행된 개장일 것만 모은다 — 주말은
+        # 위 정적 캘린더로 걸러 아예 아티팩트를 안 보고, 개장일인데 결손인 날은
+        # engine.json 자체가 없어 자연히 빠진다(flow_anomaly_findings 와 동일 관례).
         for i in range(1, 11):
             d = today - timedelta(days=i)
+            if not _is_trading_day(market, d, static_calendar):
+                continue
             payload = _engine_json(market, d)
             if payload is not None:
                 trailing_summaries.append(_report_summary(payload))
             if len(trailing_summaries) >= 7:
                 break
-        findings += H.report_quality_findings(market, today_summary, trailing_summaries)
+        findings += H.report_quality_findings(
+            market, today_summary, trailing_summaries,
+            today_is_trading_day=trading_today[market],
+        )
 
     # 필수 시크릿이 **앱이 실제로 쓰는 경로로** 읽히나. "파일에 있나"가 아니다 —
     # 2026-08-14 에 그 차이가 사고를 만들었다(검증 도구는 자기 로더로 읽어 "완료",

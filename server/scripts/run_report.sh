@@ -136,6 +136,11 @@ if "$PY" -m quant.apps.report_cli build --market "$MARKET" >> "$LOG" 2>&1; then
   notify ok
 else
   RC=$?
+  if [ "$RC" = "3" ]; then
+    # 휴장일 스킵(report_cli EXIT_SKIPPED) — 빌드가 직접 "휴장일" 한 줄을 보냈다. 조용히 종료.
+    log "휴장일 — 리포트 스킵(exit 3)"
+    exit 0
+  fi
   log "빌드 실패 (exit $RC)"
   notify fail
   exit 1

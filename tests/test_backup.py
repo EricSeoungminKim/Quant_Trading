@@ -13,6 +13,7 @@ from __future__ import annotations
 import gzip
 import json
 import tarfile
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -268,6 +269,58 @@ def test_regressions_flags_disappeared_file(tmp_path: Path):
     (tmp_path / "data" / "news" / "KR" / "2026-08-13.jsonl").unlink()
 
     assert any("news/KR/2026-08-13.jsonl" in p for p in regressions(manifest(tmp_path), prev))
+
+
+# ── 뉴스 보존기간 정리(prune)와 회귀 구분(2026-09-06) ──────────────────────
+#
+# 실측: cli backup 이 quant.collect.collector.prune() (RETENTION_DAYS=7일)이
+# 지운 뉴스 일별 파일을 매일 회귀로 오판해 jobs alert backup 을 냈다 — 번들
+# 자체(생성 + 복원 리허설)는 정상이었다.
+
+def test_regressions_treats_retention_expired_news_prune_as_expected(tmp_path: Path):
+    """RETENTION_DAYS(7일) 지난 뉴스 일별 파일이 사라진 것은 collector.prune()
+    이 지운 것이다 — `today=`를 준 경우에만 회귀에서 뺀다."""
+    _seed(tmp_path)
+    prev = manifest(tmp_path)
+    (tmp_path / "data" / "news" / "KR" / "2026-08-13.jsonl").unlink()
+
+    problems = regressions(manifest(tmp_path), prev, today=date(2026, 8, 25))
+
+    assert problems == []
+
+
+def test_regressions_still_flags_news_removed_within_retention_window(tmp_path: Path):
+    """보존 기간 안(7일 이내)의 뉴스 파일이 사라지면 여전히 회귀다 — prune()
+    이 아직 지울 날짜가 아니다."""
+    _seed(tmp_path)
+    prev = manifest(tmp_path)
+    (tmp_path / "data" / "news" / "KR" / "2026-08-13.jsonl").unlink()
+
+    problems = regressions(manifest(tmp_path), prev, today=date(2026, 8, 14))
+
+    assert any("news/KR/2026-08-13.jsonl" in p for p in problems)
+
+
+def test_regressions_without_today_still_flags_old_news_disappearance(tmp_path: Path):
+    """`today`를 안 주면(기본값) 기존 동작 그대로 — 보존기간과 무관하게 회귀로
+    본다(하위 호환, `cmd_backup`이 명시적으로 `today=`를 넘겨야 새 판정이 켜진다)."""
+    _seed(tmp_path)
+    prev = manifest(tmp_path)
+    (tmp_path / "data" / "news" / "KR" / "2026-08-13.jsonl").unlink()
+
+    assert any("news/KR/2026-08-13.jsonl" in p for p in regressions(manifest(tmp_path), prev))
+
+
+def test_regressions_does_not_excuse_non_news_disappearance_even_with_today(tmp_path: Path):
+    """`today=`를 줘도 원장·상태 파일이 사라진 건 여전히 회귀다 — 뉴스 보존기간
+    로직은 `news/{KR,US}/YYYY-MM-DD.jsonl` 형태에만 적용된다."""
+    _seed(tmp_path)
+    prev = manifest(tmp_path)
+    (tmp_path / "data" / "state" / "trades.jsonl").unlink()
+
+    problems = regressions(manifest(tmp_path), prev, today=date(2026, 8, 25))
+
+    assert any("state/trades.jsonl" in p for p in problems)
 
 
 # ── 도우미 ────────────────────────────────────────────────────────────────

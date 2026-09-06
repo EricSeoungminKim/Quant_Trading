@@ -99,6 +99,72 @@ def test_job_last_run_failed_is_alert():
     assert "접속 실패" in findings[0].detail
 
 
+# ── 세션/영업일 스케줄 잡(ops-judge) — 주말 오경보(2026-09-06 실측) ────────
+#
+# ops-judge 는 KR 평일 13:10 + US 화~토 01:30 에만 돈다. 마지막 성공이 토요일
+# 새벽(US 런)이면 opstate 의 20시간 TTL 로는 일요일 아침에 이미 "최근 성공이
+# 없다"가 거짓으로 났다 — `now`를 주면 JOB_SCHEDULE(영업일 기준)로 재판정한다.
+
+def test_ops_judge_weekend_gap_is_not_alert_with_business_day_schedule():
+    """금/토 마지막 성공 → 일요일 아침 점검. opstate 의 `fresh` 는 TTL 만료로
+    이미 False 인데(실측), 영업일로는 아직 하루도 안 지나 fresh 로 재판정된다."""
+    snap = {"available": True,
+            "jobs": {"ops-judge": {
+                "fresh": False, "ok": True,
+                "last": "2026-09-04T16:30:00+00:00",
+                "last_ok": "2026-09-04T16:30:00+00:00",  # = 2026-09-05 01:30 KST(토)
+            }}}
+    now = datetime(2026, 9, 6, 0, 50, tzinfo=UTC)  # = 2026-09-06 09:50 KST(일)
+
+    assert job_findings(snap, now=now) == []
+
+
+def test_ops_judge_genuinely_stale_over_a_weekend_is_still_alert():
+    """주말을 끼워도 진짜 문제(수요일부터 결근)는 그대로 잡는다 — 관대해진
+    것이지 눈을 감은 게 아니다."""
+    snap = {"available": True,
+            "jobs": {"ops-judge": {
+                "fresh": False, "ok": True,
+                "last": "2026-09-02T04:10:00+00:00",
+                "last_ok": "2026-09-02T04:10:00+00:00",  # = 2026-09-02 13:10 KST(수)
+            }}}
+    now = datetime(2026, 9, 6, 0, 50, tzinfo=UTC)  # = 2026-09-06 09:50 KST(일)
+
+    findings = job_findings(snap, now=now)
+
+    assert _levels(findings) == [ALERT]
+    assert "ops-judge" in findings[0].detail
+
+
+def test_ops_judge_without_now_falls_back_to_ttl_based_freshness():
+    """`now`를 안 주면(예: 옛 호출부) 기존 TTL 기반 `fresh` 를 그대로 쓴다 —
+    새 판정으로 조용히 바뀌지 않는다(하위 호환)."""
+    snap = {"available": True,
+            "jobs": {"ops-judge": {
+                "fresh": False, "ok": True,
+                "last": "2026-09-04T16:30:00+00:00",
+                "last_ok": "2026-09-04T16:30:00+00:00",
+            }}}
+
+    findings = job_findings(snap)
+
+    assert _levels(findings) == [ALERT]
+
+
+def test_ops_judge_monday_morning_before_that_days_run_is_not_alert():
+    """월요일 이른 시각(그날 13:10 런 전) 점검 — 토요일 마지막 성공에서 아직
+    1영업일(월요일 그 자체)만 지났으므로 관대한 창 안이다."""
+    snap = {"available": True,
+            "jobs": {"ops-judge": {
+                "fresh": False, "ok": True,
+                "last": "2026-09-04T16:30:00+00:00",  # = 토 01:30 KST
+                "last_ok": "2026-09-04T16:30:00+00:00",
+            }}}
+    now = datetime(2026, 9, 6, 22, 0, tzinfo=UTC)  # = 2026-09-07 07:00 KST(월)
+
+    assert job_findings(snap, now=now) == []
+
+
 # ── 피드 ─────────────────────────────────────────────────────────────────
 
 def test_no_stale_feeds_is_ok():
@@ -1020,6 +1086,45 @@ def test_unreadable_today_with_enough_trailing_history_is_unknown():
     findings = report_quality_findings("KR", None, trailing)
 
     assert _levels(findings) == [UNKNOWN]
+
+
+# ── 휴장일 스킵 — 결측이 아니다(2026-09-06 실측) ───────────────────────────
+#
+# 2026-09-06 일요일에 빌드된 KR_engine.json 이 후보 2건·중기 0건으로 "급감"
+# alert 를 냈다 — 애초에 열리지 않은 시장을 평일 중앙값과 비교한 게 원인이다.
+# `quant.apps.report_cli` build 가 이제 휴장일엔 빌드 자체를 생략한다 —
+# 호출부가 그 판정(`today_is_trading_day=False`)을 넘기면 오늘 몫을 통째로
+# 건너뛴다(UNKNOWN 조차 내지 않는다 — "결측"이 아니라 "원래 없는 게 정상"이다).
+
+def test_non_trading_day_skips_the_check_entirely_even_when_today_is_none():
+    trailing = [_summary() for _ in range(3)]
+
+    findings = report_quality_findings("KR", None, trailing, today_is_trading_day=False)
+
+    assert findings == []
+
+
+def test_non_trading_day_skips_even_a_genuinely_bad_today():
+    """휴장일 판정이 있으면 today 값 자체가 나빠도(0건 + failed) 평가하지 않는다
+    — 그 시장이 애초에 안 열렸으므로 비교 대상이 아니다."""
+    trailing = [_summary(candidates=c) for c in (10, 12, 9)]
+
+    findings = report_quality_findings(
+        "KR", _summary(candidates=0, agent_interpret="failed"), trailing,
+        today_is_trading_day=False,
+    )
+
+    assert findings == []
+
+
+def test_trading_day_default_keeps_existing_behavior():
+    """`today_is_trading_day` 기본값(True)은 기존 동작을 그대로 유지한다 —
+    새 인자가 조용히 판정을 바꾸지 않는다."""
+    trailing = [_summary(candidates=c) for c in (10, 12, 9)]
+
+    findings = report_quality_findings("KR", _summary(candidates=0), trailing)
+
+    assert _levels(findings) == [ALERT]
 
 
 def test_candidates_already_near_zero_median_does_not_alert_on_zero():

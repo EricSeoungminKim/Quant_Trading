@@ -34,8 +34,10 @@ import json
 import tarfile
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+
+from quant.collect.collector import RETENTION_DAYS
 
 # 지켜야 할 아티팩트. `data/` 아래 이 디렉토리들만 담는다.
 ARTIFACTS = ("state", "ledger", "news")
@@ -253,11 +255,46 @@ def verify(bundle: Path | str) -> list[str]:
     return problems
 
 
-def regressions(cur: dict[str, Entry], prev: dict[str, Entry]) -> list[str]:
+def _is_expected_news_prune(key: str, cutoff: date) -> bool:
+    """`key`(예: `"news/KR/2026-08-20.jsonl"`)가 보존 기간보다 오래된 뉴스
+    일별 파일인가 — 그러면 사라진 게 아니라 `quant.collect.collector.prune()`
+    이 지운 것이다(RETENTION_DAYS=7). `prune()`과 정확히 같은 판정(`file_date
+    < cutoff`)을 쓴다 — 여기서 따로 정의하면 언젠가 갈라진다.
+
+    이름 형태가 아니거나(원장·상태 파일처럼 날짜가 없다) 날짜를 못 읽으면
+    `False` — 안전한 방향(회귀로 취급)이다.
+    """
+    parts = key.split("/")
+    if len(parts) != 3 or parts[0] != "news" or parts[1] not in ("KR", "US"):
+        return False
+    name = parts[2]
+    if not name.endswith(".jsonl"):
+        return False
+    try:
+        file_date = date.fromisoformat(name[: -len(".jsonl")])
+    except ValueError:
+        return False
+    return file_date < cutoff
+
+
+def regressions(cur: dict[str, Entry], prev: dict[str, Entry],
+                today: date | None = None) -> list[str]:
     """지난 번들 대비 **줄어든** 것. 원장·뉴스는 append-only 이므로 줄어들면 사고다.
 
     이 검사가 없으면 망가진 소스를 그대로 백업해 지난 백업까지 덮어쓴다.
+
+    `today`(2026-09-06 신규, 선택)를 주면 `news/{KR,US}/YYYY-MM-DD.jsonl` 중
+    보존 기간(`RETENTION_DAYS`=7일)보다 오래된 날짜가 사라진 것은 **의도된
+    정리**(`collector.prune()`, 매일 뉴스 수집 사이클마다 돈다)로 보고 회귀에서
+    뺀다. 실측(2026-09-06): `cli backup`이 정리로 사라진 파일을 매일 회귀로
+    오판해 `jobs alert backup`을 냈다 — 실제 백업(번들+복원 리허설)은 정상이었다.
+
+    `today`를 안 주면(기본값) **기존 동작 그대로** — 모든 실종을 회귀로 본다.
+    호출부(`cmd_backup`)가 명시적으로 오늘 날짜를 넘겨야 새 판정이 켜진다(하위
+    호환 — 기존 테스트가 고정 날짜 픽스처로 실종을 검증하고 있어 암묵적으로
+    `date.today()`를 기본값으로 쓰면 그 검증이 시간이 지나면서 조용히 무력화된다).
     """
+    cutoff = (today - timedelta(days=RETENTION_DAYS)) if today is not None else None
     problems: list[str] = []
     for key, was in sorted(prev.items()):
         if key.startswith("mysql/"):
@@ -268,6 +305,8 @@ def regressions(cur: dict[str, Entry], prev: dict[str, Entry]) -> list[str]:
             continue
         now = cur.get(key)
         if now is None:
+            if cutoff is not None and _is_expected_news_prune(key, cutoff):
+                continue
             problems.append(f"{key}: 지난 백업에 있었는데 사라졌다")
             continue
         if was.lines is not None and now.lines is not None and now.lines < was.lines:
