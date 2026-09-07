@@ -642,3 +642,9 @@
 # 매일 08:00 KST — 관찰 레인 판정일 알림(2026-09-07 결정 1). settings.yaml 의
 # validation.review_by 가 도래한 enabled 전략이 있을 때만 제어실 레인에 한 줄.
 0 8 * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/lane_review_reminder.sh >> data/lane_review.log 2>&1
+
+# 매분 — 서버 사용량 샘플(2026-09-07 소유자 질문 "최대 과부하 때와 평균 사용량"). /proc + ps 만 쓴다.
+# data/ops/usage.jsonl 에 한 줄씩; 일요일 03:00 정리 크론은 .log 만 지우므로 이 파일은 따로 순환
+# (아래 usage_rotate: 매주 월 04:00, 14일 초과분 삭제).
+* * * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/usage_sample.sh 2>>data/usage_sample.err
+0 4 * * 1 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -c "import json,datetime as d,pathlib as P;p=P.Path('data/ops/usage.jsonl');c=(d.datetime.now(d.timezone.utc)-d.timedelta(days=14)).isoformat();rows=[l for l in p.read_text().splitlines() if l.strip() and json.loads(l)['ts']>=c[:19]];p.write_text('\n'.join(rows)+'\n')" 2>>data/usage_sample.err

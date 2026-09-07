@@ -1037,6 +1037,33 @@ def declared_initial_krw(
     return out
 
 
+def _heal_ghost_currency_books(
+    books, active_strategy_ids, krw_by_sid: dict, usd_by_sid: dict,
+) -> list[str]:
+    """미참여 통화(capital_fraction[market] == 0)인데 장부에 잔액이 남아 있고 그 통화로 아무
+    활동(실현손익·수수료·해당 시장 포지션)이 없는 레인의 잔액·시작금을 0 으로 만든다.
+    돌려주는 값은 치유한 `"sid:KRW"` 목록. 활동이 있으면 건드리지 않는다(원장이 진실)."""
+    healed: list[str] = []
+    for sid in active_strategy_ids:
+        b = books.books.get(sid)
+        if not b:
+            continue
+        positions = b.get("positions") or {}
+        if sid not in krw_by_sid:
+            kr_pos = [s for s, p in positions.items() if market_of_symbol(s) == "KR" and (p.get("qty") or 0) > 0]
+            if (b.get("cash_krw") or b.get("initial_krw")) and not (b.get("realized_pnl_krw") or b.get("fees_krw") or kr_pos):
+                b["cash_krw"] = 0.0
+                b["initial_krw"] = 0.0
+                healed.append(f"{sid}:KRW")
+        if sid not in usd_by_sid:
+            us_pos = [s for s, p in positions.items() if market_of_symbol(s) == "US" and (p.get("qty") or 0) > 0]
+            if (b.get("cash_usd") or b.get("initial_usd")) and not (b.get("realized_pnl_usd") or b.get("fees_usd") or us_pos):
+                b["cash_usd"] = 0.0
+                b["initial_usd"] = 0.0
+                healed.append(f"{sid}:USD")
+    return healed
+
+
 def fixed_dual_books(
     capital_fraction: dict[str, dict[str, float]],
     active_strategy_ids: list[str],
@@ -1307,9 +1334,22 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
                 per_strategy_initial_krw, per_strategy_initial_usd,
             )
             books = StrategyBooks.load(books_path, initial_krw=0.0)
+            # `load()`는 인자 0.0 이 아니라 파일의 옛 최상위 initial_krw(equal_split 시절
+            # 933,411원)를 되살린다 → 미참여 통화 레인이 `_ensure` 폴백으로 유령 장부를 받았다
+            # (2026-09-06 에폭 리셋 실사고: 미국 전용 7레인이 KRW 933,411원 장부, 사이트 시드
+            # 6.5M 부풀림). 여기서 0 으로 못박고, 활성 레인 전부에 통화별 명시값(미참여=0.0)을
+            # 준 뒤, 이미 파일에 남은 유령 장부(미참여 통화인데 활동 0)는 기동 시 0 으로 치유한다.
+            books.initial_krw = 0.0
             books.dual_currency = True
-            books.initial_by_strategy = krw_by_sid
-            books.initial_by_strategy_usd = usd_by_sid
+            books.initial_by_strategy = {sid: float(krw_by_sid.get(sid, 0.0)) for sid in active_strategy_ids}
+            books.initial_by_strategy_usd = {sid: float(usd_by_sid.get(sid, 0.0)) for sid in active_strategy_ids}
+            healed = _heal_ghost_currency_books(books, active_strategy_ids, krw_by_sid, usd_by_sid)
+            if healed:
+                logger.warning(
+                    "capital_policy fixed_dual: 미참여 통화의 유령 장부 %d건을 0 으로 치유 — %s",
+                    len(healed), ", ".join(healed),
+                )
+                books.save()
             skipped = [
                 sid for sid in active_strategy_ids
                 if sid not in krw_by_sid and sid not in usd_by_sid
