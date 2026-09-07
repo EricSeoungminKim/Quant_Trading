@@ -125,8 +125,14 @@ table.sboard td.num,table.sboard th.num{text-align:right;font-family:var(--font-
 .meta-row{display:flex;gap:16px;flex-wrap:wrap;font-size:var(--fs-xs);color:var(--body);margin-bottom:14px}
 .meta-row b{color:var(--ink)}
 
-.chart-box{width:100%;height:360px;margin-bottom:6px}
+.chart-box{width:100%;height:340px;min-height:340px;margin-bottom:2px}
 .chart-note{font-size:var(--fs-2xs);color:var(--mute);margin-bottom:16px}
+.legend-row{font-size:var(--fs-2xs);color:var(--mute);margin:2px 0 4px}
+.r-ruler{font-size:var(--fs-xs);color:var(--body);background:var(--paper);
+  border-radius:var(--radius-md);padding:6px 10px;margin-bottom:6px;font-family:var(--font-mono)}
+.cards-grid{display:block}
+@media(min-width:900px){.cards-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  .cards-grid .card{margin-bottom:0}}
 .no-chart{padding:24px;text-align:center;color:var(--mute);font-size:var(--fs-sm);
   border:1px dashed var(--rule);border-radius:var(--radius-md);margin-bottom:16px}
 
@@ -208,6 +214,9 @@ footer{margin-top:32px;font-size:var(--fs-2xs);color:var(--mute);text-align:cent
 <div class="empty">오늘({{ review.date }}) {{ market_name }} 진입 체결 없음.</div>
 {%- endif %}
 
+{%- if review.groups %}
+<div class="cards-grid">
+{%- endif %}
 {%- for g in review.groups %}
 {%- set cid = "chart-" ~ loop.index %}
 {%- set badge_cls = "unknown" %}
@@ -238,8 +247,17 @@ footer{margin-top:32px;font-size:var(--fs-2xs);color:var(--mute);text-align:cent
     {%- if g.mfe_bp is not none %}<span>MFE <b>{{ fmt_bp(g.mfe_bp) }}</b> · MAE <b>{{ fmt_bp(g.mae_bp) }}</b></span>{% endif %}
   </div>
 
-  {%- if g.bars_window and g.bars_window|length > 1 %}
+  {%- if g.bars_window and g.bars_window|length > 1 and g.y_range %}
   <div id="{{ cid }}" class="chart-box"></div>
+  <div class="legend-row">초록=목표 구간 · 빨강=손절 구간 · 진한 띠=실제 손익 · 노랑=보유 · 주황=MA60(청산 트레일)</div>
+  {%- if g.r and g.r.stop_r is not none %}
+  <div class="r-ruler">
+    청산 위치: {{ '{:+.2f}'.format(g.r.exit_r) if g.r.exit_r is not none else '진행중' }}R
+    (손절 {{ '{:+.0f}'.format(g.r.stop_r) }}R … 목표 {{ '{:+.2f}'.format(g.r.target_r) if g.r.target_r is not none else '?' }}R)
+    {%- if g.r.mfe_r is not none %} · MFE {{ fmt_bp(g.mfe_bp) }} = {{ '{:+.2f}'.format(g.r.mfe_r) }}R{% endif %}
+    {%- if g.r.mae_r is not none %} · MAE {{ fmt_bp(g.mae_bp) }} = {{ '{:+.2f}'.format(g.r.mae_r) }}R{% endif %}
+  </div>
+  {%- endif %}
   <div class="chart-note">봉 출처: {{ g.bars_source or '알수없음' }} · {{ g.bars_interval or '?' }} 간격 · {{ g.bars_window|length }}봉 · 시각은 {{ g.tz_label or g.market }} 기준</div>
   <script>
   (function(){
@@ -257,53 +275,86 @@ footer{margin-top:32px;font-size:var(--fs-2xs);color:var(--mute);text-align:cent
     var entryPrice = {{ g.entry_price }};
     var entryTs = {{ g.entries[0].ts | tojson }};
     var exitTs = {{ (g.exits[-1].ts if g.exits else g.bars_window[-1].ts) | tojson }};
+    var isDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    var haloColor = isDark ? "rgba(17,18,20,0.85)" : "rgba(255,255,255,0.85)";
+    var fontColor = isDark ? "#A7ADB8" : "#5B616E";
     var shapes = [];
     var annotations = [];
-    // 보유 구간(진입→청산, 아직 미종결이면 진입→마지막 봉) — 노란 배경으로 먼저 깐다.
+    // 보유 구간(진입→청산, 아직 미종결이면 진입→마지막 봉) — 노랑 10% 배경으로 먼저 깐다.
     shapes.push({type:"rect", xref:"x", yref:"paper", x0: entryTs, x1: exitTs,
       y0: 0, y1: 1, fillcolor:"rgba(230,180,20,0.10)", line:{width:0}, layer:"below"});
-    {%- if g.band.target is not none %}
+    {% if g.band.target is not none %}
     shapes.push({type:"rect", xref:"x", yref:"y", x0: entryTs, x1: exitTs,
       y0: entryPrice, y1: {{ g.band.target }}, fillcolor:"rgba(30,125,69,0.15)", line:{width:0}, layer:"below"});
-    {%- endif %}
-    {%- if g.band.stop is not none %}
+    {% endif %}
+    {% if g.band.stop is not none %}
     shapes.push({type:"rect", xref:"x", yref:"y", x0: entryTs, x1: exitTs,
       y0: entryPrice, y1: {{ g.band.stop }}, fillcolor:"rgba(214,41,75,0.15)", line:{width:0}, layer:"below"});
-    {%- endif %}
+    {% endif %}
+    {% if g.exits %}
+    // 실제 손익 "포착" 띠 — 진입가↔청산가, 보유 구간에만, 이익=초록/손실=빨강(오너 지정 색).
+    shapes.push({type:"rect", xref:"x", yref:"y", x0: entryTs, x1: exitTs,
+      y0: entryPrice, y1: {{ g.exits[-1].price }},
+      fillcolor: "{{ 'rgba(10,125,69,0.35)' if (g.pnl_known and g.pnl > 0) else 'rgba(193,18,31,0.35)' }}",
+      line:{width:0}, layer:"below"});
+    {% endif %}
     {%- set ma60_pairs = g.bars_window | selectattr("ma60", "ne", none) | list %}
-    {%- if ma60_pairs %}
+    {% if ma60_pairs %}
     traces.push({type:"scatter", mode:"lines", x: {{ ma60_pairs | map(attribute="ts") | list | tojson }},
       y: {{ ma60_pairs | map(attribute="ma60") | list | tojson }},
       line:{color:"#D98A1E", width:1.5}, name:"MA60"});
-    {%- endif %}
+    {% endif %}
+    // 레벨 기준선(목표/진입/손절 점선, 청산 실선) — 차트 전체 폭에 걸치고
+    // 라벨은 오른쪽 여백(xref:paper, x=1.0)에 고정한다(2026-09-07: "목표선이
+    // 화면 밖으로 잘린다" 지적 — y축을 밴드 포함 고정 범위로 잡아 항상 보이게).
+    {% if g.band.target is not none %}
+    shapes.push({type:"line", xref:"paper", x0:0, x1:1, yref:"y", y0:{{ g.band.target }}, y1:{{ g.band.target }},
+      line:{color:"#0A7D33", width:1.3, dash:"dash"}, layer:"below"});
+    annotations.push({xref:"paper", x:1.0, yref:"y", y:{{ g.band.target }}, xanchor:"left", yanchor:"bottom",
+      showarrow:false, align:"left", font:{size:9, color:"#0A7D33"},
+      text:"목표 {{ fmt_price(g.band.target, g.market) }}<br>{% if g.entry_price %}{{ '{:+.1f}%'.format((g.band.target/g.entry_price - 1)*100) }}{% endif %}{% if g.r and g.r.target_r is not none %} ({{ '{:+.1f}'.format(g.r.target_r) }}R){% endif %}"});
+    {% endif %}
+    annotations.push({xref:"paper", x:1.0, yref:"y", y:entryPrice, xanchor:"left", yanchor:"bottom",
+      showarrow:false, align:"left", font:{size:9, color:fontColor},
+      text:"진입 {{ fmt_price(g.entry_price, g.market) }}"});
+    shapes.push({type:"line", xref:"paper", x0:0, x1:1, yref:"y", y0:entryPrice, y1:entryPrice,
+      line:{color:"#9AA0A6", width:1, dash:"dot"}, layer:"below"});
+    {% if g.band.stop is not none %}
+    shapes.push({type:"line", xref:"paper", x0:0, x1:1, yref:"y", y0:{{ g.band.stop }}, y1:{{ g.band.stop }},
+      line:{color:"#C1121F", width:1.3, dash:"dash"}, layer:"below"});
+    annotations.push({xref:"paper", x:1.0, yref:"y", y:{{ g.band.stop }}, xanchor:"left", yanchor:"top",
+      showarrow:false, align:"left", font:{size:9, color:"#C1121F"},
+      text:"손절 {{ fmt_price(g.band.stop, g.market) }}<br>{% if g.entry_price %}{{ '{:+.1f}%'.format((g.band.stop/g.entry_price - 1)*100) }}{% endif %}"});
+    {% endif %}
+    {% if g.exits %}
+    shapes.push({type:"line", xref:"paper", x0:0, x1:1, yref:"y", y0:{{ g.exits[-1].price }}, y1:{{ g.exits[-1].price }},
+      line:{color: "{{ '#C1272D' if (g.pnl_known and g.pnl > 0) else '#2F5FC4' }}", width:2}, layer:"below"});
+    annotations.push({xref:"paper", x:1.0, yref:"y", y:{{ g.exits[-1].price }}, xanchor:"left", yanchor:"middle",
+      showarrow:false, align:"left", font:{size:9, color: "{{ '#C1272D' if (g.pnl_known and g.pnl > 0) else '#2F5FC4' }}"},
+      text:"청산 {{ fmt_price(g.exits[-1].price, g.market) }}{% if g.pnl_bp is not none %}<br>{{ fmt_bp(g.pnl_bp) }}{% endif %}"});
+    {% endif %}
     traces.push({type:"scatter", mode:"markers", x:[entryTs], y:[entryPrice],
-      marker:{symbol:"triangle-up", size:13, color:"#0052FF"}, name:"BUY"});
+      marker:{symbol:"triangle-up", size:12, color:"#0052FF"}, name:"BUY"});
     annotations.push({x: entryTs, y: entryPrice,
-      text: "BUY {{ fmt_hhmm(g.entries[0].ts) }} {{ g.tz_label or '' }}<br>{{ fmt_price(g.entry_price, g.market) }}",
-      showarrow:true, arrowhead:2, ax:0, ay:-30, font:{size:10}});
-    {%- if g.exits %}
+      text: "BUY {{ fmt_hhmm(g.entries[0].ts) }}<br>{{ fmt_price(g.entry_price, g.market) }}",
+      showarrow:true, arrowhead:2, ax:0, ay:-32, font:{size:10, color:fontColor},
+      bgcolor:haloColor, borderpad:2});
+    {% if g.exits %}
     traces.push({type:"scatter", mode:"markers", x:[exitTs], y:[{{ g.exits[-1].price }}],
-      marker:{symbol:"triangle-down", size:13, color:"#A6570A"}, name:"SELL"});
+      marker:{symbol:"triangle-down", size:12, color:"#A6570A"}, name:"SELL"});
     annotations.push({x: exitTs, y: {{ g.exits[-1].price }},
-      text: "SELL {{ fmt_hhmm(g.exits[-1].ts) }} {{ g.tz_label or '' }}<br>{{ fmt_price(g.exits[-1].price, g.market) }}{% if g.pnl_bp is not none %} ({{ fmt_bp(g.pnl_bp) }}){% endif %}",
-      showarrow:true, arrowhead:2, ax:0, ay:30, font:{size:10}});
-    {%- endif %}
-    {%- if g.mfe_price is not none %}
-    shapes.push({type:"line", xref:"x", yref:"y", x0: entryTs, x1: exitTs,
-      y0: {{ g.mfe_price }}, y1: {{ g.mfe_price }}, line:{color:"#1E7D45", width:1, dash:"dot"}});
-    {%- endif %}
-    {%- if g.mae_price is not none %}
-    shapes.push({type:"line", xref:"x", yref:"y", x0: entryTs, x1: exitTs,
-      y0: {{ g.mae_price }}, y1: {{ g.mae_price }}, line:{color:"#D6294B", width:1, dash:"dot"}});
-    {%- endif %}
+      text: "SELL {{ fmt_hhmm(g.exits[-1].ts) }}<br>{{ fmt_price(g.exits[-1].price, g.market) }}{% if g.pnl_bp is not none %} ({{ fmt_bp(g.pnl_bp) }}){% endif %}",
+      showarrow:true, arrowhead:2, ax:0, ay:32, font:{size:10, color:fontColor},
+      bgcolor:haloColor, borderpad:2});
+    {% endif %}
     var layout = {
-      margin:{l:50,r:10,t:10,b:30}, height: 360,
-      xaxis:{rangeslider:{visible:false}, type:"date", tickformat:"%H:%M",
-        title:{text:"시각 ({{ g.tz_label or g.market }})", font:{size:10}}},
-      yaxis:{fixedrange:false},
+      margin:{l:40,r:104,t:24,b:32}, height: 340,
+      xaxis:{rangeslider:{visible:false}, type:"date", tickformat:"%H:%M", nticks:5,
+        tickfont:{size:9}, title:{text:"시각 ({{ g.tz_label or g.market }})", font:{size:9}}},
+      yaxis:{fixedrange:false, range: {{ g.y_range | tojson }}, tickfont:{size:9}},
       shapes: shapes, annotations: annotations, showlegend:false,
       paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
-      font:{color: window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "#A7ADB8" : "#5B616E"},
+      font:{color: fontColor},
     };
     Plotly.newPlot("{{ cid }}", traces, layout, {displayModeBar:false, responsive:true});
   })();
@@ -367,6 +418,9 @@ footer{margin-top:32px;font-size:var(--fs-2xs);color:var(--mute);text-align:cent
   </div>
 </div>
 {%- endfor %}
+{%- if review.groups %}
+</div>
+{%- endif %}
 
 <footer>quant/control/trade_review.py + quant/report/render/trade_review.py — 원장 data/state/trades.jsonl 기준 자동 생성</footer>
 </div>

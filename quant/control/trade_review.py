@@ -238,7 +238,7 @@ def _mfe_mae_bp(bars: pd.DataFrame | None, entry_price: float, start: datetime, 
 
 
 def _chart_bars(
-    bars: pd.DataFrame | None, start: datetime, end: datetime, market: str, pad_bars: int = 15,
+    bars: pd.DataFrame | None, start: datetime, end: datetime, market: str, pad_bars: int = 30,
 ) -> list[dict[str, Any]]:
     """차트용 봉 슬라이스 — entry~exit 구간에 앞뒤 여유(`pad_bars`)를 더해 진입
     직전 맥락과 청산 직후 여진을 함께 보여준다. 캔들 차트는 렌더러(HTML/노트북)
@@ -254,10 +254,20 @@ def _chart_bars(
         return []
     try:
         sorted_bars = bars.sort_index()
-        # 전체 시계열 기준으로 미리 60선을 잡아둔다 — 슬라이스 후에 계산하면
-        # 창 시작 부근 60개가 워밍업 부족으로 NaN이 된다(scalp_1m 청산 규칙
-        # 자체가 60선을 보므로, 카드에서도 전략이 실제로 본 값과 같아야 한다).
-        ma60 = sorted_bars["close"].rolling(60, min_periods=1).mean()
+        # 60선은 **그날(거래소 로컬 날짜) 안에서만** 굴린다 — 야후가 주는
+        # 다일치 1분봉을 그냥 이어 붙여 rolling(60)을 걸면 개장 직후 60분은
+        # 전날 종가까지 끌어와 평균이 왜곡된다(2026-09-06 실측: 09:20경 MA60이
+        # 172.5k에서 시작해 09:35경 175k로 치솟는 인공적인 "워밍업 꼬리" —
+        # 전날 종가가 섞여 든 것). 날짜 경계로 그룹을 나눠 각 날짜 안에서만
+        # `min_periods=1`로 계산하면, 개장 첫 분은 그 분 하나만의 값이 되고
+        # 60분이 지나야 진짜 60선이 된다 — scalp_1m 청산 규칙이 실제로 보는
+        # 값과 일치한다(전날 데이터가 섞이지 않는다는 점에서 오히려 더 정확).
+        tz = MARKET_TZ.get(market)
+        local_index = sorted_bars.index.tz_convert(tz) if tz is not None else sorted_bars.index
+        day_keys = local_index.date
+        ma60 = sorted_bars.groupby(day_keys)["close"].transform(
+            lambda s: s.rolling(60, min_periods=1).mean()
+        )
         mask = (sorted_bars.index >= start) & (sorted_bars.index <= end)
         positions = sorted_bars.index[mask]
         if len(positions) == 0:
@@ -280,6 +290,52 @@ def _chart_bars(
         }
         for (idx, row), m in zip(window.iterrows(), ma60_window, strict=True)
     ]
+
+
+def _chart_y_range(
+    bars_window: list[dict[str, Any]], stop: float | None, target: float | None, pad_pct: float = 0.003,
+) -> list[float] | None:
+    """차트 y축 고정 범위(2026-09-07 오너 지적 수리) — 자동스케일에 맡기면
+    MA60 선(워밍업 구간 포함)이나 60선 궤적이 캔들 범위를 밀어내 목표/손절대가
+    화면 밖으로 잘렸다("초록 구간이 잘려 보인다"). `[min(창 저가들, 손절),
+    max(창 고가들, 목표)] ± 0.3%`로 명시 고정 — 계획한 손절/목표가 실제로
+    도달했든 안 했든 항상 보이게 한다. `bars_window`가 비면 `None`(차트 자체를
+    생략하는 근거와 같은 신호)."""
+    if not bars_window:
+        return None
+    los = [b["low"] for b in bars_window] + ([stop] if stop is not None else [])
+    his = [b["high"] for b in bars_window] + ([target] if target is not None else [])
+    lo, hi = min(los), max(his)
+    if hi <= lo:
+        hi = lo + max(abs(lo) * pad_pct, 1.0)
+    return [lo * (1 - pad_pct), hi * (1 + pad_pct)]
+
+
+def _r_multiples(
+    entry_price: float, stop: float | None, target: float | None, exit_price: float | None,
+    mfe_bp: float | None, mae_bp: float | None,
+) -> dict[str, float | None]:
+    """R = entry − stop(손절까지 거리, 항상 양수 전제). 손절이 없으면 R을
+    정의할 수 없어 전부 `None`(2026-09-07 오너 요청 "R자 눈금" 재료) — 지어
+    내지 않는다. `stop_r`은 정의상 항상 -1.0(손절 자체가 -1R)."""
+    out: dict[str, float | None] = {
+        "unit_r_bp": None, "stop_r": None, "target_r": None, "exit_r": None, "mfe_r": None, "mae_r": None,
+    }
+    if stop is None or entry_price is None or entry_price <= stop:
+        return out
+    r_price = entry_price - stop
+    unit_r_bp = r_price / entry_price * 1e4
+    out["unit_r_bp"] = unit_r_bp
+    out["stop_r"] = -1.0
+    if target is not None:
+        out["target_r"] = (target - entry_price) / r_price
+    if exit_price is not None:
+        out["exit_r"] = (exit_price - entry_price) / r_price
+    if mfe_bp is not None and unit_r_bp:
+        out["mfe_r"] = mfe_bp / unit_r_bp
+    if mae_bp is not None and unit_r_bp:
+        out["mae_r"] = mae_bp / unit_r_bp
+    return out
 
 
 def _group_key(row: dict) -> tuple[str, str]:
@@ -386,6 +442,12 @@ def _build_group(
     entry_reason = str(buys[0].get("reason") or "")
     parsed_entry = parse_entry_reason(entry_reason)
     band = compute_band(strategy_id, entry_price, parsed_entry, strategy_params, risk_params)
+    exit_price = float(sells[-1].get("price")) if sells else None
+    y_range = _chart_y_range(bars_window, band.get("stop"), band.get("target"))
+    r_multiples = _r_multiples(
+        entry_price, band.get("stop"), band.get("target"), exit_price,
+        mfe_mae.get("mfe_bp"), mfe_mae.get("mae_bp"),
+    )
 
     base_id = base_strategy_id(strategy_id)
     cfg = strategy_params.get(strategy_id) or strategy_params.get(base_id) or {}
@@ -426,6 +488,8 @@ def _build_group(
         "bars_source": (bar_meta or {}).get("source") if bars_available else None,
         "bars_interval": (bar_meta or {}).get("interval") if bars_available else None,
         "bars_window": bars_window,
+        "y_range": y_range,
+        "r": r_multiples,
         "thinking": {
             "entry_reason": entry_reason,
             "entry_parsed": parsed_entry,

@@ -422,6 +422,11 @@ def _trade_review_card(g: dict) -> dict:
         "band": g["band"], "mfe_bp": g["mfe_bp"], "mae_bp": g["mae_bp"],
         "bars_window": g.get("bars_window") or [],
         "bars_source": g.get("bars_source"),
+        # y_range/r(2026-09-07 가시성 수리)는 build_trade_review가 이미 계산해
+        # 둔 값 그대로 쓴다 — 여기서 다시 계산하면 표준 페이지(Plotly)와 다른
+        # 축 범위가 나올 위험이 있다(단일 출처 원칙).
+        "y_range": g.get("y_range"),
+        "r": g.get("r") or {},
         "pattern": g["thinking"]["entry_parsed"].get("pattern"),
         "exit_reason": g["thinking"]["exit_reason"],
         "gates": g["thinking"]["entry_parsed"].get("gates") or [],
@@ -565,6 +570,8 @@ padding:10px 12px;margin:10px 0}
 .tr-date{font-size:11px;margin-bottom:4px}
 .tr-src{font-size:11px;margin-top:0}
 .key-params{font-size:12px}
+.legend-row{font-size:11px;margin:2px 0}
+.r-ruler{font-size:12px;background:var(--card);border-radius:6px;padding:4px 6px;margin:4px 0}
 """
 
 
@@ -752,42 +759,64 @@ def _nearest_bar_index(bars_window: list[dict], ts: str | None) -> int:
     return best_i
 
 
-def _svg_candle(card: dict, w: float = 300.0, h: float = 130.0) -> str:
+def _fmt_svg_price(v: float, market: str) -> str:
+    return f"{v:,.0f}" if market == "KR" else f"{v:,.2f}"
+
+
+def _svg_candle(card: dict, w: float = 320.0, h: float = 170.0) -> str:
     """카드 하나짜리 캔들 SVG. index 기반 x좌표(`charts.sparkline`과 같은 방식
     — 실제 봉 간 시간차는 시각 목적상 무시해도 된다). 봉이 2개 미만이면 빈
-    문자열(호출부가 "봉 없음" 문구로 대체한다) — 차트를 지어내지 않는다."""
+    문자열(호출부가 "봉 없음" 문구로 대체한다) — 차트를 지어내지 않는다.
+
+    2026-09-07 가시성 수리: y축은 `card["y_range"]`(build_trade_review가 미리
+    계산한 `[min(창 저가, 손절), max(창 고가, 목표)] ± 0.3%`)를 그대로 쓴다 —
+    표준 페이지(Plotly)와 같은 값이라 목표/손절선이 절대 화면 밖으로 안
+    잘린다. 오른쪽에 `right_gutter`px를 비워 목표/진입/손절/청산 가격표를
+    캔들 위에 안 겹치게 붙인다."""
     bars = card.get("bars_window") or []
     n = len(bars)
     if n < 2:
         return ""
+    market = card.get("market", "KR")
     entry_price = card["entry_price"]
     band = card.get("band") or {}
     stop, target = band.get("stop"), band.get("target")
+    exit_price = card.get("exit_price")
+    pnl_known = card.get("pnl_known")
+    pnl = card.get("pnl")
+    is_profit = bool(pnl_known and pnl is not None and pnl > 0)
 
-    values = [b["high"] for b in bars] + [b["low"] for b in bars]
-    values += [v for v in (stop, target, entry_price) if v is not None]
-    lo, hi = min(values), max(values)
-    if hi <= lo:
-        hi = lo + max(abs(lo) * 0.01, 1.0)
-    pad = 8.0
+    y_range = card.get("y_range")
+    if not y_range:
+        values = [b["high"] for b in bars] + [b["low"] for b in bars]
+        values += [v for v in (stop, target, entry_price) if v is not None]
+        lo, hi = min(values), max(values)
+        if hi <= lo:
+            hi = lo + max(abs(lo) * 0.01, 1.0)
+    else:
+        lo, hi = y_range
+    pad = 10.0
     plot_h = h - pad * 2
+    right_gutter = 58.0
+    plot_w = w - right_gutter
 
     def y(v: float) -> float:
         return pad + (hi - v) / (hi - lo) * plot_h
 
-    step = w / n
+    step = plot_w / n
     body_w = max(step * 0.5, 1.0)
     entry_i = _nearest_bar_index(bars, card.get("entry_ts"))
     exit_i = _nearest_bar_index(bars, card.get("exit_ts")) if card.get("exit_ts") else n - 1
     x_entry, x_exit = entry_i * step + step / 2, exit_i * step + step / 2
     x0, x1 = sorted((x_entry, x_exit))
+    halo = 'style="paint-order:stroke;stroke:var(--card);stroke-width:3px"'
 
     parts = [
         f'<svg class="tr-chart" width="{w:.0f}" height="{h:.0f}" viewBox="0 0 {w:.0f} {h:.0f}" '
         f'role="img" aria-label="{_esc(str(card.get("symbol", "")))} 캔들 차트">'
-        # 보유 구간(진입→청산/마지막 봉) — 노랑 배경.
+        # 보유 구간(진입→청산/마지막 봉) — 노랑 10% 배경.
         f'<rect x="{x0:.1f}" y="0" width="{max(x1 - x0, 1):.1f}" height="{h:.0f}" '
-        f'fill="#E6B414" opacity="0.12"/>'
+        f'fill="#E6B414" opacity="0.10"/>'
     ]
     if target is not None:
         yt0, yt1 = sorted((y(entry_price), y(target)))
@@ -797,6 +826,12 @@ def _svg_candle(card: dict, w: float = 300.0, h: float = 130.0) -> str:
         ys0, ys1 = sorted((y(entry_price), y(stop)))
         parts.append(f'<rect x="{x0:.1f}" y="{ys0:.1f}" width="{max(x1 - x0, 1):.1f}" '
                      f'height="{max(ys1 - ys0, 0.5):.1f}" fill="#C1121F" opacity="0.16"/>')
+    if exit_price is not None:
+        # 실제 손익 "포착" 띠 — 이익=초록/손실=빨강(오너 지정 색), 진한 35%.
+        yc0, yc1 = sorted((y(entry_price), y(exit_price)))
+        cap_color = "#0A7D33" if is_profit else "#C1121F"
+        parts.append(f'<rect x="{x0:.1f}" y="{yc0:.1f}" width="{max(x1 - x0, 1):.1f}" '
+                     f'height="{max(yc1 - yc0, 0.5):.1f}" fill="{cap_color}" opacity="0.35"/>')
     ma_pts = [(i * step + step / 2, y(b["ma60"])) for i, b in enumerate(bars) if b.get("ma60") is not None]
     if len(ma_pts) >= 2:
         d = " ".join(f"{x:.1f},{yy:.1f}" for x, yy in ma_pts)
@@ -811,9 +846,50 @@ def _svg_candle(card: dict, w: float = 300.0, h: float = 130.0) -> str:
         ybt, ybb = sorted((yo, yc))
         parts.append(f'<rect x="{x - body_w / 2:.1f}" y="{ybt:.1f}" width="{body_w:.1f}" '
                      f'height="{max(ybb - ybt, 0.8):.1f}" fill="{color}"/>')
-    parts.append(f'<circle cx="{x_entry:.1f}" cy="{y(entry_price):.1f}" r="3.2" fill="#0052FF"/>')
-    if card.get("exit_price") is not None:
-        parts.append(f'<circle cx="{x_exit:.1f}" cy="{y(card["exit_price"]):.1f}" r="3.2" fill="#A6570A"/>')
+
+    # 레벨 기준선 + 오른쪽 여백 가격표(2026-09-07 — "목표선이 화면 밖으로
+    # 잘린다"/"가격 라벨이 없다" 지적. 표준 페이지의 오른쪽 여백 라벨과 같은
+    # 배치 규약: xref=paper 대신 SVG는 x=w-2, text-anchor=end로 고정.)
+    tag_x = w - 2.0
+    if target is not None:
+        yt = y(target)
+        pct = (target / entry_price - 1) * 100 if entry_price else None
+        # 오른쪽 여백이 좁아(SVG 카드는 표준 페이지보다 훨씬 작다) R배수까지
+        # 한 줄에 넣으면 잘린다 — R배수는 아래 r-ruler 캡션에 이미 나온다.
+        parts.append(f'<line x1="0" y1="{yt:.1f}" x2="{plot_w:.1f}" y2="{yt:.1f}" '
+                     f'stroke="#0A7D33" stroke-width="1" stroke-dasharray="3,2"/>')
+        parts.append(f'<text x="{tag_x:.1f}" y="{yt - 2:.1f}" text-anchor="end" font-size="8"'
+                     f' fill="#0A7D33" {halo}>목표 {_fmt_svg_price(target, market)}'
+                     f'{f" {pct:+.1f}%" if pct is not None else ""}</text>')
+    ye = y(entry_price)
+    parts.append(f'<line x1="0" y1="{ye:.1f}" x2="{plot_w:.1f}" y2="{ye:.1f}" '
+                 f'stroke="#9AA0A6" stroke-width="1" stroke-dasharray="1,2"/>')
+    parts.append(f'<text x="{tag_x:.1f}" y="{ye - 2:.1f}" text-anchor="end" font-size="8" '
+                 f'fill="var(--muted)" {halo}>진입 {_fmt_svg_price(entry_price, market)}</text>')
+    if stop is not None:
+        ys = y(stop)
+        pct = (stop / entry_price - 1) * 100 if entry_price else None
+        parts.append(f'<line x1="0" y1="{ys:.1f}" x2="{plot_w:.1f}" y2="{ys:.1f}" '
+                     f'stroke="#C1121F" stroke-width="1" stroke-dasharray="3,2"/>')
+        parts.append(f'<text x="{tag_x:.1f}" y="{ys + 9:.1f}" text-anchor="end" font-size="8" '
+                     f'fill="#C1121F" {halo}>손절 {_fmt_svg_price(stop, market)}'
+                     f'{f" {pct:+.1f}%" if pct is not None else ""}</text>')
+    if exit_price is not None:
+        yx = y(exit_price)
+        exit_color = "#C1272D" if is_profit else "#2F5FC4"
+        bp_txt = f" {card['pnl_bp']:+.1f}bp" if card.get("pnl_bp") is not None else ""
+        parts.append(f'<line x1="0" y1="{yx:.1f}" x2="{plot_w:.1f}" y2="{yx:.1f}" '
+                     f'stroke="{exit_color}" stroke-width="1.6"/>')
+        parts.append(f'<text x="{tag_x:.1f}" y="{yx + 4:.1f}" text-anchor="end" font-size="8" '
+                     f'fill="{exit_color}" {halo}>청산 {_fmt_svg_price(exit_price, market)}{bp_txt}</text>')
+
+    parts.append(f'<circle cx="{x_entry:.1f}" cy="{y(entry_price):.1f}" r="5" fill="#0052FF"/>')
+    parts.append(f'<text x="{x_entry:.1f}" y="{y(entry_price) - 9:.1f}" text-anchor="middle" '
+                 f'font-size="8.5" fill="#0052FF" {halo}>BUY</text>')
+    if exit_price is not None:
+        parts.append(f'<circle cx="{x_exit:.1f}" cy="{y(exit_price):.1f}" r="5" fill="#A6570A"/>')
+        parts.append(f'<text x="{x_exit:.1f}" y="{y(exit_price) + 15:.1f}" text-anchor="middle" '
+                     f'font-size="8.5" fill="#A6570A" {halo}>SELL</text>')
     parts.append("</svg>")
     return "".join(parts)
 
@@ -829,8 +905,20 @@ def _render_trade_review_card(c: dict) -> str:
     else:
         cls, badge = "muted", "손익 미상"
     svg = _svg_candle(c)
+    r = c.get("r") or {}
+    r_line = ""
+    if r.get("stop_r") is not None:
+        bits = [f"청산 위치: {r['exit_r']:+.2f}R" if r.get("exit_r") is not None else "청산 위치: 진행중"]
+        bits[-1] += f" (손절 {r['stop_r']:+.0f}R … 목표 {r['target_r']:+.2f}R)" if r.get("target_r") is not None else f" (손절 {r['stop_r']:+.0f}R)"
+        if r.get("mfe_r") is not None:
+            bits.append(f"MFE {c['mfe_bp']:+.1f}bp={r['mfe_r']:+.2f}R")
+        if r.get("mae_r") is not None:
+            bits.append(f"MAE {c['mae_bp']:+.1f}bp={r['mae_r']:+.2f}R")
+        r_line = f'<p class="r-ruler">{_esc(" · ".join(bits))}</p>'
     chart_html = (
         f'<div class="tr-chart-wrap">{svg}</div>'
+        f'<p class="muted legend-row">초록=목표 구간 · 빨강=손절 구간 · 진한 띠=실제 손익 · 노랑=보유 · 주황=MA60(청산 트레일)</p>'
+        f'{r_line}'
         f'<p class="muted tr-src">봉 출처: {_esc(c.get("bars_source") or "?")} · {_esc(tz_label)} 기준</p>'
         if svg else '<p class="muted">봉 없음</p>'
     )
@@ -881,14 +969,16 @@ def _render_trade_review_section(sec: dict) -> str:
         bits.append(f"순 {t['net_bp']:+.0f}bp")
     out = [f'<p>{" · ".join(bits)}</p>']
     if sec["per_strategy"]:
+        # 최고/최저 두 열은 모바일에서 표가 옆으로 넘쳐 안 보인다는 지적
+        # (2026-09-07) — 카드 쪽에 이미 종목별 손익이 나오므로 표는 전략/n/
+        # 승률/순bp 네 열로 압축한다(최고/최저는 카드에서 확인).
         rows = [
             [s["strategy_id"], str(s["n"]),
              (f"{s['win_rate']:.0%}" if s.get("win_rate") is not None else "-"),
-             (f"{s['net_bp']:+.0f}bp" if s.get("net_bp") is not None else "-"),
-             (s.get("best") or "-"), (s.get("worst") or "-")]
+             (f"{s['net_bp']:+.0f}bp" if s.get("net_bp") is not None else "-")]
             for s in sec["per_strategy"]
         ]
-        out.append('<div class="scroll">' + _table(["전략", "n", "승률", "순bp", "최고", "최저"], rows) + "</div>")
+        out.append('<div class="scroll">' + _table(["전략", "n", "승률", "순bp"], rows) + "</div>")
     out.extend(_render_trade_review_card(c) for c in sec["cards"])
     if sec.get("date") and sec.get("market"):
         y, m, d = sec["date"].split("-")

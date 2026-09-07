@@ -360,13 +360,15 @@ def test_coordinator_regression_kst_marker_falls_inside_kst_bar_range():
     from quant.control.daily_wrap import _svg_candle
 
     card = {
-        "symbol": g["symbol"], "entry_price": g["entry_price"], "band": g["band"],
+        "symbol": g["symbol"], "market": g["market"], "entry_price": g["entry_price"], "band": g["band"],
         "bars_window": g["bars_window"], "entry_ts": g["entries"][0]["ts"],
         "exit_ts": g["exits"][0]["ts"], "exit_price": g["exits"][0]["price"],
+        "pnl_known": g["pnl_known"], "pnl": g["pnl"], "pnl_bp": g["pnl_bp"],
+        "y_range": g["y_range"], "r": g["r"],
     }
     svg = _svg_candle(card, w=300.0, h=130.0)
     assert svg, "봉이 있는데 SVG가 비었다"
-    m = re.search(r'<circle cx="([\d.]+)" cy="[\d.]+" r="3.2" fill="#0052FF"', svg)
+    m = re.search(r'<circle cx="([\d.]+)" cy="[\d.]+" r="5" fill="#0052FF"', svg)
     assert m is not None, "BUY 마커를 SVG에서 못 찾음"
     buy_x = float(m.group(1))
     assert 5.0 < buy_x < 295.0, f"BUY 마커가 가장자리에 붙음(x={buy_x}) — 시간대 정렬 결함 재발"
@@ -417,3 +419,138 @@ def test_compute_band_stop_note_present_for_derived_stop():
     band = compute_band("close_bet", 10000.0, parsed, strategy_params)
     assert band["stop_note"] == "-1% 손절"
     assert band["target_note"] == "+2% 익절"
+
+
+# ------------------------------------------------------------------ 차트 y축/R-배수 (2026-09-07 가시성 수리)
+
+from quant.control.trade_review import _chart_y_range, _r_multiples  # noqa: E402
+
+
+def test_chart_y_range_expands_to_cover_untouched_target_and_stop():
+    # 창 안 캔들은 99~101 사이만 오갔지만 목표(110)/손절(80)은 훨씬 밖이다 —
+    # 실측 버그: 자동스케일에 맡기면 이 범위가 화면 밖으로 잘렸다.
+    bars_window = [{"high": 101.0, "low": 99.0}, {"high": 100.5, "low": 99.5}]
+    y_range = _chart_y_range(bars_window, stop=80.0, target=110.0)
+    assert y_range[0] == pytest.approx(80.0 * 0.997)
+    assert y_range[1] == pytest.approx(110.0 * 1.003)
+
+
+def test_chart_y_range_falls_back_to_window_when_no_band():
+    bars_window = [{"high": 101.0, "low": 99.0}]
+    y_range = _chart_y_range(bars_window, stop=None, target=None)
+    assert y_range[0] == pytest.approx(99.0 * 0.997)
+    assert y_range[1] == pytest.approx(101.0 * 1.003)
+
+
+def test_chart_y_range_none_without_bars():
+    assert _chart_y_range([], stop=90.0, target=110.0) is None
+
+
+def test_r_multiples_basic():
+    r = _r_multiples(entry_price=100.0, stop=90.0, target=115.0, exit_price=95.0, mfe_bp=140.0, mae_bp=-300.0)
+    assert r["unit_r_bp"] == pytest.approx(1000.0)  # R=10 on entry 100 = 1000bp
+    assert r["stop_r"] == -1.0
+    assert r["target_r"] == pytest.approx(1.5)
+    assert r["exit_r"] == pytest.approx(-0.5)
+    assert r["mfe_r"] == pytest.approx(0.14)
+    assert r["mae_r"] == pytest.approx(-0.3)
+
+
+def test_r_multiples_none_without_stop():
+    r = _r_multiples(entry_price=100.0, stop=None, target=115.0, exit_price=95.0, mfe_bp=10.0, mae_bp=-10.0)
+    assert all(v is None for v in r.values())
+
+
+def test_ma60_does_not_leak_across_local_day_boundary():
+    # 전날 마감(172,000대)에 이어 다음날 개장(175,000대)이 붙은 2일치 1분봉 —
+    # 실측 버그였던 "개장 직후 MA60이 172.5k에서 시작해 치솟는" 워밍업 꼬리가
+    # 재발하면 이 테스트가 잡는다: 다음날 첫 분의 MA60은 **그 분 자신의 종가와
+    # 같아야 한다**(전날 값이 하나도 안 섞임).
+    day1 = pd.date_range("2026-09-06 09:00", periods=5, freq="1min", tz="Asia/Seoul")
+    day2 = pd.date_range("2026-09-07 09:00", periods=5, freq="1min", tz="Asia/Seoul")
+    idx = day1.append(day2)
+    closes = [172000.0] * 5 + [175000.0, 175010.0, 175020.0, 175030.0, 175040.0]
+    bars = pd.DataFrame(
+        {"open": closes, "high": [c + 5 for c in closes], "low": [c - 5 for c in closes], "close": closes, "volume": 1000},
+        index=idx,
+    )
+    fills = [
+        _fill("scalp_1m", "105560", "buy", 10, 175000.0, "2026-09-07T00:00:30+00:00", reason="진입 손절=174000"),
+        _fill("scalp_1m", "105560", "sell", 10, 175020.0, "2026-09-07T00:02:00+00:00", reason="청산", pnl=200.0),
+    ]
+    review = build_trade_review(fills, {"105560": bars}, {}, "KR", date(2026, 9, 7))
+    g = review["groups"][0]
+    first_bar_of_day2 = next(b for b in g["bars_window"] if b["ts"].startswith("2026-09-07"))
+    assert first_bar_of_day2["ma60"] == pytest.approx(first_bar_of_day2["close"])
+
+
+def test_build_trade_review_group_exposes_y_range_and_r():
+    entry_ts = "2026-09-07T00:30:00+00:00"
+    exit_ts = "2026-09-07T00:40:00+00:00"
+    fills = [
+        _fill("scalp_1m", "105560", "buy", 10, 100.0, entry_ts, reason="진입 손절=90"),
+        _fill("scalp_1m", "105560", "sell", 10, 95.0, exit_ts, reason="청산", pnl=-50.0),
+    ]
+    bars = _bars("105560", datetime(2026, 9, 7, 9, 20), 30, open_=100.0, step=0.1, tz="Asia/Seoul")
+    review = build_trade_review(fills, {"105560": bars}, {}, "KR", date(2026, 9, 7))
+    g = review["groups"][0]
+    assert g["y_range"] is not None and g["y_range"][0] < g["y_range"][1]
+    assert g["r"]["stop_r"] == -1.0
+    assert g["r"]["exit_r"] == pytest.approx(-0.5)
+
+
+# ------------------------------------------------------------------ 렌더 스모크 (2026-09-07 가시성 수리)
+
+def test_jinja_template_js_block_has_no_comment_swallowing_hazard():
+    """실측 결함 재발 방지 — JS `//` 주석 줄 바로 다음이 좌측 공백을 지우는
+    `{%- if/for %}` 태그면, Jinja가 주석 줄의 개행을 삼켜 그 태그의 본문(진짜
+    코드)까지 주석에 먹힌다(2026-09-06 실측: node --check로 "Unexpected token
+    ':'" 확인). 템플릿 소스에서 이 패턴 자체가 없는지 정적으로 검사한다 —
+    렌더링 결과 문자열만 봐서는(주석 안이든 밖이든 글자는 똑같이 있다) 못
+    잡는 결함이라 소스 라인 인접성을 직접 본다."""
+    import re as _re
+    from pathlib import Path
+
+    path = Path("quant/analyze/templates/trade_review.html.j2")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    comment_re = _re.compile(r"^\s*//")
+    hazard_re = _re.compile(r"^\s*\{%-\s*(if|for|endif|endfor)\b")
+    hits = [
+        i for i in range(len(lines) - 1)
+        if comment_re.match(lines[i]) and hazard_re.match(lines[i + 1])
+    ]
+    assert hits == [], f"주석 직후 좌측 공백 제거 태그 — 줄 {hits}에서 코드가 주석에 먹힐 위험"
+
+
+def test_render_trade_review_js_is_syntactically_valid_with_full_band():
+    """목표/손절/청산이 전부 있는(가장 복잡한 분기 조합) 카드를 렌더해 실제
+    브라우저에서 실행될 <script> 블록을 뽑아 Node로 문법 검사한다. Node가 이
+    환경에 없으면(CI 등) 스킵 — 이 테스트의 목적은 "있으면 잡는" 안전망이지
+    Node 설치를 강제하는 게 아니다."""
+    import re as _re
+    import shutil
+    import subprocess
+    import tempfile
+
+    if shutil.which("node") is None:
+        pytest.skip("node 없음 — 이 환경에서는 JS 문법 검사를 건너뜀")
+
+    fills = [
+        _fill("scalp_1m", "105560", "buy", 10, 100.0, "2026-09-07T00:30:32+00:00",
+              reason="1분봉 스캘프 패턴B 진입: 105560 w=0.50 손절=95"),
+        _fill("scalp_1m", "105560", "sell", 10, 98.0, "2026-09-07T00:40:19+00:00",
+              reason="60선 이탈(잔량 트레일): 종가=98 MA60=99", pnl=-20.0),
+    ]
+    bars = _bars("105560", datetime(2026, 9, 7, 9, 0), 90, open_=100.0, step=0.02, tz="Asia/Seoul")
+    strategy_params = {"scalp_1m": {"params": {"partial_take_r": 1.5, "take_profit_bps": 0}}}
+    review = build_trade_review(fills, {"105560": bars}, strategy_params, "KR", date(2026, 9, 7))
+
+    from quant.report.render.trade_review import render_trade_review
+    html = render_trade_review(review, "KR", date(2026, 9, 7))
+    scripts = _re.findall(r"<script>(.*?)</script>", html, _re.S)
+    assert scripts, "차트 <script> 블록을 못 찾음 — 밴드가 있으니 차트가 그려져야 한다"
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+        f.write(scripts[0])
+        path = f.name
+    result = subprocess.run(["node", "--check", path], capture_output=True, text=True)
+    assert result.returncode == 0, f"생성된 JS 문법 오류:\n{result.stderr}"
