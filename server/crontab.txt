@@ -278,6 +278,14 @@
 # 요약 HTML(06:55) 전에 돈다.
 40 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/report_accuracy.sh >> data/report_accuracy.log 2>&1
 
+# 06:17 US — 데일리 매매 리뷰(KR 16:05 항목과 같은 리포트, 2026-09-07 오너
+# 요청). session_pnl(06:10) 뒤, 같은 분(06:15)에 이미 equity-snapshot·
+# macro_collect가 몰려 있어 2분 띄웠다(오너 지정값은 06:15였으나 1.8GB 박스
+# 크론 몰림을 피해 06:17로 미뤘다 — 이 정도 지연은 daily-wrap 06:55보다
+# 훨씬 앞이라 순서 제약에 영향 없다). daily-wrap 7절이 이 산출물의 JSON을
+# 재사용하므로 반드시 그 앞이어야 한다.
+17 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/trade_review.sh US >> data/trade_review.log 2>&1
+
 # 06:55 US — 하루 요약 HTML 한 장을 텔레그램 **파일**로 (2026-08-28 소유자 지시:
 # "매매 관련만 장중에 메시지로, 마감 뒤엔 하루 요약을 HTML 파일로"). 세션
 # 손익(06:10)·자본 곡선(06:15)·일일 피드백(06:25)이 전부 끝난 뒤라야 그날
@@ -333,6 +341,12 @@
 # 직접 고친다. **처음에는 --dry-run** 으로 건다(capital_review.sh 안에 있음) —
 # 관찰 기간 뒤 사람이 --dry-run 을 뗀다.
 50 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/capital_review.sh >> data/capital_review.log 2>&1
+
+# 16:05 KR — 데일리 매매 리뷰(2026-09-07 오너 요청): 오늘 진입한 전략들의
+# 진입/청산 타점·손익절 범위·진입 사유를 (전략, 종목) 카드로. capital-review
+# (16:50)·daily-wrap(16:55)보다 반드시 앞이어야 한다 — daily-wrap 7절이 이
+# 산출물의 JSON(out/YYYY/MM/DD/KR_trade_review.json)을 재사용한다.
+5 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/trade_review.sh KR >> data/trade_review.log 2>&1
 
 # 16:55 KR — 하루 요약 HTML 한 장을 텔레그램 **파일**로 (US 06:55 항목과 같은
 # 리포트). KR 마감 정산 체인(session-pnl 15:35 → outcomes 16:00 → close-report

@@ -52,7 +52,7 @@ from quant.core.models import market_of_symbol
 # 같은 이유로(조건부 절 번호 흔들림 회피) 맨 끝에 붙었다.
 SECTION_TITLES = (
     "오늘의 실적", "지분 변경", "문제 발견 및 개선", "변경된 점", "지수 대비 성적",
-    "체결 비용",
+    "체결 비용", "오늘의 매매 리뷰",
 )
 
 
@@ -373,6 +373,76 @@ def build_cost_section(trips: list[dict], spread_rows: list[dict], market: str,
     return {"groups": groups}
 
 
+# ── 7. 오늘의 매매 리뷰 (2026-09-07 오너 요청) ──────────────────────────────
+#
+# 별도 상시 페이지(`quant/report/render/trade_review.py`, Plotly 인터랙티브
+# 차트)와 같은 원장(`quant.control.trade_review.build_trade_review`)을 본다 —
+# 여기서는 그 결과 dict(`review`)를 인자로 받기만 한다(이 모듈 자체는 원장을
+# 읽지 않는다, "순수 조립" 원칙). `review`가 `None`이면(그날 아직 안 돌았거나
+# 실패) "표본 없음"으로 절 자체는 남긴다 — 다른 절(alpha 등)과 같은 관례.
+#
+# **차트는 인라인 SVG뿐이다.** 이 문서 자체가 "외부 요청 0"(모듈 docstring)
+# 계약이라 Plotly/CDN을 못 쓴다 — `_svg_candle`이 `bars_window`(review JSON에
+# 이미 포함된 캔들 배열)로 서버사이드 SVG를 그린다. `bars_window`가 비어 있으면
+# (오늘 처음 도는 `cmd_daily_wrap`이 네트워크 없이 즉석에서 만든 review라 봉이
+# 없을 수 있다) 차트를 생략하고 "봉 없음"만 낸다 — 표를 지어내지 않는다.
+
+
+def build_trade_review_section(review: dict | None, url: str | None = None) -> dict:
+    """`review`(build_trade_review 반환값, 없으면 `None`) → 렌더용 평범한 dict.
+
+    `url`은 상시 페이지 링크 — 이 문서 본문(HTML)에는 절대 넣지 않는다(외부
+    요청 0 규율, `test_html_has_no_external_requests`). 캡션(`caption_line`,
+    HTML이 아니라 텔레그램 메시지 필드)에만 쓰인다."""
+    if not review or not review.get("groups"):
+        return {"available": False, "url": url, "totals": None, "per_strategy": [], "cards": []}
+    totals = review["summary"]["totals"]
+    per_strategy = [
+        {"strategy_id": sid, **stats}
+        for sid, stats in sorted(review["summary"]["per_strategy"].items())
+    ]
+    cards = [_trade_review_card(g) for g in review["groups"]]
+    return {
+        "available": True, "url": url, "totals": totals, "per_strategy": per_strategy,
+        "cards": cards, "market": review.get("market"), "date": review.get("date"),
+    }
+
+
+def _trade_review_card(g: dict) -> dict:
+    return {
+        "strategy_id": g["strategy_id"], "symbol": g["symbol"], "status": g["status"],
+        "market": g["market"], "tz_label": g.get("tz_label") or g["market"],
+        "entry_price": g["entry_price"],
+        # ts는 build_trade_review가 이미 시장 로컬 벽시계(오프셋 없음)로 준다
+        # (2026-09-07 수리 — `to_market_local_iso`) — 여기서 다시 변환하지 않는다.
+        "entry_ts": g["entries"][0]["ts"] if g["entries"] else None,
+        "exit_ts": g["exits"][-1]["ts"] if g["exits"] else None,
+        "exit_price": g["exits"][-1]["price"] if g["exits"] else None,
+        "pnl": g["pnl"], "pnl_bp": g["pnl_bp"], "pnl_known": g["pnl_known"],
+        "band": g["band"], "mfe_bp": g["mfe_bp"], "mae_bp": g["mae_bp"],
+        "bars_window": g.get("bars_window") or [],
+        "bars_source": g.get("bars_source"),
+        "pattern": g["thinking"]["entry_parsed"].get("pattern"),
+        "exit_reason": g["thinking"]["exit_reason"],
+        "gates": g["thinking"]["entry_parsed"].get("gates") or [],
+        "strategy_params": g["thinking"].get("strategy_params") or {},
+    }
+
+
+# 파라미터 표 전체(20줄+)를 보여주지 않고, 그 트립을 실제로 결정한 것들만 —
+# 표준 페이지(trade_review.html.j2)의 `key_params_summary` 매크로와 같은
+# 우선순위 목록(2026-09-07, 오너 지적: "25줄짜리 표는 4개만 보고 싶다").
+_KEY_PARAM_NAMES = (
+    "stop_mode", "partial_take_r", "trail_bp", "adx_min", "trend_gate_mode",
+    "take_profit_bps", "stop_pct", "take_profit_pct",
+)
+
+
+def _key_param_summary(params: dict, limit: int = 4) -> str:
+    picked = [f"{n}={params[n]}" for n in _KEY_PARAM_NAMES if n in params][:limit]
+    return " · ".join(picked) if picked else ""
+
+
 def build_sections(*, market: str, on: date, pnl: dict | None, trips: list[dict],
                    equity_points: list[dict], positions: dict,
                    session_trades: list[dict], names: dict[str, str],
@@ -383,7 +453,9 @@ def build_sections(*, market: str, on: date, pnl: dict | None, trips: list[dict]
                    spread_rows: list[dict] | None = None,
                    kr_etf: set[str] | None = None,
                    all_trips: list[dict] | None = None,
-                   ab_bases: list[str] | None = None) -> dict:
+                   ab_bases: list[str] | None = None,
+                   trade_review: dict | None = None,
+                   trade_review_url: str | None = None) -> dict:
     """6개 절을 소유자가 지정한 순서(실적→지분→이상→변경→지수 대비 성적→체결
     비용)로 조립한다.
 
@@ -394,7 +466,10 @@ def build_sections(*, market: str, on: date, pnl: dict | None, trips: list[dict]
     `leverage_of`는 2절 꼬리 합산 노출 요약(build_exposure_summary)에만 쓰인다 —
     없으면(cmd_daily_wrap은 네트워크를 쓰지 않아 보통 없다) 알려진 상쇄 쌍만
     내장 배수로 보강된다. `spread_rows`/`kr_etf`는 6절(build_cost_section)
-    재료 — 둘 다 없으면(`None`/빈 리스트) 6절이 그룹별로 "표본 없음"을 낸다."""
+    재료 — 둘 다 없으면(`None`/빈 리스트) 6절이 그룹별로 "표본 없음"을 낸다.
+    `trade_review`(2026-09-07)는 이미 조립된 `build_trade_review` 결과(또는
+    `None`) — 이 함수 자체는 원장을 읽지 않는다. `trade_review_url`은 7절
+    캡션에만 쓰인다(본문 HTML에는 절대 안 들어간다, 위 절 docstring 참고)."""
     performance = build_performance(pnl, trips, equity_points, market)
     # A/B 갈래 줄(2026-09-03) — `trips`(오늘)가 아니라 `all_trips`(누적)로 잰다.
     # 둘 중 하나라도 없으면 절을 만들지 않는다(빈 표는 "0건"처럼 읽혀 거짓말이 된다).
@@ -414,11 +489,17 @@ def build_sections(*, market: str, on: date, pnl: dict | None, trips: list[dict]
         "commits": None if commits is None else list(commits)[:10],
         "alpha": build_alpha(list(alpha_series or []), market),
         "cost": build_cost_section(trips, list(spread_rows or []), market, kr_etf),
+        "trade_review": build_trade_review_section(trade_review, trade_review_url),
     }
 
 
 def caption_line(sections: dict) -> str:
-    """텔레그램 sendDocument 캡션 — **한 줄**. 파일을 열기 전에 알아야 할 것만."""
+    """텔레그램 sendDocument 캡션 — 파일을 열기 전에 알아야 할 것만.
+
+    매매 리뷰(7절)가 있으면 둘째 줄에 한 줄 더 붙인다(2026-09-07 오너 요청:
+    "문서의 텍스트 메시지에 매매 리뷰 한 줄") — 캡션은 HTML이 아니라 텔레그램
+    메시지 필드라 URL을 그대로 넣어도 "외부 요청 0"(본문 HTML 전용 규율)을
+    건드리지 않는다."""
     perf = sections["performance"]
     market, on = sections["market"], sections["date"]
     mm, dd = on.split("-")[1:]
@@ -428,7 +509,21 @@ def caption_line(sections: dict) -> str:
     held = len(sections["positions"]["holdings"])
     issues = sections["issues"]
     ops = "이상 없음" if not issues else f"이상 {len(issues)}건"
-    return f"{head} — {pnl} · 보유 {held}종목 · {ops}"
+    line = f"{head} — {pnl} · 보유 {held}종목 · {ops}"
+
+    tr = sections.get("trade_review") or {}
+    if tr.get("available") and tr.get("totals"):
+        t = tr["totals"]
+        bits = [f"{t['n']}트립"]
+        if t.get("win_rate") is not None:
+            bits.append(f"승률 {t['win_rate']:.0%}")
+        if t.get("net_bp") is not None:
+            bits.append(f"순 {t['net_bp']:+.0f}bp")
+        tr_line = "📈 매매 리뷰: " + " · ".join(bits)
+        if tr.get("url"):
+            tr_line += f" — {tr['url']}"
+        line += f"\n{tr_line}"
+    return line
 
 
 # ── 렌더 ────────────────────────────────────────────────────────────────
@@ -463,6 +558,13 @@ th{color:var(--muted);font-weight:600}
 .down{color:var(--down)}
 .flat{color:var(--flat)}
 .muted{color:var(--muted)}
+.tr-card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+padding:10px 12px;margin:10px 0}
+.tr-chart-wrap{width:100%;overflow-x:auto;margin-bottom:2px}
+.tr-chart{display:block;max-width:100%;height:auto}
+.tr-date{font-size:11px;margin-bottom:4px}
+.tr-src{font-size:11px;margin-top:0}
+.key-params{font-size:12px}
 """
 
 
@@ -624,6 +726,177 @@ def _render_cost(sec: dict) -> str:
     return "<ul>" + "".join(items) + "</ul>"
 
 
+# ── 7절 렌더 — 인라인 SVG 캔들(외부 요청 0 규율, 이 파일 docstring "HTML 규율") ──
+
+def _nearest_bar_index(bars_window: list[dict], ts: str | None) -> int:
+    """`ts`(체결 시각)와 가장 가까운 `bars_window` 인덱스. 봉 경계와 체결 초
+    단위가 정확히 안 맞는 게 정상이라(체결은 봉 중간 아무 때나 난다) 정확히
+    일치를 찾지 않고 최소 시간차로 고른다."""
+    if not bars_window:
+        return 0
+    if ts is None:
+        return len(bars_window) - 1
+    try:
+        target = datetime.fromisoformat(ts)
+    except ValueError:
+        return len(bars_window) - 1
+    best_i, best_diff = 0, None
+    for i, b in enumerate(bars_window):
+        try:
+            bt = datetime.fromisoformat(b["ts"])
+        except (ValueError, KeyError):
+            continue
+        diff = abs((bt - target).total_seconds())
+        if best_diff is None or diff < best_diff:
+            best_i, best_diff = i, diff
+    return best_i
+
+
+def _svg_candle(card: dict, w: float = 300.0, h: float = 130.0) -> str:
+    """카드 하나짜리 캔들 SVG. index 기반 x좌표(`charts.sparkline`과 같은 방식
+    — 실제 봉 간 시간차는 시각 목적상 무시해도 된다). 봉이 2개 미만이면 빈
+    문자열(호출부가 "봉 없음" 문구로 대체한다) — 차트를 지어내지 않는다."""
+    bars = card.get("bars_window") or []
+    n = len(bars)
+    if n < 2:
+        return ""
+    entry_price = card["entry_price"]
+    band = card.get("band") or {}
+    stop, target = band.get("stop"), band.get("target")
+
+    values = [b["high"] for b in bars] + [b["low"] for b in bars]
+    values += [v for v in (stop, target, entry_price) if v is not None]
+    lo, hi = min(values), max(values)
+    if hi <= lo:
+        hi = lo + max(abs(lo) * 0.01, 1.0)
+    pad = 8.0
+    plot_h = h - pad * 2
+
+    def y(v: float) -> float:
+        return pad + (hi - v) / (hi - lo) * plot_h
+
+    step = w / n
+    body_w = max(step * 0.5, 1.0)
+    entry_i = _nearest_bar_index(bars, card.get("entry_ts"))
+    exit_i = _nearest_bar_index(bars, card.get("exit_ts")) if card.get("exit_ts") else n - 1
+    x_entry, x_exit = entry_i * step + step / 2, exit_i * step + step / 2
+    x0, x1 = sorted((x_entry, x_exit))
+
+    parts = [
+        f'<svg class="tr-chart" width="{w:.0f}" height="{h:.0f}" viewBox="0 0 {w:.0f} {h:.0f}" '
+        f'role="img" aria-label="{_esc(str(card.get("symbol", "")))} 캔들 차트">'
+        # 보유 구간(진입→청산/마지막 봉) — 노랑 배경.
+        f'<rect x="{x0:.1f}" y="0" width="{max(x1 - x0, 1):.1f}" height="{h:.0f}" '
+        f'fill="#E6B414" opacity="0.12"/>'
+    ]
+    if target is not None:
+        yt0, yt1 = sorted((y(entry_price), y(target)))
+        parts.append(f'<rect x="{x0:.1f}" y="{yt0:.1f}" width="{max(x1 - x0, 1):.1f}" '
+                     f'height="{max(yt1 - yt0, 0.5):.1f}" fill="#0A7D33" opacity="0.16"/>')
+    if stop is not None:
+        ys0, ys1 = sorted((y(entry_price), y(stop)))
+        parts.append(f'<rect x="{x0:.1f}" y="{ys0:.1f}" width="{max(x1 - x0, 1):.1f}" '
+                     f'height="{max(ys1 - ys0, 0.5):.1f}" fill="#C1121F" opacity="0.16"/>')
+    ma_pts = [(i * step + step / 2, y(b["ma60"])) for i, b in enumerate(bars) if b.get("ma60") is not None]
+    if len(ma_pts) >= 2:
+        d = " ".join(f"{x:.1f},{yy:.1f}" for x, yy in ma_pts)
+        parts.append(f'<polyline points="{d}" fill="none" stroke="#D98A1E" stroke-width="1.3"/>')
+    for i, b in enumerate(bars):
+        x = i * step + step / 2
+        up = b["close"] >= b["open"]
+        color = "#C1272D" if up else "#2F5FC4"  # KR 관례: 상승=적, 하락=청
+        parts.append(f'<line x1="{x:.1f}" y1="{y(b["high"]):.1f}" x2="{x:.1f}" y2="{y(b["low"]):.1f}" '
+                     f'stroke="{color}" stroke-width="1"/>')
+        yo, yc = y(b["open"]), y(b["close"])
+        ybt, ybb = sorted((yo, yc))
+        parts.append(f'<rect x="{x - body_w / 2:.1f}" y="{ybt:.1f}" width="{body_w:.1f}" '
+                     f'height="{max(ybb - ybt, 0.8):.1f}" fill="{color}"/>')
+    parts.append(f'<circle cx="{x_entry:.1f}" cy="{y(entry_price):.1f}" r="3.2" fill="#0052FF"/>')
+    if card.get("exit_price") is not None:
+        parts.append(f'<circle cx="{x_exit:.1f}" cy="{y(card["exit_price"]):.1f}" r="3.2" fill="#A6570A"/>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _render_trade_review_card(c: dict) -> str:
+    market = c["market"]
+    tz_label = c.get("tz_label") or market
+    if c["status"] == "closed" and c["pnl_known"]:
+        cls = _cls(c["pnl"])
+        badge = f"{fmt_amount(c['pnl'], market)} ({c['pnl_bp']:+.0f}bp)"
+    elif c["status"] == "open":
+        cls, badge = "muted", "보유중"
+    else:
+        cls, badge = "muted", "손익 미상"
+    svg = _svg_candle(c)
+    chart_html = (
+        f'<div class="tr-chart-wrap">{svg}</div>'
+        f'<p class="muted tr-src">봉 출처: {_esc(c.get("bars_source") or "?")} · {_esc(tz_label)} 기준</p>'
+        if svg else '<p class="muted">봉 없음</p>'
+    )
+    # ts는 이미 시장 로컬 벽시계(오프셋 없음, 2026-09-07 수리) — 여기서 HH:MM만
+    # 뽑으면 그대로 맞는 로컬 시각이다. 날짜는 카드 헤더에 한 번만 보여준다.
+    entry_date = (c.get("entry_ts") or "").split("T")[0]
+    entry_hhmm = (c.get("entry_ts") or "").split("T")[-1][:5]
+    exit_hhmm = (c.get("exit_ts") or "").split("T")[-1][:5] if c.get("exit_ts") else None
+    fill_line = f"매수 {entry_hhmm} {fmt_amount(c['entry_price'], market, signed=False)}"
+    if exit_hhmm and c.get("exit_price") is not None:
+        fill_line += f" · 매도 {exit_hhmm} {fmt_amount(c['exit_price'], market, signed=False)}"
+    band = c.get("band") or {}
+    band_bits = []
+    if band.get("stop") is not None:
+        band_bits.append(f"손절 {fmt_amount(band['stop'], market, signed=False)}" + (f"({band['stop_note']})" if band.get("stop_note") else ""))
+    if band.get("target") is not None:
+        band_bits.append(f"목표 {fmt_amount(band['target'], market, signed=False)}" + (f"({band['target_note']})" if band.get("target_note") else ""))
+    out = [
+        '<div class="tr-card">',
+        f'<p class="muted tr-date">{_esc(entry_date)} · {_esc(tz_label)}</p>',
+        chart_html,
+        f'<p><b>{_esc(c["symbol"])}</b> <span class="muted">{_esc(c["strategy_id"])}</span> '
+        f'<span class="{cls}">{_esc(badge)}</span></p>',
+        f'<p class="muted">{_esc(fill_line)}</p>',
+    ]
+    if band_bits:
+        out.append(f'<p class="muted">{_esc(" · ".join(band_bits))}</p>')
+    if c.get("pattern"):
+        out.append(f'<p class="muted">생각: {_esc(c["pattern"])}</p>')
+    if c.get("exit_reason"):
+        out.append(f'<p class="muted">청산: {_esc(c["exit_reason"])}</p>')
+    key_params = _key_param_summary(c.get("strategy_params") or {})
+    if key_params:
+        out.append(f'<p class="muted key-params">파라미터: {_esc(key_params)}</p>')
+    out.append("</div>")
+    return "".join(out)
+
+
+def _render_trade_review_section(sec: dict) -> str:
+    """7절 본문. `sec["url"]`은 절대 쓰지 않는다(캡션 전용, 위 절 docstring)."""
+    if not sec.get("available"):
+        return '<p class="muted">오늘 진입 체결 없음</p>'
+    t = sec["totals"]
+    bits = [f"{t['n']}건" + (f" (+{t['n_open']} 보유중)" if t.get("n_open") else "")]
+    if t.get("win_rate") is not None:
+        bits.append(f"승률 {t['win_rate']:.0%}")
+    if t.get("net_bp") is not None:
+        bits.append(f"순 {t['net_bp']:+.0f}bp")
+    out = [f'<p>{" · ".join(bits)}</p>']
+    if sec["per_strategy"]:
+        rows = [
+            [s["strategy_id"], str(s["n"]),
+             (f"{s['win_rate']:.0%}" if s.get("win_rate") is not None else "-"),
+             (f"{s['net_bp']:+.0f}bp" if s.get("net_bp") is not None else "-"),
+             (s.get("best") or "-"), (s.get("worst") or "-")]
+            for s in sec["per_strategy"]
+        ]
+        out.append('<div class="scroll">' + _table(["전략", "n", "승률", "순bp", "최고", "최저"], rows) + "</div>")
+    out.extend(_render_trade_review_card(c) for c in sec["cards"])
+    if sec.get("date") and sec.get("market"):
+        y, m, d = sec["date"].split("-")
+        rel_path = f"out/{y}/{int(m):02d}/{int(d):02d}/{sec['market']}_trade_review.html"
+        out.append(f'<p class="muted">전체 인터랙티브 카드: {_esc(rel_path)}</p>')
+    return "".join(out)
+
+
 def render_html(sections: dict) -> str:
     """4절 HTML 한 장. 외부 요청 0 — 스타일은 인라인, 이미지·스크립트 없음."""
     market, on = sections["market"], sections["date"]
@@ -674,5 +947,7 @@ def render_html(sections: dict) -> str:
     parts.append(_render_alpha(sections.get("alpha") or {"lines": [], "rows": []}))
     parts.append(f"<h2>6. {SECTION_TITLES[5]}</h2>")
     parts.append(_render_cost(sections.get("cost") or {"groups": []}))
+    parts.append(f"<h2>7. 📈 {SECTION_TITLES[6]}</h2>")
+    parts.append(_render_trade_review_section(sections.get("trade_review") or {"available": False}))
     parts.append("</body></html>")
     return "".join(parts)

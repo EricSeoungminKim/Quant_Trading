@@ -68,6 +68,39 @@ def _narrated_text(kind: str, facts: dict, deterministic: str, *, no_narrate: bo
     return f"{tgfmt.i(text)}\n\n{deterministic}" if text else deterministic
 
 
+def _trade_review_url(market: str, on) -> str:
+    """상시 매매 리뷰 페이지(`report_cli trade-review`가 발행) URL — 캡션 전용,
+    `_daily_report_url`과 같은 규칙."""
+    base = os.environ.get("REPORT_URL_BASE") or "https://ip-172-31-63-20.tailfee6e9.ts.net"
+    return f"{base}/{on.year:04d}/{on.month:02d}/{on.day:02d}/{market}_trade_review.html"
+
+
+def _load_trade_review_for_wrap(root, market: str, on, trades: list[dict]) -> dict | None:
+    """마감 요약 7절 재료 — **네트워크 없음**(cmd_daily_wrap 자체 계약). 1순위로
+    상시 페이지가 이미 만들어둔 JSON(`report_cli trade-review`, 봉·차트 포함)을
+    읽는다 — 크론 순서가 그걸 보장한다(trade_review.sh KR 16:05 < daily_wrap.sh
+    KR 16:55, US 06:15 < 06:55). 아직 없으면(크론이 이번에 처음 돌거나 실패했을
+    때) `build_trade_review`를 봉 없이(빈 `bars_by_symbol`) 그 자리에서 돌린다
+    — 차트는 없어도 진입/청산·손익·밴드·사유는 그대로 나온다(네트워크 조회
+    없이도 이 정도는 항상 만들 수 있다)."""
+    import json as _json
+
+    from quant.apps.config import load_settings as _load_settings
+    from quant.control.trade_review import build_trade_review as _build_trade_review
+
+    json_path = (root / "out" / f"{on.year:04d}" / f"{on.month:02d}" / f"{on.day:02d}"
+                 / f"{market}_trade_review.json")
+    try:
+        return _json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    try:
+        settings = _load_settings(str(root / "config" / "settings.yaml"))
+        return _build_trade_review(trades, {}, settings.strategies, market, on, risk_params=settings.risk)
+    except Exception:  # noqa: BLE001 — 7절은 부가 정보, 마감 요약 전체를 막지 않는다
+        return None
+
+
 def _daily_report_url(market: str, on) -> str:
     """그날의 회사 리포트(개장 전 발행, `own_brief.sh`/`run_report.sh`가 쓰는
     것과 같은 URL 규칙) HTML 링크. `REPORT_URL_BASE`가 없으면 두 스크립트와
@@ -2295,6 +2328,10 @@ def cmd_daily_wrap(args: argparse.Namespace) -> None:
         # A/B 갈래(2026-09-03)는 **누적** 트립으로 잰다 — 하루치로는 양쪽 다
         # 30건에 한참 못 미쳐 매일 "판단 불가"만 찍힌다.
         all_trips=all_trips, ab_bases=ab_pairs_from_config(load_settings().raw),
+        # 7절 — 오늘의 매매 리뷰(2026-09-07). 표준 리뷰 JSON을 재사용하고
+        # (읽기만, 없으면 봉 없이 즉석 조립) URL은 캡션에만 쓴다.
+        trade_review=_load_trade_review_for_wrap(root, market, on, trades),
+        trade_review_url=_trade_review_url(market, on),
     )
 
     if args.narration_only:

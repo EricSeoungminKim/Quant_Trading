@@ -1,0 +1,374 @@
+{#- 데일리 매매 리뷰 — quant.control.trade_review.build_trade_review() 반환 dict(`review`)만 본다.
+   report.html.j2와 같은 색상/폰트 변수·다크모드를 그대로 복사해 시각 언어를 맞춘다. -#}
+{%- macro sym_link(symbol) -%}
+{%- set s = symbol|string -%}
+{%- if s|length == 6 and s.isdigit() -%}
+https://finance.naver.com/item/main.naver?code={{ s }}
+{%- else -%}
+https://finance.yahoo.com/quote/{{ s }}
+{%- endif -%}
+{%- endmacro -%}
+{%- macro fmt_price(v, market) -%}
+{%- if v is none -%}-{%- elif market == "KR" -%}{{ '{:,.0f}'.format(v) }}{%- else -%}{{ '{:,.2f}'.format(v) }}{%- endif -%}
+{%- endmacro -%}
+{%- macro fmt_amount(v, market) -%}
+{%- if v is none -%}-{%- elif market == "KR" -%}{{ '{:,.0f}'.format(v) }}원{%- else -%}${{ '{:,.2f}'.format(v) }}{%- endif -%}
+{%- endmacro -%}
+{%- macro fmt_bp(v) -%}
+{%- if v is none -%}-{%- else -%}{{ '{:+.1f}'.format(v) }}bp{%- endif -%}
+{%- endmacro -%}
+{%- macro fmt_pct(v) -%}
+{%- if v is none -%}-{%- else -%}{{ '{:.0%}'.format(v) }}{%- endif -%}
+{%- endmacro -%}
+{#- ts는 quant.control.trade_review.to_market_local_iso()를 거친 "오프셋 없는
+   시장 로컬 벽시계"(2026-09-07 수리) — 여기서 문자열만 슬라이스하면 그대로
+   그 시장 로컬 시:분/날짜다. 원본 UTC 문자열을 그대로 보여주던 결함
+   ("00:30"이 실제로는 09:30 KST) 재발 방지용 macro. -#}
+{%- macro fmt_hhmm(ts) -%}
+{%- if ts and 'T' in ts -%}{{ ts.split('T')[1][:5] }}{%- else -%}?{%- endif -%}
+{%- endmacro -%}
+{%- macro fmt_date(ts) -%}
+{%- if ts and 'T' in ts -%}{{ ts.split('T')[0] }}{%- else -%}?{%- endif -%}
+{%- endmacro -%}
+{#- 파라미터 표가 전략에 따라 20줄 넘게 나와 화면을 압도한다는 지적(2026-09-07)
+   — 이 트립을 실제로 결정한 4개만(있는 것만, 우선순위 순) 한 줄 요약으로
+   보여주고 전체 표는 <details> 안에 접는다. -#}
+{%- macro key_params_summary(params) -%}
+{%- set names = ["stop_mode", "partial_take_r", "trail_bp", "adx_min", "trend_gate_mode", "take_profit_bps", "stop_pct", "take_profit_pct"] -%}
+{%- set picked = [] -%}
+{%- for n in names -%}
+  {%- if n in params and picked|length < 4 -%}
+    {%- set _ = picked.append(n ~ "=" ~ params[n]) -%}
+  {%- endif -%}
+{%- endfor -%}
+{{ picked|join(' · ') if picked else '핵심 파라미터 없음' }}
+{%- endmacro -%}
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>매매 리뷰 · {{ market_name }} · {{ review.date }}</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/4.0.0/plotly.min.js"></script>
+<style>
+:root{
+  --paper:#F7F7F7; --card:#FFFFFF;
+  --ink:#0A0B0D; --body:#5B616E; --mute:#7C828A;
+  --hair:#EEF0F3; --rule:#DEE1E6;
+  --accent:#0052FF; --accent-active:#003ECC;
+  --up:#C1272D; --down:#2F5FC4; --alert:#A6570A; --flat:#7C828A;
+  --hm-up:#1E7D45; --hm-down:#D6294B;
+  --shadow:0 4px 12px rgba(10,11,13,.04);
+  --radius-lg:24px; --radius-md:14px; --radius-pill:100px;
+  --fs-2xs:12px; --fs-xs:13px; --fs-sm:14px; --fs-base:15px; --fs-md:16px;
+  --fs-lg:17px; --fs-xl:19px; --fs-2xl:24px; --fs-display:30px;
+  --font-body:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",Pretendard,
+              "Noto Sans KR","Malgun Gothic",sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --paper:#111214; --card:#191B1F;
+  --ink:#EEF0F3; --body:#A7ADB8; --mute:#82868F;
+  --hair:#24262B; --rule:#32353B;
+  --accent:#4D84FF; --accent-active:#6FA0FF;
+  --up:#FF6B60; --down:#5B9BFF; --alert:#E8963C; --flat:#82868F;
+  --hm-up:#3DDC91; --hm-down:#FF6B7A;
+  --shadow:0 4px 16px rgba(0,0,0,.4);
+}}
+*{margin:0;padding:0;box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--paper);color:var(--ink);font-family:var(--font-body);
+  font-size:var(--fs-base);line-height:1.65;letter-spacing:-.003em}
+.num{font-family:var(--font-mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+.wrap{max-width:1160px;margin:0 auto;padding:32px 20px 96px}
+a{color:var(--accent)}
+
+.masthead{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
+  padding-bottom:18px;border-bottom:2px solid var(--accent);margin-bottom:24px}
+.masthead h1{font-size:var(--fs-display);font-weight:400;letter-spacing:-.01em}
+.eyebrow{font-family:var(--font-mono);font-size:var(--fs-2xs);font-weight:600;
+  text-transform:uppercase;color:var(--mute)}
+.masthead .stamp{margin-left:auto;text-align:right;font-size:var(--fs-2xs);color:var(--mute)}
+
+/* ── 요약 ─────────────────────────────────────── */
+.summary{background:var(--card);border:1px solid var(--rule);border-radius:var(--radius-lg);
+  padding:20px 24px;margin-bottom:28px;box-shadow:var(--shadow)}
+.summary h2{font-size:var(--fs-lg);font-weight:600;margin-bottom:12px}
+.totals{display:flex;gap:22px;flex-wrap:wrap;margin-bottom:16px;padding-bottom:14px;
+  border-bottom:1px solid var(--hair)}
+.totals .item{display:flex;flex-direction:column;gap:2px}
+.totals .k{font-family:var(--font-mono);font-size:var(--fs-2xs);color:var(--mute);text-transform:uppercase}
+.totals .v{font-size:var(--fs-xl);font-weight:700}
+.v.pos{color:var(--up)} .v.neg{color:var(--down)}
+table.sboard{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
+table.sboard th{text-align:left;font-family:var(--font-mono);font-size:var(--fs-2xs);
+  color:var(--mute);text-transform:uppercase;padding:6px 10px;border-bottom:1px solid var(--rule);
+  white-space:nowrap}
+table.sboard td{padding:7px 10px;border-bottom:1px solid var(--hair)}
+table.sboard td.num,table.sboard th.num{text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.overflow-x{overflow-x:auto}
+
+/* ── 카드 ─────────────────────────────────────── */
+.card{background:var(--card);border:1px solid var(--rule);border-radius:var(--radius-lg);
+  padding:22px 24px;margin-bottom:22px;box-shadow:var(--shadow)}
+.card-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.card-head .sym{font-size:var(--fs-xl);font-weight:700}
+.card-head .strat{font-family:var(--font-mono);font-size:var(--fs-xs);color:var(--mute);
+  padding:2px 9px;border:1px solid var(--rule);border-radius:var(--radius-pill)}
+.card-head .date{font-family:var(--font-mono);font-size:var(--fs-2xs);color:var(--mute)}
+.badge{font-family:var(--font-mono);font-size:var(--fs-xs);font-weight:700;
+  padding:4px 12px;border-radius:var(--radius-pill);color:#fff;margin-left:auto}
+.badge.win{background:var(--up)}
+.badge.loss{background:var(--down)}
+.badge.open{background:var(--alert)}
+.badge.unknown{background:var(--flat)}
+.meta-row{display:flex;gap:16px;flex-wrap:wrap;font-size:var(--fs-xs);color:var(--body);margin-bottom:14px}
+.meta-row b{color:var(--ink)}
+
+.chart-box{width:100%;height:360px;margin-bottom:6px}
+.chart-note{font-size:var(--fs-2xs);color:var(--mute);margin-bottom:16px}
+.no-chart{padding:24px;text-align:center;color:var(--mute);font-size:var(--fs-sm);
+  border:1px dashed var(--rule);border-radius:var(--radius-md);margin-bottom:16px}
+
+.grid2{display:grid;grid-template-columns:1.1fr 0.9fr;gap:20px}
+@media(max-width:800px){.grid2{grid-template-columns:1fr}}
+.think{background:var(--paper);border-radius:var(--radius-md);padding:14px 16px}
+.think h3{font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:.02em;
+  color:var(--mute);margin-bottom:8px;font-family:var(--font-mono)}
+.think dl{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:var(--fs-sm)}
+.think dt{color:var(--mute)}
+.think dd{font-weight:550}
+.gates{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px}
+.chip{font-family:var(--font-mono);font-size:var(--fs-2xs);padding:2px 9px;
+  border-radius:var(--radius-pill);border:1px solid var(--rule);color:var(--body)}
+.reason-raw{font-size:var(--fs-xs);color:var(--body);background:var(--card);
+  border:1px solid var(--hair);border-radius:8px;padding:8px 10px;margin-top:8px;
+  font-family:var(--font-mono);white-space:pre-wrap;word-break:break-word}
+.params-table{width:100%;font-size:var(--fs-xs);margin-top:8px;border-collapse:collapse}
+.params-table td{padding:2px 4px;border-bottom:1px solid var(--hair)}
+.params-table td:first-child{color:var(--mute);width:55%}
+.key-params{font-size:var(--fs-xs);font-family:var(--font-mono);color:var(--body);margin-top:2px}
+.think details{margin-top:6px}
+.think summary{font-size:var(--fs-2xs);color:var(--accent);cursor:pointer;font-family:var(--font-mono)}
+
+.fills{margin-top:14px;font-size:var(--fs-xs)}
+.fills table{width:100%;border-collapse:collapse}
+.fills th{text-align:left;color:var(--mute);font-family:var(--font-mono);font-size:var(--fs-2xs);
+  padding:4px 8px;border-bottom:1px solid var(--rule);white-space:nowrap}
+.fills td{padding:4px 8px;border-bottom:1px solid var(--hair)}
+.fills td.num{text-align:right;font-family:var(--font-mono)}
+.side-buy{color:var(--up);font-weight:700}
+.side-sell{color:var(--down);font-weight:700}
+
+.empty{padding:40px;text-align:center;color:var(--mute);background:var(--card);
+  border:1px solid var(--rule);border-radius:var(--radius-lg)}
+footer{margin-top:32px;font-size:var(--fs-2xs);color:var(--mute);text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="masthead">
+  <span class="eyebrow">매매 리뷰</span>
+  <h1>{{ market_name }} · {{ review.date }}</h1>
+  <div class="stamp">전략별 진입/청산 타점 · 손익절 범위 · 진입 사유<br>봉 데이터는 카드마다 출처 표기</div>
+</div>
+
+{%- set t = review.summary.totals %}
+<div class="summary">
+  <h2>오늘 요약</h2>
+  <div class="totals">
+    <div class="item"><span class="k">종결 트립</span><span class="v">{{ t.n }}건{% if t.n_open %} (미종결 {{ t.n_open }}){% endif %}</span></div>
+    <div class="item"><span class="k">승률</span><span class="v">{{ fmt_pct(t.win_rate) }}</span></div>
+    <div class="item"><span class="k">순손익</span>
+      <span class="v {{ 'pos' if (t.net_bp or 0) > 0 else 'neg' if (t.net_bp or 0) < 0 else '' }}">{{ fmt_bp(t.net_bp) }}</span></div>
+  </div>
+  <div class="overflow-x">
+  <table class="sboard">
+    <thead><tr><th>전략</th><th class="num">n</th><th class="num">미종결</th><th class="num">승률</th>
+      <th class="num">순bp</th><th>최고</th><th>최저</th></tr></thead>
+    <tbody>
+    {%- for sid, s in review.summary.per_strategy.items() | sort %}
+      <tr>
+        <td class="num" style="font-family:var(--font-mono)">{{ sid }}</td>
+        <td class="num">{{ s.n }}</td>
+        <td class="num">{{ s.n_open }}</td>
+        <td class="num">{{ fmt_pct(s.win_rate) }}</td>
+        <td class="num">{{ fmt_bp(s.net_bp) }}</td>
+        <td>{% if s.best %}{{ s.best }} ({{ fmt_bp(s.best_bp) }}){% endif %}</td>
+        <td>{% if s.worst %}{{ s.worst }} ({{ fmt_bp(s.worst_bp) }}){% endif %}</td>
+      </tr>
+    {%- endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+{%- if not review.groups %}
+<div class="empty">오늘({{ review.date }}) {{ market_name }} 진입 체결 없음.</div>
+{%- endif %}
+
+{%- for g in review.groups %}
+{%- set cid = "chart-" ~ loop.index %}
+{%- set badge_cls = "unknown" %}
+{%- if g.status == "open" %}{%- set badge_cls = "open" %}
+{%- elif g.pnl_known and g.pnl > 0 %}{%- set badge_cls = "win" %}
+{%- elif g.pnl_known %}{%- set badge_cls = "loss" %}
+{%- endif %}
+<div class="card">
+  <div class="card-head">
+    <a class="sym" href="{{ sym_link(g.symbol) }}" target="_blank" rel="noopener">{{ g.symbol }}</a>
+    <span class="strat">{{ g.strategy_id }}</span>
+    <span class="date">{{ fmt_date(g.entries[0].ts) }} · {{ g.tz_label or g.market }}</span>
+    <span class="badge {{ badge_cls }}">
+      {%- if g.status == "open" -%}
+        보유중
+      {%- elif g.pnl_known -%}
+        {{ fmt_amount(g.pnl, g.market) }} ({{ fmt_bp(g.pnl_bp) }})
+      {%- else -%}
+        손익 미상
+      {%- endif -%}
+    </span>
+  </div>
+  <div class="meta-row">
+    <span>진입 <b>{{ fmt_hhmm(g.entries[0].ts) }}</b> @ {{ fmt_price(g.entry_price, g.market) }}</span>
+    {%- if g.exits %}<span>청산 <b>{{ fmt_hhmm(g.exits[-1].ts) }}</b></span>{% endif %}
+    {%- if g.holding_minutes is not none %}<span>보유 <b>{{ '%.0f'|format(g.holding_minutes) }}분</b></span>{% endif %}
+    <span>수수료 <b>{{ fmt_amount(g.fees, g.market) }}</b></span>
+    {%- if g.mfe_bp is not none %}<span>MFE <b>{{ fmt_bp(g.mfe_bp) }}</b> · MAE <b>{{ fmt_bp(g.mae_bp) }}</b></span>{% endif %}
+  </div>
+
+  {%- if g.bars_window and g.bars_window|length > 1 %}
+  <div id="{{ cid }}" class="chart-box"></div>
+  <div class="chart-note">봉 출처: {{ g.bars_source or '알수없음' }} · {{ g.bars_interval or '?' }} 간격 · {{ g.bars_window|length }}봉 · 시각은 {{ g.tz_label or g.market }} 기준</div>
+  <script>
+  (function(){
+    var rows = {{ g.bars_window | tojson }};
+    var x = rows.map(function(r){ return r.ts; });
+    var o = rows.map(function(r){ return r.open; });
+    var h = rows.map(function(r){ return r.high; });
+    var l = rows.map(function(r){ return r.low; });
+    var c = rows.map(function(r){ return r.close; });
+    var traces = [{
+      type: "candlestick", x: x, open: o, high: h, low: l, close: c,
+      increasing: {line: {color: "#C1272D"}}, decreasing: {line: {color: "#2F5FC4"}},
+      name: "{{ g.symbol }}",
+    }];
+    var entryPrice = {{ g.entry_price }};
+    var entryTs = {{ g.entries[0].ts | tojson }};
+    var exitTs = {{ (g.exits[-1].ts if g.exits else g.bars_window[-1].ts) | tojson }};
+    var shapes = [];
+    var annotations = [];
+    // 보유 구간(진입→청산, 아직 미종결이면 진입→마지막 봉) — 노란 배경으로 먼저 깐다.
+    shapes.push({type:"rect", xref:"x", yref:"paper", x0: entryTs, x1: exitTs,
+      y0: 0, y1: 1, fillcolor:"rgba(230,180,20,0.10)", line:{width:0}, layer:"below"});
+    {%- if g.band.target is not none %}
+    shapes.push({type:"rect", xref:"x", yref:"y", x0: entryTs, x1: exitTs,
+      y0: entryPrice, y1: {{ g.band.target }}, fillcolor:"rgba(30,125,69,0.15)", line:{width:0}, layer:"below"});
+    {%- endif %}
+    {%- if g.band.stop is not none %}
+    shapes.push({type:"rect", xref:"x", yref:"y", x0: entryTs, x1: exitTs,
+      y0: entryPrice, y1: {{ g.band.stop }}, fillcolor:"rgba(214,41,75,0.15)", line:{width:0}, layer:"below"});
+    {%- endif %}
+    {%- set ma60_pairs = g.bars_window | selectattr("ma60", "ne", none) | list %}
+    {%- if ma60_pairs %}
+    traces.push({type:"scatter", mode:"lines", x: {{ ma60_pairs | map(attribute="ts") | list | tojson }},
+      y: {{ ma60_pairs | map(attribute="ma60") | list | tojson }},
+      line:{color:"#D98A1E", width:1.5}, name:"MA60"});
+    {%- endif %}
+    traces.push({type:"scatter", mode:"markers", x:[entryTs], y:[entryPrice],
+      marker:{symbol:"triangle-up", size:13, color:"#0052FF"}, name:"BUY"});
+    annotations.push({x: entryTs, y: entryPrice,
+      text: "BUY {{ fmt_hhmm(g.entries[0].ts) }} {{ g.tz_label or '' }}<br>{{ fmt_price(g.entry_price, g.market) }}",
+      showarrow:true, arrowhead:2, ax:0, ay:-30, font:{size:10}});
+    {%- if g.exits %}
+    traces.push({type:"scatter", mode:"markers", x:[exitTs], y:[{{ g.exits[-1].price }}],
+      marker:{symbol:"triangle-down", size:13, color:"#A6570A"}, name:"SELL"});
+    annotations.push({x: exitTs, y: {{ g.exits[-1].price }},
+      text: "SELL {{ fmt_hhmm(g.exits[-1].ts) }} {{ g.tz_label or '' }}<br>{{ fmt_price(g.exits[-1].price, g.market) }}{% if g.pnl_bp is not none %} ({{ fmt_bp(g.pnl_bp) }}){% endif %}",
+      showarrow:true, arrowhead:2, ax:0, ay:30, font:{size:10}});
+    {%- endif %}
+    {%- if g.mfe_price is not none %}
+    shapes.push({type:"line", xref:"x", yref:"y", x0: entryTs, x1: exitTs,
+      y0: {{ g.mfe_price }}, y1: {{ g.mfe_price }}, line:{color:"#1E7D45", width:1, dash:"dot"}});
+    {%- endif %}
+    {%- if g.mae_price is not none %}
+    shapes.push({type:"line", xref:"x", yref:"y", x0: entryTs, x1: exitTs,
+      y0: {{ g.mae_price }}, y1: {{ g.mae_price }}, line:{color:"#D6294B", width:1, dash:"dot"}});
+    {%- endif %}
+    var layout = {
+      margin:{l:50,r:10,t:10,b:30}, height: 360,
+      xaxis:{rangeslider:{visible:false}, type:"date", tickformat:"%H:%M",
+        title:{text:"시각 ({{ g.tz_label or g.market }})", font:{size:10}}},
+      yaxis:{fixedrange:false},
+      shapes: shapes, annotations: annotations, showlegend:false,
+      paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
+      font:{color: window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "#A7ADB8" : "#5B616E"},
+    };
+    Plotly.newPlot("{{ cid }}", traces, layout, {displayModeBar:false, responsive:true});
+  })();
+  </script>
+  {%- else %}
+  <div class="no-chart">
+    차트 없음 — {{ g.symbol }} 봉 데이터 미확보{% if g.bars_source %}({{ g.bars_source }}){% endif %}.
+    아래 체결/사유만 표시.
+  </div>
+  {%- endif %}
+
+  <div class="grid2">
+    <div class="think">
+      <h3>전략의 생각 — 진입</h3>
+      <dl>
+        <dt>패턴</dt><dd>{{ g.thinking.entry_parsed.pattern or '-' }}</dd>
+        {%- if g.thinking.entry_parsed.weight is not none %}<dt>비중(w)</dt><dd>{{ g.thinking.entry_parsed.weight }}</dd>{% endif %}
+        <dt>손절</dt><dd>{{ fmt_price(g.band.stop, g.market) }}{% if g.band.stop is not none and g.entry_price %} ({{ '{:+.1f}%'.format((g.band.stop/g.entry_price - 1)*100) }}){% endif %}{% if g.band.stop_note %} · {{ g.band.stop_note }}{% endif %}</dd>
+        <dt>목표</dt><dd>{{ fmt_price(g.band.target, g.market) }}{% if g.band.target is not none and g.entry_price %} ({{ '{:+.1f}%'.format((g.band.target/g.entry_price - 1)*100) }}){% endif %}{% if g.band.target_note %} · {{ g.band.target_note }}{% endif %}</dd>
+        <dt>밴드 출처</dt><dd style="font-family:var(--font-mono);font-size:var(--fs-2xs)">{{ g.band.band_source }}</dd>
+      </dl>
+      {%- if g.thinking.entry_parsed.gates %}
+      <div class="gates">{% for gate in g.thinking.entry_parsed.gates %}<span class="chip">{{ gate }}</span>{% endfor %}</div>
+      {%- endif %}
+      <div class="reason-raw">{{ g.thinking.entry_reason }}</div>
+      {%- if g.thinking.exit_reason %}
+      <h3 style="margin-top:12px">전략의 생각 — 청산</h3>
+      <div class="reason-raw">{{ g.thinking.exit_reason }}</div>
+      {%- endif %}
+    </div>
+    <div class="think">
+      <h3>전략 파라미터 ({{ g.strategy_id }})</h3>
+      {%- if g.thinking.strategy_params %}
+      <p class="key-params">{{ key_params_summary(g.thinking.strategy_params) }}</p>
+      <details>
+        <summary>전체 파라미터 {{ g.thinking.strategy_params|length }}개 보기</summary>
+        <table class="params-table">
+          {%- for k, v in g.thinking.strategy_params.items() | sort %}
+          <tr><td>{{ k }}</td><td>{{ v }}</td></tr>
+          {%- endfor %}
+        </table>
+      </details>
+      {%- else %}
+      <p style="color:var(--mute);font-size:var(--fs-xs)">설정을 찾지 못함.</p>
+      {%- endif %}
+    </div>
+  </div>
+
+  <div class="fills overflow-x">
+    <table>
+      <thead><tr><th>구분</th><th>시각({{ g.tz_label or g.market }})</th><th class="num">수량</th><th class="num">가격</th></tr></thead>
+      <tbody>
+        {%- for e in g.entries %}
+        <tr><td class="side-buy">매수</td><td>{{ fmt_hhmm(e.ts) }}</td><td class="num">{{ e.qty }}</td><td class="num">{{ fmt_price(e.price, g.market) }}</td></tr>
+        {%- endfor %}
+        {%- for e in g.exits %}
+        <tr><td class="side-sell">매도</td><td>{{ fmt_hhmm(e.ts) }}</td><td class="num">{{ e.qty }}</td><td class="num">{{ fmt_price(e.price, g.market) }}</td></tr>
+        {%- endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{%- endfor %}
+
+<footer>quant/control/trade_review.py + quant/report/render/trade_review.py — 원장 data/state/trades.jsonl 기준 자동 생성</footer>
+</div>
+</body>
+</html>

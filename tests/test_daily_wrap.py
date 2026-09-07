@@ -10,6 +10,7 @@ import re
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+import pandas as pd
 import pytest
 
 from quant.apps.cli import _wrap_consume_queue, _wrap_deferred
@@ -21,6 +22,7 @@ from quant.control.daily_wrap import (
     render_html,
     trips_closed_between,
 )
+from quant.control.trade_review import build_trade_review
 
 KST = ZoneInfo("Asia/Seoul")
 ON = date(2026, 8, 28)
@@ -642,3 +644,83 @@ def test_ab_line_reports_the_difference_once_both_arms_are_thick_enough():
     assert row["reason"] == ""
     assert row["delta"] == pytest.approx(50.0, abs=0.5)
     assert "차이 +50.0bp" in render_html(sec)
+
+
+# ── 7. 오늘의 매매 리뷰 (2026-09-07 오너 요청) ──────────────────────────────
+
+def _synthetic_review():
+    fills = [
+        {"ts": "2026-08-28T00:30:00+00:00", "strategy_id": "scalp_1m", "symbol": "105560",
+         "side": "buy", "qty": 10, "price": 100.0, "fee": 0.0, "realized_pnl": None,
+         "reason": "1분봉 스캘프 패턴B 진입: 105560 w=0.50 손절=95 (기준=99)", "market": "KR"},
+        {"ts": "2026-08-28T00:40:00+00:00", "strategy_id": "scalp_1m", "symbol": "105560",
+         "side": "sell", "qty": 10, "price": 110.0, "fee": 2.0, "realized_pnl": 100.0,
+         "reason": "60선 이탈(잔량 트레일): 종가=110 MA60=108", "market": "KR"},
+    ]
+    idx = pd.date_range("2026-08-28 00:20", periods=40, freq="1min", tz="UTC")
+    bars = pd.DataFrame(
+        {"open": 100.0, "high": 102.0, "low": 98.0, "close": 100.0, "volume": 1000}, index=idx,
+    )
+    return build_trade_review(fills, {"105560": bars}, {}, "KR", date(2026, 8, 28))
+
+
+def test_trade_review_section_absent_by_default():
+    sec = _sections()
+    assert sec["trade_review"]["available"] is False
+    assert "오늘 진입 체결 없음" in render_html(sec)
+
+
+def test_trade_review_section_renders_card_with_chart_and_thinking():
+    review = _synthetic_review()
+    sec = _sections(trade_review=review)
+    assert sec["trade_review"]["available"] is True
+    html = render_html(sec)
+    assert "105560" in html
+    assert "<svg" in html and "tr-chart" in html
+    assert "1분봉 스캘프 패턴B 진입" in html
+    assert "60선 이탈" in html
+
+
+def test_trade_review_section_missing_bars_shows_note_not_chart():
+    fills = [
+        {"ts": "2026-08-28T00:30:00+00:00", "strategy_id": "scalp_1m", "symbol": "999999",
+         "side": "buy", "qty": 10, "price": 100.0, "fee": 0.0, "realized_pnl": None,
+         "reason": "진입", "market": "KR"},
+        {"ts": "2026-08-28T00:40:00+00:00", "strategy_id": "scalp_1m", "symbol": "999999",
+         "side": "sell", "qty": 10, "price": 105.0, "fee": 0.0, "realized_pnl": 50.0,
+         "reason": "청산", "market": "KR"},
+    ]
+    review = build_trade_review(fills, {}, {}, "KR", date(2026, 8, 28))
+    sec = _sections(trade_review=review)
+    html = render_html(sec)
+    assert "봉 없음" in html
+    assert "<svg" not in html
+
+
+def test_trade_review_caption_appends_summary_line_only_when_available():
+    assert "매매 리뷰" not in caption_line(_sections())
+    review = _synthetic_review()
+    cap = caption_line(_sections(trade_review=review))
+    assert "📈 매매 리뷰: 1트립" in cap
+    assert "승률 100%" in cap
+
+
+def test_trade_review_caption_includes_url_but_html_body_does_not():
+    review = _synthetic_review()
+    url = "https://example.tailnet.ts.net/2026/08/28/KR_trade_review.html"
+    sec = _sections(trade_review=review, trade_review_url=url)
+    cap = caption_line(sec)
+    assert url in cap
+    html = render_html(sec)
+    assert "https:" not in html and "http:" not in html
+
+
+def test_trade_review_section_does_not_break_no_external_requests_rule():
+    review = _synthetic_review()
+    sec = _sections(
+        trade_review=review,
+        trade_review_url="https://example.tailnet.ts.net/2026/08/28/KR_trade_review.html",
+    )
+    html = render_html(sec)
+    hit = _EXTERNAL.search(html)
+    assert hit is None, f"외부 요청 흔적: {hit.group(0)!r}"

@@ -20,6 +20,10 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 from quant.adapters.kv import make_kv
 from quant.analyze.delta import previous_snapshot
@@ -1336,6 +1340,122 @@ def _skip_if_holiday(market: str, session: date, session_kind: str) -> bool:
     return True
 
 
+# ── 데일리 매매 리뷰 (2026-09-07 오너 요청) ─────────────────────────────────
+#
+# "오늘 어떤 전략이 왜 그 가격에 사고 팔았나"를 (전략, 종목) 카드로 재구성한다.
+# 순수 조립(`quant.control.trade_review.build_trade_review`)은 그대로 두고,
+# 여기서는 원장/설정/봉을 읽어 넘기고 렌더러(`quant.report.render.trade_review`)
+# 를 호출하는 얇은 조립부다 — 다른 서브커맨드(`review-daily`)와 같은 역할 분리.
+
+
+def _trade_review_yahoo_symbol(symbol: str, market: str, market_map: dict[str, str]) -> str:
+    if market == "US":
+        from quant.control.outcomes import to_yahoo_us_symbol
+        return to_yahoo_us_symbol(symbol)
+    return market_map.get(symbol) or f"{symbol}.KS"
+
+
+def _fetch_trade_review_bars(
+    symbols: list[str], market: str, cache_dir: Path,
+) -> tuple[dict[str, pd.DataFrame], dict[str, dict[str, str]]]:
+    """그날 매매 리뷰용 1분봉. 1순위 엔진 자체 히스토리(`data/history/` parquet,
+    백테스트와 같은 소스) — 오늘 KR/US 개별 종목은 보통 없다(파티션은
+    QQQ/SPY/VIX 일봉뿐, `data/history/CLAUDE.md`). 없으면 yfinance 1분봉(최근
+    7일 창, 야후 상한)으로 폴백한다. 심볼별로 실제 쓰인 출처를 `bar_meta`에
+    남긴다 — 카드가 "어디서 온 봉인지" 정직하게 밝히기 위함(절대 지어내지 않는다).
+    실패는 그 심볼만 결측으로 남기고 나머지는 계속 진행한다."""
+    from quant.adapters.data.history import HistoryDataFeed
+
+    bars_by_symbol: dict[str, pd.DataFrame] = {}
+    bar_meta: dict[str, dict[str, str]] = {}
+
+    try:
+        feed = HistoryDataFeed(symbols)
+        for sym in symbols:
+            try:
+                df = feed.history(sym, "1m", 2000)
+            except Exception:  # noqa: BLE001 — 이 심볼만 결측으로 남기고 계속
+                continue
+            if df is not None and not df.empty:
+                bars_by_symbol[sym] = df
+                bar_meta[sym] = {"source": "engine:history(parquet)", "interval": "1m"}
+    except Exception:  # noqa: BLE001 — 엔진 히스토리 자체가 없어도 yfinance로 계속
+        pass
+
+    missing = [s for s in symbols if s not in bars_by_symbol]
+    if not missing:
+        return bars_by_symbol, bar_meta
+
+    try:
+        import yfinance as yf
+
+        from quant.analyze.entities import load_market_map
+        market_map = load_market_map(cache_dir) if market == "KR" else {}
+    except Exception:  # noqa: BLE001 — KIND 캐시 없어도 .KS 폴백으로 계속
+        market_map = {}
+
+    for sym in missing:
+        ticker = _trade_review_yahoo_symbol(sym, market, market_map)
+        try:
+            df = yf.Ticker(ticker).history(period="7d", interval="1m", auto_adjust=False)
+        except Exception:  # noqa: BLE001 — 이 심볼만 결측
+            continue
+        if df is None or df.empty:
+            continue
+        df = df.rename(columns=str.lower)
+        cols = [c for c in ("open", "high", "low", "close", "volume") if c in df.columns]
+        df = df[cols].dropna(subset=[c for c in ("open", "high", "low", "close") if c in cols])
+        if df.empty:
+            continue
+        bars_by_symbol[sym] = df
+        bar_meta[sym] = {"source": f"yfinance:{ticker}", "interval": "1m"}
+
+    return bars_by_symbol, bar_meta
+
+
+def cmd_trade_review(a: argparse.Namespace) -> int:
+    """`report trade-review --market KR|US --date YYYY-MM-DD [--root] [--out]`
+    — 그날 진입한 모든 전략의 체결을 (전략, 종목) 카드로 재구성해 HTML/JSON을
+    낸다. 그 시장·그 날짜 체결이 없으면(휴장일·무거래일) 조용히 스킵한다
+    (exit 0, stdout 무출력) — 크론이 매일 도는데 매일 "실패"로 보이면 안 된다
+    (다른 자동화 서브커맨드, 예: review-daily 와 같은 계약)."""
+    from quant.apps.config import DEFAULT_SETTINGS_PATH, load_settings
+    from quant.control.ledger import DEFAULT_LEDGER_PATH, load_trades, trades_in_session
+    from quant.control.trade_review import build_trade_review, format_telegram_line
+    from quant.report.render.trade_review import write_trade_review
+
+    root = Path(a.root)
+    _, default_out_root, cache_dir, _ = _paths(root)
+    out_root = Path(a.out) if getattr(a, "out", None) else default_out_root
+    market = a.market
+    on = date.fromisoformat(a.date)
+
+    ledger_path = root / DEFAULT_LEDGER_PATH
+    trades = load_trades(ledger_path)
+    session_fills = trades_in_session(trades, market, on)
+    if not session_fills:
+        print(f"trade-review: {market} {on.isoformat()} 체결 없음 — 스킵", file=sys.stderr)
+        return 0
+
+    settings_path = root / DEFAULT_SETTINGS_PATH
+    settings = load_settings(str(settings_path)) if settings_path.exists() else load_settings()
+    symbols = sorted({str(f.get("symbol")) for f in session_fills if f.get("symbol")})
+    bars_by_symbol, bar_meta = _fetch_trade_review_bars(symbols, market, cache_dir)
+
+    review = build_trade_review(
+        trades, bars_by_symbol, settings.strategies, market, on,
+        risk_params=settings.risk, bar_meta_by_symbol=bar_meta,
+    )
+    hp, jp = write_trade_review(review, market, on, out_root)
+    url_base = a.url_base.rstrip("/") if getattr(a, "url_base", None) else None
+    url = f"{url_base}/{on.year:04d}/{on.month:02d}/{on.day:02d}/{market}_trade_review.html" if url_base else None
+    line = format_telegram_line(review, url=url)
+    if line:
+        print(line)
+    print(f"저장: {hp} / {jp}", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="report")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1395,6 +1515,16 @@ def main(argv: list[str] | None = None) -> int:
     srd.add_argument("--out", default="data/report_review")
     srd.add_argument("--ledger", default="data/ledger/report_review.jsonl")
     srd.add_argument("--days", type=int, default=7)
+    # trade-review(2026-09-07 오너 요청) — 데일리 매매 리뷰(전략별 진입/청산
+    # 타점 + 손익절 범위 + 진입 사유). `--out`은 다른 리포트와 같은 산출물
+    # 트리(`{root}/out`) 기본값 — `_paths`가 이미 그 규칙을 안다.
+    stv = sub.add_parser("trade-review")
+    stv.add_argument("--market", choices=["KR", "US"], required=True)
+    stv.add_argument("--date", default=date.today().isoformat())
+    stv.add_argument("--root", default=".")
+    stv.add_argument("--out", default=None)
+    stv.add_argument("--url-base", default=None,
+                      help="텔레그램 한 줄에 붙일 페이지 URL 베이스(예: REPORT_URL_BASE)")
     a = p.parse_args(argv)
     # accuracy 는 --date 가 없다(--since/--until 구간) — 다른 서브커맨드처럼
     # 무조건 date.fromisoformat(a.date) 를 부르면 여기서 AttributeError 로 죽는다.
@@ -1409,6 +1539,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.cmd == "review-daily":
         return cmd_review_daily(a)
+
+    if a.cmd == "trade-review":
+        return cmd_trade_review(a)
 
     if a.cmd == "uswrap":
         root = Path(a.root)
