@@ -204,3 +204,29 @@ def test_market_inferred_when_not_given(tmp_path, monkeypatch):
     resolver = sn.build_resolver(tmp_path / "cache", tmp_path / "state")
     resolver.names_for(["005930", "AAPL"])
     assert set(seen_markets) == {"KR", "US"}
+
+
+def test_toss_etf_ticker_as_name_falls_back_to_english_name(tmp_path, monkeypatch):
+    """Toss `stock_info` 는 ETF 에서 name=티커(EWY→"EWY")를 준다(2026-09-07 EC2 실측) —
+    englishName 을 쓰고, 코드=이름은 절대 이름으로 저장하지 않는다."""
+    monkeypatch.setattr(sn, "load_name_map", lambda cache_dir, market: {})
+    resolver = sn.build_resolver(
+        tmp_path / "cache", tmp_path / "state",
+        toss_lookup=lambda s: {"symbol": s, "name": s, "englishName": "ISHARES INC MSCI SOUTH KOREA ETF"},
+        narrator=_AssertNoCallNarrator(),
+    )
+    assert resolver.names_for(["EWY"], market="US") == {"EWY": "ISHARES INC MSCI SOUTH KOREA ETF"}
+    meta = json.loads((tmp_path / "state" / "symbol_names_meta.json").read_text(encoding="utf-8"))
+    assert meta["EWY"]["source"] == "toss"
+
+
+def test_cached_code_equals_name_entry_is_treated_as_unknown(tmp_path, monkeypatch):
+    """엔진 부팅 채움이 남긴 {"EWY": "EWY"} 캐시 항목은 '모른다'와 같다 — 뒤 단계로 넘어간다."""
+    monkeypatch.setattr(sn, "load_name_map", lambda cache_dir, market: {})
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "symbol_names.json").write_text(json.dumps({"EWY": "EWY"}), encoding="utf-8")
+    narrator = _FakeNarrator('{"EWY": "iShares MSCI South Korea ETF"}')
+    resolver = sn.build_resolver(tmp_path / "cache", state, narrator=narrator)
+    assert resolver.names_for(["EWY"], market="US") == {"EWY": "iShares MSCI South Korea ETF"}
+    assert len(narrator.calls) == 1

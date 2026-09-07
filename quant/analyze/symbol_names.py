@@ -108,6 +108,19 @@ def _valid_llm_name(code: str, value: object) -> str | None:
     return name
 
 
+def _toss_display_name(symbol: str, info: object) -> str | None:
+    """Toss `stock_info` 응답에서 표시용 이름. ETF 는 `name` 이 티커 그대로 오고
+    (EWY→"EWY", 2026-09-07 EC2 실측) `englishName` 에만 이름이 있다 — 코드와 같은
+    이름은 "모른다"로 취급해야 캐시가 코드=이름 항목으로 영원히 굳지 않는다."""
+    if not isinstance(info, dict):
+        return None
+    for key in ("name", "englishName"):
+        nm = info.get(key)
+        if isinstance(nm, str) and nm.strip() and nm.strip().upper() != symbol.upper():
+            return nm.strip()
+    return None
+
+
 @dataclass
 class SymbolNameResolver:
     """`build_resolver()`로 만든다 — 직접 생성자를 호출하지 않는다."""
@@ -177,11 +190,12 @@ class SymbolNameResolver:
         for sym in symbols:
             nm = cache.get(sym)
             src = (meta.get(sym) or {}).get("source")
-            if nm and src != "llm":
+            # 코드=이름 항목(엔진 부팅 Toss 채움이 ETF 에서 남긴다)은 "모른다"와 같다.
+            if nm and nm.upper() != sym.upper() and src != "llm":
                 result[sym] = nm
                 continue
             pending.append(sym)
-            if nm:
+            if nm and src == "llm" and nm.upper() != sym.upper():
                 llm_fallback[sym] = nm
 
         if not pending:
@@ -224,10 +238,10 @@ class SymbolNameResolver:
                     info = self.toss_lookup(sym)
                 except Exception:  # noqa: BLE001 — 조회 실패는 삼킨다
                     info = None
-                nm = (info or {}).get("name") if isinstance(info, dict) else None
+                nm = _toss_display_name(sym, info)
                 if nm:
-                    result[sym] = str(nm)
-                    new_entries[sym] = (str(nm), "toss")
+                    result[sym] = nm
+                    new_entries[sym] = (nm, "toss")
             pending = [s for s in pending if s not in result]
 
         # (5) LLM 배치 — 이전에 이미 LLM으로 확인된 적 있는 심볼은 매번 다시
