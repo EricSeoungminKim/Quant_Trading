@@ -1591,6 +1591,22 @@ def _trade_review_symbol_names(root: Path, cache_dir: Path, symbols: list[str], 
         return {}
 
 
+def cmd_symbol_names(a: argparse.Namespace) -> int:
+    """`report symbol-names --market KR|US SYM...` — 셸 스크립트(flow_scan.sh 등)가
+    텔레그램 문장에 붙일 '이름(코드)' 라벨을 한 줄(공백 구분, 입력 순서 유지)로
+    받는다(2026-09-07, 오너: 리포트/알림에 종목번호만 오지 않게). 리졸버는
+    trade-review 와 같은 조립(캐시 → 표 → 워치리스트 → Toss → LLM 배치 1회).
+    해석 실패는 코드 그대로 — 호출부 문장이 비는 일은 없다."""
+    from quant.analyze.symbol_names import label
+
+    root = Path(a.root)
+    _, _, cache_dir, _ = _paths(root)
+    symbols = [s for s in a.symbols if s]
+    names = _trade_review_symbol_names(root, cache_dir, symbols, a.market) if symbols else {}
+    print(" ".join(label(sym, names.get(sym)) for sym in symbols))
+    return 0
+
+
 def cmd_trade_review(a: argparse.Namespace) -> int:
     """`report trade-review --market KR|US --date YYYY-MM-DD [--root] [--out]`
     — 그날 진입한 모든 전략의 체결을 (전략, 종목) 카드로 재구성해 HTML/JSON을
@@ -1711,6 +1727,11 @@ def main(argv: list[str] | None = None) -> int:
     stv.add_argument("--out", default=None)
     stv.add_argument("--url-base", default=None,
                       help="텔레그램 한 줄에 붙일 페이지 URL 베이스(예: REPORT_URL_BASE)")
+    # 셸 스크립트용 종목명 라벨(2026-09-07) — flow_scan.sh 편입 알림 문장.
+    ssn = sub.add_parser("symbol-names")
+    ssn.add_argument("--market", choices=["KR", "US"], required=True)
+    ssn.add_argument("--root", default=".")
+    ssn.add_argument("symbols", nargs="*")
     a = p.parse_args(argv)
     # accuracy 는 --date 가 없다(--since/--until 구간) — 다른 서브커맨드처럼
     # 무조건 date.fromisoformat(a.date) 를 부르면 여기서 AttributeError 로 죽는다.
@@ -1728,6 +1749,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.cmd == "trade-review":
         return cmd_trade_review(a)
+    if a.cmd == "symbol-names":
+        return cmd_symbol_names(a)
 
     if a.cmd == "uswrap":
         root = Path(a.root)

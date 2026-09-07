@@ -99,4 +99,8 @@ log "편입 완료: $SYMS_ONLY"
 
 # 토큰 유무 검사는 게이트가 한다 — 여기서 걸러버리면 토큰이 없는 날 큐 적재까지
 # 같이 사라진다(장중 편입은 미뤄서 마감 리포트에 실려야 한다).
-notify_auto "flow_scan" "🌊 장중 거래대금 편입(${MARKET}): ${SYMS_ONLY} — 확신도 게이트 통과. 전략들이 시그널 감시를 시작한다." || true   # 발송 실패가 크론 exit 코드를 바꾸지 않게
+# 알림 문장은 '이름(코드)' 라벨로(2026-09-07 오너: 종목번호만 오지 않게). 해석 실패·타임아웃이면 코드 그대로.
+# shellcheck disable=SC2086
+LABELS="$(timeout 90 "$PY" -m quant.apps.report_cli symbol-names --market "$MARKET" $SYMS_ONLY 2>>"$LOG")" || LABELS=""
+[ -n "$LABELS" ] || LABELS="$SYMS_ONLY"
+notify_auto "flow_scan" "🌊 장중 거래대금 편입(${MARKET}): ${LABELS} — 확신도 게이트 통과. 전략들이 시그널 감시를 시작한다." || true   # 발송 실패가 크론 exit 코드를 바꾸지 않게
