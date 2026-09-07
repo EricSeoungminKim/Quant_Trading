@@ -346,7 +346,8 @@
 # 진입/청산 타점·손익절 범위·진입 사유를 (전략, 종목) 카드로. capital-review
 # (16:50)·daily-wrap(16:55)보다 반드시 앞이어야 한다 — daily-wrap 7절이 이
 # 산출물의 JSON(out/YYYY/MM/DD/KR_trade_review.json)을 재사용한다.
-5 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/trade_review.sh KR >> data/trade_review.log 2>&1
+# 2026-09-07 재배치: 16:00 outcomes(약 5분, 메모리 큼)와 겹쳐 16:02~16:05 메모리 1,005MB 피크 실측 → 16:12 로.
+12 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/trade_review.sh KR >> data/trade_review.log 2>&1
 
 # 16:55 KR — 하루 요약 HTML 한 장을 텔레그램 **파일**로 (US 06:55 항목과 같은
 # 리포트). KR 마감 정산 체인(session-pnl 15:35 → outcomes 16:00 → close-report
@@ -506,7 +507,8 @@
 # close-report(바로 위)와 같은 분이지만 이쪽은 원장 읽기 + JSON 쓰기뿐(LLM/네트워크
 # 호출 없음, 결정론)이라 1.8GB 박스에서도 동시 실행이 안전하다 — quant/control/
 # performance.py 계약. git push는 아직 안 한다(공개 저장소 배선 전).
-20 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_performance.sh >> data/publish_performance.log 2>&1
+# 2026-09-07 재배치: 16:20 close_report 와 같은 분 → 16:15 로(세션 원장은 15:30 에 확정).
+15 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_performance.sh >> data/publish_performance.log 2>&1
 
 # 매주 금 16:30 KST — 리더보드 승격 판정. **자동 적용하지 않는다**(판정만 낸다).
 # 표본 수를 거래일로 세므로 20거래일 전에는 계속 "판단 불가"가 정상이다.
