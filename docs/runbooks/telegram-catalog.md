@@ -171,7 +171,7 @@ tg_bridge.py:1351). 레인표를 보지 않는다.
 | `ops_watch.sh` | 매시 05분 | `ops` | `notify_now` | 🚨/❔ 운영 감시 이상 (§4의 `notify_failure_findings` 포함) + 배포 드리프트 별도 경로 | 2500(형식화 실패 폴백) | Finding 지문 24h 억제(`dedupe_repeat_alerts`) + 배포드리프트는 SHA당 1회 | 정상 시 무발송, 초당 최대 24회 실행 |
 | `watchdog.sh` | 5분마다 | `ops` | `notify_now` | 🚨 엔진 다운/행 / ⚠️ 브리지 다운 / ✅ 회복 | 상태 파일 기반(장애당 1회) | 정상 시 무발송 |
 | `publish_portfolio.sh` | 평일 16:25 + 화-토 06:25 | `ops` | `notify_now` | 🚨 공개 성과 JSON 검증 실패 | — | — | 정상 시 무발송 |
-| `daily_wrap.sh KR/US` | 평일 16:55 / 화-토 06:55 | `briefs` | `notify_now`(서술만) + `sendDocument`(문서, 게이트 밖) | 자연어 서술 1통 + 마감 요약 HTML 파일 | 서술은 4096 하드캡(tgfmt 아님) | 없음(1회/세션) | KR/US 각 1(서술+문서 2통) |
+| `daily_wrap.sh KR/US` | 평일 16:55 / 화-토 06:55 | `briefs` | `notify_now`(서술) + `notify_document`(문서, 2026-09-07부터 게이트 통과) | 자연어 서술 1통 + 마감 요약 HTML 파일 | 서술은 4096 하드캡(tgfmt 아님), 캡션은 HTML 이스케이프 후 발송 | 없음(1회/세션) | KR/US 각 1(서술+문서 2통) |
 
 **빈도 합계 감**: 정상 운영일 기준 즉시/큐 합쳐 대략 KR 세션 15~25통 +
 US 세션 20~30통 + 시간당 ops_watch 24회(대부분 무발송) + watchdog 288회/일
@@ -216,6 +216,14 @@ US 세션 20~30통 + 시간당 ops_watch 24회(대부분 무발송) + watchdog 2
 `sendDocument`로 전송한다(이 저장소 최초의 문서 전송 — 메시지 4096자 제한을
 피하려고 장 마감 후 "하루 요약 HTML 파일 1장"으로 통합하는 것이 2026-08-28
 소유자 지시의 핵심이다).
+
+**2026-09-07까지는 이 sendDocument가 `lib/notify.sh` 게이트 밖에서 돌았다** —
+api.telegram.org를 직접 쳐서 레인이 안 갈리고(레거시 단일 채팅 고정), 레이트
+리밋도 안 걸리고, 성공/실패가 발송 원장에도 안 남았다(라이브 준비 세션에서
+발견해 수리). 이제 `lib/notify.sh`의 네 번째 공개 함수 `notify_document(lane,
+file, caption)`을 거친다 — `_notify_send`(sendMessage)와 같은 토큰/챗 해석·
+레인 타겟팅·레이트 리밋·발송(실패) 원장을 그대로 타고, 캡션은 HTML 이스케이프
+후 `parse_mode=HTML`로 먼저 보내고 거부되면 원문 그대로 평문 재시도한다.
 
 - 큐 파일: `data/notify_queue.jsonl` → 소비 후 `data/ledger/notify_queue_archive.jsonl`.
 - 소비 규칙: 큐 **전체**를 읽는다(날짜로 거르지 않음 — KR 16:55/US 06:55 마감이

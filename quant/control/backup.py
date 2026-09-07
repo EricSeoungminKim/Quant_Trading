@@ -310,6 +310,13 @@ def _is_expected_ledger_prune(key: str) -> bool:
     return key in PRUNED_LEDGERS
 
 
+def _is_expected_state_backup_prune(key: str) -> bool:
+    """`prune_state_backups`(일요일 03:20 크론)가 지우는 상태 백업 파일인가 — 사라져도 회귀가 아니다
+    (2026-09-07: 같은 모양의 오탐을 .log/뉴스/텔레그램 원장에서 세 번 겪었다). 패턴은 prune 과 동일."""
+    name = key.rsplit("/", 1)[-1]
+    return (".pre-epoch-" in name) or (".pre_seed" in name) or (".bak" in name) or name.startswith("regime.json.bak-")
+
+
 def regressions(cur: dict[str, Entry], prev: dict[str, Entry],
                 today: date | None = None) -> list[str]:
     """지난 번들 대비 **줄어든** 것. 원장·뉴스는 append-only 이므로 줄어들면 사고다.
@@ -344,6 +351,7 @@ def regressions(cur: dict[str, Entry], prev: dict[str, Entry],
         if now is None:
             if cutoff is not None and (
                 _is_expected_news_prune(key, cutoff) or _is_expected_log_prune(key)
+                or _is_expected_state_backup_prune(key)
             ):
                 continue
             problems.append(f"{key}: 지난 백업에 있었는데 사라졌다")
@@ -353,3 +361,57 @@ def regressions(cur: dict[str, Entry], prev: dict[str, Entry],
                 continue  # 보존 prune 대상 — PRUNED_LEDGERS 주석 참고(2026-09-07 오경보)
             problems.append(f"{key}: 줄이 줄었다 ({was.lines} → {now.lines})")
     return problems
+
+
+# ── 에폭/시드 백업 파일 정리 (2026-09-07 라이브 준비 세션) ──────────────────
+#
+# `paper-epoch`/시드 재적재가 갈아끼우기 전에 안전망으로 남기는 `*.pre-epoch-*`
+# `*.pre_seed*` 사본과, 수동 복구 때 남긴 `*.bak*`/`regime.json.bak-*` 사본이
+# `data/state`·`data/ledger`에 정책 없이 쌓인다 — 지운 적이 없어 EC2 디스크를
+# 계속 먹는다. 이 함수는 **지우지 않는다** — 무엇을 지울지만 결정론적으로
+# 고른다(이 모듈의 다른 순수 함수들과 같은 계약: `manifest()`/`regressions()`도
+# 파일을 건드리지 않는다). 실제 삭제는 호출부(`server/scripts/
+# state_backup_prune.sh`)가 반환된 경로를 받아 한다.
+_STATE_BACKUP_PATTERNS = ("*.pre-epoch-*", "*.pre_seed*", "*.bak*", "regime.json.bak-*")
+_STATE_BACKUP_DIRS = ("state", "ledger")
+
+
+def prune_state_backups(
+    root: Path | str, keep_days: int = 30, now: datetime | None = None,
+) -> list[Path]:
+    """`root/data/{state,ledger}` 아래 에폭/시드/수동 백업 사본 중 `keep_days`
+    (기본 30일)보다 오래된 것들의 경로 목록을 돌려준다 — **삭제는 하지
+    않는다**(순수 함수, 위 절 참고).
+
+    대상 패턴은 딱 넷: `*.pre-epoch-*`, `*.pre_seed*`, `*.bak*`,
+    `regime.json.bak-*`(실측된 파일명 그대로 — 이 넷 이외는 절대 건드리지
+    않는다, 라이브 상태 파일을 실수로 지우는 사고를 막는 가장 확실한 방법은
+    "이름이 뭘 뜻하는지 추론"이 아니라 "정확히 이 접미사만"이다). 한 파일이
+    여러 패턴에 걸려도(예: `regime.json.bak-2026...`은 `*.bak*` 에도 걸린다)
+    한 번만 반환한다.
+
+    나이는 mtime 기준(`now` 기본값은 호출 시각 — 테스트가 고정 시각을 주입할
+    수 있게 매개변수로 뺐다, `regressions()`의 `today` 매개변수와 같은 이유).
+    `root/data/{state,ledger}` 디렉토리가 없으면 그 디렉토리는 조용히
+    건너뛴다(신규 설치·테스트 픽스처가 이것 때문에 죽지 않는다) — 하위
+    디렉토리까지 뒤지지 않는다(`glob`, `rglob` 아님): 이 네 패턴이 관측된
+    자리는 언제나 `data/state`·`data/ledger` 바로 아래였다.
+    """
+    root = Path(root)
+    cutoff = (now or datetime.now(UTC)).timestamp() - keep_days * 86400
+    found: set[Path] = set()
+    for sub in _STATE_BACKUP_DIRS:
+        d = root / "data" / sub
+        if not d.is_dir():
+            continue
+        for pattern in _STATE_BACKUP_PATTERNS:
+            for path in d.glob(pattern):
+                if not path.is_file():
+                    continue
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                if mtime < cutoff:
+                    found.add(path)
+    return sorted(found)

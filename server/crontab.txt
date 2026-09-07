@@ -33,6 +33,13 @@
 # 매주 일요일 03:00 KST — 로그 로테이션 + 캐시 정리 (7일 이상 지난 로그/캐시 삭제)
 0 3 * * 0 cd /home/ubuntu/quant_trading_kiwoom && find data -name "*.log" -mtime +7 -delete && find data/cache -mtime +7 -delete 2>/dev/null || true
 
+# 매주 일요일 03:20 KST — 에폭/시드/수동 백업 사본 정리(2026-09-07 라이브 준비
+# 세션). data/state·data/ledger 에 정책 없이 쌓이는 *.pre-epoch-*/*.pre_seed*/
+# *.bak*/regime.json.bak-* (30일 초과분)를 지운다. 위 03:00 정리 뒤, 03:30
+# 아티팩트 백업(backup.sh) 전에 돈다 — 먼저 지워야 오늘 백업이 정리 후 마지막
+# 사본을 담는다.
+20 3 * * 0 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/state_backup_prune.sh >> data/state_backup_prune.log 2>&1
+
 # 2026-08-17 사용자 세션 표에 맞춰 KR 자동 편입 체인 전체를 전진했다: 08:30~09:00은
 # 동시호가(호가가 쌓여 개장가를 형성하는 창)라 그 전에 편입이 끝나 있어야 그날 새
 # 후보가 개장가부터 반영된다. KR 리포트는 08:00 발행(빌드 리드 포함)이므로 08:12에는

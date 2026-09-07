@@ -34,9 +34,7 @@ report_accuracy/deepdive 등)는 실시세(Toss)·LLM·yfinance 네트워크가 
 """
 from __future__ import annotations
 
-import json
 import os
-import shutil
 import stat
 import subprocess
 from pathlib import Path

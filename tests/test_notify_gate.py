@@ -620,4 +620,83 @@ def test_failed_send_is_not_recorded_in_sent_ledger(gate, tmp_path):
     r = gate.run('notify_now "실패"', NOTIFY_SENT_LEDGER=str(sent), **OFF_HOURS)
     assert r.returncode != 0
     assert not sent.exists() or sent.read_text(encoding="utf-8").strip() == ""
-    assert len(gate.failures()) == 1
+
+
+# ── notify_document — 문서(sendDocument) 전송 게이트 (2026-09-07 live-readiness) ──
+#
+# daily_wrap.sh 가 예전에 이 게이트를 우회해 api.telegram.org 의 sendDocument
+# 를 직접 쳤다 — 레인 라우팅·레이트 리밋·발송(실패) 원장이 전부 빠져 있었다.
+# `notify_document`는 그 세 문(notify_now/_auto/_defer)과 별도의 네 번째
+# 공개 API로, `_notify_send`가 쓰는 헬퍼(토큰/챗 해석·레인 타겟팅·발송 원장)를
+# 그대로 재사용한다.
+
+def test_document_send_is_recorded_in_sent_ledger(gate, tmp_path):
+    doc = tmp_path / "report.html"
+    doc.write_text("<html>요약</html>", encoding="utf-8")
+    sent = tmp_path / "notify_sent.jsonl"
+    r = gate.run(
+        f'notify_document "briefs" "{doc}" "마감 요약" && echo SENT || echo FAILED',
+        NOTIFY_SENT_LEDGER=str(sent), **OFF_HOURS,
+    )
+    assert "SENT" in r.stdout, r.stderr
+    call = gate.sends()[0]
+    assert "sendDocument" in call
+    assert f"document=@{doc};type=text/html" in call
+    assert "caption=마감 요약" in call
+    assert "parse_mode=HTML" in call
+    rows = [json.loads(l) for l in sent.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len(rows) == 1
+    assert rows[0]["lane"] == "briefs"
+    assert rows[0]["text"] == "마감 요약"
+    assert gate.failures() == []
+
+
+def test_document_send_failure_is_recorded_in_failure_ledger(gate, tmp_path):
+    bad = tmp_path / "bin" / "curl"
+    bad.write_text('#!/usr/bin/env bash\nprintf \'{"ok":false}\'\n', encoding="utf-8")
+    bad.chmod(0o755)
+    doc = tmp_path / "report.html"
+    doc.write_text("<html>요약</html>", encoding="utf-8")
+    r = gate.run(
+        f'notify_document "" "{doc}" "실패 케이스" && echo SENT || echo FAILED',
+        **OFF_HOURS,
+    )
+    assert "FAILED" in r.stdout, r.stderr
+    rows = gate.failures()
+    assert len(rows) == 1
+    assert rows[0]["text"] == "실패 케이스"
+
+
+def test_document_send_no_token_is_silent_skip(gate, tmp_path):
+    doc = tmp_path / "report.html"
+    doc.write_text("<html>요약</html>", encoding="utf-8")
+    r = gate.run(
+        f'notify_document "" "{doc}" "요약" && echo SENT || echo FAILED',
+        token=False, **OFF_HOURS,
+    )
+    assert "SENT" in r.stdout, r.stderr  # 조용한 no-op도 "성공"(0)이다
+    assert gate.sends() == [], "토큰이 없으면 발송 시도 자체를 하지 않는다"
+    assert gate.failures() == []
+
+
+def test_document_send_missing_file_fails_without_calling_telegram(gate, tmp_path):
+    r = gate.run(
+        f'notify_document "" "{tmp_path}/no-such-file.html" "요약" && echo SENT || echo FAILED',
+        **OFF_HOURS,
+    )
+    assert "FAILED" in r.stdout, r.stderr
+    assert gate.sends() == [], "파일이 없으면 텔레그램을 치지 않는다"
+
+
+def test_document_caption_html_special_chars_are_escaped(gate, tmp_path):
+    """캡션에 `&`/`<`/`>` 가 섞이면(매매 리뷰 URL 등) parse_mode=HTML 시도에서
+    이스케이프된 채 나가야 한다 — 안 그러면 텔레그램이 깨진 HTML로 보고 거부한다."""
+    doc = tmp_path / "report.html"
+    doc.write_text("<html>요약</html>", encoding="utf-8")
+    r = gate.run(
+        f'notify_document "" "{doc}" "매매 리뷰 & <b>강조</b>" && echo SENT || echo FAILED',
+        **OFF_HOURS,
+    )
+    assert "SENT" in r.stdout, r.stderr
+    call = gate.sends()[0]
+    assert "caption=매매 리뷰 &amp; &lt;b&gt;강조&lt;/b&gt;" in call

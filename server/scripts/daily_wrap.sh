@@ -90,51 +90,21 @@ if [ -n "$NARRATION" ]; then
   notify_now "$NARRATION" || log "$MARKET 서술 메시지 발송 실패 — 문서 발송은 계속 진행"
 fi
 
-send() {
-  # 성공 여부를 반환한다(ops_watch.sh 와 같은 계약) — 실패를 삼키면 재시도가
-  # 사라진다. 텔레그램 응답의 "ok":true 로 판정.
-  #
-  # 레인 라우팅(2026-09-05) — 위 notify_now(narration)와 같은 레인으로 문서도
-  # 보낸다. sendDocument는 notify.sh의 _notify_send를 타지 않으므로(멀티파트
-  # 전송이라 별도 curl -F 호출) 여기서 같은 판정 헬퍼(_notify_lane_target/
-  # _notify_lane_header)를 직접 쓴다 — 아니면 서술 메시지는 토픽에 들어가고
-  # 문서는 레거시 채팅에 남는 사고가 난다.
-  local lane t_target t_chat t_thread t_bound chat_id thread_id caption
-  lane="${NOTIFY_LANE:-}"
-  chat_id="$TG_CHAT"
-  thread_id=""
-  caption="$CAPTION"
-  if [ -n "$lane" ]; then
-    t_target="$(_notify_lane_target "$lane")"
-    IFS='|' read -r t_chat t_thread t_bound <<< "$t_target"
-    if [ -n "$t_chat" ] && [ -n "$t_thread" ]; then
-      chat_id="$t_chat"
-      thread_id="$t_thread"
-    elif [ "$t_bound" = "1" ]; then
-      caption="$(_notify_lane_header "$lane") ${caption}"
-    fi
-  fi
-  local thread_args=()
-  if [ -n "$thread_id" ]; then
-    thread_args=(-F "message_thread_id=${thread_id}")
-  fi
-  RESP="$(curl -s -m 60 "https://api.telegram.org/bot${TG_TOKEN}/sendDocument" \
-    -F "chat_id=${chat_id}" \
-    "${thread_args[@]}" \
-    -F "document=@${FILE};type=text/html" \
-    -F "caption=${caption}" 2>/dev/null)"
-  case "$RESP" in *'"ok":true'*) return 0 ;; esac
-  return 1
-}
-
-if send; then
+# 문서 발송 — notify.sh 의 notify_document(2026-09-07 live-readiness 세션)를
+# 쓴다. 예전엔 여기서 직접 api.telegram.org 의 sendDocument 를 쳤다 — notify.sh
+# 게이트(레인 라우팅·레이트 리밋·발송 원장)를 통째로 우회해, 레인이 안 갈리고
+# (레거시 단일 채팅 고정) 레이트 리밋도 안 걸리고 성공/실패가 발송 원장에도
+# 안 남았다. `notify_document`가 토큰/챗 해석·레인 타겟팅·헤더 삽입·레이트
+# 리밋·발송(실패) 원장·재시도(HTML→평문)를 전부 대신한다 — 이 스크립트는
+# 반환값(0/1)으로 성공/실패만 판정한다(ops_watch.sh 와 같은 계약).
+if notify_document "$NOTIFY_LANE" "$FILE" "$CAPTION"; then
   log "$MARKET 전송 성공 — $FILE"
   exit 0
 fi
 
 log "$MARKET 1차 전송 실패 — 20초 후 1회 재시도"
 sleep 20
-if send; then
+if notify_document "$NOTIFY_LANE" "$FILE" "$CAPTION"; then
   log "$MARKET 재시도 전송 성공 — $FILE"
 else
   # 그래도 실패하면 로그만 — 실패 알림을 또 텔레그램으로 쏘면 그것이 곧

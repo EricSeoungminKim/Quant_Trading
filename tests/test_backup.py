@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import tarfile
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ from quant.control.backup import (
     SecretInBundle,
     create,
     manifest,
+    prune_state_backups,
     read_manifest,
     regressions,
     verify,
@@ -439,3 +441,125 @@ def test_regressions_ignores_line_drop_in_pruned_telegram_ledger(tmp_path: Path)
 
     assert not any("telegram_msgs" in p for p in problems)
     assert any("trades.jsonl" in p and "줄이 줄었다" in p for p in problems)
+
+
+# ── prune_state_backups (2026-09-07 라이브 준비 세션) — 순수 함수, 지우지 않는다 ──
+#
+# `data/state`·`data/ledger`에 정책 없이 쌓이는 `*.pre-epoch-*`/`*.pre_seed*`/
+# `*.bak*`/`regime.json.bak-*` 사본을 30일 지나면 지울 후보로 고른다. 실제
+# 삭제는 `server/scripts/state_backup_prune.sh`가 한다 — 이 함수는 목록만.
+
+_NOW = datetime(2026, 9, 7, 3, 20, tzinfo=UTC)
+
+
+def _touch(path: Path, *, age_days: float) -> None:
+    """`path`를 만들고 mtime 을 `_NOW`에서 `age_days`일 전으로 맞춘다."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("x", encoding="utf-8")
+    ts = (_NOW - timedelta(days=age_days)).timestamp()
+    os.utime(path, (ts, ts))
+
+
+def test_prune_state_backups_picks_up_all_four_patterns(tmp_path: Path):
+    old = 40  # keep_days=30 보다 오래됨
+    targets = [
+        tmp_path / "data" / "state" / "portfolio.json.pre-epoch-20260101",
+        tmp_path / "data" / "state" / "portfolio.json.pre_seed_20260101",
+        tmp_path / "data" / "state" / "some.bak",
+        tmp_path / "data" / "state" / "regime.json.bak-20260101",
+        tmp_path / "data" / "ledger" / "trades.jsonl.pre-epoch-20260101",
+    ]
+    for t in targets:
+        _touch(t, age_days=old)
+
+    found = prune_state_backups(tmp_path, keep_days=30, now=_NOW)
+
+    assert set(found) == set(targets)
+
+
+def test_prune_state_backups_keeps_files_newer_than_keep_days(tmp_path: Path):
+    fresh = tmp_path / "data" / "state" / "portfolio.json.pre-epoch-20260901"
+    _touch(fresh, age_days=10)  # keep_days=30 보다 최근
+
+    assert prune_state_backups(tmp_path, keep_days=30, now=_NOW) == []
+
+
+def test_prune_state_backups_boundary_is_strictly_older_than_keep_days(tmp_path: Path):
+    """정확히 `keep_days`째 되는 파일은 아직 지우지 않는다 — 경계는 "그보다
+    오래됨"이다."""
+    exact = tmp_path / "data" / "state" / "x.bak"
+    _touch(exact, age_days=30)
+
+    assert prune_state_backups(tmp_path, keep_days=30, now=_NOW) == []
+
+    older = tmp_path / "data" / "state" / "y.bak"
+    _touch(older, age_days=30.001)
+    assert older in prune_state_backups(tmp_path, keep_days=30, now=_NOW)
+
+
+def test_prune_state_backups_ignores_unmatched_names(tmp_path: Path):
+    """패턴 넷 이외는 아무리 오래돼도 절대 건드리지 않는다 — 라이브 상태 파일
+    (portfolio.json, trades.jsonl 등)을 이름 추론이 아니라 정확한 접미사로만
+    구분한다."""
+    live = [
+        tmp_path / "data" / "state" / "portfolio.json",
+        tmp_path / "data" / "state" / "control.json",
+        tmp_path / "data" / "ledger" / "trades.jsonl",
+        tmp_path / "data" / "state" / "backup_of_something.txt",
+    ]
+    for f in live:
+        _touch(f, age_days=999)
+
+    assert prune_state_backups(tmp_path, keep_days=30, now=_NOW) == []
+
+
+def test_prune_state_backups_ignores_other_directories(tmp_path: Path):
+    """`data/state`·`data/ledger` 바깥(예: `data/news`, `data/cache`)은
+    보지 않는다 — 이 넷 패턴이 실측된 자리가 아니다."""
+    outside = tmp_path / "data" / "news" / "KR" / "old.bak"
+    _touch(outside, age_days=999)
+
+    assert prune_state_backups(tmp_path, keep_days=30, now=_NOW) == []
+
+
+def test_prune_state_backups_does_not_double_count_overlapping_patterns(tmp_path: Path):
+    """`regime.json.bak-*`는 `*.bak*`에도 걸린다 — 한 번만 나와야 한다."""
+    f = tmp_path / "data" / "state" / "regime.json.bak-20260101"
+    _touch(f, age_days=40)
+
+    found = prune_state_backups(tmp_path, keep_days=30, now=_NOW)
+    assert found == [f]
+
+
+def test_prune_state_backups_does_not_delete_anything(tmp_path: Path):
+    """순수 함수 — 호출 자체가 파일을 지우면 안 된다."""
+    f = tmp_path / "data" / "state" / "x.bak"
+    _touch(f, age_days=40)
+
+    prune_state_backups(tmp_path, keep_days=30, now=_NOW)
+
+    assert f.exists()
+
+
+def test_prune_state_backups_missing_directories_returns_empty(tmp_path: Path):
+    """`data/state`·`data/ledger` 자체가 없으면(신규 설치) 죽지 않고 빈 목록."""
+    assert prune_state_backups(tmp_path, keep_days=30, now=_NOW) == []
+
+
+def test_prune_state_backups_default_keep_days_is_30(tmp_path: Path):
+    f = tmp_path / "data" / "state" / "x.bak"
+    _touch(f, age_days=31)
+    assert prune_state_backups(tmp_path, now=_NOW) == [f]
+
+
+def test_regressions_ignores_pruned_state_backup_files(tmp_path: Path):
+    """일요일 03:20 prune_state_backups 가 지우는 *.pre-epoch-*/*.bak* 는 회귀가 아니다(2026-09-07)."""
+    _seed(tmp_path)
+    st = tmp_path / "data" / "state"
+    st.mkdir(parents=True, exist_ok=True)
+    (st / "portfolio.json.pre-epoch-20260906-045055").write_text("{}", encoding="utf-8")
+    (st / "regime.json.bak-old").write_text("{}", encoding="utf-8")
+    prev = manifest(tmp_path)
+    (st / "portfolio.json.pre-epoch-20260906-045055").unlink()
+    (st / "regime.json.bak-old").unlink()
+    assert regressions(manifest(tmp_path), prev, today=date(2026, 9, 7)) == []

@@ -140,6 +140,16 @@ _notify_json_escape() {
     | awk 'BEGIN{ORS=""} NR>1{print "\\n"} {print}'
 }
 
+# HTML 특수문자(&, <, >) 이스케이프 — `quant.core.tgfmt.esc()`와 같은 규칙과
+# 같은 순서(& 부터 바꿔야 뒤에 붙는 &lt;/&gt; 자체를 다시 이스케이프하지
+# 않는다). `notify_document`가 캡션을 `parse_mode=HTML`로 보낼 때 쓴다 — 캡션
+# 자체는 HTML 태그를 담지 않는 평문(`quant.control.daily_wrap.caption_line`
+# 문서 참고)이지만, 매매 리뷰 URL의 `&`(쿼리 구분자)처럼 리터럴 특수문자가
+# 섞이면 텔레그램이 깨진 HTML로 보고 거부한다.
+_notify_html_escape() {
+  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
 # 큐에 한 줄 append. 반환값은 **실제 쓰기 성공 여부**를 반영한다(2026-09-04
 # 수정 — 이전엔 항상 0을 반환해 notify_defer/notify_auto 호출부가 "큐 적재
 # 성공/실패"를 구분할 방법이 없었다: session_pnl.sh/manual_recs.sh가 발송
@@ -386,6 +396,69 @@ notify_auto() {  # $1=source $2=text
 # 어느 쪽에서 호출해도 같은 순간의 벽시계를 보므로 결과가 갈릴 일은 사실상 없다.
 notify_auto_would_defer() {
   _in_market_hours
+}
+
+# 문서(HTML 등) 전송 — daily_wrap.sh 전용(2026-09-07 live-readiness 세션).
+# 원래 daily_wrap.sh 는 이 게이트를 우회해 api.telegram.org 의 sendDocument 를
+# 직접 쳤다 — 레인이 안 갈리고(레거시 단일 채팅 고정), 레이트 리밋도 안 걸리고,
+# 성공/실패가 발송 원장에도 안 남았다. `_notify_send`(sendMessage, 폼 인코딩)와
+# 달리 멀티파트(`curl -F`)라 별도 함수지만, 토큰/챗 해석·레인 타겟팅·헤더
+# 삽입·레이트 리밋·발송(실패) 원장은 그 함수가 쓰는 헬퍼를 그대로 재사용한다
+# (로직 두 벌을 만들지 않는다).
+#
+# 캡션은 `_notify_html_escape`로 이스케이프한 뒤 `parse_mode=HTML`로 먼저
+# 보낸다(notify_now 와 같은 서식 계약) — 그래도 텔레그램이 거부하면(ok:false)
+# **원문 그대로** parse_mode 없이 한 번 더 재시도한다(`_notify_send`와 같은
+# 폴백 계약).
+#
+# 반환값은 실제 발송 성공 여부(0/1) — `_notify_send`와 같은 계약. 토큰/챗이
+# 없으면 조용한 no-op(0), 파일이 없으면 1(호출부 버그를 성공으로 위장하지
+# 않는다).
+notify_document() {  # $1=lane(비어 있을 수 있다) $2=file $3=caption
+  local NOTIFY_LANE="$1" file="$2" caption="$3"
+  local token chat chat_id thread_id target t_chat t_thread t_bound resp caption_html thread_args
+  token="$(_notify_token)"
+  chat="$(_notify_chat)"
+  if [ -z "$token" ] || [ -z "$chat" ]; then
+    return 0   # 조용한 no-op — _notify_send 와 같은 안전 계약
+  fi
+  if [ ! -f "$file" ]; then
+    return 1   # 파일이 없으면 보낼 수 없다 — 호출부 버그를 성공으로 위장하지 않는다
+  fi
+  chat_id="$chat"
+  thread_id=""
+  if [ -n "$NOTIFY_LANE" ]; then
+    target="$(_notify_lane_target "$NOTIFY_LANE")"
+    IFS='|' read -r t_chat t_thread t_bound <<< "$target"
+    if [ -n "$t_chat" ] && [ -n "$t_thread" ]; then
+      chat_id="$t_chat"
+      thread_id="$t_thread"
+    elif [ "$t_bound" = "1" ]; then
+      caption="$(_notify_lane_header "$NOTIFY_LANE") ${caption}"
+    fi
+  fi
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    printf '[DRY_RUN][TG-DOC]\n%s\n%s\n' "$file" "$caption"
+    return 0
+  fi
+  _notify_rate_limit "$NOTIFY_LANE"
+  thread_args=()
+  if [ -n "$thread_id" ]; then
+    thread_args=(-F "message_thread_id=${thread_id}")
+  fi
+  caption_html="$(_notify_html_escape "$caption")"
+  resp="$(curl -s -m 60 "${TELEGRAM_API_BASE:-https://api.telegram.org}/bot${token}/sendDocument" \
+    -F "chat_id=${chat_id}" ${thread_args[@]+"${thread_args[@]}"} \
+    -F "document=@${file};type=text/html" \
+    -F "caption=${caption_html}" -F "parse_mode=HTML" 2>/dev/null)"
+  case "$resp" in *'"ok":true'*) _notify_record_sent "$caption"; return 0 ;; esac
+  resp="$(curl -s -m 60 "${TELEGRAM_API_BASE:-https://api.telegram.org}/bot${token}/sendDocument" \
+    -F "chat_id=${chat_id}" ${thread_args[@]+"${thread_args[@]}"} \
+    -F "document=@${file};type=text/html" \
+    -F "caption=${caption}" 2>/dev/null)"
+  case "$resp" in *'"ok":true'*) _notify_record_sent "$caption"; return 0 ;; esac
+  _notify_record_failure "$caption"
+  return 1
 }
 
 fi
