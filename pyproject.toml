@@ -95,11 +95,14 @@ ignore = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["live: 네트워크를 타는 테스트 (기본 실행에서 제외)"]
+markers = [
+    "live: 네트워크를 타는 테스트 (기본 실행에서 제외)",
+    "e2e: server/scripts/*.sh 를 서브프로세스로 실제 실행하는 테스트 — QT_E2E=1일 때만 (기본 실행에서 제외)",
+]
 # importlib 모드가 필요한 이유: 두 저장소를 합치면서 tests/ 와 tests/report/ 에
 # 같은 이름의 파일이 생겼다(test_clock.py, test_indicators.py). 기본 prepend
 # 모드는 basename 이 겹치면 "import file mismatch" 로 죽는다.
-addopts = "-m 'not live' --import-mode=importlib"
+addopts = "-m 'not live and not e2e' --import-mode=importlib"
 
 [build-system]
 requires = ["hatchling"]

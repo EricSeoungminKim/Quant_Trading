@@ -20,9 +20,16 @@ if [ "$MARKET" != "KR" ] && [ "$MARKET" != "US" ]; then
 fi
 
 LOG="data/trade_review.log"
-mkdir -p data
+mkdir -p data data/state
 
 log() { echo "[$(date '+%F %T')] [$MARKET] $*" >> "$LOG"; }
+
+# 같은 (시장, 날짜)로 두 번 불리면(수동 재실행·크론 재시도·겹침) 텔레그램이
+# 그대로 중복 발송된다 — quant.apps.report_cli trade-review는 순수 재계산이라
+# 자체적으로 "오늘 이미 보냈다"를 모른다(2026-09-07 크론체인 시뮬레이션에서
+# 실측: 같은 날 두 번 실행 시 동일 카드가 두 번 큐/발송됐다). watchdog.sh의
+# 상태파일 관례(마커 파일에 마지막 처리 키만 기록)를 그대로 따른다.
+SENT_MARKER="data/state/trade_review_sent_${MARKET}.txt"
 
 . "$(dirname "$0")/lib/notify.sh"
 NOTIFY_LANE="briefs"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/telegram-rooms.md
@@ -48,5 +55,14 @@ if [ -z "$OUT" ]; then
   exit 0
 fi
 
+if [ "$(cat "$SENT_MARKER" 2>/dev/null)" = "$DATE" ]; then
+  log "이미 발송함($DATE) — 재실행 중복 발송 방지, 스킵"
+  exit 0
+fi
+
 log "발행 — 큐 적재(장중이면 미룸)"
-notify_auto "trade_review" "$OUT"
+if notify_auto "trade_review" "$OUT"; then
+  printf '%s' "$DATE" > "$SENT_MARKER" 2>/dev/null || true
+else
+  log "발송/큐 적재 실패 — 마커 기록 안 함(다음 실행에서 재시도)"
+fi
