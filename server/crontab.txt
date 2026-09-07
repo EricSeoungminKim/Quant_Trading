@@ -651,3 +651,7 @@
 # (아래 usage_rotate: 매주 월 04:00, 14일 초과분 삭제).
 * * * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/usage_sample.sh 2>>data/usage_sample.err
 0 4 * * 1 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -c "import json,datetime as d,pathlib as P;p=P.Path('data/ops/usage.jsonl');c=(d.datetime.now(d.timezone.utc)-d.timedelta(days=14)).isoformat();rows=[l for l in p.read_text().splitlines() if l.strip() and json.loads(l)['ts']>=c[:19]];p.write_text('\n'.join(rows)+'\n')" 2>>data/usage_sample.err
+
+# 매일 03:10 KST — 원장 크기 순환(03:30 백업 전). smart_flow.jsonl 이 100MB 를 넘으면
+# data/ledger/archive/ 로 gzip 이동(2026-09-07 감사: 37MB/일, 읽는 곳 없음). 상세는 스크립트 상단.
+10 3 * * * cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/ledger_rotate.sh >> data/ledger_rotate.log 2>&1
