@@ -21,7 +21,8 @@ proc_json() {  # $1=label $2=pattern
 cpu_pct() {
   local a b; read -r _ a1 a2 a3 a4 a5 a6 a7 _ < /proc/stat; sleep 1; read -r _ b1 b2 b3 b4 b5 b6 b7 _ < /proc/stat
   local idle=$((b4-a4)) total=$(( (b1+b2+b3+b4+b5+b6+b7) - (a1+a2+a3+a4+a5+a6+a7) ))
-  [ "$total" -gt 0 ] && echo "scale=1; 100*($total-$idle)/$total" | bc || echo 0
+  # 외부 계산기(bc) 의존 없이 awk 로 계산 — 첫 샘플 몇 줄이 빈 값으로 깨진 JSON 을 남겼다(2026-09-07).
+  awk -v t="$total" -v i="$idle" 'BEGIN{ if (t>0) printf "%.1f", 100*(t-i)/t; else printf "0" }'
 }
 cpu=$(cpu_pct)
 printf '{"ts":"%s","load":[%s,%s,%s],"cpu_pct":%s,"mem_used_mb":%d,"mem_avail_mb":%d,"mem_total_mb":%d,"swap_used_mb":%d,%s,%s,%s,%s,%s}\n' \
