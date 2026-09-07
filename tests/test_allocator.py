@@ -210,3 +210,27 @@ def test_capital_review_writes_nothing_when_no_losing_candidates(tmp_path):
 
     assert not (root / "config" / "auto_params.yaml").exists()
     assert not (root / "data" / "ledger" / "capital_decisions.jsonl").exists()
+
+
+# ── 2026-09-07: 자본 심사 범위 — 비활성 레인 제외 + 에폭 이후 트립만 ──────────────────
+def test_capital_review_scope_excludes_disabled_and_pre_epoch():
+    from types import SimpleNamespace
+
+    from quant.apps.cli import _capital_review_trips, _enabled_only
+    from quant.control.ledger import PAPER_EPOCH_MARKER
+
+    settings = SimpleNamespace(strategies={
+        "scalp_1m": {"enabled": True, "capital_fraction": {"KR": 0.03}},
+        "intraday_scan": {"enabled": False, "capital_fraction": {"KR": 0.1, "US": 0.1}},
+    })
+    fr = _enabled_only({("scalp_1m", "KR"): 0.03, ("intraday_scan", "KR"): 0.1, ("intraday_scan", "US"): 0.1}, settings)
+    assert fr == {("scalp_1m", "KR"): 0.03}
+
+    old = {"ts": "2026-09-01T01:00:00+00:00", "strategy_id": "scalp_1m", "symbol": "005930", "side": "buy", "qty": 1, "price": 100.0, "fee": 0.0, "realized_pnl": 0.0, "market": "KR"}
+    old_x = {**old, "ts": "2026-09-01T02:00:00+00:00", "side": "sell", "price": 90.0, "realized_pnl": -10.0}
+    marker = {"ts": "2026-09-06T15:00:00+00:00", "strategy_id": "epoch", "symbol": "_EPOCH_", "side": "buy", "qty": 0.0, "price": 0.0, "fee": 0.0, "realized_pnl": 0.0, "reason": f"{PAPER_EPOCH_MARKER} — test", "market": "US"}
+    new = {**old, "ts": "2026-09-07T01:00:00+00:00"}
+    new_x = {**old_x, "ts": "2026-09-07T02:00:00+00:00", "price": 110.0, "realized_pnl": 10.0}
+    trips = _capital_review_trips([old, old_x, marker, new, new_x])
+    assert len(trips) == 1 and trips[0].get("pnl", trips[0].get("realized_pnl", 10.0)) >= 0
+    assert len(_capital_review_trips([old, old_x])) == 1  # 마커 없으면 전체 원장

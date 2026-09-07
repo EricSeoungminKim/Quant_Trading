@@ -5700,6 +5700,20 @@ def _capital_stats_from_trips(trips: list[dict]) -> list:
     return stats
 
 
+def _capital_review_trips(trades: list[dict]) -> list[dict]:
+    """자본 심사 범위 = 페이퍼 에폭 이후 왕복(에폭 마커가 없으면 전체 원장)."""
+    from quant.control.ledger import round_trips, round_trips_since_epoch
+
+    return round_trips_since_epoch(trades) or round_trips(trades)
+
+
+def _enabled_only(fractions: dict[tuple[str, str], float], settings) -> dict[tuple[str, str], float]:
+    """`enabled: false` 전략의 (전략, 시장) 키를 뺀다 — 꺼진 레인은 강등 대상이 아니다."""
+    blocks = getattr(settings, "strategies", None) or {}
+    enabled = {sid for sid, b in blocks.items() if isinstance(b, dict) and b.get("enabled")}
+    return {k: v for k, v in fractions.items() if k[0] in enabled}
+
+
 def _capital_current_fractions(settings) -> dict[tuple[str, str], float]:
     """settings(+오버레이 병합)의 `strategies.*.capital_fraction`을 `{(전략, 시장): 비율}`로.
 
@@ -5889,21 +5903,26 @@ def cmd_capital_review(args: argparse.Namespace) -> None:
     from quant.adapters.env import REPO_ROOT
     from quant.apps.config import load_settings
     from quant.control import allocator
-    from quant.control.ledger import load_trades, round_trips
+    from quant.control.ledger import load_trades
 
     root = Path(args.root) if args.root else REPO_ROOT
     today = _date.today()
     decisions_path = root / "data" / "ledger" / "capital_decisions.jsonl"
     overlay_path = root / "config" / "auto_params.yaml"
 
-    trips = round_trips(load_trades(root / "data" / "state" / "trades.jsonl"))
+    # 2026-09-07: 페이퍼 에폭 이후 트립만 심사 — 계좌를 새로 시딩했는데 옛 원장(에폭 이전 n=40,
+    # −72bp)으로 강등하면 리셋의 의미가 없다(에폭 마커가 없으면 전체 원장 = 기존 동작).
+    all_trades = load_trades(root / "data" / "state" / "trades.jsonl")
+    trips = _capital_review_trips(all_trades)
     stats = _capital_stats_from_trips(trips)
     if not stats:
         logger.info("capital-review: 종결 트레이드 없음 — 침묵")
         return
 
     settings = load_settings(str(root / "config" / "settings.yaml"))
-    current_fractions = _capital_current_fractions(settings)
+    # 비활성 전략(enabled: false, 예: intraday_scan)은 심사 대상이 아니다 — 2026-09-07 16:50
+    # 실발송이 비활성 레인 5건을 "강등"이라고 냈다.
+    current_fractions = _enabled_only(_capital_current_fractions(settings), settings)
     last_change_days = _capital_last_change_days(decisions_path, today)
 
     demotions = allocator.decide(
