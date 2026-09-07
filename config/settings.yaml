@@ -1076,7 +1076,7 @@ strategies:
       # 2026-09-07 R-SCALP(사전 등록 walk-forward, KR 1분봉 34종목 1년): 패턴B 라이브 동등 구성 46 fold 전부
       # 음수(평균 −69.6bp/트립, 비용 후). 소유자 관찰(차트 리뷰)용으로 10-06 판정일까지만 유지.
       review_by: "2026-10-06"
-      evidence: "NO_GO — R-SCALP 2026-09-07 walk-forward 46/46 fold 음수(−69.6bp/트립)"
+      evidence: "NO_GO — R-SCALP(청산 3가설)+R-SCALP2(진입 5가설 10변형) 2026-09-07: 17변형 전부 46/46 fold 음수(베이스라인 −69.2bp/트립, n=7,632 OOS), 진입 강화 4변형은 유의하게 더 나쁨 — 구조적 엣지 부재"
     universe: watchlist
     symbols: []
     universe_filter:
@@ -1240,7 +1240,7 @@ strategies:
       # 2026-09-07 R-SCALP(사전 등록 walk-forward, KR 1분봉 34종목 1년): 패턴B 라이브 동등 구성 46 fold 전부
       # 음수(평균 −69.6bp/트립, 비용 후). 소유자 관찰(차트 리뷰)용으로 10-06 판정일까지만 유지.
       review_by: "2026-10-06"
-      evidence: "NO_GO — R-SCALP 2026-09-07 walk-forward 46/46 fold 음수(−69.6bp/트립)"
+      evidence: "NO_GO — R-SCALP(청산 3가설)+R-SCALP2(진입 5가설 10변형) 2026-09-07: 17변형 전부 46/46 fold 음수(베이스라인 −69.2bp/트립, n=7,632 OOS), 진입 강화 4변형은 유의하게 더 나쁨 — 구조적 엣지 부재"
     universe: watchlist
     symbols: []
     universe_filter:
