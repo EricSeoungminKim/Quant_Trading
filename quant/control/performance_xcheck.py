@@ -43,6 +43,11 @@ __all__ = ["cross_check"]
 # 연산이라 아주 작은 여유를 둔다. 실제 데이터 결함(트립 누락/중복)은 이 여유보다
 # 몇 자릿수 큰 차이를 낸다.
 _STAT_TOLERANCE = 1e-6
+# 공개 JSON 의 `cum_native` 는 통화 소수 2자리로 반올림돼 나간다(performance.py) — 재계산은 전체
+# 정밀도라 1e-6 로 비교하면 반올림 자체가 "불일치"가 된다. 2026-09-07 16:25 첫 에폭 발행이
+# 정확히 이 오탐(json=-58398.84 vs 재계산=-58398.8417…)으로 push 가 막혔다. 반올림 단위(0.01)
+# 의 절반보다 넉넉한 0.01 을 허용한다 — 진짜 결함(트립 누락·경계 오류)은 원 단위 이상 어긋난다.
+_CUM_NATIVE_TOLERANCE = 0.01
 
 # "전략별 합 vs 전체 지분" 허용오차 — 전략별 곡선(`_epoch_market_curve`)과 전체
 # 곡선(`_epoch_overall_rows`)은 각자 날짜별로 반올림(소수 2자리)해 누적하므로
@@ -158,7 +163,7 @@ def cross_check(
                     "error", f"{path}[-1].trips",
                     f"공개 JSON 트립 수 불일치: json={payload_n} 재계산={expected_n}",
                 ))
-            if abs(payload_pnl - expected_pnl) > _STAT_TOLERANCE:
+            if abs(payload_pnl - expected_pnl) > _CUM_NATIVE_TOLERANCE:
                 findings.append(Finding(
                     "error", f"{path}[-1].cum_native",
                     f"공개 JSON 손익 불일치: json={payload_pnl} 재계산={expected_pnl}",

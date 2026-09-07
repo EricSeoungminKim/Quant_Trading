@@ -169,3 +169,12 @@ def test_cross_check_catches_a_trip_count_mismatch_via_direct_group_stats():
     assert block["pnl"] == pytest.approx(200.0)
     # expectancy = wr*aw - (1-wr)*al = 0.5*50 - 0.5*30 = 10.0
     assert block["expectancy_bp"] == pytest.approx(10.0)
+
+
+# ── 2026-09-07: 공개 JSON 의 소수 2자리 반올림은 불일치가 아니다 ─────────────────────
+def test_cum_native_rounding_is_within_tolerance():
+    from quant.control.performance_xcheck import _CUM_NATIVE_TOLERANCE
+
+    json_value, recomputed = -58398.84, -58398.841732500325
+    assert abs(json_value - recomputed) <= _CUM_NATIVE_TOLERANCE
+    assert abs(-58398.84 - (-58399.90)) > _CUM_NATIVE_TOLERANCE  # 원 단위 어긋남은 계속 잡는다
