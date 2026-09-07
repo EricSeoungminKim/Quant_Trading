@@ -9,7 +9,8 @@ from __future__ import annotations
 import json
 from datetime import date
 
-from quant.control.allocator import StrategyStat, decide, is_losing, next_fraction
+from quant.control.allocator import StrategyStat, decide, is_losing, next_fraction, p_value_losing
+from quant.control.multiple_testing import benjamini_hochberg
 
 TODAY = date(2026, 8, 28)
 
@@ -240,3 +241,80 @@ def test_capital_review_scope_excludes_disabled_and_pre_epoch():
     trips = _capital_review_trips([old, old_x, marker, new, new_x])
     assert len(trips) == 1 and trips[0].get("pnl", trips[0].get("realized_pnl", 10.0)) >= 0
     assert len(_capital_review_trips([old, old_x])) == 1  # 마커 없으면 전체 원장
+
+
+# ── ⑧ 다중검정 보정(FDR/BH, 결정 ⑧ 2026-09-07) ──────────────────────────────
+#
+# 17개 전략을 동시에 심사하면(현재 로스터 규모), 진짜 지는 전략이 딱 하나뿐
+# 이어도 "우연히 신뢰상한이 0 밑으로 내려가는" 노이즈 전략이 여럿 나온다 —
+# 동전을 17번 던지면 몇 개는 마이너스 구간을 지나는 것과 같다. 아래 값들은
+# 손으로 계산해 고정한 것이다(무작위 시드가 아니라 결정론적 상수 — 매 실행
+# 같은 결과):
+#
+#   신호(signal): n=100, mean=-40bp, stdev=50bp → z=-8.0, p≈6.2e-16 (압도적)
+#   노이즈 12개(진짜 무해): mean -1~-9bp, 90% 신뢰상한이 전부 양수 → 애초에
+#     프리필터(is_losing)를 통과 못 해 후보가 아니다.
+#   노이즈 4개(우연히 유의): mean -11/-12/-13/-14bp, n=40, stdev=50bp → 90%
+#     신뢰상한이 전부 음수라 **개별 검정으로는(보정 전) 후보가 된다** — 이게
+#     "3~4개가 우연히 강등된다"는 실측이다.
+#
+# BH(q=0.10)를 17개 전체(가족 전체, 프리필터 통과 여부와 무관)에 적용하면
+# 신호 하나만 남고 노이즈 4개는 전부 탈락한다(p 0.038~0.082가 문턱보다 크다).
+
+def _signal_and_noise_stats():
+    signal = StrategyStat(strategy="signal", n=100, mean_bp=-40.0, stdev_bp=50.0)
+    noise_means = [-1, -2, -3, -4, -5, -6, -6.5, -7, -7.5, -8, -8.5, -9, -11, -12, -13, -14]
+    noise = [
+        StrategyStat(strategy=f"noise{i}", n=40, mean_bp=m, stdev_bp=50.0)
+        for i, m in enumerate(noise_means)
+    ]
+    return [signal, *noise]
+
+
+def test_raw_rule_alone_flags_the_signal_plus_several_noise_false_positives():
+    """보정 전(현재 90% 신뢰상한 프리필터만) 기준으로 몇 개가 "지고 있다"로
+    잘못 걸리는지 확인 — 신호 1개 + 노이즈 3~4개."""
+    stats = _signal_and_noise_stats()
+    flagged = [s.strategy for s in stats if is_losing(s, min_samples=30)[0]]
+    assert "signal" in flagged
+    false_positives = [s for s in flagged if s != "signal"]
+    assert 3 <= len(false_positives) <= 4
+    assert set(false_positives) == {"noise12", "noise13", "noise14", "noise15"}  # -11/-12/-13/-14
+
+
+def test_bh_correction_across_the_full_run_keeps_only_the_true_signal():
+    """BH(q=0.10)를 17개 전체 가족에 적용하면 압도적으로 유의한 신호만 남고
+    개별로는 유의해 보였던 노이즈 4개는 다중검정 보정에 탈락한다."""
+    stats = _signal_and_noise_stats()
+    out = decide(
+        stats,
+        {("signal", "KR"): 0.1, **{(f"noise{i}", "KR"): 0.1 for i in range(16)}},
+        {s.strategy: None for s in stats},
+    )
+    applied = {d.strategy for d in out if d.applied}
+    assert applied == {"signal"}
+
+    # 프리필터를 통과했지만 BH에서 탈락한 4개 노이즈는 그대로 기록되되
+    # applied=False, passed_fdr=False로 남는다(거부도 남긴다).
+    rejected_by_fdr = {d.strategy: d for d in out if not d.applied and not d.passed_fdr}
+    assert set(rejected_by_fdr) == {"noise12", "noise13", "noise14", "noise15"}
+    for d in rejected_by_fdr.values():
+        assert d.p_value > d.bh_threshold
+        assert "FDR" in d.skip_reason
+
+    signal_demotion = next(d for d in out if d.strategy == "signal")
+    assert signal_demotion.passed_fdr is True
+    assert signal_demotion.p_value <= signal_demotion.bh_threshold
+
+
+def test_bh_with_a_single_candidate_matches_the_raw_fdr_threshold():
+    """후보가 하나뿐이면 BH 문턱은 그냥 q 자체다 — 보정할 다른 검정이 없어
+    `benjamini_hochberg([p], q)`가 raw `p <= q`와 같은 답을 낸다."""
+    stat = StrategyStat(strategy="scalp_1m", n=77, mean_bp=-57.2, stdev_bp=150.0)
+    p = p_value_losing(stat)
+    assert benjamini_hochberg([p], q=0.10) == [p <= 0.10]
+
+    out = decide([stat], {("scalp_1m", "KR"): 0.2}, {"scalp_1m": None})
+    assert len(out) == 1
+    assert out[0].passed_fdr == (p <= 0.10)
+    assert out[0].bh_threshold == (p if p <= 0.10 else 0.0)

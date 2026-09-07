@@ -32,6 +32,12 @@ from dataclasses import dataclass
 # 는 이미 30(`MIN_TRIPS_FOR_JUDGEMENT`)을 쓴다 — 같은 질문("판단할 만큼 쌓였나")에
 # 파일마다 다른 답을 하고 있었다. ledger의 상수를 그대로 재사용해 하나로 합친다.
 from quant.control.ledger import MIN_TRIPS_FOR_JUDGEMENT
+from quant.control.multiple_testing import benjamini_hochberg
+
+# 2026-09-07(결정 ⑧, 다중검정 보정): 자동 강등 후보가 같은 회차에 여럿이면
+# 개별 검정(90% 신뢰상한)만으로는 우연히 유의해 보이는 전략이 섞인다 —
+# `quant/control/multiple_testing.py` 모듈 docstring 참고. FDR(q) 기본값.
+FDR_Q = 0.10
 
 
 @dataclass
@@ -67,6 +73,30 @@ def is_losing(stat: StrategyStat, *, min_samples: int = MIN_TRIPS_FOR_JUDGEMENT,
     return False, f"{detail} — 우연한 손실 구간일 수 있어 무변경"
 
 
+def p_value_losing(stat: StrategyStat) -> float:
+    """단측 p값 — "이 전략의 참 평균이 0 미만"이라는 귀무가설 하에서 관측된
+    평균(혹은 그보다 더 극단적인 값)이 나올 확률.
+
+    `is_losing()`이 90% 신뢰상한을 만들 때 쓴 것과 **같은 정규근사 가정**을
+    쓴다(z, t분포 아님 — 표준 라이브러리에 t분포 역함수가 없고, 기존 코드가
+    이미 z를 쓰고 있어 하나의 가정으로 통일한다): 검정통계량
+    z = mean_bp / se (se = stdev_bp / sqrt(n))는 귀무가설(참 평균=0) 하에서
+    표준정규를 근사한다. p = P(Z <= z) = Φ(z) — z가 많이 음수일수록 p가
+    작아진다(평균이 우연히 이렇게 낮게 나올 확률이 작다 = 진짜 지고 있다는
+    근거가 강하다).
+
+    n<2나 stdev_bp<=0(표본 분산을 계산할 수 없음)이면 se가 0이 되어 나눗셈이
+    안 된다 — 이 경우 부호만으로 극단값 취급한다(평균<0 이면 p=0.0, 아니면
+    p=1.0). 실제로는 `decide()`가 이 함수를 부르기 전에 `is_losing()`의
+    `min_samples`(기본 30) 문턱을 이미 통과한 후보에만 적용하므로 거의 발생하지
+    않는다."""
+    se = stat.stdev_bp / (stat.n ** 0.5) if stat.n > 0 else 0.0
+    if se <= 0:
+        return 0.0 if stat.mean_bp < 0 else 1.0
+    z = stat.mean_bp / se
+    return statistics.NormalDist().cdf(z)
+
+
 def next_fraction(current: float, *, factor: float = 0.5, floor: float = 0.05) -> float:
     """반감, 하한 클램프. 이미 하한이면 그대로 — 완전 정지는 사람의 결정이다
     (전략이 죽었는지 판단하려면 최소한의 표본이 계속 나와야 한다)."""
@@ -86,21 +116,42 @@ class Demotion:
     reason: str
     applied: bool
     skip_reason: str = ""
+    # 2026-09-07(결정 ⑧, 다중검정 보정) — 이 후보의 단측 p값(`p_value_losing`)과
+    # 그 회차의 BH 문턱·통과 여부. 기존 90% 신뢰상한 프리필터를 통과한 후보에만
+    # 채워진다(표본 부족/신뢰상한 양수로 애초에 후보가 아니었던 전략은 이 필드가
+    # 없는 Demotion 자체가 안 만들어진다). `capital_decisions.jsonl`에 원시 p와
+    # BH 판정을 같이 남겨 "우연이 아니라는 근거"를 사람이 재검증할 수 있게 한다.
+    p_value: float = 0.0
+    bh_threshold: float = 0.0
+    passed_fdr: bool = False
 
 
 def decide(stats: list[StrategyStat],
            current_fractions: dict[tuple[str, str], float],
            last_change_days: dict[str, int | None],
            *, min_samples: int = MIN_TRIPS_FOR_JUDGEMENT, cooldown_days: int = 5,
-           factor: float = 0.5, floor: float = 0.05) -> list[Demotion]:
+           factor: float = 0.5, floor: float = 0.05, fdr_q: float = FDR_Q) -> list[Demotion]:
     """전략별 통계를 심사해 강등 후보 목록을 만든다.
 
     "지고 있다"는 증거가 없는 전략(표본 부족 포함)은 애초에 후보가 아니다 —
-    아무 항목도 만들지 않는다(원칙 2: 증거 없이 움직이지 않는다). 후보로
-    떠오른 전략만 시장별로 냉각/하한/보폭을 검사한다.
+    아무 항목도 만들지 않는다(원칙 2: 증거 없이 움직이지 않는다).
+
+    **다중검정 보정(BH, q=`fdr_q`)은 이 회차에 평가된 전략 `stats` 전부를
+    가족(family)으로 삼는다** — 신뢰상한 프리필터를 통과한 것만 가족으로
+    좁히면 안 된다(그러면 이미 유의해 보이는 것들끼리만 비교하게 되어 보정이
+    사실상 무력화된다: 17개 중 5개가 우연히 유의해 보였다면 그 5개만으로
+    보정해선 안 되고 원래 17개 전부를 분모로 써야 FDR이 의미가 있다).
+    `quant/control/multiple_testing.py` 참고. 프리필터를 통과한 전략만 BH
+    판정과 무관하게 **후보로서 기록**되고(Demotion row 생성), 그중에서도 BH를
+    통과한 것만 실제로 냉각/하한/보폭을 검사해 강등을 적용한다 — BH를 통과
+    못 한 후보도 스킵으로 기록은 남긴다(원장 규율: 거부도 남긴다).
     """
+    pvalues = [p_value_losing(stat) for stat in stats]
+    passed_flags = benjamini_hochberg(pvalues, q=fdr_q)
+    bh_threshold = max((p for p, ok in zip(pvalues, passed_flags) if ok), default=0.0)
+
     out: list[Demotion] = []
-    for stat in stats:
+    for stat, p, passed_fdr in zip(stats, pvalues, passed_flags):
         losing, reason = is_losing(stat, min_samples=min_samples)
         if not losing:
             continue
@@ -113,6 +164,19 @@ def decide(stats: list[StrategyStat],
                 # 강등 대상이 아니다. 기록할 "결정"도 아니다.
                 continue
 
+            if not passed_fdr:
+                # 개별로는 신뢰상한이 0 미만이었지만, 같은 회차에 검정한 다른
+                # 후보들과 함께 보면 다중검정 보정 후엔 우연일 가능성을
+                # 배제하지 못한다 — 자동 강등은 하지 않는다.
+                out.append(Demotion(
+                    stat.strategy, market, current, current, reason,
+                    applied=False,
+                    skip_reason=(f"FDR(BH q={fdr_q:.2f}) 미통과 — p={p:.4f} > "
+                                 f"문턱 {bh_threshold:.4f} (다중검정 보정 후 우연일 가능성 배제 못함)"),
+                    p_value=p, bh_threshold=bh_threshold, passed_fdr=False,
+                ))
+                continue
+
             days = last_change_days.get(stat.strategy)
             if days is not None and days < cooldown_days:
                 # 왜 냉각인가: 줄인 직후 또 줄이면 새 크기에서의 성과를 측정할
@@ -122,6 +186,7 @@ def decide(stats: list[StrategyStat],
                     stat.strategy, market, current, current, reason,
                     applied=False,
                     skip_reason=f"냉각 중 — 마지막 강등 {days}일 전 ({cooldown_days}일 필요)",
+                    p_value=p, bh_threshold=bh_threshold, passed_fdr=True,
                 ))
                 continue
 
@@ -130,6 +195,7 @@ def decide(stats: list[StrategyStat],
                     stat.strategy, market, current, current, reason,
                     applied=False,
                     skip_reason=f"이미 하한({floor}) — 자동으로는 더 줄이지 않는다",
+                    p_value=p, bh_threshold=bh_threshold, passed_fdr=True,
                 ))
                 continue
 
@@ -140,9 +206,13 @@ def decide(stats: list[StrategyStat],
                 out.append(Demotion(
                     stat.strategy, market, current, current, reason,
                     applied=False, skip_reason="증가 방향은 자동 금지",
+                    p_value=p, bh_threshold=bh_threshold, passed_fdr=True,
                 ))
                 continue
 
-            out.append(Demotion(stat.strategy, market, current, proposed, reason, applied=True))
+            out.append(Demotion(
+                stat.strategy, market, current, proposed, reason, applied=True,
+                p_value=p, bh_threshold=bh_threshold, passed_fdr=True,
+            ))
 
     return out

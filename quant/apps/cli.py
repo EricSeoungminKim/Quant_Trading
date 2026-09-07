@@ -1292,9 +1292,11 @@ def cmd_scoreboard(args: argparse.Namespace) -> None:
     # 판정에 쓴다. 어느 쪽이든 "현재 판본 트립 n / 전체 N" 줄은 항상 보여준다 —
     # 그 숫자를 모르면 필터를 켜야 할지조차 판단할 수 없다.
     settings_raw = load_settings().raw
-    current_params_only = bool(getattr(args, "current_params_only", False)) or bool(
-        (settings_raw.get("governor") or {}).get("judge_current_params_only", False)
-    )
+    current_params_only = (
+        bool(getattr(args, "current_params_only", False)) or bool(
+            (settings_raw.get("governor") or {}).get("judge_current_params_only", False)
+        )
+    ) and not bool(getattr(args, "all_params", False))  # --all-params: 분석·테스트용 강제 off
     sidecar = load_params_sidecar()
     strategies_cfg = settings_raw.get("strategies", {}) or {}
 
@@ -4231,12 +4233,16 @@ def cmd_health(args: argparse.Namespace) -> None:
         rehearsal_stamp=rehearsal_raw.strip() if rehearsal_raw else None,
     )
 
-    # LLM 호출 계측 — narrate()/chat_with_tools()/quality/stance/agent_interpret
+    # LLM 호출 계측 — narrate()/quality/stance/agent_interpret/ops_judge
     # 레인이 기록한 최근 24시간 실패율. kv 는 위에서 이미 만든 것을 재사용한다.
     # 2026-09-07(Claude CLI 주 레인 전환): "quality"·"stance"·"agent_interpret"
     # 를 추가했다 — 이 레인들에서 claude transport 가 실패하기 시작하는 걸
-    # narrate/tool 만 보던 예전 목록으로는 못 잡았다.
-    llm_lanes = ("narrate", "tool", "quality", "stance", "agent_interpret")
+    # narrate/tool 만 보던 예전 목록으로는 못 잡았다. 같은 세션에서 ops_judge
+    # 도 툴콜링 루프(레인 "tool")를 버리고 이 전송 수단 전환에 합류했으므로
+    # "tool"을 빼고 "ops_judge"로 바꾼다 — 안 그러면 더 이상 아무도 기록하지
+    # 않는 죽은 레인을 계속 조회하고, 정작 새 레인의 claude 실패율은 아무도
+    # 안 본다.
+    llm_lanes = ("narrate", "quality", "stance", "agent_interpret", "ops_judge")
     stats_by_lane = {lane: llm_stats(kv, lane, now) for lane in llm_lanes}
     findings += H.llm_health_findings(stats_by_lane)
 
@@ -4259,6 +4265,42 @@ def cmd_health(args: argparse.Namespace) -> None:
     summary["checked_at"] = now.isoformat(timespec="seconds")
     print(_json.dumps(summary, ensure_ascii=False, indent=2))
     raise SystemExit({"ok": 0, H.ALERT: 1, H.UNKNOWN: 2}[summary["verdict"]])
+
+
+def _ops_judge_narrator(claude_timeout: int):
+    """판단하는 워치독(`cmd_ops_judge`)의 LLM 백엔드 조립 — Claude CLI 1순위 +
+    OpenRouter 폴백(`quant.adapters.narrate.QualityFallbackNarrator`,
+    `lane="ops_judge"`, 2026-09-07 전송 수단 전환).
+
+    `quant.control.ops_judge.run_judgment`은 순수 함수라 이 조립(환경변수
+    조회·서브프로세스 실행파일 존재 확인)을 하지 않는다 — 여기, 호출부에서
+    한다(`quant/report/collect/agent_interpret.py`의 `_agent_interpret_narrator`
+    와 같은 위치의 같은 패턴, lane 이름만 다르다). 테스트가 이 함수 자체를
+    몽키패치해 진짜 서브프로세스를 타지 않게 한다 — `CLAUDE_BIN`이 실제
+    설치된 머신에서 옛 `chat_with_tools`만 가짜로 바꾸면 Claude CLI 쪽은
+    그대로 실행돼 버리는 구멍을 그 모듈의 테스트가 이미 잡았다(같은 이유로
+    여기도 함수 자체를 교체 지점으로 둔다).
+
+    실행파일도 OpenRouter 키도 없으면 `None`(호출부가 `narrator="none"`으로
+    조용히 건너뛴다).
+    """
+    from quant.adapters.env import get_key
+    from quant.adapters.narrate import (
+        FALLBACK_OPENROUTER_TIMEOUT_S,
+        ClaudeCliNarrator,
+        NullNarrator,
+        OpenRouterNarrator,
+        QualityFallbackNarrator,
+    )
+
+    binary = (os.environ.get("CLAUDE_BIN") or "").strip() or os.path.expanduser("~/.local/bin/claude")
+    has_claude = os.path.exists(binary)
+    key = (os.environ.get("OPENROUTER_API_KEY") or "").strip() or (get_key("OPENROUTER_API_KEY") or "")
+    if not has_claude and not key:
+        return None
+    primary = ClaudeCliNarrator(binary, timeout=claude_timeout) if has_claude else NullNarrator()
+    fallback = OpenRouterNarrator(key, timeout=FALLBACK_OPENROUTER_TIMEOUT_S) if key else NullNarrator()
+    return QualityFallbackNarrator(primary, fallback, lane="ops_judge")
 
 
 def cmd_ops_judge(args: argparse.Namespace) -> None:
@@ -4407,25 +4449,22 @@ def cmd_ops_judge(args: argparse.Namespace) -> None:
         sent_notifications=sent_notifications, label=args.label,
     )
 
-    # LLM 백엔드 — chat_with_tools(OpenRouter 무료 레인, agent_interpret.py와 같은
-    # 툴콜링 루프). 크론은 .env.local 을 export 하지 않으므로 os.environ 우선,
-    # 없으면 get_key() 파일 직독 폴백(narrate.py `_make_openrouter_narrator`와
-    # 같은 이유 — 2026-08-16 실측: 이 폴백이 없어 크론 경로의 LLM 이 조용히 죽어
-    # 있었다).
-    key = os.environ.get("OPENROUTER_API_KEY", "").strip() or (get_key("OPENROUTER_API_KEY") or "")
-    narrator_name = "none"
-    chat = None
-    if key:
-        # 단일 HTTP 콜 타임아웃을 예산의 일부로 줄인다 — chat_with_tools는 라운드당
-        # (최대 5라운드 x 1순위/폴백 모델 = 최대 10콜) 재시도하므로, 콜 하나가
-        # 예산 전체를 먹으면 안 된다. 실제 벽시계 상한은 그래도 셸의 `timeout`이
-        # 진다(run_judgment 문서 — 이 함수는 단일 판단 호출이라 도중을 못 자른다).
-        budget = args.time_budget if args.time_budget else 240
-        timeout = max(10, min(60, int(budget / 4)))
-        chat = functools.partial(chat_with_tools, api_key=key, model=TOOL_MODEL, timeout=timeout)
-        narrator_name = f"openrouter:{TOOL_MODEL}"
+    # LLM 백엔드 — Claude CLI 1순위 + OpenRouter 폴백(2026-09-07 전송 수단
+    # 전환, `_ops_judge_narrator` 문서 참고). 크론은 .env.local 을 export 하지
+    # 않으므로 os.environ 우선, 없으면 get_key() 파일 직독 폴백(narrate.py
+    # `_make_openrouter_narrator`와 같은 이유 — 2026-08-16 실측: 이 폴백이
+    # 없어 크론 경로의 LLM 이 조용히 죽어 있었다) — `_ops_judge_narrator`
+    # 내부가 이미 그 순서를 따른다.
+    budget = args.time_budget if args.time_budget else 240
+    narrator = _ops_judge_narrator(claude_timeout=int(budget))
+    if narrator is None:
+        narrator_name = "none"
+    else:
+        binary = (os.environ.get("CLAUDE_BIN") or "").strip() or os.path.expanduser("~/.local/bin/claude")
+        or_key = os.environ.get("OPENROUTER_API_KEY", "").strip() or (get_key("OPENROUTER_API_KEY") or "")
+        narrator_name = "claude" if os.path.exists(binary) else ("openrouter" if or_key else "none")
 
-    result = J.run_judgment(data, chat, time_budget_seconds=args.time_budget)
+    result = J.run_judgment(data, narrator, time_budget_seconds=args.time_budget)
 
     out = dict(result)
     out["narrator"] = narrator_name
@@ -5649,7 +5688,8 @@ def cmd_governor_apply(args: argparse.Namespace) -> None:
             name=f"strategies.{sid}.enabled", current=True, proposed=False,
             samples=c["n"], expected_improvement=1.0,
             rationale=(f"{c['streak_days']}거래일 연속 사망 판정: 평균 {c['mean_bp']:+.1f}bp/건 "
-                       f"(p={c['p_value']:.3f}, n={c['n']}, {c['since']}~{c['until']})"),
+                       f"(p={c['p_value']:.3f}, n={c['n']}, {c['since']}~{c['until']}, "
+                       f"FDR q={c.get('fdr_q', 0.10):.2f} 통과)"),
         ))
 
     if not proposals and not protected_notes:
@@ -5838,6 +5878,10 @@ def _record_capital_decisions(demotions: list, today, path) -> None:
                 "applied": d.applied,
                 "reason": d.reason,
                 "skip_reason": d.skip_reason,
+                # 2026-09-07 결정 ⑧: 자동 강등 경로의 다중검정 보정 근거를 원장에 남긴다.
+                "p_value": getattr(d, "p_value", None),
+                "bh_threshold": getattr(d, "bh_threshold", None),
+                "passed_fdr": getattr(d, "passed_fdr", None),
             }, ensure_ascii=False) + "\n")
 
 
@@ -6992,6 +7036,10 @@ def main() -> None:
         help="지금 설정과 파라미터 지문이 일치하는 트립만 판정에 쓴다(2026-09-07, "
              "옛 판본과 풀리는 것을 막는다). 기본값은 config의 "
              "governor.judge_current_params_only(기본 false)를 따른다 — 이 플래그는 그걸 강제로 켠다",
+    )
+    p_scoreboard.add_argument(
+        "--all-params", action="store_true",
+        help="governor.judge_current_params_only 를 무시하고 전 판본 트립으로 집계(분석·테스트용)",
     )
     p_scoreboard.set_defaults(func=cmd_scoreboard)
 

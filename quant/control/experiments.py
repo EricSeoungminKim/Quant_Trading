@@ -49,6 +49,8 @@ import statistics as st
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from quant.control.multiple_testing import benjamini_hochberg
+
 # 판정에 필요한 최소 종결 건수(변경군 기준, 전/후 각각). 30은 `ledger.py`의
 # 스코어보드 표본 문턱과 같은 값 — 같은 원장을 같은 기준으로 읽는다.
 MIN_SAMPLE = 30
@@ -414,17 +416,26 @@ def death_watch(trips: list[dict], min_sample: int = MIN_SAMPLE) -> list[dict]:
 DEFAULT_DEATH_WATCH_PATH = "data/ledger/death_watch.jsonl"
 KILL_STREAK_DAYS = 5      # "K일 연속" 기본값
 KILL_P_THRESHOLD = 0.01   # 자동 비활성 문턱 — death_watch 알림 문턱(0.05)보다 엄격
+KILL_FDR_Q = 0.10         # 2026-09-07(결정 ⑧) — 다중검정 보정(BH) FDR 목표
 
 
 def record_death_watch(
     trips: list[dict], today: date, path: Path | str = DEFAULT_DEATH_WATCH_PATH,
-    min_sample: int = MIN_SAMPLE,
+    min_sample: int = MIN_SAMPLE, fdr_q: float = KILL_FDR_Q,
 ) -> list[dict]:
     """오늘의 표본충분 전략 전부(부호 무관)의 통계를 원장에 append한다. 직전
-    기록과 (n, mean_bp, p_value)가 완전히 같으면(=새 거래 없음, 주말 등) 쓰지
-    않는다 — record_fingerprints와 동일한 멱등 관례. 회복(양수 전환)일에도
-    dead=false 로 줄이 남으므로(_all_edge_stats 참고) consecutive_dead_candidates
-    가 그 지점에서 스트릭을 정확히 끊을 수 있다."""
+    기록과 (n, mean_bp, p_value, passed_fdr)가 완전히 같으면(=새 거래 없음,
+    주말 등) 쓰지 않는다 — record_fingerprints와 동일한 멱등 관례. 회복(양수
+    전환)일에도 dead=false 로 줄이 남으므로(_all_edge_stats 참고)
+    consecutive_dead_candidates 가 그 지점에서 스트릭을 정확히 끊을 수 있다.
+
+    2026-09-07(결정 ⑧, 다중검정 보정) — 자동 킬스위치는 매일 여러 전략을
+    동시에 "죽었는가"로 검정한다(현재 로스터 17개). 개별 순열검정 p값만으로
+    판정하면 다 같이 무해해도 우연히 유의해 보이는 전략이 나온다. **오늘
+    실제로 사망 가설을 검정한 전략들(평균이 음수라 p값이 계산된 것들) 전체를
+    가족으로 BH(q=`fdr_q`)를 적용**하고, `dead`는 기존 p<KILL_P_THRESHOLD 문턱과
+    BH 통과를 **둘 다** 만족해야 True다. 평균이 양수인 전략(p_value=None)은
+    애초에 사망 가설을 검정하지 않으므로 이 가족에 들지 않는다."""
     existing = load_changes(path)
     last: dict[str, dict] = {}
     for r in existing:
@@ -433,16 +444,26 @@ def record_death_watch(
             last[sid] = r
 
     stats = _all_edge_stats(trips, min_sample)
+    tested_ids = [sid for sid, s in stats.items() if s["p_value"] is not None]
+    pvalues = [stats[sid]["p_value"] for sid in tested_ids]
+    passed_flags = benjamini_hochberg(pvalues, q=fdr_q)
+    bh_threshold = max((p for p, ok in zip(pvalues, passed_flags) if ok), default=0.0)
+    passed_fdr_by_sid = dict(zip(tested_ids, passed_flags))
+
     added = []
     for sid, s in stats.items():
-        dead = s["mean_bp"] < 0 and s["p_value"] is not None and s["p_value"] < KILL_P_THRESHOLD
+        passed_fdr = passed_fdr_by_sid.get(sid, False)
+        dead = (s["mean_bp"] < 0 and s["p_value"] is not None
+                and s["p_value"] < KILL_P_THRESHOLD and passed_fdr)
         prev = last.get(sid)
         if (prev is not None and prev.get("n") == s["n"]
-                and prev.get("mean_bp") == s["mean_bp"] and prev.get("p_value") == s["p_value"]):
+                and prev.get("mean_bp") == s["mean_bp"] and prev.get("p_value") == s["p_value"]
+                and prev.get("passed_fdr") == passed_fdr):
             continue
         added.append({
             "date": today.isoformat(), "strategy": sid,
             "n": s["n"], "mean_bp": s["mean_bp"], "p_value": s["p_value"], "dead": dead,
+            "fdr_q": fdr_q, "passed_fdr": passed_fdr, "bh_threshold": bh_threshold,
         })
 
     if added:
@@ -482,6 +503,11 @@ def consecutive_dead_candidates(
             "strategy": sid, "streak_days": k_days,
             "n": latest["n"], "mean_bp": latest["mean_bp"], "p_value": latest["p_value"],
             "since": tail[0]["date"], "until": latest["date"],
+            # 2026-09-07(결정 ⑧) — 오래된 원장(이 필드가 없던 시절)과의 호환을
+            # 위해 .get 기본값을 둔다. record_death_watch가 이미 BH 통과 여부를
+            # dead 판정에 반영했으므로 여기 도달한 항목은 사실상 항상
+            # passed_fdr=True다(그렇지 않으면 애초에 dead=True 로 기록되지 않았다).
+            "fdr_q": latest.get("fdr_q"), "passed_fdr": latest.get("passed_fdr", True),
         })
     return out
 

@@ -219,6 +219,18 @@ def test_summary_names_the_blocking_layer(tmp_path):
     assert "0-blast-radius" in text and "stop_loss_pct" in text
 
 
+def test_summary_surfaces_proposal_rationale_for_accepted_kill_switch(tmp_path):
+    """2026-09-07(결정 ⑧) — 킬스위치 제안의 rationale(다중검정 보정 문구 포함,
+    quant.apps.cli 가 조립)이 텔레그램 요약에도 그대로 보여야 한다. reason
+    (층 통과 여부의 일반 메시지)만으로는 "FDR q=0.10 통과" 같은 근거가 안 보인다."""
+    proposal = Proposal(
+        name=KILL_SWITCH, current=True, proposed=False, samples=40, expected_improvement=1.0,
+        rationale="5거래일 연속 사망 판정: 평균 -72.0bp/건 (p=0.003, n=40, FDR q=0.10 통과)",
+    )
+    text = summary([evaluate(proposal, TODAY, [])])
+    assert "FDR q=0.10 통과" in text
+
+
 
 # --- ALLOWED_ORDINAL (작업1, 2026-09-02 — trend_gate_mode 등 문자열 enum) ---
 

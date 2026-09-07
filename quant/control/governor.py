@@ -477,6 +477,12 @@ def summary(decisions: list[Decision]) -> str:
                      f" (표본 {d.proposal.samples}건)")
         if d.layer:
             lines.append(f"     ↳ {d.reason}")
+        if d.proposal.rationale:
+            # 2026-09-07(결정 ⑧) — 킬스위치 제안(experiments.consecutive_dead_candidates)의
+            # 근거 문구에는 다중검정 보정(FDR/BH) 정보가 들어 있다("... FDR q=0.10
+            # 통과" 등, quant/apps/cli.py의 rationale 조립부 참고) — reason(층 이름의
+            # 일반 메시지)만으로는 이 정보가 텔레그램/decisions.jsonl 요약에 안 보인다.
+            lines.append(f"     ↳ {d.proposal.rationale}")
     for d in no:
         lines.append(f"  ⛔ {d.proposal.name} [{d.layer}] {d.reason}")
     return "\n".join(lines)

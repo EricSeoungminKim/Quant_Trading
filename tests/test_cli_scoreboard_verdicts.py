@@ -82,7 +82,7 @@ def test_scoreboard_command_prints_both_promotion_verdicts(tmp_path, monkeypatch
 def argparse_namespace():
     import argparse
 
-    return argparse.Namespace(days=None)
+    return argparse.Namespace(days=None, all_params=True)  # 2026-09-07: governor.judge_current_params_only 와 무관하게 전 판본 집계로 검증
 
 
 # ---------------------------------------------------------------------------

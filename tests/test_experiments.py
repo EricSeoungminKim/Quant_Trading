@@ -11,11 +11,13 @@
 """
 from __future__ import annotations
 
+import random
 from datetime import date
 
 import pytest
 
 from quant.control.experiments import (
+    KILL_FDR_Q,
     KILL_P_THRESHOLD,
     consecutive_dead_candidates,
     daily_report,
@@ -396,3 +398,65 @@ def test_consecutive_dead_candidates_streak_breaks_on_recovery(tmp_path):
     # 최신 연속 구간은 d5,d6 둘뿐 — K=5 를 못 채운다.
     assert consecutive_dead_candidates(path, k_days=5) == []
     assert len(consecutive_dead_candidates(path, k_days=2)) == 1
+
+
+# ── 8. 다중검정 보정(FDR/BH, 결정 ⑧ 2026-09-07) ─────────────────────────────
+#
+# 킬스위치는 매일 로스터 전체(현재 17개)를 동시에 "죽었는가"로 검정한다.
+# 개별 순열검정 p값(KILL_P_THRESHOLD=0.01)만 보면, 진짜 죽은 전략이 하나도
+# 없어도 우연히 p<0.01 을 넘는 전략이 나올 수 있다 — 아래는 손으로 고른
+# 고정 시드로 그 상황을 재현한다: 회사 전체(17개)가 진짜로는 다 무해한데
+# (모든 평균이 노이즈 수준으로 작다) 그중 하나(`borderline`)가 우연히
+# raw 문턱(p<0.01)을 근소하게 넘는다 — BH(q=0.10)를 17개 가족 전체에 적용하면
+# 1순위 문턱(1/17*0.10≈0.00588)을 통과 못 해 살아난다(dead=False).
+
+def _uniform_vals(n, mean, spread, seed):
+    rng = random.Random(seed)
+    return [mean + rng.uniform(-spread, spread) for _ in range(n)]
+
+
+def _bps_trips(strategy, vals, day="2026-08-10"):
+    return [_trip(strategy, day, v) for v in vals]
+
+
+def test_record_death_watch_applies_bh_across_the_whole_roster_same_day(tmp_path):
+    path = tmp_path / "death_watch.jsonl"
+
+    # 손으로 찾은 시드(경계선 사례): n=30, p_value=0.009 (< KILL_P_THRESHOLD=0.01
+    # 이므로 raw 문턱은 통과하지만, 아래처럼 다른 16개와 같은 날 같이 검정되면
+    # 1순위 BH 문턱(0.00588)을 넘지 못한다).
+    trips = list(_bps_trips("borderline", _uniform_vals(30, -6.0, 30.0, seed=8)))
+
+    # 진짜로는 다 무해한 나머지 16개(평균은 음수지만 노이즈 수준 — 개별
+    # 순열검정 p 도 전부 0.05 초과, raw 문턱에도 안 걸린다). 시드는 "평균<0
+    # 이면서 p>0.05"가 나오도록 사전 탐색으로 고른 것뿐, 특별한 의미는 없다.
+    companion_seeds = [1, 2, 3, 4, 5, 6, 10, 11, 12, 13, 14, 15, 18, 20, 21, 23]
+    for i, seed in enumerate(companion_seeds):
+        trips += _bps_trips(f"noise{i}", _uniform_vals(30, -3.0, 25.0, seed))
+
+    added = record_death_watch(trips, D, path)
+    by_sid = {r["strategy"]: r for r in added}
+    row = by_sid["borderline"]
+
+    assert row["p_value"] < KILL_P_THRESHOLD  # raw 문턱은 실제로 통과한다
+    assert row["passed_fdr"] is False         # 그러나 17개 가족 전체로 보면 우연일 수 있다
+    assert row["dead"] is False                # → 자동 비활성 후보가 아니다
+    assert row["fdr_q"] == KILL_FDR_Q
+    assert row["bh_threshold"] == 0.0  # 이번 회차엔 통과한 항목이 아예 없다
+
+    # 노이즈 16개는 애초에 raw 문턱도 못 넘는다 — dead 는 항상 False.
+    for i in range(len(companion_seeds)):
+        assert by_sid[f"noise{i}"]["dead"] is False
+
+
+def test_record_death_watch_same_borderline_strategy_alone_is_dead(tmp_path):
+    """같은 전략·같은 관측치라도 그날 그 전략 하나만 검정 대상이면(m=1)
+    BH 문턱은 그냥 q(=0.10) 자체라 raw 판정과 같아진다 — dead=True.
+    가족 크기가 결과를 가른다는 것 자체가 다중검정 보정의 핵심이다."""
+    path = tmp_path / "death_watch.jsonl"
+    trips = list(_bps_trips("borderline", _uniform_vals(30, -6.0, 30.0, seed=8)))
+    added = record_death_watch(trips, D, path)
+    row = next(r for r in added if r["strategy"] == "borderline")
+    assert row["p_value"] < KILL_P_THRESHOLD
+    assert row["passed_fdr"] is True
+    assert row["dead"] is True
