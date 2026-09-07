@@ -105,12 +105,26 @@ def _normalize_quote(quote: Quote) -> Quote:
 
 
 def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """tz 정규화 + **시각순 정렬/중복 제거**(2026-09-07 결함발견주입 세션).
+
+    소스가 봉을 시간순으로 준다는 보장이 없다(재시도/폴백/키움 REST 페이지네이션
+    등에서 뒤섞이거나 같은 분이 두 번 올 수 있다) — 그런데 `history()`의 소비자
+    (donchian 등 전략의 `bars.iloc[-1]`, `lookback["high"].max()`)는 인덱스가
+    시각순으로 정렬돼 있다고 **암묵적으로** 가정한다. 정렬되지 않은 프레임이 그대로
+    흘러가면 `iloc[-1]`이 "가장 최근 봉"이 아니라 "원본에서 마지막 위치의 봉"을
+    돌려줘, 실측(2026-09-07 결함주입 테스트)으로 확인된 것처럼 봉이 뒤바뀐 채로
+    돌파/손절 판단에 들어간다. 중복 타임스탬프는 나중 값(최신 재조회 결과일
+    가능성이 높다)을 남긴다."""
     if df.empty or not isinstance(df.index, pd.DatetimeIndex):
         return df
     if df.index.tz is None:
-        return df.tz_localize("UTC")
-    if str(df.index.tz) != "UTC":
-        return df.tz_convert("UTC")
+        df = df.tz_localize("UTC")
+    elif str(df.index.tz) != "UTC":
+        df = df.tz_convert("UTC")
+    if df.index.has_duplicates:
+        df = df[~df.index.duplicated(keep="last")]
+    if not df.index.is_monotonic_increasing:
+        df = df.sort_index()
     return df
 
 

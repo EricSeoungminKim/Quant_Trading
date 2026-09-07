@@ -1455,6 +1455,31 @@ class RiskManagerImpl:
                     room_total = self.max_symbol_pct_total * equity - to_krw(agg_qty * price, market, self.fx)
                     budget = min(budget, max(room_total, 0.0))
 
+                if self.sizing_mode == "cash_pct":
+                    # 최종 현금 게이트(2026-09-07 결함주입 세션에서 발견·수정) —
+                    # **공유자본 모드의 cash_pct 사이징에만 이게 빠져 있었다.**
+                    # per_strategy 모드(위 `_approve_entry_per_strategy`류 경로,
+                    # 976번째 줄 `budget = min(budget, max(cash, 0.0))`)는 사이징
+                    # 모드와 무관하게 이 클램프를 건다. 그런데 이 공유자본
+                    # 경로에서는 capital_fraction 모드가 **의도적으로** equity
+                    # 기준(전략자본)으로 사이징하고 실제 현금과 무관하다
+                    # (test_risk_sizing.py
+                    # test_default_mode_is_capital_fraction_and_uses_equity_not_cash
+                    # — 고정 전략자본 계좌 전제, capital_policy: fixed_dual 문서
+                    # 참고) — 그래서 capital_fraction까지 여기서 clamp하면
+                    # 그 계약을 깬다. cash_pct 모드는 반대로 모듈 docstring이
+                    # "그날 실제 가용 현금"을 사이징 기준으로 못박고 있는데,
+                    # `target_weight`와 국면 배수(risk_multiplier)의 곱이 1.0을
+                    # 넘는 순간(예: weight=0.8 × aggressive 배수 1.3=1.04)
+                    # 이 클램프 없이는 budget이 가용 현금을 넘어선다.
+                    # PaperBroker.place_order는 잔고를 확인하지 않으므로(사이징이
+                    # 이미 걸렀다고 가정) 체결 후 현금이 음수가 된다. US는
+                    # `cash_usd()` 게이트가 있었지만(아래) KR과
+                    # dual_currency=False(단일 KRW 풀)인 US는 무방비였다 —
+                    # 결함주입 랜덤 사이징 테스트(tests/test_fault_risk_properties.py)
+                    # 로 실측했다.
+                    budget = min(budget, max(available_cash, 0.0))
+
                 qty = from_krw(budget, market, self.fx) / price
                 # floor보다 **먼저** 유한성을 본다. math.floor(inf)는 OverflowError로
                 # approve() 전체를 크래시시켜, 아래 최종 sanity 가드가 실행되기도 전에
