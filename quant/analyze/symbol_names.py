@@ -108,6 +108,16 @@ def _valid_llm_name(code: str, value: object) -> str | None:
     return name
 
 
+def _usable(symbol: str, name: object) -> str | None:
+    """이름으로 쓸 수 있는 값만 — 비어 있거나 코드와 같으면 '모른다'(None)."""
+    if not isinstance(name, str):
+        return None
+    nm = name.strip()
+    if not nm or nm.upper() == symbol.upper():
+        return None
+    return nm
+
+
 def _toss_display_name(symbol: str, info: object) -> str | None:
     """Toss `stock_info` 응답에서 표시용 이름. ETF 는 `name` 이 티커 그대로 오고
     (EWY→"EWY", 2026-09-07 EC2 실측) `englishName` 에만 이름이 있다 — 코드와 같은
@@ -215,7 +225,7 @@ class SymbolNameResolver:
                 table = {}
             source = "kind" if mkt == "KR" else "sp500"
             for sym in syms:
-                nm = table.get(sym)
+                nm = _usable(sym, table.get(sym))
                 if nm:
                     result[sym] = nm
                     new_entries[sym] = (nm, source)
@@ -225,7 +235,8 @@ class SymbolNameResolver:
         if pending:
             wl = self._watchlist_names()
             for sym in pending:
-                nm = wl.get(sym)
+                # 워치리스트는 모르는 종목의 name 에 코드를 그대로 넣는다(watch-add) — 이름이 아니다.
+                nm = _usable(sym, wl.get(sym))
                 if nm:
                     result[sym] = nm
                     new_entries[sym] = (nm, "watchlist")

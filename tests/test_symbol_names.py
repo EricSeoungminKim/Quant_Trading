@@ -230,3 +230,19 @@ def test_cached_code_equals_name_entry_is_treated_as_unknown(tmp_path, monkeypat
     resolver = sn.build_resolver(tmp_path / "cache", state, narrator=narrator)
     assert resolver.names_for(["EWY"], market="US") == {"EWY": "iShares MSCI South Korea ETF"}
     assert len(narrator.calls) == 1
+
+
+def test_watchlist_code_as_name_falls_through_to_toss(tmp_path, monkeypatch):
+    """watch-add 는 모르는 티커의 name 에 코드를 그대로 넣는다(EC2 실측: EWY/FXI) — 그건 이름이 아니므로
+    Toss/LLM 단계로 넘어가야 한다."""
+    import yaml
+
+    monkeypatch.setattr(sn, "load_name_map", lambda cache_dir, market: {})
+    wl = tmp_path / "watchlist.yaml"
+    wl.write_text(yaml.safe_dump({"symbols": [{"symbol": "EWY", "name": "EWY"}]}), encoding="utf-8")
+    resolver = sn.build_resolver(
+        tmp_path / "cache", tmp_path / "state", watchlist_paths=[wl],
+        toss_lookup=lambda s: {"name": s, "englishName": "ISHARES INC MSCI SOUTH KOREA ETF"},
+        narrator=_AssertNoCallNarrator(),
+    )
+    assert resolver.names_for(["EWY"], market="US") == {"EWY": "ISHARES INC MSCI SOUTH KOREA ETF"}
