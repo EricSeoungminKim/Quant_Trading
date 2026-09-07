@@ -1976,4 +1976,4 @@ governor:
   # (2026-09-07, 진화가능성 평가 투자 #2·#4 — 원장 소급 판본 태깅). false(기본)면
   # 기존과 동일하게 판본 무관 전체 트립을 쓰되 "현재 판본 트립 n/전체 N" 줄만
   # 추가로 보여준다. true로 켜면 `--current-params-only` 없이도 항상 필터링된다.
-  judge_current_params_only: false
+  judge_current_params_only: true # 2026-09-07 팀장 결정 ⑥: 판정(스코어보드·governor·자본 심사)은 현재 판본 트립만. 소급 근사는 사이드카(approx)로 분석용
