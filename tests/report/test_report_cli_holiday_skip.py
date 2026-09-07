@@ -5,7 +5,8 @@
 2026-09-06(일요일)에 후보 2건·중기 0건짜리 빈약한 KR_engine.json이 빌드돼
 `cli health`의 report_quality가 "중기 관심 종목 수가 0"으로 거짓 경보를 냈다.
 그래서 이제 `--market`/`--date`가 그 시장의 휴장일이면 빌드 자체를 생략하고
-NOTIFY_LANE=briefs 한 줄만 보낸다.
+셸(run_report.sh)이 NOTIFY_LANE=briefs 한 줄을 보낸다(발송 주체는 2026-09-07 에
+파이썬에서 셸로 옮겼다 — 아래 테스트 주석 참고).
 
 `_report_session_calendar()`(Toss 자격증명을 읽어 실제 캘린더를 만드는 I/O
 지점)는 전부 monkeypatch로 가짜 캘린더로 갈아치운다 — 로컬 `.env.local`에
@@ -90,31 +91,41 @@ def test_next_trading_day_gives_up_after_cap():
 
 # ── _skip_if_holiday — 판정 + 알림 + 운영 상태 기록 ────────────────────────
 
-def test_skip_if_holiday_true_on_weekend_records_skip_and_notifies(monkeypatch):
+def test_skip_if_holiday_records_skip_and_never_sends_from_python(monkeypatch):
+    """스킵은 기록하되 **파이썬에서 직접 텔레그램을 보내지 않는다**(2026-09-07 변경).
+
+    유래: systemd 유닛(market-report@.service)은 TZ 만 주고 텔레그램 자격증명을 주지
+    않아 파이썬 쪽 발송이 예외를 삼킨 채 사라졌다 — 09-06·09-07 이틀 연속 사장님께
+    휴장 안내가 가지 않았다. 이제 문구만 만들고 발송은 셸(run_report.sh)이 한다.
+    """
     monkeypatch.setattr(report_cli, "_report_session_calendar", lambda: StaticSessionCalendar())
     recorded = {}
     monkeypatch.setattr(
         report_cli, "record_run",
         lambda kv, job, ok, detail="": recorded.update(job=job, ok=ok, detail=detail),
     )
-    sent = {}
+    sent = []
 
-    class _StubNotifier:
+    class _ExplodingNotifier:
         def send(self, text, lane=None):
-            sent.update(text=text, lane=lane)
+            sent.append(text)
 
     monkeypatch.setattr(
         "quant.adapters.notify.telegram.TelegramNotifier.from_env",
-        classmethod(lambda cls: _StubNotifier()),
+        classmethod(lambda cls: _ExplodingNotifier()),
     )
 
     skipped = report_cli._skip_if_holiday("KR", date(2026, 9, 6), "open")
 
     assert skipped is True
     assert recorded == {"job": "report:KR", "ok": True, "detail": "휴장일 — 스킵"}
-    assert sent["lane"] == "briefs"
-    assert "KR 휴장일" in sent["text"]
-    assert "2026-09-07" in sent["text"]  # 다음 개장일
+    assert sent == [], "파이썬 경로 발송은 자격증명 없는 환경에서 조용히 사라진다 — 셸이 보낸다"
+
+
+def test_holiday_notice_text_names_the_next_open_day():
+    text = report_cli.holiday_notice_text("KR", date(2026, 9, 6), StaticSessionCalendar())
+    assert "KR 휴장일" in text
+    assert "2026-09-07" in text  # 다음 개장일
 
 
 def test_skip_if_holiday_records_close_report_job_name(monkeypatch):
@@ -124,11 +135,6 @@ def test_skip_if_holiday_records_close_report_job_name(monkeypatch):
         report_cli, "record_run",
         lambda kv, job, ok, detail="": recorded.update(job=job),
     )
-    monkeypatch.setattr(
-        "quant.adapters.notify.telegram.TelegramNotifier.from_env",
-        classmethod(lambda cls: type("N", (), {"send": lambda self, *a, **k: None})()),
-    )
-
     assert report_cli._skip_if_holiday("KR", date(2026, 9, 6), "close") is True
     assert recorded["job"] == "report_close:KR"
 

@@ -36,7 +36,10 @@ notify() {
     return 0
   fi
   url="${REPORT_URL_BASE:-https://ip-172-31-63-20.tailfee6e9.ts.net}/$(date +%Y/%m/%d)/${MARKET}_close_report.html"
-  if [ "$1" = "ok" ]; then
+  if [ "$1" = "holiday" ]; then
+    # 휴장일 안내(2026-09-07) — URL 도 로그 꼬리도 없다. 문구는 report_cli holiday-notice 가 만든다.
+    text="$2"
+  elif [ "$1" = "ok" ]; then
     text="📄 ${MARKET} 마감 포지션 리포트 발행 (14:00~15:30 참고용)
 ${url}"
     # 결정론 요약(G Task 5 확장, R) — 실패해도 발행 알림 자체는 막지 않는다.
@@ -77,8 +80,16 @@ if "$PY" -m quant.apps.report_cli build --market "$MARKET" --session close >> "$
 else
   RC=$?
   if [ "$RC" = "3" ]; then
-    # 휴장일 스킵(report_cli EXIT_SKIPPED) — 빌드가 직접 "휴장일" 한 줄을 보냈다. 조용히 종료.
+    # 휴장일 스킵(report_cli EXIT_SKIPPED). 안내 발송은 **여기서** 한다 — 빌드 프로세스는
+    # systemd 유닛이 TZ 만 주는 환경이라 텔레그램 자격증명이 없어 그쪽 발송은 조용히
+    # 사라졌다(2026-09-07 실측: 09-06·09-07 이틀 연속 무공지).
     log "휴장일 — 리포트 스킵(exit 3)"
+    HOLIDAY_TEXT="$("$PY" -m quant.apps.report_cli holiday-notice --market "$MARKET" 2>/dev/null || true)"
+    if [ -n "$HOLIDAY_TEXT" ]; then
+      notify holiday "$HOLIDAY_TEXT"
+    else
+      log "휴장일 안내 문구 생성 실패 — 발송 없음"
+    fi
     exit 0
   fi
   # "빌드 실패" 메타 로그 줄을 남기기 전에 꼬리를 떠 둔다(run_report.sh 와

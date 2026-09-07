@@ -193,7 +193,7 @@ def _lint_and_gate(model: ReportModel | CloseReportModel, root: Path) -> None:
     알림은 "로그를 보라"고만 하지 findings 를 담지 않는다). warn 등급은
     발행을 막지 않고 `report_lint.jsonl`에 남긴다 — 둘 다 알림/원장 쓰기
     실패가 이 함수의 본 목적(게이트)을 방해하면 안 되므로 예외를 삼킨다
-    (`_notify_holiday_skip`과 같은 관례).
+    (`record_run` 기록과 같은 관례).
 
     **`REPORT_LINT_GATE` 우회 지침(2026-09-07, 오탐 대응)** — 기본값
     `"block"`(위 동작 그대로). `"warn"`이면 error 등급이 있어도 절대
@@ -1429,18 +1429,14 @@ def _next_trading_day(market: str, after: date, calendar, cap: int = 10) -> date
     return None
 
 
-def _notify_holiday_skip(market: str, session: date, calendar) -> None:
-    """휴장일 스킵 알림 — NOTIFY_LANE=briefs 한 줄. 알림 실패가 빌드 스킵
-    자체를 막으면 안 된다(다른 record_run 호출과 같은 관례로 전부 삼킨다)."""
-    try:
-        from quant.adapters.notify.telegram import TelegramNotifier
-
-        nxt = _next_trading_day(market, session, calendar)
-        date_str = nxt.isoformat() if nxt else "미확인"
-        text = f"📰 {market} 휴장일 — 리포트 없음(다음 개장 {date_str})"
-        TelegramNotifier.from_env().send(text, lane="briefs")
-    except Exception:  # noqa: BLE001 — 알림은 부가 기능, 빌드 스킵을 막지 않는다
-        pass
+def holiday_notice_text(market: str, session: date, calendar) -> str:
+    """휴장일 한 줄 안내 문구. **발송은 셸(run_report.sh/run_close_report.sh)이 한다** —
+    이 프로세스는 systemd 유닛이 TZ 만 주는 환경에서 돌아 텔레그램 자격증명이 없고
+    (2026-09-07 실측: 09-06·09-07 이틀 연속 안내가 조용히 사라졌다), 파이썬에서 직접
+    보내면 발송 게이트(레인·레이트 리밋·발송 원장)도 우회한다."""
+    nxt = _next_trading_day(market, session, calendar)
+    date_str = nxt.isoformat() if nxt else "미확인"
+    return f"📰 {market} 휴장일 — 리포트 없음(다음 개장 {date_str})"
 
 
 # 휴장일 스킵 종료코드(2026-09-06). run_report.sh / run_close_report.sh 가 0(발행)·1(실패)과
@@ -1470,7 +1466,6 @@ def _skip_if_holiday(market: str, session: date, session_kind: str) -> bool:
         return False
     label = "마감 리포트" if session_kind == "close" else "리포트"
     print(f"{market} 휴장일 — {label} 생략 (session={session.isoformat()})")
-    _notify_holiday_skip(market, session, calendar)
     job = f"report_close:{market}" if session_kind == "close" else f"report:{market}"
     try:
         record_run(make_kv(), job, ok=True, detail="휴장일 — 스킵")
@@ -1589,6 +1584,22 @@ def _trade_review_symbol_names(root: Path, cache_dir: Path, symbols: list[str], 
     except Exception as e:  # noqa: BLE001 — 이름 채우기 실패가 리포트를 막지 않는다
         print(f"종목명 해석 생략: {type(e).__name__}: {e}", file=sys.stderr)
         return {}
+
+
+def cmd_holiday_notice(a: argparse.Namespace) -> int:
+    """`report holiday-notice --market KR|US [--date] [--kind open|close]` — 그날이
+    휴장일이면 안내 한 줄을 stdout 에, 개장일이면 아무것도 출력하지 않는다(둘 다 exit 0).
+    run_report.sh/run_close_report.sh 가 빌드 exit 3(EXIT_SKIPPED) 뒤에 호출해 발송한다."""
+    session = date.fromisoformat(a.date)
+    try:
+        calendar = _report_session_calendar()
+        if _is_trading_day(a.market, session, calendar):
+            return 0
+    except Exception as e:  # noqa: BLE001 — 판정 실패 시 안내를 지어내지 않는다
+        print(f"개장일 판정 실패({type(e).__name__}: {e})", file=sys.stderr)
+        return 0
+    print(holiday_notice_text(a.market, session, calendar))
+    return 0
 
 
 def cmd_symbol_names(a: argparse.Namespace) -> int:
@@ -1728,6 +1739,10 @@ def main(argv: list[str] | None = None) -> int:
     stv.add_argument("--url-base", default=None,
                       help="텔레그램 한 줄에 붙일 페이지 URL 베이스(예: REPORT_URL_BASE)")
     # 셸 스크립트용 종목명 라벨(2026-09-07) — flow_scan.sh 편입 알림 문장.
+    shn = sub.add_parser("holiday-notice")
+    shn.add_argument("--market", choices=["KR", "US"], required=True)
+    shn.add_argument("--date", default=date.today().isoformat())
+    shn.add_argument("--root", default=".")
     ssn = sub.add_parser("symbol-names")
     ssn.add_argument("--market", choices=["KR", "US"], required=True)
     ssn.add_argument("--root", default=".")
@@ -1749,6 +1764,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.cmd == "trade-review":
         return cmd_trade_review(a)
+    if a.cmd == "holiday-notice":
+        return cmd_holiday_notice(a)
     if a.cmd == "symbol-names":
         return cmd_symbol_names(a)
 
