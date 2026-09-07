@@ -168,6 +168,10 @@ body{
   .cons{gap:10px 12px}
   .cons-item .v{font-size:var(--fs-xs)}
   .stance-line{font-size:var(--fs-md)}
+  /* 접힘 요약줄의 .sub는 원래 margin-left:auto라 좁은 화면에서 줄바꿈되면
+     제목과 무관하게 오른쪽에 떠 보인다 — 제목 바로 아래로 붙인다
+     (2026-09-07 소유자 지시). */
+  .mod > summary .sub{margin-left:0;flex-basis:100%}
 }
 /* 2026-08-29 실기기(iPhone) 확인: 위 .sym/.sym-scalp 1열 붕괴 규칙이 여기(파일
    앞부분)에 있었지만 뒤(약 430행대)의 본 정의가 캐스케이드 동률 규칙(같은
@@ -188,10 +192,16 @@ body{
    보이고 나머지는 펼쳐서 본다. `.mod > h2`와 타이포는 완전히 공유하고(위 병합
    셀렉터), summary 고유의 클릭 커서·마커·화살표만 여기서 얹는다(.appendix/
    .engine/.sector 의 기존 접힘 패턴과 동일). 정보는 그대로다 — 접히는 것뿐. */
-.mod > summary{cursor:pointer;list-style:none}
+.mod > summary{cursor:pointer;list-style:none;min-height:44px}
 .mod > summary::-webkit-details-marker{display:none}
-.mod > summary::after{content:"▸";margin-left:8px;font-size:var(--fs-2xs);color:var(--mute)}
-details.mod[open] > summary::after{content:"▾"}
+/* 펼치기/접기 어포던스(2026-09-07 소유자 지시) — 예전엔 회색 10px 화살표
+   하나뿐이라 접힌 상태에서 폰으로 보면 점 하나로 보였다("눌러야 하는지도
+   모른다"). 글자를 얹고, 진한 강조색을 쓰고, .mod-tldr처럼 항상 새 줄로
+   내려(flex-basis:100%) 어디를 눌러야 하는지 스스로 설명하게 한다. */
+.mod > summary::after{content:"펼치기 ▸";flex-basis:100%;margin-top:6px;
+  font-size:var(--fs-xs);font-weight:650;color:var(--accent)}
+details.mod[open] > summary::after{content:"접기 ▾"}
+.mod > summary:hover::after{color:var(--accent-active);text-decoration:underline}
 .mod > summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 /* 결론 한 줄 — 제목(굵게)·부가 배지(.sub)와 다른 무게로, 항상 새 줄에(줄바꿈
    강제는 flex-basis:100%) 읽힌다. 접혀 있어도 이 줄만으로 오해가 없어야 한다
@@ -688,7 +698,7 @@ html{overflow-x:hidden}
   </div>
 </section>
 <details class="mod">
-  <summary>🇺🇸 실시간 헤드라인<span class="sub">텔레그램 미국 뉴스 채널</span></summary>
+  <summary>🇺🇸 실시간 헤드라인<span class="sub">텔레그램 미국 뉴스 채널</span><span class="mod-tldr">채널 없음</span></summary>
   <p class="mkt-tab-empty">채널 없음 — 등록된 usnews tier 채널이 없다(아래 "📡 채널 브리핑 종합" 참고)</p>
 </details>
 <div class="grid">
@@ -774,7 +784,7 @@ html{overflow-x:hidden}
   </p>
 </details>
 <details class="mod">
-  <summary>🇺🇸→🇰🇷 미국발 섹터 수혜주<span class="sub">텔레그램 미국 헤드라인 · 섹터별 국내 수혜주</span></summary>
+  <summary>🇺🇸→🇰🇷 미국발 섹터 수혜주<span class="sub">텔레그램 미국 헤드라인 · 섹터별 국내 수혜주</span><span class="mod-tldr">채널 없음</span></summary>
   <p class="mkt-tab-empty">채널 없음 — 등록된 usnews tier 채널이 없다(아래 "📡 채널 브리핑 종합" 참고)</p>
 </details>
 

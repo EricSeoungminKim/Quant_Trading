@@ -869,13 +869,18 @@ def summarize_index_outlook(index_outlook: dict[str, dict] | None) -> str | None
 
 
 def summarize_money_flow(money_flow: dict | None) -> str | None:
-    """돈의 흐름 접힘 요약 — 자금 흐름 판정 + 현금 체력 판정 두 줄을 한 줄로."""
+    """돈의 흐름 접힘 요약 — 자금 흐름 판정 + 현금 체력 판정 두 줄을 한 줄로.
+
+    섹션(`{% if money_flow %}`)이 이미 열려 있는데 두 라벨이 다 없는 경우까지
+    대비해 "데이터 없음"으로 막는다 — 접힌 요약줄이 빈 채로 나가지 않게
+    (2026-09-07 소유자 지시: 접힌 상태에서도 헤드라인 정보가 보여야 한다).
+    """
     if not money_flow:
         return None
     flow = (money_flow.get("flow") or {}).get("label")
     cash = (money_flow.get("cash") or {}).get("label")
     parts = [p for p in (flow, cash) if p]
-    return " · ".join(parts) if parts else None
+    return " · ".join(parts) if parts else "데이터 없음"
 
 
 def summarize_candidates(ranked: list[tuple[str, dict]]) -> str | None:
@@ -919,7 +924,7 @@ def summarize_us_wrap(us_wrap: dict | None) -> str | None:
     up, down = us_wrap.get("up_count"), us_wrap.get("down_count")
     if tone and up is not None and down is not None:
         return f"{tone} · {up}↑ {down}↓"
-    return tone
+    return tone or "데이터 없음"
 
 
 def summarize_us_kr_bridge(us_kr_bridge: dict | None) -> str | None:
@@ -934,7 +939,7 @@ def summarize_us_kr_bridge(us_kr_bridge: dict | None) -> str | None:
     n_focus = len(us_kr_bridge.get("focus") or [])
     if n_focus:
         parts.append(f"연동 업종 {n_focus}개")
-    return " · ".join(parts) if parts else None
+    return " · ".join(parts) if parts else "데이터 없음"
 
 
 def summarize_usnews_headlines(usnews_headlines: list[dict] | None) -> str | None:
@@ -1039,6 +1044,29 @@ def summarize_carried_candidates(
     return f"{len(carried_candidates)}종목 · {len(carried_by_sector)}개 업종"
 
 
+def summarize_sector_daily(sector_daily: dict | None) -> str | None:
+    """주도 섹터 접힘 요약 — 거래대금 1위 업종 한 줄로(2026-09-07 소유자 지시:
+    이 섹션은 요약줄 자체가 아예 없어 접힌 상태에서 제목·부제뿐이었다)."""
+    if not sector_daily:
+        return None
+    if sector_daily.get("missing"):
+        return "데이터 없음"
+    sectors = sector_daily.get("sectors") or []
+    if not sectors:
+        return "데이터 없음"
+    top = sectors[0]
+    return f"{len(sectors)}개 업종 · 거래대금 1위 {top.get('sector')}"
+
+
+def summarize_report_accuracy(report_accuracy: dict | None) -> str | None:
+    """리포트 정확도 접힘 요약 — 채점된 청구 건수(2026-09-07 소유자 지시,
+    summarize_sector_daily와 같은 결함: 요약줄이 없어 제목·부제뿐이었다)."""
+    if not report_accuracy or not report_accuracy.get("measured"):
+        return None
+    n = report_accuracy.get("n_claims") or 0
+    return f"청구 {n}건 채점"
+
+
 def render(
     snap: Snapshot,
     cont: dict | None = None,
@@ -1130,6 +1158,8 @@ def render(
         "research_badges": summarize_research_badges(research_badges),
         "carried": summarize_carried_candidates(carried_candidates, carried_by_sector),
         "channel_digest": summarize_channel_digest(channel_digest),
+        "sector_daily": summarize_sector_daily(sector_daily),
+        "report_accuracy": summarize_report_accuracy(report_accuracy),
     }
     return _env().get_template("report.html.j2").render(
         snap=snap,
