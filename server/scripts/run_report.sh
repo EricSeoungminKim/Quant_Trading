@@ -108,8 +108,22 @@ ${TAIL}"
     # 동일하게 3500자에서 자른다(평문 curl 이라 HTML 이스케이프는 필요 없다).
     text="${text:0:3500}"
   fi
-  curl -s -m 10 "https://api.telegram.org/bot${token}/sendMessage" \
-    -d "chat_id=${chat}" --data-urlencode "text=${text}" >/dev/null 2>&1 || true
+  # 성공 기록(2026-09-07) — 이 스크립트는 lib/notify.sh 를 거치지 않는 자체 발송이라
+  # data/ledger/notify_sent.jsonl 에 남지 않았다(텔레그램 카탈로그 §3.5 격차). 응답의
+  # "ok":true 일 때만 같은 스키마로 한 줄 남긴다 — 기록 실패는 발송 결과를 바꾸지 않는다.
+  local resp
+  resp="$(curl -s -m 10 "https://api.telegram.org/bot${token}/sendMessage" \
+    -d "chat_id=${chat}" --data-urlencode "text=${text}" 2>/dev/null || true)"
+  case "$resp" in *'"ok":true'*)
+    SENT_TEXT="$text" .venv/bin/python - <<'PY' 2>/dev/null || true
+import json, os, datetime
+row = {"ts": datetime.datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"), "source": "run_report",
+       "lane": "briefs", "text": os.environ.get("SENT_TEXT", "")[:1000]}
+os.makedirs("data/ledger", exist_ok=True)
+with open("data/ledger/notify_sent.jsonl", "a", encoding="utf-8") as f:
+    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+PY
+  ;; esac
 }
 
 # TZ 가드 — 발행 시각이 전부 KST 전제다. 호스트가 다른 존이면 조용히 엉뚱한

@@ -47,7 +47,10 @@ if [ "${DRY_RUN:-0}" = "1" ]; then
 fi
 
 # --- 1. 다이제스트 생성(결정론 + 선택 LLM 스탠스) ---
-DIGEST_OUT="$(timeout 120 "$PY" -m quant.apps.cli tg-digest --market "$MARKET" $DRY_RUN_FLAG 2>>"$LOG")"
+# 2026-09-07 첫 실발송(09:35 KR)이 무료 LLM 레인 재시도(사고과정 유출 폐기 → 재시도, 회당 ~40초)로
+# 120초를 넘겨 exit 124 로 죽었다 — 미발송. 셸 상한은 300초로 두고, 진짜 방어선은 cli 쪽 LLM 총
+# 시간 예산(cmd_tg_digest, 90초)이다 — 예산 초과 시 LLM 없이 결정론 다이제스트를 낸다.
+DIGEST_OUT="$(timeout 300 "$PY" -m quant.apps.cli tg-digest --market "$MARKET" $DRY_RUN_FLAG 2>>"$LOG")"
 DIGEST_RC=$?
 if [ "$DIGEST_RC" -ne 0 ]; then
   log "tg-digest 실패 exit=$DIGEST_RC — 건너뜀"

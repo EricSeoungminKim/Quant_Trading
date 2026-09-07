@@ -480,9 +480,15 @@ def brief_text(payload: dict, market: str, url: str | None = None,
     lines = [f"{label} 개장 전 브리핑 · {date}"]
 
     stance = payload.get("stance") or {}
+    # 1차 스탠스 = 엔진 국면(2026-09-07, Phase 2 §1 — 리포트 본문과 같은 순서). 국면이
+    # 실측된 날은 그 줄이 머리기사이고, 옛 점수 진단("지수 모멘텀(참고)")은 그 아래
+    # 참고 줄로 내려간다. 국면 파일이 없던 날(measured=False)은 예전 그대로.
+    regime = stance.get("regime") or {}
+    if regime.get("measured") and regime.get("line"):
+        lines.append(f"\n🧭 국면 {regime.get('label_kr') or regime.get('label') or '?'} — {regime['line']}")
     score100 = stance.get("score100")
     if score100 is not None:
-        lines.append(f"\n📊 종합 {int(score100)}점/100점 — {stance.get('label') or '?'}")
+        lines.append(f"{'' if regime.get('measured') else chr(10)}📊 종합 {int(score100)}점/100점 — {stance.get('label') or '?'}")
     # 방향 판정 실측 정확도(2026-09-06 소유자 지시 priority-1 §2) — payload에
     # report_accuracy 키가 없으면(호출부 하위호환 — 옛 엔진 JSON, 단위 테스트
     # 픽스처) 줄 자체를 안 붙인다. `quant.control.report_accuracy.report_summary`

@@ -5,6 +5,8 @@ import argparse
 import asyncio
 import logging
 import os
+import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -6476,6 +6478,22 @@ def _tg_digest_stance_call():
     return lambda prompt: stance_only(prompt, key)
 
 
+def _budgeted_call(fn, deadline: float, *, what: str):
+    """`fn(prompt)` 를 `deadline`(monotonic) 전까지만 부른다 — 지나면 부르지 않고 None.
+    `fn` 이 None 이면 None. 무료 LLM 레인의 재시도 폭주가 다이제스트 발송 자체를 막지 않게
+    하는 마지막 방어선(tg_digest.sh 의 timeout 300 보다 먼저 걸린다)."""
+    if fn is None:
+        return None
+
+    def call(prompt: str):
+        if time.monotonic() >= deadline:
+            print(f"tg-digest LLM 예산 초과 — {what} 서술 생략", file=sys.stderr)
+            return None
+        return fn(prompt)
+
+    return call
+
+
 def cmd_tg_digest(args: argparse.Namespace) -> None:
     """텔레그램 인텔리전스 다이제스트 — 정규장 중 30분마다 신규 텔레그램
     메시지만 모아 KR/US 스탠스 힌트·관심종목 후보·방별 요약을 stdout에 낸다
@@ -6558,8 +6576,12 @@ def cmd_tg_digest(args: argparse.Namespace) -> None:
         _quote_cache[symbol] = price
         return price
 
-    llm_call = None if args.no_narrate else _narrate_call()
-    stance_llm_call = None if args.no_narrate else _tg_digest_stance_call()
+    # LLM 총 시간 예산(2026-09-07): 09:35 KR 첫 실발송이 무료 레인 재시도로 120초를 넘겨 exit 124 —
+    # 다이제스트 자체가 안 나갔다. 결정론 부분은 수 초면 끝나므로, LLM 호출은 명령 시작부터
+    # 예산(기본 90초, TG_DIGEST_LLM_BUDGET_S) 안에서만 시도하고 넘기면 None(=서술 없이 발송).
+    _deadline = time.monotonic() + float(os.environ.get("TG_DIGEST_LLM_BUDGET_S", "90") or 90)
+    llm_call = None if args.no_narrate else _budgeted_call(_narrate_call(), _deadline, what="digest")
+    stance_llm_call = None if args.no_narrate else _budgeted_call(_tg_digest_stance_call(), _deadline, what="stance")
     regime = load_regime_for_market(root, args.market)
     digest = tg_digest.build_digest(
         messages, args.market, now, since=since, name_table=name_table,

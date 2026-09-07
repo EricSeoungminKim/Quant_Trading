@@ -464,3 +464,21 @@ def test_close_brief_text_shows_intraday_candidates_not_auto_watch_none():
 def test_close_brief_text_no_candidates_says_so_not_empty_auto_watch():
     t = close_brief_text({"session_date": "2026-08-17", "missing": []}, "KR")
     assert "당일 단타 후보 없음" in t
+
+
+# ── 2026-09-07: 국면이 실측된 날은 브리핑 머리기사가 국면 줄이다 ────────────────────
+def test_brief_text_leads_with_regime_when_measured():
+    from quant.analyze.market_brief import brief_text
+
+    payload = {
+        "session_date": "2026-09-07",
+        "stance": {
+            "score100": 90, "label": "지수 모멘텀(참고)", "line": "KOSPI +1.64%",
+            "regime": {"measured": True, "label": "neutral", "label_kr": "중립", "line": "중립(1.0x) — KR 추세 …"},
+        },
+        "symbols": [], "auto_watch": "",
+    }
+    text = brief_text(payload, "KR")
+    assert text.index("🧭 국면 중립") < text.index("📊 종합 90점")
+    unmeasured = {**payload, "stance": {**payload["stance"], "regime": {"measured": False, "line": "판정 불가"}}}
+    assert "🧭 국면" not in brief_text(unmeasured, "KR")
