@@ -153,3 +153,14 @@ def test_attribution_sees_program_only_pnl_after_seeding_exclusion():
     assert round(decomp["net"], 4) == 1.15
     top, bottom = top_bottom_strategies(session["by_strategy"])
     assert top["strategy"] == "gap_fade" and bottom["strategy"] == "gap_fade"
+
+
+# ── 2026-09-07: ETF 매도는 세금 면제(엔진과 같은 목록) ────────────────────────────────
+def test_kr_sell_tax_exempts_etf_symbols():
+    from quant.control.pnl_attribution import _kr_sell_tax
+
+    etf_sell = {"market": "KR", "side": "sell", "symbol": "069500", "qty": 37, "price": 110_000.0}
+    stock_sell = {**etf_sell, "symbol": "105560"}
+    assert _kr_sell_tax(etf_sell, 20.0, frozenset({"069500"})) == 0.0
+    assert _kr_sell_tax(stock_sell, 20.0, frozenset({"069500"})) > 0.0
+    assert _kr_sell_tax(etf_sell, 20.0) > 0.0  # 목록이 비면 예전처럼 상한

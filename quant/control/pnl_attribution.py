@@ -32,9 +32,13 @@ from __future__ import annotations
 PRODUCER = "pnl_attribution"
 
 
-def _kr_sell_tax(trade: dict, tax_bps: float) -> float:
-    """체결 1건의 KR 매도세 추정(ETF 면제 미반영 — 모듈 docstring 참고)."""
+def _kr_sell_tax(trade: dict, tax_bps: float, kr_etf_symbols=frozenset()) -> float:
+    """체결 1건의 KR 매도세 추정. `kr_etf_symbols`(엔진과 같은 목록, data/state/kr_etf.json)에
+    있는 심볼은 면제 — 2026-09-07 KR 귀속이 KODEX 200·레버리지 매도까지 세금으로 잡아 16만원을
+    "추정 상한"으로 냈다(브로커는 이미 면제 적용, 매도 수수료 1.5bp). 목록이 비면 예전처럼 상한."""
     if str(trade.get("market")) != "KR":
+        return 0.0
+    if str(trade.get("symbol") or "") in kr_etf_symbols:
         return 0.0
     if str(trade.get("side", "")).upper() == "BUY":
         return 0.0
@@ -44,7 +48,8 @@ def _kr_sell_tax(trade: dict, tax_bps: float) -> float:
     return notional * tax_bps / 1e4
 
 
-def decompose(session: dict, session_trades: list[dict], kr_stock_sell_tax_bps: float) -> dict:
+def decompose(session: dict, session_trades: list[dict], kr_stock_sell_tax_bps: float,
+              kr_etf_symbols=frozenset()) -> dict:
     """`session_pnl_summary()` 출력 + 세션 체결 목록 → [엣지 − 수수료 − 세금] 분해.
 
     `edge`(수수료 전 실현손익) − `commission` − `tax` == `net`(수수료 차감 후
@@ -53,13 +58,14 @@ def decompose(session: dict, session_trades: list[dict], kr_stock_sell_tax_bps: 
     fees_total = float(session.get("fees", 0.0))
     net = edge - fees_total
 
-    tax_upper_bound = sum(_kr_sell_tax(t, kr_stock_sell_tax_bps) for t in session_trades)
+    tax_upper_bound = sum(_kr_sell_tax(t, kr_stock_sell_tax_bps, kr_etf_symbols) for t in session_trades)
     tax_clamped = tax_upper_bound > fees_total
     tax = min(tax_upper_bound, fees_total) if fees_total > 0 else 0.0
     commission = fees_total - tax
 
     return {
         "edge": edge, "commission": commission, "tax": tax, "net": net,
+        "etf_exempt": bool(kr_etf_symbols),
         "tax_is_estimate": True, "tax_clamped": tax_clamped,
     }
 
@@ -87,7 +93,10 @@ def _fmt(v: float, market: str) -> str:
 def format_summary(market: str, date_str: str, decomp: dict,
                    top: dict | None, bottom: dict | None) -> str:
     """정확히 4줄 요약(소유자 지시 형식). notify_auto로 그대로 발송한다."""
-    unit_note = " (추정 상한 — ETF 면제 미반영)" if decomp["tax"] > 0 else ""
+    unit_note = (
+        (" (추정 — ETF 면제 반영)" if decomp.get("etf_exempt") else " (추정 상한 — ETF 면제 미반영)")
+        if decomp["tax"] > 0 else ""
+    )
     lines = [
         f"📊 PnL 귀속 — {market} {date_str} 순손익 {_fmt(decomp['net'], market)}",
         f"분해: 엣지 {_fmt(decomp['edge'], market)} − 수수료 {_fmt(decomp['commission'], market)}"

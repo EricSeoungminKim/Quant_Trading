@@ -4940,7 +4940,10 @@ def cmd_pnl_attribution(args: argparse.Namespace) -> None:
     execution_cfg = settings.raw.get("execution") or {}
     tax_bps = float(execution_cfg.get("kr_stock_sell_tax_bps", 0.0))
 
-    decomp = pa.decompose(session, session_trades, tax_bps)
+    from quant.apps.assembly import _load_kr_etf
+
+    # ETF 면제(2026-09-07): 엔진이 쓰는 같은 목록(data/state/kr_etf.json)으로 세금 추정에서 ETF 를 뺀다.
+    decomp = pa.decompose(session, session_trades, tax_bps, kr_etf_symbols=frozenset(_load_kr_etf()))
     top, bottom = pa.top_bottom_strategies(session["by_strategy"])
     print(pa.format_summary(market, on.isoformat(), decomp, top, bottom))
 
