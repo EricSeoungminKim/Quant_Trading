@@ -59,6 +59,14 @@ TOOL_MODEL_FALLBACK = "dots-studio/dots-3-note-preview:free"
 TOOL_RETRY_AFTER_DEFAULT = 22
 TOOL_RETRY_AFTER_CAP = 30
 
+# Claude CLI 를 1순위로 승격(2026-09-07)한 뒤 OpenRouter가 **폴백으로만**
+# 쓰이는 자리(make_narrator의 claude 선택지, make_quality_narrator)의 상한.
+# Claude 가 이미 시간을 쓴 다음의 마지막 시도이므로, narrate()의 기존 1회
+# 재시도 관례(2회 시도 + 2초 대기)를 포함해도 전체 벽시계가 45초를 넘지
+# 않게 묶는다(2*20+2=42s) — 무료 레인이 report build(12분 상한)·tg-digest
+# (90초 상한) 예산을 잠식하지 않기 위해서다.
+FALLBACK_OPENROUTER_TIMEOUT_S = 20
+
 # Claude Code CLI 를 부를 때 **전면 차단**하는 도구 목록. 서술만 하면 되므로 파일·셸·
 # 네트워크에 닿을 이유가 없고, 프롬프트에 로그 내용(신뢰 불가 입력)이 들어가므로
 # 도구가 살아 있으면 프롬프트 주입이 실행으로 이어질 수 있다. daily_brief.sh 와 같은 계약.
@@ -81,11 +89,15 @@ def _quietly(fn, *args, what: str):
         return None
 
 
-def _record_llm_call(lane: str, ok: bool, seconds: float) -> None:
-    """OpenRouter 무료 레인 호출 1건을 `quant.control.opstate` 에 계측한다
-    (2026-08-18). 요청 수·실패율·지연을 아무도 기록하지 않으면 무료 레인
-    한도에 걸리기 시작해도 모른다 — `quant.control.health.llm_health_findings`
-    가 이 기록을 읽는다.
+def _record_llm_call(lane: str, ok: bool, seconds: float, transport: str = "openrouter") -> None:
+    """LLM 호출 1건을 `quant.control.opstate` 에 계측한다 (2026-08-18,
+    `transport` 추가는 2026-09-07 — Claude CLI 를 주 레인으로 전환하면서
+    "무엇이 실패했나"를 lane 하나로는 답할 수 없어졌다: 같은 lane("quality"
+    등) 안에서도 1순위(claude)와 폴백(openrouter)이 섞여 기록되면 "claude가
+    맛이 갔다"와 "openrouter 폴백이 원래 그렇다"가 구분이 안 된다.
+    `quant.control.health.llm_health_findings` 가 이 기록을 transport 별로
+    읽어 임계값을 다르게 적용한다(claude=주 레인이라 엄격, openrouter=폴백이라
+    참고용).
 
     `quant.adapters` → `quant.control` 임포트는 아키텍처 규칙상 허용된다
     (`tests/test_architecture.py` 의 FORBIDDEN 목록에 이 방향은 없다 — 금지된
@@ -100,7 +112,7 @@ def _record_llm_call(lane: str, ok: bool, seconds: float) -> None:
         from quant.adapters.kv import make_kv
         from quant.control.opstate import record_llm_call
 
-        record_llm_call(make_kv(), lane, ok, seconds)
+        record_llm_call(make_kv(), lane, ok, seconds, transport=transport)
     except Exception as e:  # noqa: BLE001 — 계측 실패가 호출자를 죽이면 안 된다
         log.debug("LLM 호출 계측 실패(%s)", type(e).__name__)
 
@@ -390,6 +402,53 @@ def stance_only(
     return None
 
 
+def stance_via_claude(prompt: str, binary: str, timeout: int = 25) -> dict | None:
+    """스탠스 전용 마이크로프롬프트 — Claude CLI 경로(2026-09-07, Claude CLI
+    주 레인 전환). `ClaudeCliNarrator`로 1회 호출 후 `_parse_stance_json`
+    (OpenRouter 경로 `stance_only`와 동일한 엄격 JSON 계약)으로 검증한다.
+    프롬프트(`tg_digest._stance_prompt`)가 이미 "다른 텍스트·마크다운
+    코드펜스 금지"를 명시하므로 별도 파싱 관용은 두지 않는다 — 코드펜스가
+    섞여 나오면 그대로 실패(`None`)로 취급해 `stance()`가 OpenRouter로
+    폴백한다("절반만 맞는 JSON은 안 믿느니만 못하다" 원칙, 모듈 상단 참고).
+
+    실패(실행 실패·타임아웃·계약 불일치)는 예외가 아니라 `None`(narrate
+    계약과 동일).
+    """
+    t0 = time.monotonic()
+    narrator = ClaudeCliNarrator(binary, timeout=timeout)
+    result = _parse_stance_json(narrator.narrate(prompt))
+    _record_llm_call("stance", result is not None, time.monotonic() - t0, transport="claude")
+    return result
+
+
+def stance(
+    prompt: str, *, claude_binary: str | None = None, claude_timeout: int = 25,
+    api_key: str | None = None, model: str = DEFAULT_OPENROUTER_MODEL,
+    fallback_model: str = STANCE_FALLBACK_MODEL, poster=None, openrouter_timeout: int = 20,
+) -> dict | None:
+    """스탠스 전용 마이크로프롬프트 — Claude CLI 1순위, OpenRouter(`stance_only`)
+    폴백(2026-09-07). `_tg_digest_stance_call`/`_channel_digest_stance_call`
+    이 이 함수 하나로 두 전송 수단을 순서대로 시도한다 — 시퀀싱 로직을
+    호출부(apps 레이어) 두 곳에 중복시키지 않는다.
+
+    `claude_binary`가 `None`이거나 파일이 없으면 1순위를 건너뛴다(호출부가
+    실행파일 존재를 미리 확인할 필요 없게). `api_key`가 없으면 폴백도
+    건너뛴다. 계측은 `stance_via_claude`/`stance_only`가 각자
+    transport("claude"/"openrouter")로 이미 기록하므로 여기서 또 기록하지
+    않는다(`QualityFallbackNarrator`와 다른 점 — 그쪽은 실패해도 항상 폴백을
+    시도하는 클래스라 자체 기록이 필요했지만, 여긴 두 leaf 함수가 이미
+    스스로 기록하는 계약이라 얹을 필요가 없다).
+    """
+    if claude_binary and os.path.exists(claude_binary):
+        result = stance_via_claude(prompt, claude_binary, timeout=claude_timeout)
+        if result is not None:
+            return result
+    if not api_key:
+        return None
+    return stance_only(prompt, api_key, model=model, fallback_model=fallback_model,
+                       poster=poster, timeout=openrouter_timeout)
+
+
 # 텔레그램 채널 사진 해석(서브프로젝트 S part 3, 2026-08-17) — `Narrator` 포트가
 # 아니다(입력이 프롬프트 문자열이 아니라 이미지 URL이라 모양이 다르다). OpenRouter
 # 무료 레인 중 실제 vision-capable 모델을 실측 확인(2026-08-17,
@@ -624,15 +683,24 @@ def make_narrator(
 
     `kv.py: make_kv()` 와 같은 계약이다.
 
-    `model`(선택) — openrouter 선택 시 `OPENROUTER_MODEL` 환경변수/기본값보다
-    **우선**한다(서브프로젝트 W part 2, 2026-08-17: 중기 관심종목 산문 요약은
+    `model`(선택) — openrouter 선택 시, 또는 claude 선택 시의 **폴백**
+    OpenRouter 호출에 `OPENROUTER_MODEL` 환경변수/기본값보다 **우선**한다
+    (서브프로젝트 W part 2, 2026-08-17: 중기 관심종목 산문 요약은
     U(툴콜링 해석 에이전트)가 실측한 1순위 모델(`TOOL_MODEL`)을 명시적으로
-    쓰고 싶은 호출부가 있다 — `make_narrator(model=TOOL_MODEL)`). claude 선택지는
-    모델 개념이 없어 무시한다.
+    쓰고 싶은 호출부가 있다 — `make_narrator(model=TOOL_MODEL)`). claude
+    1순위 자체는 모델 개념이 없어 무시한다.
 
-    `timeout`(선택, 2026-09-04) — openrouter 선택 시에만 의미가 있다(claude
-    CLI는 별도 timeout 인자를 이미 생성자에서 받는다). 텔레그램 리포트 서술처럼
-    짧은 상한이 필요한 호출부가 쓴다.
+    `timeout`(선택, 2026-09-04) — claude 선택 시의 폴백을 포함해 OpenRouter
+    호출에만 의미가 있다(claude CLI는 별도 timeout 인자를 이미 생성자에서
+    받는다). 텔레그램 리포트 서술처럼 짧은 상한이 필요한 호출부가 쓴다.
+
+    `choice == "claude"`(기본값, 2026-09-07 전환): 무료 OpenRouter 레인이
+    한도 초과로 상시 실패하기 시작해(owner 실측: 최근 24시간 44건 중 28건,
+    64%) 구독 기반 Claude CLI를 주 레인으로 승격했다. 실행파일이 없거나
+    호출이 실패하면(레이트리밋·미로그인 등) `QualityFallbackNarrator`가
+    OpenRouter로 1회 폴백한다 — `make_quality_narrator()`와 동일한 조립,
+    `lane="narrate"`로 계측한다는 점만 다르다. 둘 다 안 되면(OpenRouter
+    키도 없음) `NullNarrator`로 낙착 — 예외를 던지지 않는다.
     """
     e = os.environ if env is None else env
     choice = (e.get("OPS_NARRATOR") or "claude").strip().lower()
@@ -646,10 +714,14 @@ def make_narrator(
 
     if choice == "claude":
         binary = (e.get("CLAUDE_BIN") or "").strip() or os.path.expanduser("~/.local/bin/claude")
-        if not os.path.exists(binary):
-            log.warning("claude 실행파일 없음(%s) — 서술 없이 동작한다", binary)
-            return NullNarrator()
-        return ClaudeCliNarrator(binary)
+        if os.path.exists(binary):
+            primary = ClaudeCliNarrator(binary)
+        else:
+            log.warning("claude 실행파일 없음(%s) — OpenRouter 폴백만 시도한다", binary)
+            primary = NullNarrator()
+        fb_timeout = timeout if timeout is not None else FALLBACK_OPENROUTER_TIMEOUT_S
+        fallback = _make_openrouter_narrator(env, model, fb_timeout) or NullNarrator()
+        return QualityFallbackNarrator(primary, fallback, lane="narrate")
 
     log.warning("알 수 없는 OPS_NARRATOR=%r — 서술 없이 동작한다", choice)
     return NullNarrator()
@@ -683,8 +755,12 @@ def make_json_narrator(env: dict[str, str] | None = None, model: str | None = No
 
 
 class QualityFallbackNarrator:
-    """품질 레인(2026-08-18) — Claude CLI(구독) 1순위, 실패하면 OpenRouter
-    무료 레인 폴백. `make_quality_narrator()`가 조립해 돌려준다.
+    """Claude CLI(구독) 1순위, 실패하면 OpenRouter 무료 레인 폴백(2026-08-18,
+    품질 레인). `make_quality_narrator()`가 `lane="quality"`로 조립하고,
+    2026-09-07부터 `make_narrator()`의 기본(`OPS_NARRATOR=claude`)도 이
+    래퍼를 `lane="narrate"`로 조립한다 — Claude CLI 를 전 레인의 주 전송
+    수단으로 승격하면서, "claude 실행 자체는 됐는데 이 프롬프트에서만
+    실패했다"를 폴백 없이 조용히 서술 없음으로 떨어뜨리지 않기 위해서다.
 
     사용자 A/B 실측 근거(`compare_narrators.html`, 같은 스냅샷): OpenRouter
     무료판은 Exec Summary 영어 사고과정 유출·시황 산문 누락·4섹션 해석
@@ -693,26 +769,34 @@ class QualityFallbackNarrator:
 
     이 클래스 자체는 가드·재시도 로직을 갖지 않는다 — 그건 이미 `primary`/
     `fallback`(`ClaudeCliNarrator`/`OpenRouterNarrator`) 각자가 갖고 있다.
-    여기서 하는 일은 둘뿐이다: (1) 1순위 실패 시 폴백으로 넘기기 (2) 그
-    결과를 lane="quality"로 계측하기 — `ClaudeCliNarrator`엔 계측이 없어서다.
-    폴백이 실제로 쓰인 호출은 `OpenRouterNarrator.narrate`가 이미 자체적으로
-    lane="narrate"를 기록하므로 이중 기록된다 — 의도한 동작이다: "narrate"
-    레인은 OpenRouter 실사용량을, "quality"는 품질 레인 전체 성공률을 답한다.
+    여기서 하는 일은 둘뿐이다: (1) 1순위 실패 시 폴백으로 넘기기 (2) 두
+    시도를 각각 `lane`으로, `transport`("claude"|"openrouter")를 구분해
+    계측하기(2026-09-07, `_record_llm_call` transport 인자) — 1순위가
+    성공하면 1건("claude", 성공)만, 실패하면 2건("claude", 실패) +
+    ("openrouter", 폴백 결과)을 남긴다. 그래야 `llm_health_findings`가
+    "주 레인(claude)이 맛이 갔다"와 "폴백(openrouter)은 원래 가끔 실패한다"를
+    구분해 임계값을 다르게 적용할 수 있다. 폴백이 실제로 쓰인 호출은
+    `OpenRouterNarrator.narrate`가 이미 자체적으로 lane="narrate"를
+    기록하므로 이중 기록된다 — 의도한 동작이다(narrate 레인은 OpenRouter
+    실사용량을, 이 레인은 전체 성공률을 답한다).
     """
 
-    name = "quality"
-
-    def __init__(self, primary, fallback):
+    def __init__(self, primary, fallback, lane: str = "quality"):
         self._primary = primary
         self._fallback = fallback
+        self._lane = lane
+        self.name = lane
 
     def narrate(self, prompt: str) -> str | None:
         t0 = time.monotonic()
         text = self._primary.narrate(prompt)
-        if text is None:
-            log.warning("품질 레인 1순위(Claude CLI) 실패 — OpenRouter 폴백")
-            text = self._fallback.narrate(prompt)
-        _record_llm_call("quality", text is not None, time.monotonic() - t0)
+        _record_llm_call(self._lane, text is not None, time.monotonic() - t0, transport="claude")
+        if text is not None:
+            return text
+        log.warning("%s 레인 1순위(Claude CLI) 실패 — OpenRouter 폴백", self._lane)
+        t1 = time.monotonic()
+        text = self._fallback.narrate(prompt)
+        _record_llm_call(self._lane, text is not None, time.monotonic() - t1, transport="openrouter")
         return text
 
 
@@ -748,5 +832,8 @@ def make_quality_narrator(env: dict[str, str] | None = None, model: str | None =
         log.warning("claude 실행파일 없음(%s) — 품질 레인은 OpenRouter 단독", binary)
         primary = NullNarrator()
 
-    fallback = _make_openrouter_narrator(env, model) or NullNarrator()
+    # 폴백 timeout 은 고정 상한을 쓴다(2026-09-07, FALLBACK_OPENROUTER_TIMEOUT_S
+    # 상단 주석) — 품질 레인은 Claude 1순위(240s)가 이미 넉넉해, 실패 후
+    # 폴백까지 60s(기존 기본값)를 더 주면 report build 예산을 잠식한다.
+    fallback = _make_openrouter_narrator(env, model, FALLBACK_OPENROUTER_TIMEOUT_S) or NullNarrator()
     return QualityFallbackNarrator(primary, fallback)

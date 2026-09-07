@@ -4122,9 +4122,13 @@ def cmd_health(args: argparse.Namespace) -> None:
         rehearsal_stamp=rehearsal_raw.strip() if rehearsal_raw else None,
     )
 
-    # LLM 호출 계측 — narrate()/chat_with_tools() (OpenRouter 무료 레인)가
-    # 기록한 최근 24시간 실패율. kv 는 위에서 이미 만든 것을 재사용한다.
-    stats_by_lane = {lane: llm_stats(kv, lane, now) for lane in ("narrate", "tool")}
+    # LLM 호출 계측 — narrate()/chat_with_tools()/quality/stance/agent_interpret
+    # 레인이 기록한 최근 24시간 실패율. kv 는 위에서 이미 만든 것을 재사용한다.
+    # 2026-09-07(Claude CLI 주 레인 전환): "quality"·"stance"·"agent_interpret"
+    # 를 추가했다 — 이 레인들에서 claude transport 가 실패하기 시작하는 걸
+    # narrate/tool 만 보던 예전 목록으로는 못 잡았다.
+    llm_lanes = ("narrate", "tool", "quality", "stance", "agent_interpret")
+    stats_by_lane = {lane: llm_stats(kv, lane, now) for lane in llm_lanes}
     findings += H.llm_health_findings(stats_by_lane)
 
     # 국면(regime) 강등 지속 — 유효 지표 부족으로 neutral 강등된 상태가 오래
@@ -6462,20 +6466,35 @@ def _tg_digest_save_last_run(path, market: str, at) -> None:
 
 
 def _tg_digest_stance_call():
-    """스탠스 전용 마이크로프롬프트 콜러블 — `_narrate_call`과 같은 게이트
-    (`OPS_NARRATOR=openrouter`일 때만) — `narrate.stance_only`는 OpenRouter
-    전용이라 다른 값(미설정/claude/none)이면 `None`을 돌려주고 시도하지 않는다.
-    반환은 이미 엄격 검증을 통과한 `{"stance","why"}` dict|None(`stance_only`
-    계약) — `tg_digest`는 그대로 받아 표시만 한다."""
-    if (os.environ.get("OPS_NARRATOR") or "").strip().lower() != "openrouter":
+    """스탠스 전용 마이크로프롬프트 콜러블. 2026-09-07(Claude CLI 주 레인
+    전환) 전까지는 `OPS_NARRATOR=openrouter`일 때만 동작했다 — 이제 기본값
+    (미설정/`claude`)에서도 Claude CLI 1순위 + OpenRouter 폴백
+    (`narrate.stance`)으로 동작한다. `OPS_NARRATOR=openrouter`면 명시적
+    선택을 존중해 OpenRouter 단독(`stance_only`)으로, `OPS_NARRATOR=none`이면
+    완전히 끈다(둘 다 기존 관례 유지). 반환은 이미 엄격 검증을 통과한
+    `{"stance","why"}` dict|None(`stance`/`stance_only` 계약) — `tg_digest`는
+    그대로 받아 표시만 한다.
+
+    `claude_timeout=20`(2026-09-07 tg-digest LLM 예산 지침) — 다이제스트
+    전체 LLM 시간 예산(기본 90초, `TG_DIGEST_LLM_BUDGET_S`)을 이 호출
+    하나가 다 쓰지 않게, digest 산문 호출(`_narrate_call`)과 비슷한 상한을
+    맞춘다."""
+    choice = (os.environ.get("OPS_NARRATOR") or "claude").strip().lower()
+    if choice == "none":
         return None
     from quant.adapters.env import get_key
-    from quant.adapters.narrate import stance_only
+    from quant.adapters.narrate import stance, stance_only
 
     key = (os.environ.get("OPENROUTER_API_KEY") or "").strip() or (get_key("OPENROUTER_API_KEY") or "").strip()
-    if not key:
+    if choice == "openrouter":
+        if not key:
+            return None
+        return lambda prompt: stance_only(prompt, key)
+
+    binary = (os.environ.get("CLAUDE_BIN") or "").strip() or os.path.expanduser("~/.local/bin/claude")
+    if not os.path.exists(binary) and not key:
         return None
-    return lambda prompt: stance_only(prompt, key)
+    return lambda prompt: stance(prompt, claude_binary=binary, claude_timeout=20, api_key=key or None)
 
 
 def _budgeted_call(fn, deadline: float, *, what: str):

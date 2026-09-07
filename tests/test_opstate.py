@@ -151,7 +151,8 @@ def test_llm_stats_counts_ok_and_failed_calls_within_window():
     record_llm_call(kv, "narrate", ok=False, seconds=30.0, now=NOW.isoformat())
 
     stats = llm_stats(kv, "narrate", NOW)
-    assert stats == {"total": 3, "failed": 1}
+    assert stats == {"total": 3, "failed": 1,
+                     "by_transport": {"openrouter": {"total": 3, "failed": 1}}}
 
 
 def test_llm_stats_excludes_calls_older_than_the_window():
@@ -160,7 +161,9 @@ def test_llm_stats_excludes_calls_older_than_the_window():
     record_llm_call(kv, "narrate", ok=True, seconds=1.0, now=old)
     record_llm_call(kv, "narrate", ok=True, seconds=1.0, now=NOW.isoformat())
 
-    assert llm_stats(kv, "narrate", NOW) == {"total": 1, "failed": 0}
+    assert llm_stats(kv, "narrate", NOW) == {
+        "total": 1, "failed": 0, "by_transport": {"openrouter": {"total": 1, "failed": 0}},
+    }
 
 
 def test_llm_stats_different_lanes_are_independent():
@@ -168,16 +171,47 @@ def test_llm_stats_different_lanes_are_independent():
     record_llm_call(kv, "narrate", ok=True, seconds=1.0, now=NOW.isoformat())
     record_llm_call(kv, "tool", ok=False, seconds=1.0, now=NOW.isoformat())
 
-    assert llm_stats(kv, "narrate", NOW) == {"total": 1, "failed": 0}
-    assert llm_stats(kv, "tool", NOW) == {"total": 1, "failed": 1}
+    assert llm_stats(kv, "narrate", NOW) == {
+        "total": 1, "failed": 0, "by_transport": {"openrouter": {"total": 1, "failed": 0}},
+    }
+    assert llm_stats(kv, "tool", NOW) == {
+        "total": 1, "failed": 1, "by_transport": {"openrouter": {"total": 1, "failed": 1}},
+    }
 
 
 def test_llm_stats_with_no_calls_yet_is_zero_not_unknown():
     kv = _kv()
-    assert llm_stats(kv, "narrate", NOW) == {"total": 0, "failed": 0}
+    assert llm_stats(kv, "narrate", NOW) == {"total": 0, "failed": 0, "by_transport": {}}
 
 
 def test_llm_stats_is_none_when_redis_is_down():
     """0건과 '모른다'는 다른 사건이다 — kv 가 죽으면 None."""
     assert llm_stats(RedisKeyValue(BrokenRedis()), "narrate", NOW) is None
     assert llm_stats(NullKeyValue(), "narrate", NOW) is None
+
+
+# ── transport 구분 (2026-09-07, Claude CLI 주 레인 전환) ─────────────────
+
+def test_llm_stats_splits_by_transport():
+    kv = _kv()
+    record_llm_call(kv, "quality", ok=True, seconds=5.0, transport="claude", now=NOW.isoformat())
+    record_llm_call(kv, "quality", ok=False, seconds=6.0, transport="claude", now=NOW.isoformat())
+    record_llm_call(kv, "quality", ok=True, seconds=2.0, transport="openrouter", now=NOW.isoformat())
+
+    stats = llm_stats(kv, "quality", NOW)
+    assert stats == {
+        "total": 3, "failed": 1,
+        "by_transport": {
+            "claude": {"total": 2, "failed": 1},
+            "openrouter": {"total": 1, "failed": 0},
+        },
+    }
+
+
+def test_llm_stats_transport_defaults_to_openrouter_when_not_passed():
+    """`transport`를 안 넘긴 기존 호출부(narrate 레인 등)는 openrouter로 묶인다
+    — 지금까지 이 레인들이 전부 OpenRouter 였던 것과 일치한다."""
+    kv = _kv()
+    record_llm_call(kv, "narrate", ok=True, seconds=1.0, now=NOW.isoformat())
+
+    assert llm_stats(kv, "narrate", NOW)["by_transport"] == {"openrouter": {"total": 1, "failed": 0}}

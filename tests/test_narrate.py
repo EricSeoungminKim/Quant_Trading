@@ -22,6 +22,8 @@ from quant.adapters.narrate import (
     describe_image,
     make_narrator,
     make_quality_narrator,
+    stance,
+    stance_via_claude,
 )
 from quant.core.ports import Narrator
 
@@ -222,12 +224,142 @@ def test_claude_cli_returns_none_when_runner_fails():
     assert ClaudeCliNarrator("/x", runner=lambda *a: None).narrate("x") is None
 
 
+# ── 스탠스 마이크로프롬프트 (2026-09-07, Claude CLI 경로 추가) ────────────
+#
+# `ClaudeCliNarrator`는 `runner`를 직접 받지만 `stance_via_claude`/`stance`는
+# 편의상 binary 경로만 받으므로, 실제 서브프로세스 대신
+# `ClaudeCliNarrator._subprocess_runner`를 monkeypatch 해 네트워크/프로세스
+# 없이 계약만 검증한다.
+
+def test_stance_via_claude_returns_none_when_output_is_not_the_strict_contract(monkeypatch):
+    import quant.adapters.narrate as narrate_mod
+
+    monkeypatch.setattr(
+        narrate_mod.ClaudeCliNarrator, "_subprocess_runner",
+        staticmethod(lambda cmd, stdin, timeout: "```json\n{\"stance\": \"공격\", \"why\": \"이유\"}\n```"),
+    )
+    # 마크다운 코드펜스가 섞이면 엄격 계약 위반 — None(narrate.py 상단 all-or-nothing 원칙).
+    assert stance_via_claude("판정해라", "/usr/bin/claude") is None
+
+
+def test_stance_via_claude_parses_a_clean_json_reply(monkeypatch):
+    import quant.adapters.narrate as narrate_mod
+
+    monkeypatch.setattr(
+        narrate_mod.ClaudeCliNarrator, "_subprocess_runner",
+        staticmethod(lambda cmd, stdin, timeout: '{"stance": "방어", "why": "위험 신호"}'),
+    )
+    assert stance_via_claude("판정해라", "/usr/bin/claude") == {"stance": "방어", "why": "위험 신호"}
+
+
+def test_stance_via_claude_records_lane_stance_with_claude_transport(monkeypatch):
+    import quant.adapters.narrate as narrate_mod
+
+    seen = []
+    monkeypatch.setattr(
+        narrate_mod, "_record_llm_call",
+        lambda lane, ok, seconds, transport="openrouter": seen.append((lane, ok, transport)),
+    )
+    monkeypatch.setattr(
+        narrate_mod.ClaudeCliNarrator, "_subprocess_runner",
+        staticmethod(lambda cmd, stdin, timeout: '{"stance": "중립", "why": "근거 부족"}'),
+    )
+
+    stance_via_claude("판정해라", "/usr/bin/claude")
+
+    assert seen == [("stance", True, "claude")]
+
+
+def test_stance_tries_claude_first_and_skips_openrouter_on_success(monkeypatch):
+    import quant.adapters.narrate as narrate_mod
+
+    monkeypatch.setattr(
+        narrate_mod.ClaudeCliNarrator, "_subprocess_runner",
+        staticmethod(lambda cmd, stdin, timeout: '{"stance": "공격", "why": "이유"}'),
+    )
+    called_openrouter = []
+    monkeypatch.setattr(
+        narrate_mod, "stance_only",
+        lambda *a, **k: called_openrouter.append(1) or {"stance": "중립", "why": "폴백"},
+    )
+
+    got = stance("판정해라", claude_binary=__file__, api_key="k")
+
+    assert got == {"stance": "공격", "why": "이유"}
+    assert called_openrouter == []
+
+
+def test_stance_falls_back_to_openrouter_when_claude_fails(monkeypatch):
+    import quant.adapters.narrate as narrate_mod
+
+    monkeypatch.setattr(
+        narrate_mod.ClaudeCliNarrator, "_subprocess_runner",
+        staticmethod(lambda cmd, stdin, timeout: None),
+    )
+    monkeypatch.setattr(
+        narrate_mod, "stance_only",
+        lambda prompt, api_key, **k: {"stance": "방어", "why": "폴백 이유"},
+    )
+
+    got = stance("판정해라", claude_binary=__file__, api_key="k")
+
+    assert got == {"stance": "방어", "why": "폴백 이유"}
+
+
+def test_stance_skips_claude_when_binary_missing():
+    """claude_binary 가 없거나 파일이 없으면 1순위를 건너뛰고 바로 openrouter."""
+    got = stance("판정해라", claude_binary="/nonexistent/claude", api_key=None)
+    assert got is None  # api_key 도 없으니 폴백도 못 한다 — 예외 없이 None
+
+
+def test_stance_returns_none_when_nothing_available():
+    assert stance("판정해라", claude_binary=None, api_key=None) is None
+
+
 # ── 팩토리 ───────────────────────────────────────────────────────────────
 
 def test_factory_defaults_to_claude_but_falls_back_when_binary_missing():
-    """기본값이 claude 인데 실행파일이 없으면 Null 이다 — 예외가 아니다."""
+    """기본값이 claude 인데 실행파일이 없으면 OpenRouter 폴백을 시도한다
+    (2026-09-07) — 키까지 없으면 그제서야 완전히 Null 이다, 예외가 아니다."""
     got = make_narrator({"CLAUDE_BIN": "/nonexistent/claude"})
-    assert isinstance(got, NullNarrator)
+    assert isinstance(got, QualityFallbackNarrator)
+    assert isinstance(got._primary, NullNarrator)
+    assert isinstance(got._fallback, NullNarrator)
+
+
+def test_factory_claude_default_wraps_claude_primary_and_openrouter_fallback():
+    """binary 가 있으면 1순위는 ClaudeCliNarrator, 폴백은 OpenRouterNarrator —
+    `make_quality_narrator`와 같은 조립을 lane="narrate"로 쓴다."""
+    import sys
+
+    got = make_narrator({"CLAUDE_BIN": sys.executable, "OPENROUTER_API_KEY": "k"})
+
+    assert isinstance(got, QualityFallbackNarrator)
+    assert isinstance(got._primary, ClaudeCliNarrator)
+    assert isinstance(got._fallback, OpenRouterNarrator)
+    assert got.name == "narrate"
+
+
+def test_factory_claude_default_falls_back_to_openrouter_only_when_binary_missing():
+    got = make_narrator({"CLAUDE_BIN": "/nonexistent/claude", "OPENROUTER_API_KEY": "k"})
+
+    assert isinstance(got, QualityFallbackNarrator)
+    assert isinstance(got._primary, NullNarrator)
+    assert isinstance(got._fallback, OpenRouterNarrator)
+
+
+def test_factory_claude_default_fallback_timeout_is_bounded():
+    """폴백은 45초 예산(2*20+2) 아래로 묶는다 — Claude 가 이미 시간을 쓴 뒤의
+    마지막 시도라 report build/tg-digest 예산을 잠식하면 안 된다."""
+    got = make_narrator({"CLAUDE_BIN": "/nonexistent/claude", "OPENROUTER_API_KEY": "k"})
+    assert got._fallback._timeout == 20
+
+
+def test_factory_claude_default_honours_explicit_timeout_for_fallback():
+    got = make_narrator(
+        {"CLAUDE_BIN": "/nonexistent/claude", "OPENROUTER_API_KEY": "k"}, timeout=5,
+    )
+    assert got._fallback._timeout == 5
 
 
 def test_factory_openrouter_without_key_is_null_not_exception():
@@ -759,28 +891,53 @@ def test_quality_fallback_records_lane_quality(monkeypatch):
     import quant.adapters.narrate as narrate_mod
 
     seen = []
-    monkeypatch.setattr(narrate_mod, "_record_llm_call",
-                        lambda lane, ok, seconds: seen.append((lane, ok, seconds)))
+    monkeypatch.setattr(
+        narrate_mod, "_record_llm_call",
+        lambda lane, ok, seconds, transport="openrouter": seen.append((lane, ok, seconds, transport)),
+    )
 
     QualityFallbackNarrator(_StubNarrator("답"), _StubNarrator(None)).narrate("p")
 
+    # 1순위(claude)가 성공하면 폴백을 부르지 않으므로 기록도 1건뿐이다.
     assert len(seen) == 1
-    lane, ok, seconds = seen[0]
+    lane, ok, seconds, transport = seen[0]
     assert lane == "quality"
     assert ok is True
     assert seconds >= 0
+    assert transport == "claude"
 
 
 def test_quality_fallback_records_failure_after_both_fail(monkeypatch):
     import quant.adapters.narrate as narrate_mod
 
     seen = []
-    monkeypatch.setattr(narrate_mod, "_record_llm_call",
-                        lambda lane, ok, seconds: seen.append((lane, ok, seconds)))
+    monkeypatch.setattr(
+        narrate_mod, "_record_llm_call",
+        lambda lane, ok, seconds, transport="openrouter": seen.append((lane, ok, seconds, transport)),
+    )
 
     QualityFallbackNarrator(_StubNarrator(None), _StubNarrator(None)).narrate("p")
 
-    assert seen[0][:2] == ("quality", False)
+    # 1순위(claude) 실패 1건 + 폴백(openrouter) 실패 1건 — transport 별로
+    # 따로 기록해야 `llm_health_findings`가 어느 쪽이 맛이 갔는지 구분한다.
+    assert [s[:2] for s in seen] == [("quality", False), ("quality", False)]
+    assert [s[3] for s in seen] == ["claude", "openrouter"]
+
+
+def test_quality_fallback_lane_is_configurable_for_reuse_by_make_narrator(monkeypatch):
+    """`make_narrator()`의 기본(claude) 선택지도 이 클래스를 재사용한다
+    (2026-09-07) — `lane`을 넘기면 그 레인으로 계측된다."""
+    import quant.adapters.narrate as narrate_mod
+
+    seen = []
+    monkeypatch.setattr(
+        narrate_mod, "_record_llm_call",
+        lambda lane, ok, seconds, transport="openrouter": seen.append((lane, transport)),
+    )
+
+    QualityFallbackNarrator(_StubNarrator("답"), _StubNarrator(None), lane="narrate").narrate("p")
+
+    assert seen == [("narrate", "claude")]
 
 
 def test_make_quality_narrator_off_switch_delegates_to_make_narrator():

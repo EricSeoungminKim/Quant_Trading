@@ -163,11 +163,16 @@ def snapshot(kv, jobs: list[str]) -> dict:
 LLM_CALL_TTL = 25 * 3600
 
 
-def record_llm_call(kv, lane: str, ok: bool, seconds: float, now: str | None = None) -> None:
+def record_llm_call(kv, lane: str, ok: bool, seconds: float, transport: str = "openrouter",
+                    now: str | None = None) -> None:
     """LLM 호출 1건 계측(`narrate.py` 의 `narrate()`/`chat_with_tools()` 결과).
 
     zset(멤버=호출 1건, 스코어=epoch 초)에 담는다 — `record_feed_health` 와
     같은 자료구조 선택 이유(정렬된 최근순 조회가 `ztop` 하나로 된다).
+
+    `transport`(2026-09-07, "claude"|"openrouter") — Claude CLI 를 주 레인으로
+    승격하면서 같은 lane 안에서도 어느 전송 수단이 실패했는지 구분해야
+    했다(`llm_stats`가 lane 뿐 아니라 transport 별로도 집계한다).
 
     실패해도 호출자를 죽이지 않는다 — `kv.py` 의 `zadd`/`expire` 자체가 이미
     모든 예외를 삼킨다(`RedisKeyValue`), 여기서 또 감싸지 않는다(경계는
@@ -177,7 +182,7 @@ def record_llm_call(kv, lane: str, ok: bool, seconds: float, now: str | None = N
     epoch = _epoch(stamp)
     # 멤버는 유일해야 zadd 가 같은 초의 다른 호출을 덮어쓰지 않는다 — uuid
     # 접미사로 충돌을 막는다(판정에는 쓰이지 않는다, 그냥 키 유일성용).
-    member = f"{stamp}|{'1' if ok else '0'}|{seconds:.3f}|{uuid.uuid4().hex[:8]}"
+    member = f"{stamp}|{'1' if ok else '0'}|{seconds:.3f}|{transport}|{uuid.uuid4().hex[:8]}"
     kv.zadd(f"llm:{lane}:calls", {member: epoch})
     kv.expire(f"llm:{lane}:calls", LLM_CALL_TTL)
 
@@ -190,16 +195,30 @@ def llm_stats(kv, lane: str, now: datetime, window_hours: int = 24,
     반복되는 규율). `ztop` 은 최신순 상위 `sample`건만 보므로, 그 창 안에
     24시간보다 오래된 멤버가 섞여도 스코어(epoch)로 다시 거른다 — 무료 레인
     호출 빈도(하루 수십 건 수준)에서 `sample=2000` 이면 창을 놓칠 일이 없다.
+
+    반환은 `{"total", "failed", "by_transport"}` — `by_transport`는
+    transport("claude"|"openrouter"|구 포맷은 "unknown") → `{"total",
+    "failed"}`(2026-09-07). `llm_health_findings`가 이걸로 "주 레인(claude)이
+    맛이 갔다"와 "폴백(openrouter)은 원래 가끔 실패한다"를 구분한다 — 이
+    필드를 넣기 전에 기록된 멤버(구 포맷, transport 필드 없음)는
+    "unknown"으로 묶인다(TTL 25h 이므로 하루 지나면 자연히 사라진다).
     """
     if not kv.healthy():
         return None
     cutoff = now.timestamp() - window_hours * 3600
     total = failed = 0
+    by_transport: dict[str, dict[str, int]] = {}
     for member, ts in kv.ztop(f"llm:{lane}:calls", sample):
         if ts < cutoff:
             continue
         total += 1
         parts = member.split("|")
-        if len(parts) >= 2 and parts[1] == "0":
+        is_failed = len(parts) >= 2 and parts[1] == "0"
+        if is_failed:
             failed += 1
-    return {"total": total, "failed": failed}
+        transport = parts[3] if len(parts) >= 5 else "unknown"
+        bucket = by_transport.setdefault(transport, {"total": 0, "failed": 0})
+        bucket["total"] += 1
+        if is_failed:
+            bucket["failed"] += 1
+    return {"total": total, "failed": failed, "by_transport": by_transport}

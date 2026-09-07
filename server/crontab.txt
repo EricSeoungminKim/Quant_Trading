@@ -503,25 +503,33 @@
 # docs/superpowers/specs/2026-08-15-news-deepdive-design.md): KR 07:50 발행 →
 # 05:00 시작(상한 07:00), US 19:50 발행 → 17:30 시작(상한 19:30).
 #
-# OPS_NARRATOR=openrouter — 서술기 선택은 셸이 아니라 make_narrator() 한 곳에
-# 있지만(ops_watch.sh 와 같은 계약), 여기서 그 선택을 env 로 명시한다. 기본값
-# claude 로 두면 EC2(1.8GB)에서 Claude Code CLI 서브프로세스가 매번 뜨는데
-# 최악 30분이 걸린다(I2) — OpenRouter 무료 레인은 API 호출 한 번이다.
-# OPENROUTER_API_KEY 가 없으면 make_narrator() 가 NullNarrator 로 안전하게
-# 떨어진다(정직한 skipped_llm) — 배포 체크: .env.local 에 키를 넣어야 실제로
-# 서술이 동작한다.
+# 서술기 선택은 셸이 아니라 make_narrator() 한 곳에 있다(ops_watch.sh 와 같은
+# 계약) — 여기서는 env 로 강제하지 않고 기본값(OPS_NARRATOR 미설정 → claude)을
+# 그대로 쓴다(2026-09-07, LLM 레인 신뢰성 세션). 기존엔 "EC2(1.8GB)에서 Claude
+# Code CLI 서브프로세스가 최악 30분 걸린다(I2)"는 이유로 OpenRouter 를 강제
+# 했었는데, 그 무료 레인이 최근 24시간 44건 중 28건(64%) 실패로 한도 초과
+# 상태였다(owner 실측) — 반대로 Claude CLI 는 owner 구독 기반이고 2026-09-06
+# 실측 3/3 성공·평균 ~16초였다. `make_narrator()` 기본값이 이제 Claude CLI
+# 1순위 + OpenRouter 폴백(`QualityFallbackNarrator`, 1회 폴백만, 폴백
+# timeout 20초 상한)이라 최악의 경우에도 예외 없이 `None`으로 떨어질 뿐 셸을
+# 무한정 물지 않는다 — 다만 EC2 리소스 제약이 실제로 재발하면(디스패치 지연·
+# OOM) 그때는 `OPS_NARRATOR=openrouter`를 다시 여기 붙이는 게 아니라
+# `quant.control.health.llm_health_findings`의 claude transport 실패율(임계
+# 30%)이 먼저 잡아낸다.
 #
 # OPENROUTER_MAX_TOKENS=4000 — 기본 700 은 운영 서술("텔레그램 한 통")용으로
 # 튜닝된 값인데, 기본 모델(nemotron-3-ultra)은 추론 모델이라 생각 과정에서
 # 토큰을 먼저 쓴다. deepdive 의 9K자 프롬프트에 700 을 주면 최종 답이 잘려
-# 후보가 0건이었고(E2E 실측 2026-08-15), 4000 으로 올리면 정상 파싱됐다.
+# 후보가 0건이었고(E2E 실측 2026-08-15), 4000 으로 올리면 정상 파싱됐다 —
+# OpenRouter 폴백이 실제로 쓰일 때를 위해 그대로 남겨둔다(claude 1순위는
+# 모델 개념이 없어 이 값을 무시한다).
 #
 # 요일 제한 없이 매일(서브프로젝트 G): 매일 발행 리포트(market-report@.timer)가
 # 휴장일에도 그날 재료를 engine.json 으로 쌓고, 개장일 아침 리포트가 그걸 최신일
 # 우선으로 집계한다(§Task 3) — deepdive 가 휴장일에 쉬면 그 재료의 relations/
 # sector 심화만 비어 집계에서 빠진다.
-0 5  * * * cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 .venv/bin/python -m quant.apps.report_cli deepdive --market KR >> data/deepdive.log 2>&1
-30 17 * * * cd /home/ubuntu/quant_trading_kiwoom && OPS_NARRATOR=openrouter OPENROUTER_MAX_TOKENS=4000 .venv/bin/python -m quant.apps.report_cli deepdive --market US >> data/deepdive.log 2>&1
+0 5  * * * cd /home/ubuntu/quant_trading_kiwoom && OPENROUTER_MAX_TOKENS=4000 .venv/bin/python -m quant.apps.report_cli deepdive --market KR >> data/deepdive.log 2>&1
+30 17 * * * cd /home/ubuntu/quant_trading_kiwoom && OPENROUTER_MAX_TOKENS=4000 .venv/bin/python -m quant.apps.report_cli deepdive --market US >> data/deepdive.log 2>&1
 
 # --- 마감 종합 리포트: 미국장 + 전일 한국장 (uswrap, 2026-08-25) ---
 # 05:50 인 이유: 1분봉 백필(05:40, 실측 ~40초)이 어제 KR 세션을 로컬 파케이에

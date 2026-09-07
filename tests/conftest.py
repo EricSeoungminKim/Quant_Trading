@@ -14,6 +14,28 @@ NY = ZoneInfo("America/New_York")
 
 
 @pytest.fixture(autouse=True)
+def isolate_claude_bin(monkeypatch):
+    """`CLAUDE_BIN`을 존재하지 않는 경로로 못박는다(전 테스트 자동 적용,
+    2026-09-07 Claude CLI 주 레인 전환 세션).
+
+    이 저장소 소유자 머신(로컬 Mac·EC2 둘 다)엔 실제로 `~/.local/bin/claude`
+    가 설치돼 있다(구독 기반, `narrate.py` 모듈독스트링 참고). `make_narrator()`
+    기본값이 Claude CLI 1순위로 바뀌면서, `CLAUDE_BIN`을 명시하지 않는 아무
+    테스트나 `make_narrator()`/`make_quality_narrator()`/
+    `_agent_interpret_narrator()`/`_tg_digest_stance_call()` 등을 거치면
+    조용히 **진짜 Claude CLI 서브프로세스**를 불렀다 — 실측 사고(2026-09-07):
+    리포트 AI 심층 해석 테스트 여럿이 실행당 17초 넘는 진짜 호출을 타면서
+    전체 테스트 스위트가 느려지고, 네트워크/구독 상태에 테스트 결과가
+    좌우되는 상태였다.
+
+    Claude CLI 경로를 실제로 검증하고 싶은 테스트는 자기 안에서
+    `monkeypatch.setenv("CLAUDE_BIN", ...)`로 명시적으로 덮어쓴다 — 같은
+    `monkeypatch` 인스턴스에 나중에 적용된 `setenv`가 이 기본값을 이긴다
+    (`isolate_heartbeat_file`과 같은 전역 격리 관례)."""
+    monkeypatch.setenv("CLAUDE_BIN", "/nonexistent/claude-test-isolation")
+
+
+@pytest.fixture(autouse=True)
 def isolate_heartbeat_file(tmp_path, monkeypatch):
     """run_paper_loop의 하트비트 상태 파일 기본 경로를 tmp로 돌린다(전 테스트 자동 적용).
 

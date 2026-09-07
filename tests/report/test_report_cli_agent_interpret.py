@@ -162,6 +162,34 @@ def _candidate() -> dict:
     }
 
 
+class _FakeNarrator:
+    """`_agent_interpret_narrator()`가 돌려주는 실제 narrator(Claude CLI 1순위
+    + OpenRouter 폴백, 2026-09-07)를 대신하는 테스트 더블 — `chat_with_tools`를
+    직접 monkeypatch 하던 옛 방식(툴콜링 루프) 대신, 조립 지점 자체를 갈아
+    끼운다. 진짜 서브프로세스를 타면 CLAUDE_BIN 이 실제 설치돼 있는 머신에서
+    테스트가 수십 초짜리 진짜 Claude 호출을 하게 된다(실측 사고, 2026-09-07)
+    — 이 더블이 그걸 막는다."""
+
+    def __init__(self, replies):
+        self._replies = list(replies)
+        self.prompts: list[str] = []
+
+    def narrate(self, prompt: str):
+        self.prompts.append(prompt)
+        reply = self._replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+def _patch_agent_interpret_narrator(monkeypatch, factory):
+    """`quant.report.collect.agent_interpret._agent_interpret_narrator`를
+    갈아 끼운다 — `_build_agent_interpret`가 그 이름을 자기 모듈 전역에서
+    찾으므로 `report_cli.<이름>`이 아니라 여기를 패치해야 실제로 먹힌다."""
+    import quant.report.collect.agent_interpret as ai_mod
+    monkeypatch.setattr(ai_mod, "_agent_interpret_narrator", factory)
+
+
 def _midterm_candidate() -> dict:
     """중기 관심 종목 뷰 원소(`midterm_watch.build_midterm_watch` 반환) —
     단타 후보와 달리 `score100`/`factors` 키가 없다(2026-08-18 폴백 테스트)."""
@@ -179,7 +207,10 @@ def test_build_agent_interpret_skips_when_no_candidates(tmp_path):
 
 
 def test_build_agent_interpret_skips_when_no_key(tmp_path, monkeypatch):
-    _set_key(monkeypatch, None)
+    """"no_key" 는 2026-09-07 부터 "쓸 수 있는 전송 수단(claude/openrouter)이
+    하나도 없다"를 뜻한다 — `_agent_interpret_narrator`가 `None`을 돌려주는
+    경우를 그대로 흉내낸다."""
+    _patch_agent_interpret_narrator(monkeypatch, lambda claude_timeout: None)
 
     view, status = report_cli._build_agent_interpret(
         tmp_path, _SnapStub(), _payload(), [_candidate()], [], {},
@@ -190,14 +221,8 @@ def test_build_agent_interpret_skips_when_no_key(tmp_path, monkeypatch):
 
 
 def test_build_agent_interpret_success_records_direction_and_confidence(tmp_path, monkeypatch):
-    _set_key(monkeypatch, "sk-test")
-    import quant.adapters.narrate as narrate_mod
-
-    def fake_chat_with_tools(messages, tools, api_key, execute=None, **kw):
-        assert api_key == "sk-test"
-        return {"text": '산문.\nJUDGMENT: {"direction": "bullish", "confidence": 4}', "rounds": 1}
-
-    monkeypatch.setattr(narrate_mod, "chat_with_tools", fake_chat_with_tools)
+    narrator = _FakeNarrator(['산문.\nJUDGMENT: {"direction": "bullish", "confidence": 4}'])
+    _patch_agent_interpret_narrator(monkeypatch, lambda claude_timeout: narrator)
 
     view, status = report_cli._build_agent_interpret(
         tmp_path, _SnapStub(), _payload(), [_candidate()], [], {},
@@ -208,13 +233,14 @@ def test_build_agent_interpret_success_records_direction_and_confidence(tmp_path
     assert view[0]["direction"] == "bullish"
     assert view[0]["confidence"] == 4
     assert view[0]["source"] == "intraday"
+    # 프롬프트에 사실 테이블 + 후보 정보가 실제로 담겼는지(2026-09-07 결정론
+    # 사실 수집 전환 — 툴콜링 대신 프롬프트 하나에 전부 싣는다).
+    assert "005930" in narrator.prompts[0]
+    assert "[사실]" in narrator.prompts[0]
 
 
 def test_build_agent_interpret_failed_when_all_candidates_fail(tmp_path, monkeypatch):
-    _set_key(monkeypatch, "sk-test")
-    import quant.adapters.narrate as narrate_mod
-
-    monkeypatch.setattr(narrate_mod, "chat_with_tools", lambda **kw: None)
+    _patch_agent_interpret_narrator(monkeypatch, lambda claude_timeout: _FakeNarrator([None]))
 
     view, status = report_cli._build_agent_interpret(
         tmp_path, _SnapStub(), _payload(), [_candidate()], [], {},
@@ -225,16 +251,10 @@ def test_build_agent_interpret_failed_when_all_candidates_fail(tmp_path, monkeyp
 
 
 def test_build_agent_interpret_limits_to_top_n(tmp_path, monkeypatch):
-    _set_key(monkeypatch, "sk-test")
-    import quant.adapters.narrate as narrate_mod
-
-    seen = []
-
-    def fake_chat_with_tools(messages, tools, api_key, execute=None, **kw):
-        seen.append(messages[1]["content"])
-        return {"text": '산문.\nJUDGMENT: {"direction": "neutral", "confidence": 2}', "rounds": 1}
-
-    monkeypatch.setattr(narrate_mod, "chat_with_tools", fake_chat_with_tools)
+    narrator = _FakeNarrator([
+        '산문.\nJUDGMENT: {"direction": "neutral", "confidence": 2}' for _ in range(5)
+    ])
+    _patch_agent_interpret_narrator(monkeypatch, lambda claude_timeout: narrator)
 
     candidates = [
         {"symbol": f"{i:06d}", "name": f"종목{i}", "score100": 90 - i, "factors": []}
@@ -247,17 +267,17 @@ def test_build_agent_interpret_limits_to_top_n(tmp_path, monkeypatch):
     assert status == "ok"
     assert report_cli.AGENT_INTERPRET_TOP_N == 5
     assert len(view) == 5
-    assert len(seen) == 5
+    assert len(narrator.prompts) == 5
 
 
 def test_build_agent_interpret_exception_returns_failed_not_raise(tmp_path, monkeypatch):
-    _set_key(monkeypatch, "sk-test")
-    import quant.adapters.narrate as narrate_mod
-
-    def boom(**kw):
+    """narrator 조립 자체가 예외를 던져도(설정 오류 등) `_build_agent_interpret`
+    의 바깥 try/except 가 잡아 "failed"로 떨어진다 — 리포트 빌드를 막지
+    않는다는 계약의 증거."""
+    def boom(claude_timeout):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(narrate_mod, "chat_with_tools", boom)
+    _patch_agent_interpret_narrator(monkeypatch, boom)
 
     view, status = report_cli._build_agent_interpret(
         tmp_path, _SnapStub(), _payload(), [_candidate()], [], {},
@@ -265,6 +285,28 @@ def test_build_agent_interpret_exception_returns_failed_not_raise(tmp_path, monk
 
     assert view == []
     assert status == "failed"
+
+
+def test_build_agent_interpret_one_candidate_raising_does_not_kill_the_rest(tmp_path, monkeypatch):
+    """`narrator.narrate()`가 후보 하나에서 예외를 던져도(네트워크/서브프로세스
+    순간 오류) 나머지 후보는 그대로 해석된다 — 후보 1건 실패가 전체를
+    죽이지 않는다는 계약(`_interpret_candidates_deterministic` 문서 참고)."""
+    narrator = _FakeNarrator([
+        RuntimeError("boom"),
+        '산문.\nJUDGMENT: {"direction": "bearish", "confidence": 3}',
+    ])
+    _patch_agent_interpret_narrator(monkeypatch, lambda claude_timeout: narrator)
+
+    candidates = [
+        {"symbol": "005930", "name": "삼성전자", "score100": 90, "factors": []},
+        {"symbol": "000660", "name": "SK하이닉스", "score100": 80, "factors": []},
+    ]
+    view, status = report_cli._build_agent_interpret(
+        tmp_path, _SnapStub(), _payload(), candidates, [], {},
+    )
+
+    assert status == "ok"
+    assert [item["symbol"] for item in view] == ["000660"]
 
 
 # ── _build_agent_interpret — 중기 관심 종목 폴백(2026-08-18) ─────────────
@@ -275,13 +317,8 @@ def test_build_agent_interpret_exception_returns_failed_not_raise(tmp_path, monk
 def test_build_agent_interpret_falls_back_to_midterm_when_no_intraday_candidates(
     tmp_path, monkeypatch,
 ):
-    _set_key(monkeypatch, "sk-test")
-    import quant.adapters.narrate as narrate_mod
-
-    monkeypatch.setattr(
-        narrate_mod, "chat_with_tools",
-        lambda **kw: {"text": '산문.\nJUDGMENT: {"direction": "bullish", "confidence": 3}', "rounds": 1},
-    )
+    narrator = _FakeNarrator(['산문.\nJUDGMENT: {"direction": "bullish", "confidence": 3}'])
+    _patch_agent_interpret_narrator(monkeypatch, lambda claude_timeout: narrator)
 
     view, status = report_cli._build_agent_interpret(
         tmp_path, _SnapStub(), _payload(), [], [_midterm_candidate()], {},
@@ -294,13 +331,10 @@ def test_build_agent_interpret_falls_back_to_midterm_when_no_intraday_candidates
 
 
 def test_build_agent_interpret_midterm_fallback_limits_to_top_n(tmp_path, monkeypatch):
-    _set_key(monkeypatch, "sk-test")
-    import quant.adapters.narrate as narrate_mod
-
-    monkeypatch.setattr(
-        narrate_mod, "chat_with_tools",
-        lambda **kw: {"text": '산문.\nJUDGMENT: {"direction": "neutral", "confidence": 2}', "rounds": 1},
-    )
+    narrator = _FakeNarrator([
+        '산문.\nJUDGMENT: {"direction": "neutral", "confidence": 2}' for _ in range(5)
+    ])
+    _patch_agent_interpret_narrator(monkeypatch, lambda claude_timeout: narrator)
 
     midterm = [
         {"symbol": f"{i:06d}", "name": f"종목{i}", "mentions": 8 - i, "grade": 5 - i,
@@ -316,10 +350,7 @@ def test_build_agent_interpret_midterm_fallback_limits_to_top_n(tmp_path, monkey
 
 
 def test_build_agent_interpret_midterm_fallback_failed_status(tmp_path, monkeypatch):
-    _set_key(monkeypatch, "sk-test")
-    import quant.adapters.narrate as narrate_mod
-
-    monkeypatch.setattr(narrate_mod, "chat_with_tools", lambda **kw: None)
+    _patch_agent_interpret_narrator(monkeypatch, lambda claude_timeout: _FakeNarrator([None]))
 
     view, status = report_cli._build_agent_interpret(
         tmp_path, _SnapStub(), _payload(), [], [_midterm_candidate()], {},
@@ -330,8 +361,6 @@ def test_build_agent_interpret_midterm_fallback_failed_status(tmp_path, monkeypa
 
 
 def test_build_agent_interpret_skips_when_both_intraday_and_midterm_empty(tmp_path, monkeypatch):
-    _set_key(monkeypatch, "sk-test")
-
     view, status = report_cli._build_agent_interpret(
         tmp_path, _SnapStub(), _payload(), [], [], {},
     )
@@ -345,13 +374,8 @@ def test_build_agent_interpret_prefers_intraday_over_midterm_when_both_present(
 ):
     """단타 후보가 있으면 중기 관심 종목은 쓰지 않는다 — 폴백은 단타 0건일
     때만 발동한다."""
-    _set_key(monkeypatch, "sk-test")
-    import quant.adapters.narrate as narrate_mod
-
-    monkeypatch.setattr(
-        narrate_mod, "chat_with_tools",
-        lambda **kw: {"text": '산문.\nJUDGMENT: {"direction": "bullish", "confidence": 4}', "rounds": 1},
-    )
+    narrator = _FakeNarrator(['산문.\nJUDGMENT: {"direction": "bullish", "confidence": 4}'])
+    _patch_agent_interpret_narrator(monkeypatch, lambda claude_timeout: narrator)
 
     view, status = report_cli._build_agent_interpret(
         tmp_path, _SnapStub(), _payload(), [_candidate()], [_midterm_candidate()], {},
@@ -487,8 +511,12 @@ def _cont_entry(today_articles: int = 0) -> dict:
 def test_emit_close_agent_interpret_status_recorded_without_key(monkeypatch, tmp_path):
     """`OPENROUTER_API_KEY`가 없어도 마감 리포트 빌드는 정상 완료되고,
     engine.json 에 `agent_interpret` 상태가 남는다 — 빌드가 LLM 때문에
-    죽지 않는다는 계약의 엔드투엔드 증거."""
+    죽지 않는다는 계약의 엔드투엔드 증거. `CLAUDE_BIN`도 없는 경로로
+    강제한다 — 안 그러면 이 머신에 실제 설치된 Claude CLI를 진짜로
+    호출하게 된다(2026-09-07 실측 사고: 이 테스트가 17초짜리 진짜
+    서브프로세스를 탔었다)."""
     _set_key(monkeypatch, None)
+    monkeypatch.setenv("CLAUDE_BIN", "/nonexistent/claude")
     monkeypatch.setattr(report_core, "load_us_table", lambda cache_dir: {})
     monkeypatch.setattr(report_core, "load_table", lambda cache_dir: {})
     monkeypatch.setattr(report_core, "collect_mentions", lambda snap, table, market: [])

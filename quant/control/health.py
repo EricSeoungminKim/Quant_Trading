@@ -1042,19 +1042,36 @@ def regime_findings(snapshot: dict | None, now: datetime,
 
 # ── LLM 호출 계측 ─────────────────────────────────────────────────────────
 
+
+# Claude CLI 가 주 레인이 된 뒤(2026-09-07)의 transport별 임계값. claude 는
+# 구독 기반이라 실패가 나오면 "레인 자체가 맛이 갔다"에 가깝다(레이트리밋·
+# 미로그인·바이너리 소실 등) — openrouter(무료, 폴백 전용)보다 훨씬 엄격하게
+# 잡는다. openrouter 는 폴백일 때조차 간헐 502가 정상 변동이므로(narrate.py
+# 상단 실측 주석) 경보하지 않는다 — "info only"(그래도 총 건수는 stats에
+# 그대로 남아 있어 필요하면 사람이 볼 수 있다, 경보만 안 낼 뿐이다).
+LLM_CLAUDE_FAILURE_THRESHOLD = 0.3
+# `by_transport` 가 없는(레거시 호출자·구 포맷 데이터) 경우의 안전망 —
+# 기존 임계값을 그대로 유지한다.
+LLM_LEGACY_FAILURE_THRESHOLD = 0.5
+
+
 def llm_health_findings(stats_by_lane: dict[str, dict | None]) -> list[Finding]:
-    """`opstate.llm_stats()` 결과 — narrate/chat_with_tools(OpenRouter 무료
-    레인)의 최근 24시간 실패율.
+    """`opstate.llm_stats()` 결과 — narrate/chat_with_tools 등 LLM 호출
+    레인의 최근 24시간 실패율.
 
     유래: 무료 레인 요청 수·실패율·지연을 아무도 기록하지 않아 한도에 걸리기
     시작해도 몰랐다. `narrate.py` 가 이제 매 호출을 계측한다(`record_llm_call`).
+    2026-09-07(Claude CLI 주 레인 전환) — 같은 lane 안에 claude(주 레인)와
+    openrouter(폴백) 호출이 섞여도 `stats["by_transport"]`로 나눠 보고,
+    **transport 별로 다른 임계값**을 적용한다: claude 는 30% 초과 시 ALERT
+    (구독 기반 주 레인이 그만큼 실패하면 이상), openrouter 는 경보하지 않는다
+    (무료 폴백 특유의 간헐 실패가 정상 변동임을 실측으로 이미 확인했다 —
+    "왜 openrouter가 자주 실패하냐"는 더 이상 질문거리가 아니다).
 
     호출이 0건이면 빈 목록이다 — narrate 는 상시 도는 경로가 아니라(경보가
     있을 때만 불린다) 조용한 날마다 매시간 경보가 오면 감시가 꺼진다.
-    실패율 임계를 50%로 높게 잡은 이유는 무료 레인 특유의 간헐 502
-    (`narrate.py` 상단 실측 주석 — 당일 실패율 ~50%도 재시도로 흡수되는
-    정상 변동)를 정상으로 흡수하기 위해서다 — 그 이상만 "레인 자체가
-    맛이 갔다"로 본다. `stats` 를 못 읽으면(Redis 죽음) UNKNOWN.
+    `stats` 를 못 읽으면(Redis 죽음) UNKNOWN. `by_transport`가 없는 결과
+    (레거시 호출자·테스트)는 기존 50% 단일 임계값으로 판정한다(하위 호환).
     """
     out: list[Finding] = []
     for lane in sorted(stats_by_lane):
@@ -1062,13 +1079,31 @@ def llm_health_findings(stats_by_lane: dict[str, dict | None]) -> list[Finding]:
         if stats is None:
             out.append(Finding("llm", UNKNOWN, f"{lane}: 호출 계측을 읽지 못했다"))
             continue
-        total = stats.get("total", 0)
-        failed = stats.get("failed", 0)
-        if not total:
+        by_transport = stats.get("by_transport")
+        if not by_transport:
+            total = stats.get("total", 0)
+            failed = stats.get("failed", 0)
+            if not total:
+                continue
+            rate = failed / total
+            if rate > LLM_LEGACY_FAILURE_THRESHOLD:
+                out.append(Finding("llm", ALERT,
+                                   f"{lane}: 최근 24시간 호출 {total}건 중 {failed}건 실패"
+                                   f"({rate:.0%}) — 임계(50%) 초과"))
             continue
-        rate = failed / total
-        if rate > 0.5:
-            out.append(Finding("llm", ALERT,
-                               f"{lane}: 최근 24시간 호출 {total}건 중 {failed}건 실패"
-                               f"({rate:.0%}) — 무료 레인 임계(50%) 초과"))
+        for transport in sorted(by_transport):
+            t_stats = by_transport[transport] or {}
+            total = t_stats.get("total", 0)
+            failed = t_stats.get("failed", 0)
+            if not total:
+                continue
+            rate = failed / total
+            if transport == "openrouter":
+                continue  # 폴백 레인 — 정보용, 경보하지 않는다
+            threshold = (LLM_CLAUDE_FAILURE_THRESHOLD if transport == "claude"
+                        else LLM_LEGACY_FAILURE_THRESHOLD)
+            if rate > threshold:
+                out.append(Finding("llm", ALERT,
+                                   f"{lane}/{transport}: 최근 24시간 호출 {total}건 중 "
+                                   f"{failed}건 실패({rate:.0%}) — 임계({threshold:.0%}) 초과"))
     return out

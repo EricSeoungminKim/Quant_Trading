@@ -1317,6 +1317,67 @@ def test_multiple_lanes_are_judged_independently():
     assert "tool" in findings[0].detail
 
 
+# ── transport 별 임계값 (2026-09-07, Claude CLI 주 레인 전환) ────────────
+#
+# claude가 실패율 30% 넘으면 ALERT("주 레인이 맛이 갔다") — openrouter는
+# 폴백일 때 간헐 실패가 정상이라 몇 % 실패해도 경보하지 않는다("info only").
+
+def test_claude_transport_over_30_percent_is_alert():
+    findings = llm_health_findings({
+        "quality": {"total": 10, "failed": 4, "by_transport": {  # 40% claude
+            "claude": {"total": 10, "failed": 4},
+        }},
+    })
+
+    assert _levels(findings) == [ALERT]
+    assert "quality/claude" in findings[0].detail
+
+
+def test_claude_transport_under_30_percent_is_ok():
+    findings = llm_health_findings({
+        "quality": {"total": 10, "failed": 2, "by_transport": {  # 20% claude
+            "claude": {"total": 10, "failed": 2},
+        }},
+    })
+
+    assert findings == []
+
+
+def test_openrouter_transport_never_alerts_even_at_high_failure_rate():
+    """폴백(openrouter)은 정보용이다 — 실패율이 높아도 경보하지 않는다."""
+    findings = llm_health_findings({
+        "narrate": {"total": 20, "failed": 18, "by_transport": {  # 90% openrouter
+            "openrouter": {"total": 20, "failed": 18},
+        }},
+    })
+
+    assert findings == []
+
+
+def test_by_transport_splits_alerting_within_the_same_lane():
+    """같은 lane 안에서 claude 는 실패율이 높고 openrouter(폴백)는 정상이면
+    claude 만 경보한다 — lane 하나로는 이 구분이 불가능했다(2026-09-07 이전
+    회귀 시나리오: owner가 실측한 64% 실패 경보가 실제로는 openrouter뿐인지
+    claude까지 포함인지 알 수 없었다)."""
+    findings = llm_health_findings({
+        "quality": {"total": 30, "failed": 14, "by_transport": {
+            "claude": {"total": 10, "failed": 4},       # 40% — 경보
+            "openrouter": {"total": 20, "failed": 10},  # 50% — 경보 안 함
+        }},
+    })
+
+    assert _levels(findings) == [ALERT]
+    assert "quality/claude" in findings[0].detail
+
+
+def test_by_transport_zero_total_bucket_is_skipped():
+    findings = llm_health_findings({
+        "stance": {"total": 0, "failed": 0, "by_transport": {}},
+    })
+
+    assert findings == []
+
+
 # ── 국면(regime) 강등 지속 ───────────────────────────────────────────────
 #
 # 유래: 2026-08-18~19, US 국면이 지표 5개 중 2개만 유효한 채로 하루 종일

@@ -23,17 +23,26 @@ from quant.report.paths import _paths
 
 
 def _channel_digest_stance_call():
-    """스탠스 전용 마이크로프롬프트 콜러블 — `OPENROUTER_API_KEY`가 있을 때만
-    만든다(`_build_telegram_image_desc`와 같은 게이트, `briefs.py`). 마감
-    리포트(`narrator=None`)는 호출부에서 애초에 이 함수를 부르지 않는다 —
-    "완전 무LLM" 계약(`report_cli._emit_close` docstring)을 그대로 지킨다."""
+    """스탠스 전용 마이크로프롬프트 콜러블 — Claude CLI 1순위 + OpenRouter
+    폴백(`narrate.stance`, 2026-09-07 Claude CLI 주 레인 전환. 이전엔
+    `OPENROUTER_API_KEY`가 있을 때만 OpenRouter 단독으로 동작했다). 실행파일도
+    키도 없으면 `None`(`_build_telegram_image_desc`와 같은 게이트, `briefs.py`).
+    마감 리포트(`narrator=None`)는 호출부에서 애초에 이 함수를 부르지 않는다 —
+    "완전 무LLM" 계약(`report_cli._emit_close` docstring)을 그대로 지킨다.
+
+    아침판은 `report build`(12분 상한)의 여유 안에서 도는 4곳 중 하나일
+    뿐이라(`make_quality_narrator` 문서 참고) tg-digest(90초 예산)보다
+    느긋하게 `claude_timeout` 기본값(25초)을 그대로 쓴다."""
+    import os
+
     from quant.adapters.env import get_key
-    from quant.adapters.narrate import stance_only
+    from quant.adapters.narrate import stance
 
     key = get_key("OPENROUTER_API_KEY")
-    if not key:
+    binary = (os.environ.get("CLAUDE_BIN") or "").strip() or os.path.expanduser("~/.local/bin/claude")
+    if not os.path.exists(binary) and not key:
         return None
-    return lambda prompt: stance_only(prompt, key)
+    return lambda prompt: stance(prompt, claude_binary=binary, api_key=key)
 
 
 def _close_lookup(sym_quotes: dict):

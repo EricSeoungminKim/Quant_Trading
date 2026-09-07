@@ -456,8 +456,12 @@ def _cont_entry(today_articles: int = 0) -> dict:
 def test_emit_close_midterm_watch_recorded_without_key(monkeypatch, tmp_path):
     """`OPENROUTER_API_KEY`가 없어도 마감 리포트 빌드는 정상 완료되고,
     engine.json 에 `midterm_watch`(빈 리스트 포함) 키가 남는다 — 빌드가
-    LLM/텔레그램 부재 때문에 죽지 않는다는 계약의 엔드투엔드 증거."""
+    LLM/텔레그램 부재 때문에 죽지 않는다는 계약의 엔드투엔드 증거.
+    `CLAUDE_BIN`도 없는 경로로 강제한다 — `_emit_close`가 내부적으로
+    부르는 `_build_agent_interpret`(2026-09-07부터 Claude CLI 1순위)가 이
+    머신에 실제 설치된 Claude CLI로 진짜 서브프로세스를 타지 않게 한다."""
     _set_key(monkeypatch, None)
+    monkeypatch.setenv("CLAUDE_BIN", "/nonexistent/claude")
     monkeypatch.setattr(report_core, "load_us_table", lambda cache_dir: {})
     monkeypatch.setattr(report_core, "load_table", lambda cache_dir: [])
     monkeypatch.setattr(report_core, "collect_mentions", lambda snap, table, market: [])
