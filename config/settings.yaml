@@ -1073,6 +1073,10 @@ strategies:
 
     validation:
       status: burn_in # 신규 전략 — 백테스트 표본 없음(Toss 1m 4거래일 롤링). paper 번인이 유일한 검증 경로(스펙 "데이터" 절)
+      # 2026-09-07 R-SCALP(사전 등록 walk-forward, KR 1분봉 34종목 1년): 패턴B 라이브 동등 구성 46 fold 전부
+      # 음수(평균 −69.6bp/트립, 비용 후). 소유자 관찰(차트 리뷰)용으로 10-06 판정일까지만 유지.
+      review_by: "2026-10-06"
+      evidence: "NO_GO — R-SCALP 2026-09-07 walk-forward 46/46 fold 음수(−69.6bp/트립)"
     universe: watchlist
     symbols: []
     universe_filter:
@@ -1186,12 +1190,12 @@ strategies:
       # 없으므로 근거가 쌓일 때까지 관측만 한다. 저널의 `[게이트:차단후보 ...]`
       # 표기와 실제 손익을 n≥30 에서 대조해 block 승격을 판단한다.
       # block = 게이트 미충족 시 진입 차단 / off = 계산 자체를 하지 않음.
-      # 2026-09-07 팀장 결정 ⑤(a): shadow → block. 원장 63트립(08-27~09-07) 실측 — 게이트 통과 16건
-      # 평균 +38.6bp / 차단후보 46건 +4.0bp, 09-07 차단후보 5건 중 4건 손실(MA60 트레일 잘림).
-      # params 는 앵커로 두 갈래(scalp_1m/_cat)가 공유하므로 둘 다 block — 별도 계좌 없이 동시
-      # A/B 는 불가하고, 판본 지문(params_fingerprint)으로 이전 판본과 전/후 비교한다(국면 교란
-      # 가능성은 기록). 2주 뒤 `scoreboard --current-params-only` 로 재판정.
-      trend_gate_mode: block
+      # 2026-09-07 팀장 결정 ⑤(a) 철회(같은 날 19:3x): 원장 63트립 근거로 block 으로 켰다가, 사전 등록
+      # walk-forward(R-SCALP, quant-backtest results/scalp_exit_study — 34종목·OOS 3,067트립·46 fold)에서
+      # 게이트 통과군 −68.6bp vs 차단후보 −69.6bp 로 **구별 불가**(CI [−1.97, +4.12]) → 켤 근거 없음.
+      # shadow 로 되돌려 이전 판본 지문을 유지한다(판본 churn 최소화). 더 큰 발견: 패턴B 라이브 동등
+      # 구성이 46 fold 전부 음수(평균 −69.6bp) — 게이트·청산·갭 어느 축도 구조를 못 바꾼다.
+      trend_gate_mode: shadow
       adx_min: 25.0 # QuantConnect #407(Cross-Sectional Momentum with Trend Filter) 근거값 — 이 저장소 실데이터로 검증되지 않음
       max_atr_ratio: 0.10 # QuantConnect #478(Quantum Walk BQP) 변동성 억제기 근거값 — 이 저장소 실데이터로 검증되지 않음
   # ── A/B: 촉매 갈래 (2026-09-03 소유자 지시) ─────────────────────────────
@@ -1233,6 +1237,10 @@ strategies:
       US: 0.03 # 기준 갈래와 반씩(0.18 분할)
     validation:
       status: burn_in # 새 갈래 — 표본 0. 판정은 `run scoreboard --ab`
+      # 2026-09-07 R-SCALP(사전 등록 walk-forward, KR 1분봉 34종목 1년): 패턴B 라이브 동등 구성 46 fold 전부
+      # 음수(평균 −69.6bp/트립, 비용 후). 소유자 관찰(차트 리뷰)용으로 10-06 판정일까지만 유지.
+      review_by: "2026-10-06"
+      evidence: "NO_GO — R-SCALP 2026-09-07 walk-forward 46/46 fold 음수(−69.6bp/트립)"
     universe: watchlist
     symbols: []
     universe_filter:

@@ -27,7 +27,8 @@ def test_review_by_dates_parse_and_are_future_or_recent():
             assert d >= dt.date(2026, 9, 7), (sid, rb)
 
 
-def test_scalp_trend_gate_is_block_on_both_ab_lanes():
+def test_scalp_trend_gate_is_shadow_on_both_ab_lanes():
+    # 2026-09-07 R-SCALP NO_GO(게이트 통과/차단 구별 불가) → block 철회, shadow 유지(앵커 공유)
     st = _strategies()
-    assert st["scalp_1m"]["params"]["trend_gate_mode"] == "block"
-    assert st["scalp_1m_cat"]["params"]["trend_gate_mode"] == "block"  # 앵커 공유
+    assert st["scalp_1m"]["params"]["trend_gate_mode"] == "shadow"
+    assert st["scalp_1m_cat"]["params"]["trend_gate_mode"] == "shadow"
