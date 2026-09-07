@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from quant.analyze.symbol_names import label
 from quant.core import strategy_ids, tgfmt
 from quant.core.models import Fill, OrderStatus, Signal, market_of_symbol
 from quant.core.ports import EventSink
@@ -846,13 +847,19 @@ def _strategy_block(name: str, trips: list[dict], start_capital: dict | None = N
 def scoreboard_text(
     trips: list[dict], title: str = "누적 스코어보드",
     start_capital_by_strategy: dict[str, dict] | None = None,
+    names: dict[str, str] | None = None,
 ) -> str:
     """`start_capital_by_strategy`(2026-09-06, "에폭 이후" 절 전용) — 주어지면
     전략별 `strategy_start_capital()` 결과를 `_strategy_block`에 그대로 넘겨
     시장별 손익 줄에 수익률을 덧붙인다. 생략(기본 None)이면 기존 누적
-    스코어보드와 완전히 동일한 출력이다."""
+    스코어보드와 완전히 동일한 출력이다.
+
+    `names`(선택, 2026-09-07) — 심볼 → 표시용 회사명. 이 함수 자신은 리졸버를
+    만들지 않는다(호출부가 `quant.analyze.symbol_names`로 미리 풀어 넘긴다) —
+    "종목 상위/하위" 줄이 `symbol_names.label()`로 코드 대신 이름을 보여준다."""
     if not trips:
         return f"📊 {title}: 종결된 트레이드가 아직 없음"
+    names = names or {}
     lines = [f"📊 {title} (종결 {len(trips)}건)"]
     strategies = sorted({t["strategy"] for t in trips})
     for s in strategies:
@@ -870,9 +877,11 @@ def scoreboard_text(
         key=lambda x: x[1], reverse=True,
     )
     if ranked:
-        lines.append("종목 상위: " + ", ".join(f"{s} {b:+.0f}bp({n})" for s, b, n in ranked[:3]))
+        lines.append("종목 상위: " + ", ".join(
+            f"{label(s, names.get(s))} {b:+.0f}bp({n})" for s, b, n in ranked[:3]))
         if len(ranked) > 3:
-            lines.append("종목 하위: " + ", ".join(f"{s} {b:+.0f}bp({n})" for s, b, n in ranked[-3:]))
+            lines.append("종목 하위: " + ", ".join(
+                f"{label(s, names.get(s))} {b:+.0f}bp({n})" for s, b, n in ranked[-3:]))
     return "\n".join(lines)[:3500]
 
 

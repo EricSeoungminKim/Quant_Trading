@@ -226,7 +226,7 @@ footer{margin-top:32px;font-size:var(--fs-2xs);color:var(--mute);text-align:cent
 {%- endif %}
 <div class="card">
   <div class="card-head">
-    <a class="sym" href="{{ sym_link(g.symbol) }}" target="_blank" rel="noopener">{{ g.symbol }}</a>
+    <a class="sym" href="{{ sym_link(g.symbol) }}" target="_blank" rel="noopener">{{ g.name and g.name != g.symbol and (g.name ~ "(" ~ g.symbol ~ ")") or g.symbol }}</a>
     <span class="strat">{{ g.strategy_id }}</span>
     <span class="date">{{ fmt_date(g.entries[0].ts) }} · {{ g.tz_label or g.market }}</span>
     <span class="badge {{ badge_cls }}">
@@ -270,7 +270,7 @@ footer{margin-top:32px;font-size:var(--fs-2xs);color:var(--mute);text-align:cent
     var traces = [{
       type: "candlestick", x: x, open: o, high: h, low: l, close: c,
       increasing: {line: {color: "#C1272D"}}, decreasing: {line: {color: "#2F5FC4"}},
-      name: "{{ g.symbol }}",
+      name: {{ (g.name and g.name != g.symbol and (g.name ~ "(" ~ g.symbol ~ ")") or g.symbol) | tojson }},
     }];
     var entryPrice = {{ g.entry_price }};
     var entryTs = {{ g.entries[0].ts | tojson }};
@@ -361,7 +361,7 @@ footer{margin-top:32px;font-size:var(--fs-2xs);color:var(--mute);text-align:cent
   </script>
   {%- else %}
   <div class="no-chart">
-    차트 없음 — {{ g.symbol }} 봉 데이터 미확보{% if g.bars_source %}({{ g.bars_source }}){% endif %}.
+    차트 없음 — {{ g.name and g.name != g.symbol and (g.name ~ "(" ~ g.symbol ~ ")") or g.symbol }} 봉 데이터 미확보{% if g.bars_source %}({{ g.bars_source }}){% endif %}.
     아래 체결/사유만 표시.
   </div>
   {%- endif %}

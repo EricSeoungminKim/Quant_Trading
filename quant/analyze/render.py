@@ -20,6 +20,7 @@ from markupsafe import Markup
 from quant.analyze import charts, news_direction
 from quant.analyze.news_cluster import dedup_with_counts
 from quant.analyze.relations import MIN_EVIDENCE
+from quant.analyze.symbol_names import label
 from quant.analyze.themes import cluster, summarize
 from quant.analyze.units import (
     fmt_fred,
@@ -646,6 +647,7 @@ def _env() -> Environment:
         relation_items=relation_items,
         flow_periods=flow_periods,
         classify_report=classify_report,
+        label=label,
     )
     return env
 
@@ -706,10 +708,10 @@ def group_events_by_day(events: list[dict]) -> tuple[list[dict], list[dict]]:
     """
     hi = [e for e in events if e.get("high_impact")]
     near = []
-    for idx, label in enumerate(NEAR_LABELS):
+    for idx, near_label in enumerate(NEAR_LABELS):
         items = [e for e in hi if e.get("days_ahead") == idx]
         near.append({
-            "label": label,
+            "label": near_label,
             "date": items[0]["date"] if items else "",
             "weekday": items[0].get("weekday", "") if items else "",
             "events": items,

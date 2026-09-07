@@ -31,6 +31,30 @@ from quant.report.paths import _load_artifact, _paths
 FOREIGN_FLOW_FETCH_CAP = 60
 
 
+def _fill_ranking_names_via_resolver(
+    root: Path, cache_dir: Path, symbols: list[str], market: str,
+) -> dict[str, str]:
+    """결정론 사전에 없는 랭킹 종목명을 `quant.analyze.symbol_names`(캐시 →
+    워치리스트 → LLM 배치)로 채운다. Toss 재조회는 여기서 하지 않는다(랭킹
+    자체가 이미 Toss 응답이고, 이 파이프라인엔 별도 클라이언트 인스턴스가
+    없다) — 남는 건 워치리스트 이름과 LLM뿐이다. `quant.report`는 4평면
+    임포트 제약 밖이라 어댑터(narrator)를 직접 조립해도 된다."""
+    try:
+        from quant.adapters.narrate import make_narrator
+        from quant.analyze.symbol_names import build_resolver
+        from quant.trade.universe import DEFAULT_WATCHLIST_PATH
+
+        resolver = build_resolver(
+            cache_dir, root / "data" / "state",
+            watchlist_paths=[root / DEFAULT_WATCHLIST_PATH],
+            narrator=make_narrator(timeout=60),
+        )
+        return resolver.names_for(symbols, market=market)
+    except Exception as e:  # noqa: BLE001 — 이름 채우기 실패가 랭킹 표시를 막지 않는다
+        print(f"랭킹 종목명 LLM 보강 생략: {type(e).__name__}: {e}", file=sys.stderr)
+        return {}
+
+
 def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
             extra_watch: list[str] | None = None) -> tuple:
     """스냅샷에서 파생물 계산. 네트워크는 종목 사전 캐시가 없을 때만 탄다.
@@ -71,6 +95,7 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
         try:
             name_map = load_name_map(cache_dir, snap.market)
             named = unnamed = 0
+            unmatched_items = []
             for items in ranking.data.get("boards", {}).values():
                 for item in items:
                     nm = name_map.get(item.get("symbol", ""))
@@ -79,6 +104,21 @@ def _derive(snap, root: Path, snap_root: Path, record_ledger: bool = True,
                         named += 1
                     else:
                         unnamed += 1
+                        unmatched_items.append(item)
+            # 결정론 사전(KIND/S&P500)에 없는 잔여분(ETF·리츠·신규상장 등)은
+            # 종합 리졸버(마지막 수단 LLM 배치 포함)로 한 번 더 채운다
+            # (2026-09-07 오너 요청: "종목코드만 보이지 않게, 모르면 LLM으로").
+            # 실패해도 랭킹 표시 자체는 코드로 계속 나간다.
+            if unmatched_items:
+                filled = _fill_ranking_names_via_resolver(
+                    root, cache_dir, [it["symbol"] for it in unmatched_items], snap.market,
+                )
+                for item in unmatched_items:
+                    nm = filled.get(item.get("symbol", ""))
+                    if nm:
+                        item["name"] = nm
+                        named += 1
+                        unnamed -= 1
             print(f"랭킹 종목명 {named}건 매칭"
                   + (f" · 사전에 없어 코드 표시 {unnamed}건" if unnamed else ""))
         except Exception as e:  # 이름 붙이기 실패가 리포트를 막지 않는다

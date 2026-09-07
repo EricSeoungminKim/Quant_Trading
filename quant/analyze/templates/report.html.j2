@@ -828,7 +828,7 @@ html{overflow-x:hidden}
   <p class="idx-sub"><b>숫자 검증(채널 주장 — ✓ 표시만 우리 시세로 확인됨)</b></p>
   <ul>
   {% for n in channel_digest.number_claims %}
-    <li class="idx-sub">{{ n.symbol }} {{ n.value }} ({{ n.handle }}) — {{ n.status }}</li>
+    <li class="idx-sub">{{ label(n.symbol, n.name) }} {{ n.value }} ({{ n.handle }}) — {{ n.status }}</li>
   {% endfor %}
   </ul>
   {% else %}

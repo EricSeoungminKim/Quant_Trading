@@ -96,9 +96,61 @@ def _load_trade_review_for_wrap(root, market: str, on, trades: list[dict]) -> di
         pass
     try:
         settings = _load_settings(str(root / "config" / "settings.yaml"))
-        return _build_trade_review(trades, {}, settings.strategies, market, on, risk_params=settings.risk)
+        # 종목명 — **네트워크 0** 계약을 지키려고 결정론 사전(KIND/S&P500,
+        # 캐시 미스면 네트워크를 탄다)이나 LLM은 쓰지 않는다. `symbol_names.json`
+        # (assembly.py 부팅 시·report_cli trade-review 발행 시 쌓인 순수 로컬
+        # 캐시)만 읽는다 — 없으면 이름 없이 코드로 표시될 뿐, 마감 요약 자체는
+        # 항상 만들어진다.
+        names = {}
+        try:
+            names = _json.loads((root / "data" / "state" / "symbol_names.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        return _build_trade_review(
+            trades, {}, settings.strategies, market, on, risk_params=settings.risk,
+            names=names if isinstance(names, dict) else {},
+        )
     except Exception:  # noqa: BLE001 — 7절은 부가 정보, 마감 요약 전체를 막지 않는다
         return None
+
+
+def _scoreboard_symbol_names(trips: list[dict]) -> dict[str, str]:
+    """스코어보드 "종목 상위/하위" 줄용 이름 해석(2026-09-07, 오너 요청: 코드만
+    보이지 않게). 주간 크론이라 지연 여유가 있어 LLM 배치까지 쓴다 — 실패해도
+    스코어보드 발행 자체는 막지 않는다."""
+    symbols = sorted({str(t.get("symbol")) for t in trips if t.get("symbol")})
+    if not symbols:
+        return {}
+    try:
+        from quant.adapters.env import REPO_ROOT, get_key
+        from quant.adapters.narrate import make_narrator
+        from quant.analyze.symbol_names import build_resolver
+        from quant.trade.universe import DEFAULT_WATCHLIST_PATH
+
+        toss_lookup = None
+        client_id = get_key("TOSS_CLIENT_ID") or ""
+        client_secret = get_key("TOSS_CLIENT_SECRET") or ""
+        if client_id and client_secret:
+            try:
+                from quant.adapters.brokers.toss.client import TossClient
+
+                client = TossClient(
+                    client_id=client_id, client_secret=client_secret,
+                    account_seq=get_key("TOSS_ACCOUNT_SEQ") or "", mode="paper",
+                )
+                toss_lookup = client.stock_info
+            except Exception:  # noqa: BLE001 — 이 소스만 건너뛴다
+                toss_lookup = None
+
+        resolver = build_resolver(
+            REPO_ROOT / "data" / "cache", REPO_ROOT / "data" / "state",
+            watchlist_paths=[REPO_ROOT / DEFAULT_WATCHLIST_PATH],
+            toss_lookup=toss_lookup, narrator=make_narrator(timeout=60),
+        )
+        return resolver.names_for(symbols)
+    except Exception as e:  # noqa: BLE001 — 이름 채우기 실패가 스코어보드를 막지 않는다
+        logger.warning("스코어보드 종목명 해석 생략: %s", e)
+        return {}
 
 
 def _daily_report_url(market: str, on) -> str:
@@ -1320,6 +1372,7 @@ def cmd_scoreboard(args: argparse.Namespace) -> None:
         print(scoreboard_text(
             epoch_trips, title=title,
             start_capital_by_strategy=start_capital_by_strategy,
+            names=_scoreboard_symbol_names(epoch_trips),
         ))
         print()
 
@@ -1330,7 +1383,7 @@ def cmd_scoreboard(args: argparse.Namespace) -> None:
         title = f"최근 {args.days}일 스코어보드"
     if current_params_only:
         title += " · 현재 판본만"
-    print(scoreboard_text(trips, title=title))
+    print(scoreboard_text(trips, title=title, names=_scoreboard_symbol_names(trips)))
 
     # A/B 갈래 비교(2026-09-03) — 기본 출력에 섞지 않는다. 스코어보드는 "전략별
     # 성적"이고 이건 "같은 전략의 두 유니버스 중 어느 쪽이 나은가"라는 다른 질문이라,
@@ -2378,6 +2431,18 @@ def cmd_daily_wrap(args: argparse.Namespace) -> None:
     consume_queue = args.date is None and not args.narration_only
     deferred = _wrap_deferred(root, on, consume=consume_queue)
 
+    # 7절 — 오늘의 매매 리뷰(2026-09-07). 표준 리뷰 JSON을 재사용하고(읽기만,
+    # 없으면 봉 없이 즉석 조립) URL은 캡션에만 쓴다. 종목명 완비성 WARN
+    # (2026-09-07, 코디네이터 지시) — 게이트/종료 코드는 바꾸지 않는다. `daily_wrap`
+    # (`quant/control/`)은 순수 조립 평면이라 `quant.report.lint`를 모르게
+    # 두고, 린트 자체는 여기(apps, 두 평면을 다 알아도 되는 경계)에서 돈다.
+    trade_review = _load_trade_review_for_wrap(root, market, on, trades)
+    if trade_review:
+        from quant.report.lint import lint_trade_review_symbols
+
+        for finding in lint_trade_review_symbols(trade_review.get("groups")):
+            logger.warning("%s", finding)
+
     sections = DW.build_sections(
         market=market, on=on, pnl=pnl, trips=trips,
         equity_points=_wrap_equity_points(
@@ -2391,9 +2456,7 @@ def cmd_daily_wrap(args: argparse.Namespace) -> None:
         # A/B 갈래(2026-09-03)는 **누적** 트립으로 잰다 — 하루치로는 양쪽 다
         # 30건에 한참 못 미쳐 매일 "판단 불가"만 찍힌다.
         all_trips=all_trips, ab_bases=ab_pairs_from_config(load_settings().raw),
-        # 7절 — 오늘의 매매 리뷰(2026-09-07). 표준 리뷰 JSON을 재사용하고
-        # (읽기만, 없으면 봉 없이 즉석 조립) URL은 캡션에만 쓴다.
-        trade_review=_load_trade_review_for_wrap(root, market, on, trades),
+        trade_review=trade_review,
         trade_review_url=_trade_review_url(market, on),
     )
 

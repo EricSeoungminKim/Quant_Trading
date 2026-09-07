@@ -38,6 +38,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from html import escape as _esc
 
+from quant.analyze.symbol_names import label as _label
 from quant.control import alpha as _alpha
 from quant.control import cost_model as _cost_model
 from quant.control import exposure as _exposure
@@ -410,7 +411,7 @@ def build_trade_review_section(review: dict | None, url: str | None = None) -> d
 
 def _trade_review_card(g: dict) -> dict:
     return {
-        "strategy_id": g["strategy_id"], "symbol": g["symbol"], "status": g["status"],
+        "strategy_id": g["strategy_id"], "symbol": g["symbol"], "name": g.get("name"), "status": g["status"],
         "market": g["market"], "tz_label": g.get("tz_label") or g["market"],
         "entry_price": g["entry_price"],
         # ts는 build_trade_review가 이미 시장 로컬 벽시계(오프셋 없음)로 준다
@@ -676,11 +677,6 @@ def _render_positions(pos: dict) -> str:
     return "".join(out)
 
 
-def _label(symbol: str, name: str) -> str:
-    """종목명이 있으면 "이름(코드)". 없으면 코드만 — 없는 이름을 지어내지 않는다."""
-    return f"{name}({symbol})" if name else symbol
-
-
 def _render_deferred(deferred: dict) -> str:
     """3절 꼬리 — 장중에 미뤄둔 알림. 하나도 없으면 아무것도 그리지 않는다
     (빈 소제목은 그 자체가 소음이다)."""
@@ -940,7 +936,7 @@ def _render_trade_review_card(c: dict) -> str:
         '<div class="tr-card">',
         f'<p class="muted tr-date">{_esc(entry_date)} · {_esc(tz_label)}</p>',
         chart_html,
-        f'<p><b>{_esc(c["symbol"])}</b> <span class="muted">{_esc(c["strategy_id"])}</span> '
+        f'<p><b>{_esc(_label(c["symbol"], c.get("name")))}</b> <span class="muted">{_esc(c["strategy_id"])}</span> '
         f'<span class="{cls}">{_esc(badge)}</span></p>',
         f'<p class="muted">{_esc(fill_line)}</p>',
     ]

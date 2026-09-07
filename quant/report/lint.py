@@ -379,6 +379,25 @@ def _lint_symbol_completeness(payload: dict) -> list[Finding]:
     return out
 
 
+def lint_trade_review_symbols(groups: list[dict] | None) -> list[Finding]:
+    """매매 리뷰 카드의 종목명 완비성(2026-09-07) — `quant.control.trade_review.
+    build_trade_review()`의 `groups`와 `quant.control.daily_wrap._trade_review_card()`
+    출력(7절 카드) 둘 다 `symbol`/`name`/`market` 키를 공유해 이 함수 하나로
+    본다. `_lint_symbol_completeness`(engine.json `payload["symbols"]`)와 같은
+    규율 — KR은 이름 없음/이름=코드가 WARN, US는 이름이 아예 없을 때만 WARN
+    (S&P500 원표 자체가 티커를 정식 표시명으로 쓰는 종목이 흔하다, 위 주석
+    참고)."""
+    out: list[Finding] = []
+    for g in groups or []:
+        code, name, market = g.get("symbol"), g.get("name"), g.get("market")
+        # KR: 이름 없음 또는 이름=코드 둘 다 오탐. US: 이름이 아예 없을 때만
+        # (S&P500 원표가 IBM 같은 티커=정식명 종목을 흔히 쓴다, 위 주석 참고).
+        missing = (not name or name == code) if market == "KR" else (market == "US" and not name)
+        if missing:
+            out.append(Finding(WARN, "trade_review", f"{code}: 종목명 없음(코드 그대로 노출)"))
+    return out
+
+
 def _lint_view_completeness(section: str, items: list[dict] | None) -> list[Finding]:
     """`intraday_view`/`agent_interpret_view`처럼 `ReportModel`에만 있는 뷰용 —
     payload에는 이 리스트 자체가 없으므로 model 경로에서만 호출된다."""

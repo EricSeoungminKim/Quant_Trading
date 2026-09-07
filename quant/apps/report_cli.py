@@ -14,6 +14,7 @@ Phase D 엔진 분리(2026-08-19, `docs/superpowers/specs/2026-08-19-engine-sepa
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import time
 from dataclasses import replace
@@ -147,6 +148,8 @@ from quant.report.paths import (
 from quant.report.render.html import write_close_report, write_open_report
 from quant.report.render.telegram import _format_close_summary, _format_summary
 
+logger = logging.getLogger(__name__)
+
 
 def _print_summary(market: str, root: Path, session: date, session_kind: str = "open") -> None:
     """`summary` 서브커맨드 몸통. 엔진 JSON 이 없거나 깨졌으면 아무 것도
@@ -262,6 +265,140 @@ def _lint_and_gate(model: ReportModel | CloseReportModel, root: Path) -> None:
     if not stop:
         return
     raise RuntimeError(f"리포트 린트 오류 {len(errors)}건 — 발행 중단 (첫 건: {errors[0]})")
+
+
+def _collect_symbol_rows(model: ReportModel | CloseReportModel) -> list[dict]:
+    """모델 전역에서 `symbol`/`name` 키를 쓰는 딕셔너리 행을 전부 모은다 —
+    이미 이름이 채워진 행도 포함해 돌려주고, 호출부가 필요 여부를 판단한다
+    (2026-09-07, `_fill_report_symbol_names`의 1단계: "이 리포트에 등장하는
+    모든 심볼"을 한 곳에서 정의한다).
+
+    `payload["symbols"]`(뉴스 후보)·`midterm_watch`(중기 관심종목)·
+    `intraday_view`/`agent_interpret_view`(단타 스코어링 뷰)·`rankings.boards`
+    (마감판 랭킹, `payload["rankings"]`)·`sector_view`의 업종별 `symbols`
+    멤버까지 — `_lint_symbol_completeness`/`_lint_view_completeness`가
+    개별적으로 검사하던 것과 같은 필드 목록이다."""
+    payload = model.payload
+    rows: list[dict] = []
+
+    def _extend(items: object) -> None:
+        if not isinstance(items, list):
+            return
+        rows.extend(it for it in items if isinstance(it, dict) and it.get("symbol"))
+
+    _extend(payload.get("symbols"))
+    _extend(payload.get("midterm_watch"))
+    _extend(getattr(model, "intraday_view", None))
+    _extend(getattr(model, "agent_interpret_view", None))
+    ranking = payload.get("rankings")
+    if isinstance(ranking, dict):
+        for items in (ranking.get("boards") or {}).values():
+            _extend(items)
+    for sector in getattr(model, "sector_view", None) or []:
+        if isinstance(sector, dict):
+            _extend(sector.get("symbols"))
+    return rows
+
+
+def _fill_report_symbol_names(model: ReportModel | CloseReportModel, root: Path) -> None:
+    """린트 직전(모델이 다 채워진 뒤, 페이로드가 최종 확정된 시점) — 리포트
+    전체에서 아직 이름 없는 심볼을 한 번에 모아 `quant.analyze.symbol_names`
+    (캐시 → 결정론 사전 → 워치리스트 → Toss → LLM 배치)로 채운다(2026-09-07
+    오너 지시: "코드만 보이는 ~100건이 사라져야 한다").
+
+    `payload["symbols"]`/`midterm_watch`/`intraday_view`/`agent_interpret_view`/
+    `rankings.boards`/`sector_view` 딕셔너리 행은 **제자리에서 mutate**한다
+    (호출부가 이미 그 dict 참조를 들고 있으므로 이후 렌더가 그대로 본다).
+    `channel_digest.candidates`/`number_claims`는 frozen dataclass라 제자리
+    수정이 안 돼 `dataclasses.replace()`로 새 `Digest`를 만들어
+    `model.channel_digest`에 재대입한다 — `write_open_report`/
+    `write_close_report`가 `model.channel_digest`를 렌더 시점에 다시 읽으므로
+    이걸로 충분하다.
+
+    이름을 못 찾은 나머지는 그대로 코드로 남는다 — 그건 `lint_report`/
+    `lint_trade_review_symbols`가 WARN으로 계속 잡아야 하는 몫이다(이 함수는
+    "채우기"만, "빠짐없이 채웠는지 확인"은 린트 몫으로 분리한다).
+    실패해도 발행(과 그 뒤의 린트)을 막지 않는다."""
+    import dataclasses
+
+    try:
+        market = model.payload.get("market")
+
+        def _needs(name: str | None, code: str | None) -> bool:
+            # `_lint_symbol_completeness`와 같은 비대칭 규율 — KR은 이름
+            # 없음/이름=코드가 둘 다 "채워야 함", US는 이름이 아예 없을 때만
+            # (S&P500 원표 자체가 티커=정식명인 종목이 흔하다).
+            if not name:
+                return True
+            return market == "KR" and name == code
+
+        rows = _collect_symbol_rows(model)
+        missing_rows = [r for r in rows if _needs(r.get("name"), r.get("symbol"))]
+
+        digest = getattr(model, "channel_digest", None)
+        digest_missing: set[str] = set()
+        if digest is not None:
+            digest_missing |= {c.symbol for c in digest.candidates if _needs(c.name, c.symbol)}
+            digest_missing |= {n.symbol for n in digest.number_claims if _needs(n.name, n.symbol)}
+
+        symbols = sorted({r["symbol"] for r in missing_rows} | digest_missing)
+        if not symbols:
+            return
+
+        from quant.adapters.env import get_key
+        from quant.adapters.narrate import make_narrator
+        from quant.analyze.symbol_names import build_resolver
+        from quant.trade.universe import DEFAULT_WATCHLIST_PATH
+
+        toss_lookup = None
+        client_id = get_key("TOSS_CLIENT_ID") or ""
+        client_secret = get_key("TOSS_CLIENT_SECRET") or ""
+        if client_id and client_secret:
+            try:
+                from quant.adapters.brokers.toss.client import TossClient
+
+                client = TossClient(
+                    client_id=client_id, client_secret=client_secret,
+                    account_seq=get_key("TOSS_ACCOUNT_SEQ") or "", mode="paper",
+                )
+                toss_lookup = client.stock_info
+            except Exception:  # noqa: BLE001 — 이 소스만 건너뛴다
+                toss_lookup = None
+
+        _, _, cache_dir, _ = _paths(root)
+        resolver = build_resolver(
+            cache_dir, root / "data" / "state",
+            watchlist_paths=[root / DEFAULT_WATCHLIST_PATH],
+            toss_lookup=toss_lookup, narrator=make_narrator(timeout=60),
+        )
+        names = resolver.names_for(symbols, market=market)
+        if not names:
+            return
+
+        filled = 0
+        for row in missing_rows:
+            nm = names.get(row.get("symbol"))
+            if nm:
+                row["name"] = nm
+                filled += 1
+
+        if digest is not None:
+            def _resolve(item):
+                if _needs(item.name, item.symbol) and names.get(item.symbol):
+                    return dataclasses.replace(item, name=names[item.symbol])
+                return item
+
+            new_candidates = [_resolve(c) for c in digest.candidates]
+            new_claims = [_resolve(n) for n in digest.number_claims]
+            filled += sum(1 for old, new in zip(digest.candidates, new_candidates) if new is not old)
+            filled += sum(1 for old, new in zip(digest.number_claims, new_claims) if new is not old)
+            model.channel_digest = dataclasses.replace(
+                digest, candidates=new_candidates, number_claims=new_claims,
+            )
+
+        print(f"리포트 종목명 최종 보강: {filled}건 채움 · 잔여 {len(symbols) - len(names)}건 코드 그대로")
+    except Exception as e:  # noqa: BLE001 — 이름 채우기 실패가 발행을 막지 않는다
+        print(f"리포트 종목명 최종 보강 생략: {type(e).__name__}: {e}", file=sys.stderr)
 
 
 def _emit_close(snap, root: Path, out_root: Path, snap_root: Path) -> None:
@@ -426,6 +563,7 @@ def _emit_close(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         us_news_kr_view=us_news_kr_view, usnews_headlines=usnews_headlines,
         channel_digest=channel_digest,
     )
+    _fill_report_symbol_names(model, root)
     _lint_and_gate(model, root)
     hp, jp = write_close_report(model, snap, out_root)
     print(f"HTML(마감) {hp}\n엔진(마감) {jp}")
@@ -714,6 +852,7 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
         # 가 표시한다(index_outlook/holiday_synthesis 와 같은 관례).
         report_accuracy=payload.get("report_accuracy"),
     )
+    _fill_report_symbol_names(model, root)
     _lint_and_gate(model, root)
     hp, jp, cp = write_open_report(model, snap, out_root)
     print(f"HTML   {hp}\n엔진   {jp}\n후보   {cp}")
@@ -1413,6 +1552,45 @@ def _fetch_trade_review_bars(
     return bars_by_symbol, bar_meta
 
 
+def _trade_review_symbol_names(root: Path, cache_dir: Path, symbols: list[str], market: str) -> dict[str, str]:
+    """`quant.analyze.symbol_names` 리졸버 조립 + 해석(2026-09-07, 오너 요청:
+    "리포트에 종목코드만 보이지 않게, 모르면 LLM으로 채운다"). Toss 조회기와
+    narrator는 여기(`quant.apps`)에서만 조립한다 — `quant.analyze`는
+    `quant.adapters`를 임포트할 수 없다(`tests/test_architecture.py`
+    FORBIDDEN). 이름 조회/LLM 호출 실패가 리포트 발행을 막으면 안 되므로
+    통째로 예외를 삼킨다."""
+    try:
+        from quant.adapters.env import get_key
+        from quant.adapters.narrate import make_narrator
+        from quant.analyze.symbol_names import build_resolver
+        from quant.trade.universe import DEFAULT_WATCHLIST_PATH
+
+        toss_lookup = None
+        client_id = get_key("TOSS_CLIENT_ID") or ""
+        client_secret = get_key("TOSS_CLIENT_SECRET") or ""
+        if client_id and client_secret:
+            try:
+                from quant.adapters.brokers.toss.client import TossClient
+
+                client = TossClient(
+                    client_id=client_id, client_secret=client_secret,
+                    account_seq=get_key("TOSS_ACCOUNT_SEQ") or "", mode="paper",
+                )
+                toss_lookup = client.stock_info
+            except Exception:  # noqa: BLE001 — Toss 클라이언트 생성 실패는 그 소스만 건너뛴다
+                toss_lookup = None
+
+        resolver = build_resolver(
+            cache_dir, root / "data" / "state",
+            watchlist_paths=[root / DEFAULT_WATCHLIST_PATH],
+            toss_lookup=toss_lookup, narrator=make_narrator(timeout=60),
+        )
+        return resolver.names_for(symbols, market=market)
+    except Exception as e:  # noqa: BLE001 — 이름 채우기 실패가 리포트를 막지 않는다
+        print(f"종목명 해석 생략: {type(e).__name__}: {e}", file=sys.stderr)
+        return {}
+
+
 def cmd_trade_review(a: argparse.Namespace) -> int:
     """`report trade-review --market KR|US --date YYYY-MM-DD [--root] [--out]`
     — 그날 진입한 모든 전략의 체결을 (전략, 종목) 카드로 재구성해 HTML/JSON을
@@ -1422,6 +1600,7 @@ def cmd_trade_review(a: argparse.Namespace) -> int:
     from quant.apps.config import DEFAULT_SETTINGS_PATH, load_settings
     from quant.control.ledger import DEFAULT_LEDGER_PATH, load_trades, trades_in_session
     from quant.control.trade_review import build_trade_review, format_telegram_line
+    from quant.report.lint import lint_trade_review_symbols
     from quant.report.render.trade_review import write_trade_review
 
     root = Path(a.root)
@@ -1441,11 +1620,18 @@ def cmd_trade_review(a: argparse.Namespace) -> int:
     settings = load_settings(str(settings_path)) if settings_path.exists() else load_settings()
     symbols = sorted({str(f.get("symbol")) for f in session_fills if f.get("symbol")})
     bars_by_symbol, bar_meta = _fetch_trade_review_bars(symbols, market, cache_dir)
+    names = _trade_review_symbol_names(root, cache_dir, symbols, market)
 
     review = build_trade_review(
         trades, bars_by_symbol, settings.strategies, market, on,
-        risk_params=settings.risk, bar_meta_by_symbol=bar_meta,
+        risk_params=settings.risk, bar_meta_by_symbol=bar_meta, names=names,
     )
+    # 종목명 완비성 WARN(2026-09-07, 코디네이터 지시) — 게이트/종료 코드는
+    # 바꾸지 않는다. logger.warning 은 핸들러가 없어도 파이썬 기본
+    # "lastResort" 핸들러가 stderr 로 내보내므로, 크론이 `2>&1`로 모으는
+    # `data/trade_review.log`에 그대로 남는다(server/crontab.txt).
+    for finding in lint_trade_review_symbols(review.get("groups")):
+        logger.warning("%s", finding)
     hp, jp = write_trade_review(review, market, on, out_root)
     url_base = a.url_base.rstrip("/") if getattr(a, "url_base", None) else None
     url = f"{url_base}/{on.year:04d}/{on.month:02d}/{on.day:02d}/{market}_trade_review.html" if url_base else None

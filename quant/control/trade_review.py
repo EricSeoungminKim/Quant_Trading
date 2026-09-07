@@ -34,6 +34,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from quant.analyze.symbol_names import label
 from quant.control.ledger import (
     is_paper_epoch_marker,
     is_seeding_carry,
@@ -350,6 +351,7 @@ def build_trade_review(
     date: Any,
     risk_params: dict[str, Any] | None = None,
     bar_meta_by_symbol: dict[str, dict[str, str]] | None = None,
+    names: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """그날(`date`, `market` 세션 기준) 체결을 (전략, 종목) 카드로 묶는다.
 
@@ -362,8 +364,14 @@ def build_trade_review(
     "open"(오버나이트 보유 등, 그날 안에서는 미종결). 선행 매수 없이 시작하는
     매도(전날 진입한 오버나이트 포지션의 오늘 청산)는 이 리뷰의 범위 밖이라
     건너뛴다 — "오늘 진입한 전략들의 생각"이 요청의 초점이다.
+
+    `names`(선택, 2026-09-07) — 심볼 → 표시용 회사명. 이 모듈 자신은 리졸버를
+    만들지 않는다(호출부가 `quant.analyze.symbol_names`로 미리 풀어 넘긴다) —
+    카드 dict의 `name` 필드로 그대로 실려 렌더러가 `symbol_names.label()`로
+    보여준다.
     """
     bar_meta_by_symbol = bar_meta_by_symbol or {}
+    names = names or {}
     session_fills = [f for f in trades_in_session(fills, market, date) if not _is_marker(f)]
     session_fills.sort(key=lambda x: str(x.get("ts", "")))
 
@@ -377,6 +385,7 @@ def build_trade_review(
         cur: list[dict] = []
         started = False
         meta = bar_meta_by_symbol.get(symbol, {})
+        name = names.get(symbol)
         for f in rows:
             side = str(f.get("side", "")).upper()
             f_qty = float(f.get("qty", 0) or 0)
@@ -387,10 +396,10 @@ def build_trade_review(
             qty += f_qty if side == "BUY" else -f_qty
             cur.append(f)
             if cur and abs(qty) < 1e-9:
-                groups.append(_build_group(strategy_id, symbol, cur, bars_by_symbol.get(symbol), strategy_params, risk_params, meta))
+                groups.append(_build_group(strategy_id, symbol, cur, bars_by_symbol.get(symbol), strategy_params, risk_params, meta, name))
                 cur, qty, started = [], 0.0, False
         if cur:
-            groups.append(_build_group(strategy_id, symbol, cur, bars_by_symbol.get(symbol), strategy_params, risk_params, meta))
+            groups.append(_build_group(strategy_id, symbol, cur, bars_by_symbol.get(symbol), strategy_params, risk_params, meta, name))
 
     groups.sort(key=lambda g: str(g["entries"][0]["ts"]) if g["entries"] else "")
     summary = _day_summary(groups)
@@ -410,6 +419,7 @@ def _build_group(
     strategy_params: dict[str, Any],
     risk_params: dict[str, Any] | None,
     bar_meta: dict[str, str] | None = None,
+    name: str | None = None,
 ) -> dict[str, Any]:
     market = str(fills[0].get("market") or "")
     buys = [f for f in fills if str(f.get("side", "")).upper() == "BUY"]
@@ -464,6 +474,7 @@ def _build_group(
     return {
         "strategy_id": strategy_id,
         "symbol": symbol,
+        "name": name,
         "market": market,
         "tz_label": MARKET_TZ_LABEL.get(market, market),
         "status": status,
@@ -516,8 +527,10 @@ def _day_summary(groups: list[dict[str, Any]]) -> dict[str, Any]:
             "win_rate": (len(wins) / n) if n else None,
             "net_bp": sum(g["pnl_bp"] for g in known) if n else None,
             "best": max(known, key=lambda g: g["pnl_bp"])["symbol"] if known else None,
+            "best_name": max(known, key=lambda g: g["pnl_bp"]).get("name") if known else None,
             "best_bp": max((g["pnl_bp"] for g in known), default=None),
             "worst": min(known, key=lambda g: g["pnl_bp"])["symbol"] if known else None,
+            "worst_name": min(known, key=lambda g: g["pnl_bp"]).get("name") if known else None,
             "worst_bp": min((g["pnl_bp"] for g in known), default=None),
         }
 
@@ -547,12 +560,12 @@ def format_telegram_line(review: dict[str, Any], url: str | None = None) -> str:
         parts.append(f"승률 {t['win_rate']:.0%}")
     if t["net_bp"] is not None:
         parts.append(f"순 {t['net_bp']:+.0f}bp")
-    best_sid, best_symbol, best_bp = None, None, None
+    best_sid, best_symbol, best_name, best_bp = None, None, None, None
     for sid, s in review["summary"]["per_strategy"].items():
         if s["best_bp"] is not None and (best_bp is None or s["best_bp"] > best_bp):
-            best_sid, best_symbol, best_bp = sid, s["best"], s["best_bp"]
+            best_sid, best_symbol, best_name, best_bp = sid, s["best"], s.get("best_name"), s["best_bp"]
     if best_sid:
-        parts.append(f"최고 {best_sid} {best_symbol} {best_bp:+.0f}bp")
+        parts.append(f"최고 {best_sid} {label(best_symbol, best_name)} {best_bp:+.0f}bp")
     line = " · ".join(parts)
     if url:
         line += f"\n{url}"

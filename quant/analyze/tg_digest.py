@@ -110,6 +110,7 @@ from pathlib import Path
 from quant.analyze.entities import extract as _extract_kr
 from quant.analyze.entities import extract_us as _extract_us
 from quant.analyze.narrator import verify_numbers
+from quant.analyze.symbol_names import label as _symbol_label
 from quant.collect.sources.feeds import parse_published
 from quant.collect.sources.telegram_channels import channels_for
 from quant.core import tgfmt
@@ -267,6 +268,12 @@ class NumberClaim:
     handle: str
     sentence: str
     status: str  # "✓" | "✗" | "미확인"
+    # 2026-09-07(오너 요청: "숫자 검증 줄도 종목코드만 보이지 않게") — 이
+    # 문장을 뽑아낸 `_candidates_in_sentence`가 이미 찾은 이름(테이블 매칭)이
+    # 있으면 그걸 쓰고, 없으면 `build_digest(names=...)`로 주입된 외부 해석
+    # 결과(캐시/워치리스트/LLM)로 채운다. 렌더러는 `symbol_names.label()`로
+    # "이름(코드)"를 만든다 — 없으면 코드 그대로(없는 이름을 지어내지 않는다).
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -559,6 +566,7 @@ def build_digest(
     llm_call: Callable[[str], str | None] | None = None,
     stance_llm_call: Callable[[str], dict | None] | None = None,
     regime: dict | None = None,
+    names: dict[str, str] | None = None,
 ) -> Digest:
     """`messages`(`telegram_channels.load_window`가 돌려주는, 최신순 원장 행
     리스트)에서 `market`(KR/US) 다이제스트를 만든다.
@@ -567,6 +575,12 @@ def build_digest(
     같은 `[(name, code), ...]` 형태 — 호출부가 캐시에서 읽어 주입한다(네트워크는
     이 함수 밖). 없으면(`None`/빈 리스트) 종목 후보·숫자 클레임은 비어 있는
     채로(리스크 키워드·채널별 원문은 그대로) 돌려준다 — 예외를 던지지 않는다.
+
+    `names`(선택, 2026-09-07) — `quant.analyze.symbol_names.SymbolNameResolver.
+    names_for()`가 미리 풀어준 심볼 → 표시용 회사명(캐시/워치리스트/LLM 포함).
+    `name_table` 매칭이 이름을 못 찾은 심볼(ETF·신규상장 등)의 폴백으로만
+    쓴다 — `name_table`이 찾은 이름이 우선이다(문장에서 실제로 매칭된 표기와
+    더 가깝다). `NumberClaim.name`이 이 값을 받는다.
 
     `regime`은 `data/state/regime.json`의 그 시장 sub-dict(호출부가 읽어
     주입, 모듈 docstring "프로그램 스탠스" 절) — `Digest.program_stance_display()`
@@ -658,6 +672,7 @@ def build_digest(
                         number_claims.append(NumberClaim(
                             symbol=symbol, value=value, handle=handle, sentence=sentence,
                             status=_verify_price_value(price_val, symbol, quotes_lookup),
+                            name=d.get("name") or (names or {}).get(symbol),
                         ))
 
     ranked_candidates = [
@@ -937,7 +952,7 @@ def render_telegram(digest: Digest, report_url: str | None = None) -> str:
         sections.append(f"{tgfmt.b('[리스크 항목]')}\n" + tgfmt.esc("\n".join(lines)))
 
     if digest.number_claims:
-        lines = [f"{n.symbol} {n.value} ({n.handle}) — {n.status} 채널 주장"
+        lines = [f"{_symbol_label(n.symbol, n.name)} {n.value} ({n.handle}) — {n.status} 채널 주장"
                  for n in digest.number_claims[:NUMBER_DISPLAY_CAP]]
         sections.append(f"{tgfmt.b('[숫자 검증]')}\n" + tgfmt.esc("\n".join(lines)))
     else:
