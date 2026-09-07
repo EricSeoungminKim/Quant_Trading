@@ -560,7 +560,10 @@
 # 아침 리포트(07:30 빌드)가 이 산출물을 읽어 카드 하나로 보여준다(리포트
 # 순환) — 완전히 결정론(LLM 호출 없음). 텔레그램 발송은 여기서 하지 않는다
 # (uswrap 서브커맨드는 stdout 요약만 낸다 — deepdive 와 달리 별도 알림 없음).
-50 5 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.report_cli uswrap >> data/uswrap.log 2>&1
+# 2026-09-07 DST 수정(V4 감사): 미국 마감은 EDT 05:00 / EST 06:00 KST — 05:50 은 11-01 DST 종료
+# 뒤(첫 오발 11-03 화)엔 마감 전에 돌아 전일 데이터를 낸다. 06:20 은 양쪽 모두 마감 후이고
+# 06:55 US wrap·07:35 KR 리포트(uswrap 소비) 전이다.
+22 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && .venv/bin/python -m quant.apps.report_cli uswrap >> data/uswrap.log 2>&1
 
 # --- 매크로 금리·환율(FRED) 일일 수집 (2026-08-28, 소유자 지시) ---
 #
