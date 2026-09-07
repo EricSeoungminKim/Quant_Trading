@@ -36,6 +36,7 @@ from quant.adapters.regime_indicators import (
 from quant.adapters.smart_flow_log import SmartFlowLogger
 from quant.adapters.tick_log import TickLogger
 from quant.apps.config import Settings
+from quant.control.experiments import strategy_fingerprints
 from quant.control.exposure import DEFAULT_ALERT_PCT
 from quant.control.exposure import build_report as build_exposure_report
 from quant.control.ledger import TradeLedgerSink
@@ -1509,7 +1510,15 @@ def build_paper_runtime(settings: Settings) -> PaperRuntime:
         # OpenOrderBook 을 sink 체인 **안**에 넣는다 — 루프는 `on_order` 를 가진
         # 싱크에만 주문 상태를 준다(isinstance 판정). 체인 밖에 두면 장부가 영원히
         # 비어 있고 대사는 아무 변화도 못 느낀다("적용했다고 믿기").
-        sinks=TradeLedgerSink(MultiSink([ConsoleSink(), JsonlSink(), open_orders])),
+        # params_fingerprint_of(2026-09-07, 진화가능성 평가 투자 #1): 조립 시점
+        # 스냅샷 — 이후 체결마다 여기서 strategy_id로 지문을 찾아 원장 행에
+        # 찍는다. `quant/trade/loop.py`의 설정 핫 리로드 훅이 장중 파라미터
+        # 변경 시 `TradeLedgerSink.refresh_params_fingerprints`로 이 맵을
+        # 다시 채운다 — 여기서는 최초 1회 값만 준다.
+        sinks=TradeLedgerSink(
+            MultiSink([ConsoleSink(), JsonlSink(), open_orders]),
+            params_fingerprint_of=strategy_fingerprints(cfg.get("strategies", {})),
+        ),
         notifier=notifier,
         data=data,
         fx=fx,

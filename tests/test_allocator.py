@@ -130,8 +130,14 @@ def test_decide_applies_when_cooldown_has_elapsed():
 
 
 def test_decide_no_prior_change_means_no_cooldown():
-    """last_change_days 가 None(한 번도 강등된 적 없음)이면 냉각 대상이 아니다."""
-    stat = StrategyStat(strategy="news_momentum", n=25, mean_bp=-90.4, stdev_bp=100.0)
+    """last_change_days 가 None(한 번도 강등된 적 없음)이면 냉각 대상이 아니다.
+
+    n=25→35(2026-09-07): `decide()`의 `min_samples` 기본값이 `ledger.
+    MIN_TRIPS_FOR_JUDGEMENT`(30, 투자 #3 — allocator/ledger/governor가 20/30으로
+    갈라져 있던 최소 표본선을 하나로 통일)로 바뀌면서 n=25는 기본값 아래로
+    떨어져 "표본 부족"으로 후보에서 빠진다. 이 테스트의 관심사는 냉각 로직이지
+    표본 임계값이 아니므로 새 기본값을 넉넉히 넘기는 n으로 올린다."""
+    stat = StrategyStat(strategy="news_momentum", n=35, mean_bp=-90.4, stdev_bp=100.0)
     out = decide([stat], {("news_momentum", "KR"): 0.1}, {"news_momentum": None}, cooldown_days=5)
     assert len(out) == 1
     assert out[0].applied is True

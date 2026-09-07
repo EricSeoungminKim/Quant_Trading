@@ -1270,10 +1270,13 @@ def cmd_scoreboard(args: argparse.Namespace) -> None:
     from quant.control.ledger import (
         ab_compare,
         ab_pairs_from_config,
+        annotate_params_version,
         filter_recent,
         frgn_accumulate_promotion_verdict,
+        load_params_sidecar,
         load_trades,
         paper_epoch_ts,
+        params_version_summary_lines,
         round_trips,
         round_trips_since_epoch,
         scoreboard_text,
@@ -1283,33 +1286,56 @@ def cmd_scoreboard(args: argparse.Namespace) -> None:
     ledger_path = Path(args.ledger) if getattr(args, "ledger", None) else ledger_state_path()
     trades = load_trades(ledger_path)
 
+    # 2026-09-07(투자 #2·#4, 진화가능성 평가): 파라미터가 바뀌어도 옛 판본 트립이
+    # 새 판본과 한 트랙레코드로 계속 풀린다 — `--current-params-only`(또는 config
+    # `governor.judge_current_params_only`)를 켜면 지금 지문과 일치하는 트립만
+    # 판정에 쓴다. 어느 쪽이든 "현재 판본 트립 n / 전체 N" 줄은 항상 보여준다 —
+    # 그 숫자를 모르면 필터를 켜야 할지조차 판단할 수 없다.
+    settings_raw = load_settings().raw
+    current_params_only = bool(getattr(args, "current_params_only", False)) or bool(
+        (settings_raw.get("governor") or {}).get("judge_current_params_only", False)
+    )
+    sidecar = load_params_sidecar()
+    strategies_cfg = settings_raw.get("strategies", {}) or {}
+
+    def _apply_version_filter(scoped_trips: list[dict]) -> list[dict]:
+        kept, stats = annotate_params_version(scoped_trips, strategies_cfg, sidecar)
+        print("\n".join(params_version_summary_lines(stats)))
+        return kept if current_params_only else scoped_trips
+
     # "에폭 이후" 절 — 에폭 마커가 없거나(paper-epoch 미실행) --days가 주어지면
     # (이미 "최근" 스코프 요청이라 중복) 건너뛴다.
     epoch_ts = None if args.days else paper_epoch_ts(trades)
     if epoch_ts is not None:
-        epoch_trips = round_trips_since_epoch(trades)
+        epoch_trips = _apply_version_filter(round_trips_since_epoch(trades))
         epoch_date = epoch_ts.astimezone(ZoneInfo("Asia/Seoul")).date().isoformat()
         start_capital_by_strategy = {
             s: strategy_start_capital(s) for s in sorted({t["strategy"] for t in epoch_trips})
         }
+        title = f"🆕 에폭 이후 ({epoch_date}~)"
+        if current_params_only:
+            title += " · 현재 판본만"
         print(scoreboard_text(
-            epoch_trips, title=f"🆕 에폭 이후 ({epoch_date}~)",
+            epoch_trips, title=title,
             start_capital_by_strategy=start_capital_by_strategy,
         ))
         print()
 
-    trips = round_trips(trades)
+    trips = _apply_version_filter(round_trips(trades))
     title = "📚 누적(역사)" if epoch_ts is not None else "누적 스코어보드"
     if args.days:
         trips = filter_recent(trips, args.days)
         title = f"최근 {args.days}일 스코어보드"
+    if current_params_only:
+        title += " · 현재 판본만"
     print(scoreboard_text(trips, title=title))
 
     # A/B 갈래 비교(2026-09-03) — 기본 출력에 섞지 않는다. 스코어보드는 "전략별
     # 성적"이고 이건 "같은 전략의 두 유니버스 중 어느 쪽이 나은가"라는 다른 질문이라,
-    # 매주 텔레그램으로 나가는 본문을 두 배로 늘리지 않고 플래그로 연다.
+    # 매주 텔레그램으로 나가는 본문을 두 배로 늘리지 않고 플래그로 연다. `trips`가
+    # 이미 위에서 `--current-params-only` 필터를 거쳤으면 A/B도 같은 스코프를 본다.
     if getattr(args, "ab", False):
-        rows = ab_compare(trips, bases=ab_pairs_from_config(load_settings().raw))
+        rows = ab_compare(trips, bases=ab_pairs_from_config(settings_raw))
         print()
         print("\n".join(_ab_report_lines(rows)))
 
@@ -1317,6 +1343,41 @@ def cmd_scoreboard(args: argparse.Namespace) -> None:
     frgn_verdict = frgn_accumulate_promotion_verdict(trades)
     print(f"갈래 B(frgn_accumulate) 승격 판정: {frgn_verdict['reason']}")
     print(_news_scalp_verdict_line())
+
+
+def cmd_ledger_versions(args: argparse.Namespace) -> None:
+    """원장 소급 판본 태깅 진단(2026-09-07, 투자 #3) — `data/ledger/
+    param_changes.jsonl`의 기록 시각으로 각 트립의 진입 판본을 근사해, 전략별
+    판본 수·트립 분포·현재 판본 승률/평균을 보여준다
+    (`docs/research/params-version-retrotag-2026-09-07.md`의 수기 실측을 커맨드로
+    고정한 것).
+
+    **`data/state/trades.jsonl`은 절대 다시 쓰지 않는다** — 읽기 전용. `--write-sidecar`를
+    주면 `params_fingerprint`가 없는 체결에 근사값을 매겨 별도 사이드카 파일
+    (`data/ledger/trades_params_sidecar.jsonl`)에 쓴다 — `run scoreboard`/
+    `annotate_params_version`이 원장 필드가 없을 때 이 파일로 폴백한다."""
+    from quant.control.experiments import load_changes
+    from quant.control.ledger import (
+        DEFAULT_PARAMS_SIDECAR_PATH,
+        backfill_params_sidecar,
+        load_trades,
+        round_trips,
+        versions_report_lines,
+    )
+
+    ledger_path = Path(args.ledger) if getattr(args, "ledger", None) else ledger_state_path()
+    changes_path = args.changes if getattr(args, "changes", None) else "data/ledger/param_changes.jsonl"
+
+    trades = load_trades(ledger_path)
+    changes = load_changes(changes_path)
+    trips = round_trips(trades)
+
+    print("\n".join(versions_report_lines(trips, changes)))
+
+    if getattr(args, "write_sidecar", False):
+        sidecar_path = Path(args.sidecar) if getattr(args, "sidecar", None) else DEFAULT_PARAMS_SIDECAR_PATH
+        n = backfill_params_sidecar(trades, changes, sidecar_path)
+        print(f"\n사이드카 {n}건 기록: {sidecar_path} (trades.jsonl 은 건드리지 않음)")
 
 
 def cmd_orders(args: argparse.Namespace) -> None:
@@ -3400,6 +3461,7 @@ def cmd_seed_carry(args: argparse.Namespace) -> None:
     from datetime import datetime as _dt
 
     from quant.control.ledger import (
+        LEDGER_SCHEMA_VERSION,
         SEEDING_CARRY_MARKER,
         TradeLedgerSink,
         is_seeding_carry,
@@ -3423,10 +3485,15 @@ def cmd_seed_carry(args: argparse.Namespace) -> None:
         reason=f"{SEEDING_CARRY_MARKER} — 수동 수리(quant.apps.cli seed-carry)",
         realized_pnl=0.0,
     )
+    # 2026-09-07: params_fingerprint/schema — TradeLedgerSink.on_fill이 실제로
+    # 쓰는 행과 이 미리보기가 갈라지지 않게 여기서도 같은 값을 찍는다(맵을
+    # 안 넘겼으므로 params_fingerprint는 None — 이 도구는 시딩 수리용이라
+    # strategy_id="seed"가 어떤 전략의 파라미터 맵에도 없다).
     row = {
         "ts": fill.ts.isoformat(), "strategy_id": fill.strategy_id, "symbol": fill.symbol,
         "side": fill.side.value, "qty": fill.qty, "price": fill.price, "fee": fill.fee,
         "realized_pnl": fill.realized_pnl, "cash_after": None, "cash_after_usd": None,
+        "params_fingerprint": fill.params_fingerprint, "schema": LEDGER_SCHEMA_VERSION,
         "reason": fill.reason, "market": market_of_symbol(fill.symbol),
     }
     print(_json.dumps(row, ensure_ascii=False, indent=2))
@@ -4208,7 +4275,6 @@ def cmd_ops_judge(args: argparse.Namespace) -> None:
     run_judgment`이 모든 LLM 실패(자격증명 없음/호출 실패/응답 없음/파싱 실패)를
     `review`로 흡수하므로, 여기서는 그 결과를 그대로 출력할 뿐이다.
     """
-    import functools
     import json as _json
     import sys
     from datetime import timedelta, timezone
@@ -4217,7 +4283,6 @@ def cmd_ops_judge(args: argparse.Namespace) -> None:
     from quant.adapters import olap as OLAP
     from quant.adapters.env import REPO_ROOT, get_key
     from quant.adapters.kv import make_kv
-    from quant.adapters.narrate import TOOL_MODEL, chat_with_tools
     from quant.control import ops_judge as J
     from quant.control.ledger import load_trades
     from quant.control.opstate import record_run
@@ -6922,7 +6987,38 @@ def main() -> None:
         "--ledger", default=None,
         help="원장 경로 재지정 (기본: data/state/trades.jsonl) — 운영 원장 사본 점검용",
     )
+    p_scoreboard.add_argument(
+        "--current-params-only", action="store_true",
+        help="지금 설정과 파라미터 지문이 일치하는 트립만 판정에 쓴다(2026-09-07, "
+             "옛 판본과 풀리는 것을 막는다). 기본값은 config의 "
+             "governor.judge_current_params_only(기본 false)를 따른다 — 이 플래그는 그걸 강제로 켠다",
+    )
     p_scoreboard.set_defaults(func=cmd_scoreboard)
+
+    p_ledger_versions = sub.add_parser(
+        "ledger-versions",
+        help="원장 소급 판본 태깅 진단 — 전략별 판본 수·트립 분포(근사). 읽기 전용, "
+             "--write-sidecar 아니면 아무 파일도 안 쓴다",
+    )
+    p_ledger_versions.add_argument(
+        "--ledger", default=None, help="원장 경로 재지정 (기본: data/state/trades.jsonl)",
+    )
+    p_ledger_versions.add_argument(
+        "--changes", default=None, help="파라미터 변경 원장 경로 (기본: data/ledger/param_changes.jsonl)",
+    )
+    p_ledger_versions.add_argument(
+        "--dry-run", action="store_true",
+        help="표만 찍는다(기본 동작과 동일 — --write-sidecar를 안 주면 이미 아무 것도 안 쓴다)",
+    )
+    p_ledger_versions.add_argument(
+        "--write-sidecar", action="store_true",
+        help="params_fingerprint 없는 체결에 근사값을 매겨 사이드카 파일에 쓴다"
+             "(trades.jsonl은 절대 다시 쓰지 않는다)",
+    )
+    p_ledger_versions.add_argument(
+        "--sidecar", default=None, help="사이드카 출력 경로 (기본: data/ledger/trades_params_sidecar.jsonl)",
+    )
+    p_ledger_versions.set_defaults(func=cmd_ledger_versions)
 
     p_orders = sub.add_parser("orders", help="주문 생애 원장(orders.jsonl) 조회 — 거부/미체결 포함")
     p_orders.add_argument(
@@ -7334,7 +7430,14 @@ def main() -> None:
     )
     p_cap.add_argument("--root", default=None, help="기본: 저장소 루트")
     p_cap.add_argument("--dry-run", action="store_true", help="심사만 하고 파일을 쓰지 않는다")
-    p_cap.add_argument("--min-samples", type=int, default=20, help="강등 판단 최소 종결 표본 (기본 20)")
+    # 2026-09-07(투자 #3): 기본값을 ledger.MIN_TRIPS_FOR_JUDGEMENT(30)로 통일 —
+    # 예전 20은 allocator/governor가 이미 쓰던 30과 갈라져 있던 값이었다.
+    from quant.control.ledger import MIN_TRIPS_FOR_JUDGEMENT as _MIN_TRIPS_FOR_JUDGEMENT
+
+    p_cap.add_argument(
+        "--min-samples", type=int, default=_MIN_TRIPS_FOR_JUDGEMENT,
+        help=f"강등 판단 최소 종결 표본 (기본 {_MIN_TRIPS_FOR_JUDGEMENT})",
+    )
     p_cap.set_defaults(func=cmd_capital_review)
 
     p_cr = sub.add_parser(

@@ -31,6 +31,13 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LEDGER_PATH = Path("data/state/trades.jsonl")
 DEFAULT_EQUITY_CURVE_PATH = Path("data/ledger/equity_curve.jsonl")
+# 원장 행에 `params_fingerprint`가 없는 체결(2026-09-07 이전 전부 + 지문 맵이
+# 아직 안 채워진 드문 배선 실수)에 붙이는 소급 근사 사이드카 — `cli ledger-versions
+# --write-sidecar`가 만든다. `trades.jsonl`은 절대 다시 쓰지 않는다(append-only
+# 계약 보존) — 이 파일이 그 대신이다.
+DEFAULT_PARAMS_SIDECAR_PATH = Path("data/ledger/trades_params_sidecar.jsonl")
+# 현재 원장 스키마 버전. `schema` 필드가 없는 행(2026-09-07 이전)은 암묵적으로 1.
+LEDGER_SCHEMA_VERSION = 2
 
 # 종결 트립 30건 미만이면 승률 표준오차가 너무 커서(이항비율 CI 폭이 대략
 # ±1/sqrt(n) 규모) 자본배분 근거로 쓸 수 없다 — 30은 이 저장소가 실무적으로
@@ -232,7 +239,8 @@ class TradeLedgerSink:
     """EventSink 래퍼 — 체결을 JSONL 원장에 추가 기록한다."""
 
     def __init__(self, inner: EventSink, path: Path | str | None = None,
-                 orders_path: Path | str | None = None):
+                 orders_path: Path | str | None = None,
+                 params_fingerprint_of: dict[str, str] | None = None):
         self._inner = inner
         # None이면 호출 시점에 모듈 전역을 읽는다 — conftest의 monkeypatch 격리가
         # 기본 인자 바인딩(정의 시점 고정)에 막히지 않게 하기 위함.
@@ -246,9 +254,36 @@ class TradeLedgerSink:
         # 반복 거부 로그 쿨다운(REJECT_LOG_COOLDOWN) — (strategy_id, symbol, reason)
         # 별 마지막 기록 시각. 프로세스 메모리에만 있다.
         self._reject_last_logged: dict[tuple[str, str, str], datetime] = {}
+        # strategy_id → 현재 파라미터 지문 (2026-09-07). 조립 시점에 채워지고,
+        # `refresh_params_fingerprints`/`set_params_fingerprints`로 갱신된다 — 이
+        # 싱크 스스로는 계산하지 않는다(`quant.control.experiments.
+        # strategy_fingerprints`가 유일한 계산처, `refresh_params_fingerprints`
+        # 참고). 복사본을 들고 있는다 — 호출부가 넘긴 dict를 나중에 바꿔도
+        # 영향받지 않는다.
+        self._params_fingerprint_of: dict[str, str] = dict(params_fingerprint_of or {})
 
     def on_signal(self, signal: Signal) -> None:
         self._inner.on_signal(signal)
+
+    def set_params_fingerprints(self, mapping: dict[str, str]) -> None:
+        """strategy_id→지문 맵을 통째로 교체한다. 계산은 호출부 책임 —
+        `refresh_params_fingerprints`(같은 클래스, 표준 계산 경로) 또는 조립
+        시점의 `quant.control.experiments.strategy_fingerprints` 호출 결과를
+        그대로 준다. 이후 체결부터 새 맵을 참조한다(과거 행은 건드리지 않는다)."""
+        self._params_fingerprint_of = dict(mapping)
+
+    def refresh_params_fingerprints(self, strategies_cfg: dict) -> None:
+        """`strategies:` 설정 dict에서 지문 맵을 다시 계산해 교체한다.
+
+        `quant/trade/loop.py`의 설정 핫 리로드 훅(`settings.reload_if_changed`
+        성공 직후)이 이 메서드를 duck-typing으로 부른다 — `quant/trade/`는
+        `quant/control/`을 임포트할 수 없으므로(아키텍처 규칙,
+        `tests/test_architecture.py`) 지문 **계산**은 그 파일이 아니라 여기
+        control 평면 안에서 한다. loop.py는 원시 dict(`settings.raw["strategies"]`)만
+        건네면 된다."""
+        from quant.control.experiments import strategy_fingerprints
+
+        self.set_params_fingerprints(strategy_fingerprints(strategies_cfg))
 
     def on_fill(self, fill: Fill) -> None:
         try:
@@ -262,6 +297,20 @@ class TradeLedgerSink:
                 "price": fill.price,
                 "fee": fill.fee,
                 "realized_pnl": fill.realized_pnl,
+                # 이 체결이 어느 파라미터 판본 아래서 났는가(2026-09-07, 진화가능성
+                # 평가 투자 #1). `fill.params_fingerprint`가 명시적으로 있으면
+                # (예: 백테스트가 트립마다 직접 채움) 그 값이 우선하고, 없으면
+                # 조립 시점에 주입된 strategy_id→지문 맵에서 찾는다. 둘 다 없으면
+                # None — "모른다"를 지어내지 않는다(Fill.cash_after와 같은 계약).
+                "params_fingerprint": (
+                    fill.params_fingerprint
+                    if fill.params_fingerprint is not None
+                    else self._params_fingerprint_of.get(fill.strategy_id)
+                ),
+                # 원장 스키마 버전(2026-09-07 도입). 이 필드가 없는 행은 스키마 1 —
+                # `load_trades`는 하위호환을 위해 값을 강제하지 않는다(구버전 행을
+                # 읽다가 깨지면 안 된다).
+                "schema": LEDGER_SCHEMA_VERSION,
                 # 체결 직후 현금 스냅샷 — 원장↔현금 갭의 발생 지점을 기록으로 특정
                 # (2026-08-11 160,974원 미설명 갭의 교훈). 구버전 Fill엔 없다.
                 "cash_after": getattr(fill, "cash_after", None),
@@ -465,10 +514,238 @@ def round_trips(trades: list[dict]) -> list[dict]:
                     "bps": (pnl / notional * 1e4) if notional > 0 else 0.0,
                     "pnl_known": pnl_known,
                     "n_fills": len(cur),
+                    # 진입 체결이 찍힌 파라미터 지문(2026-09-07, 없으면 None —
+                    # 구버전 원장 또는 지문 맵 미배선). `annotate_params_version`/
+                    # `cli ledger-versions`가 이 필드로 트립을 판본별로 가른다.
+                    "entry_params_fingerprint": cur[0].get("params_fingerprint"),
                 })
                 cur = []
         # cur에 남은 것 = 미종결 포지션 — 트립으로 세지 않는다
     return trips
+
+
+# --- 파라미터 판본 태깅 (2026-09-07, 진화가능성 평가 투자 #1~#3) --------------
+# `docs/plans/evolvability-2026-09-07.md` 문제: 원장 행에 판본 표시가 없어
+# scalp_1m처럼 6개 판본의 체결이 하나의 트랙레코드로 풀린다. `TradeLedgerSink`가
+# 이제부터의 체결에는 `params_fingerprint`를 찍지만(위), **과거 행**은 소급 불가 —
+# `param_changes.jsonl`의 기록 시각으로 근사할 수 있을 뿐이다(느슨한 근사, 미래
+# 체결만 정확). 이 절의 함수들은 그 근사와, "현재 판본만 판정에 쓴다"는 필터를
+# 제공한다.
+
+
+def load_params_sidecar(
+    path: Path | str = DEFAULT_PARAMS_SIDECAR_PATH,
+) -> dict[tuple[str, str, str], str]:
+    """`cli ledger-versions --write-sidecar`가 만든 근사 지문을 읽는다.
+
+    반환 키는 `(ts, strategy_id, symbol)` — 사이드카 행 자체와 트립의
+    `entry_ts`/`strategy`/`symbol`을 그대로 매칭하는 데 쓴다. 파일이 없거나
+    깨졌으면 빈 dict — `load_trades`와 같은 관례(읽기 실패가 스코어보드를
+    죽이면 안 된다)."""
+    p = Path(path)
+    if not p.exists():
+        return {}
+    out: dict[tuple[str, str, str], str] = {}
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        fp = row.get("params_fingerprint")
+        if not fp:
+            continue
+        key = (str(row.get("ts")), str(row.get("strategy_id")), str(row.get("symbol")))
+        out[key] = fp
+    return out
+
+
+def _entry_fingerprint(trip: dict, sidecar: dict[tuple[str, str, str], str] | None) -> str | None:
+    """트립 진입 지문 — 원장 필드 우선, 없으면 사이드카 근사, 둘 다 없으면 None."""
+    fp = trip.get("entry_params_fingerprint")
+    if fp:
+        return fp
+    if not sidecar:
+        return None
+    key = (str(trip.get("entry_ts")), str(trip.get("strategy")), str(trip.get("symbol")))
+    return sidecar.get(key)
+
+
+def annotate_params_version(
+    trips: list[dict], strategies_cfg: dict,
+    sidecar: dict[tuple[str, str, str], str] | None = None,
+) -> tuple[list[dict], dict[str, dict]]:
+    """트립을 "현재 파라미터 판본" 기준으로 가른다.
+
+    반환: `(현재 판본 트립만, 전략별 통계)`. 통계 행 하나는
+    `{"current": n, "total": N, "unknown": u}` — `total`은 그 전략의 종결
+    트립 전체(판본 무관), `current`는 그중 지금 설정과 지문이 일치하는 것,
+    `unknown`은 지문을 원장에서도 사이드카에서도 못 찾은 것(옛 판본과는 다른
+    사유 — "판정 불가"와 "이 판본이 아니다"를 섞지 않는다).
+
+    현재 지문은 `quant.control.experiments.strategy_fingerprints`
+    (`enabled_only=False` — 방금 끈 전략도 "지금 판본이 뭐였는지"는 여전히
+    답할 수 있어야 과거 트립을 판정할 수 있다)로 계산한다."""
+    from quant.control.experiments import strategy_fingerprints
+
+    current = strategy_fingerprints(strategies_cfg, enabled_only=False)
+    stats: dict[str, dict] = {}
+    kept: list[dict] = []
+    for t in trips:
+        sid = str(t.get("strategy", "?"))
+        s = stats.setdefault(sid, {"current": 0, "total": 0, "unknown": 0})
+        s["total"] += 1
+        fp = _entry_fingerprint(t, sidecar)
+        if fp is None:
+            s["unknown"] += 1
+            continue
+        cur_fp = current.get(sid)
+        if cur_fp is not None and fp == cur_fp:
+            s["current"] += 1
+            kept.append(t)
+    return kept, stats
+
+
+def params_version_summary_lines(stats: dict[str, dict]) -> list[str]:
+    """`annotate_params_version`의 전략별 통계 → 사람이 읽는 줄들.
+
+    스코어보드는 필터 적용 여부와 무관하게 이 줄을 **항상** 보여준다 — 몇 건이
+    현재 판본인지 모르면 필터를 켜야 할지조차 판단할 수 없다."""
+    lines = []
+    for sid in sorted(stats):
+        s = stats[sid]
+        line = f"  [{sid}] 현재 판본 트립 {s['current']} / 전체 {s['total']}"
+        if s["unknown"]:
+            line += f" (판본 미상 {s['unknown']}건)"
+        lines.append(line)
+    return lines
+
+
+def approx_fingerprint_at(strategy: str, ts: str, changes: list[dict]) -> str | None:
+    """`ts` 시각(entry_ts 등) 직전 그 전략의 마지막으로 기록된 지문 — 소급 근사.
+
+    `param_changes.jsonl`(`quant.control.experiments.record_fingerprints`가 매일
+    찍는 원장)에서 그 전략의 행 중 `recorded_at`(없으면 `date`)이 `ts` 이하인
+    것들의 최신값을 취한다. **근사다** — 실제 배포 시각이 아니라 하루 한 번의
+    스냅샷 시각을 쓰므로, 배포일 당일 체결은 전날 판본으로 잘못 붙을 수 있다
+    (`docs/research/params-version-retrotag-2026-09-07.md` "느슨한 근사" 문구).
+    후보가 없으면(그 전략 기록이 아예 없거나 전부 `ts` 이후) None."""
+    candidates = [
+        c for c in changes
+        if c.get("strategy") == strategy and c.get("fingerprint")
+        and str(c.get("recorded_at") or c.get("date") or "") <= str(ts)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda c: str(c.get("recorded_at") or c.get("date") or ""))
+    return candidates[-1]["fingerprint"]
+
+
+def backfill_params_sidecar(
+    trades: list[dict], changes: list[dict],
+    path: Path | str = DEFAULT_PARAMS_SIDECAR_PATH,
+) -> int:
+    """`params_fingerprint`가 없는 체결에 `approx_fingerprint_at` 근사값을 매겨
+    사이드카 파일에 쓴다. **`trades.jsonl`은 절대 다시 쓰지 않는다** — 이 함수는
+    새 파일(사이드카)에만 쓴다.
+
+    매번 **전체를 다시 계산해 덮어쓴다**(append 아님) — `param_changes.jsonl`이
+    자라거나 지문 함수가 바뀌면 이전 실행의 낡은 근사가 파일에 남을 수 있어서다
+    (append 였다면 재실행마다 중복·모순 행이 쌓인다). 반환값은 기록한 행 수."""
+    rows: list[dict] = []
+    for t in trades:
+        if t.get("params_fingerprint"):
+            continue  # 이미 실제 지문이 있다 — 근사가 필요 없다
+        sid = str(t.get("strategy_id") or "?")
+        ts = str(t.get("ts") or "")
+        fp = approx_fingerprint_at(sid, ts, changes)
+        if fp is None:
+            continue
+        rows.append({
+            "ts": t.get("ts"), "strategy_id": sid, "symbol": t.get("symbol"),
+            "side": t.get("side"), "params_fingerprint": fp, "approx": True,
+        })
+    p = Path(path)
+    if rows:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return len(rows)
+
+
+def strategy_version_table(trips: list[dict], changes: list[dict]) -> dict[str, dict]:
+    """전략별 판본 분포 — `cli ledger-versions`가 찍는 표의 원자료.
+
+    행 하나: `{n_versions, n_current, n_old, n_unknown, current_win_rate,
+    current_avg_bps}`. "현재"는 `param_changes.jsonl`에서 그 전략의 가장 최근
+    (recorded_at 최대) 지문이다 — `annotate_params_version`(지금 settings.yaml
+    기준)과 달리 이 함수는 **원장 기록 기준 최신**을 쓴다(진단 도구라 설정
+    파일을 안 읽어도 되게)."""
+    by_strategy_changes: dict[str, list[dict]] = {}
+    for c in changes:
+        if c.get("strategy") and c.get("fingerprint"):
+            by_strategy_changes.setdefault(c["strategy"], []).append(c)
+
+    by_strategy_trips: dict[str, list[dict]] = {}
+    for t in trips:
+        by_strategy_trips.setdefault(str(t.get("strategy", "?")), []).append(t)
+
+    out: dict[str, dict] = {}
+    for sid, srows in by_strategy_trips.items():
+        schanges = sorted(
+            by_strategy_changes.get(sid, []),
+            key=lambda c: str(c.get("recorded_at") or c.get("date") or ""),
+        )
+        current_fp = schanges[-1]["fingerprint"] if schanges else None
+        n_versions = len({c["fingerprint"] for c in schanges})
+
+        per_trip_fp = [
+            t.get("entry_params_fingerprint") or approx_fingerprint_at(
+                sid, str(t.get("entry_ts") or ""), changes,
+            )
+            for t in srows
+        ]
+        n_unknown = sum(1 for fp in per_trip_fp if fp is None)
+        current_trips = [t for t, fp in zip(srows, per_trip_fp, strict=True)
+                          if fp is not None and fp == current_fp]
+        n_current = len(current_trips)
+        n_old = len(srows) - n_current - n_unknown
+
+        known = [t for t in current_trips if t.get("pnl_known")]
+        win_rate = (sum(1 for t in known if t["pnl"] > 0) / len(known)) if known else None
+        avg_bps = (sum(t["bps"] for t in known) / len(known)) if known else None
+
+        out[sid] = {
+            "n_versions": n_versions, "n_current": n_current, "n_old": n_old,
+            "n_unknown": n_unknown, "current_win_rate": win_rate, "current_avg_bps": avg_bps,
+        }
+    return out
+
+
+def versions_report_lines(trips: list[dict], changes: list[dict]) -> list[str]:
+    """`strategy_version_table` → 사람이 읽는 표 (`cli ledger-versions` 출력).
+
+    `docs/research/params-version-retrotag-2026-09-07.md`의 수기 실측 표와 같은
+    모양이다 — 그 문서를 만든 손계산을 여기서 재현 가능한 커맨드로 고정한다."""
+    table = strategy_version_table(trips, changes)
+    if not table:
+        return ["원장 소급 판본 태깅: 종결 트립 없음"]
+    lines = ["원장 소급 판본 태깅 — 전략별 판본 분포 (근사, param_changes.jsonl 기준)"]
+    for sid in sorted(table):
+        row = table[sid]
+        wr = f"{row['current_win_rate']:.0%}" if row["current_win_rate"] is not None else "—"
+        bp = f"{row['current_avg_bps']:+.1f}bp" if row["current_avg_bps"] is not None else "—"
+        unk = f" · 판본미상 {row['n_unknown']}" if row["n_unknown"] else ""
+        lines.append(
+            f"  [{sid}] 판본 {row['n_versions']}개 · 현재판본 {row['n_current']}트립 · "
+            f"옛판본 {row['n_old']}트립{unk} · 현재판본 승률/평균 {wr} / {bp}"
+        )
+    return lines
 
 
 def round_trips_since_epoch(trades: list[dict]) -> list[dict]:

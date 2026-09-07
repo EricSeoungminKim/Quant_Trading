@@ -316,6 +316,15 @@ class Fill:
     # None = USD 풀이 없다(dual_currency=False) 또는 브로커가 모른다 — 0.0으로
     # 위장하지 않는다(`cash_after`와 같은 계약).
     cash_after_usd: float | None = None
+    # 이 체결이 난 시점의 전략 파라미터 지문(`quant.control.experiments.
+    # params_fingerprint`, sha256 16-hex). 2026-09-07, 진화가능성 평가 투자 #1 —
+    # 파라미터가 바뀌어도 원장 행에 아무 표시가 안 남아 scalp_1m처럼 6개 판본의
+    # 체결이 한 트랙레코드로 풀링됐다(`docs/plans/evolvability-2026-09-07.md`).
+    # 브로커는 이 값을 모른다(생성자에서 채우지 않는다) — `TradeLedgerSink.on_fill`이
+    # strategy_id로 주입된 지문 맵을 찾아 원장 행에 쓴다. 여기 명시적으로 값이
+    # 있으면(예: 백테스트가 트립마다 직접 채우는 경우) 그 값이 우선한다. None =
+    # 모른다(구버전 호출부, 지문 맵 미배선) — 0이나 빈 문자열로 위장하지 않는다.
+    params_fingerprint: str | None = None
 
 
 class OrderStatus(str, Enum):

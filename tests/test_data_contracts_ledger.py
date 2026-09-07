@@ -88,6 +88,16 @@ def test_trades_jsonl_contract():
         # 있다) — 있으면 숫자여야 한다.
         if row.get("realized_pnl") is not None:
             assert isinstance(row["realized_pnl"], (int, float)), f"trades.jsonl:{i} realized_pnl"
+        # params_fingerprint/schema(2026-09-07, 진화가능성 평가 투자 #1) — 이
+        # 시점 이전 행에는 아예 없다(구버전, `test_known_unversioned_files_...`가
+        # 더는 다루지 않는다는 뜻이지 필드가 강제된다는 뜻은 아니다). 있으면
+        # 타입만 확인한다 — None(지문 맵 미배선)도 유효한 값이다.
+        if "params_fingerprint" in row and row["params_fingerprint"] is not None:
+            assert isinstance(row["params_fingerprint"], str), (
+                f"trades.jsonl:{i} params_fingerprint 타입"
+            )
+        if "schema" in row:
+            assert isinstance(row["schema"], int), f"trades.jsonl:{i} schema 타입"
 
 
 def test_trades_jsonl_no_duplicate_lines():
@@ -232,11 +242,17 @@ def test_no_files_have_undocumented_id_field():
 
 
 def test_known_unversioned_files_still_lack_schema_field():
-    """`schema` 필드가 없는 것으로 확인된 파일 목록(2026-09-07 감사).
+    """`schema` 필드가 없는 것으로 확인된 파일 목록(2026-09-07 감사, 같은 날
+    저녁 `trades.jsonl` 스키마 도입으로 이 목록에서 뺐다 — 아래 참고).
     누군가 스키마 필드를 추가했는데 이 목록을 안 지우면 실패해서 알려준다 —
-    "버전 추가를 깜빡하고 이 문서만 남은" 상황을 방지."""
+    "버전 추가를 깜빡하고 이 문서만 남은" 상황을 방지.
+
+    `trades.jsonl`은 2026-09-07(진화가능성 평가 투자 #1, `TradeLedgerSink.
+    on_fill`)부터 매 체결에 `schema: 2`를 찍는다 — 그 시점 이전 행에는 필드
+    자체가 없다(혼재가 정상, `test_trades_jsonl_contract`가 있을 때만 타입을
+    확인한다). 그래서 UNVERSIONED 목록에서 뺐다: 이 파일은 이제 "언젠가 버전이
+    생기면 알려줘"가 아니라 "이미 버전이 있다"이므로 여기서 다룰 대상이 아니다."""
     known_unversioned = {
-        "trades.jsonl": STATE,
         "capital_decisions.jsonl": LEDGER,
         "notify_sent.jsonl": LEDGER,
         "notify_failures.jsonl": LEDGER,

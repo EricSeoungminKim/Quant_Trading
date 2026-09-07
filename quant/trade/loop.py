@@ -2311,6 +2311,11 @@ async def run_paper_loop(
     # 시장별 직전 개장 상태. 값이 없는 시장은 "아직 모름"이라 첫 사이클이 닫힘이어도
     # 마감으로 치지 않는다(기동 직후 유령 마감 요약 방지).
     prev_market_open: dict[str, bool] = {}
+    # 파라미터 지문 핫 리로드 훅용 원본 sink 참조(2026-09-07) — 아래에서 sinks를
+    # _SessionTallySink로 감싸면(다음 블록) 원래 객체에 duck-typing으로 접근할
+    # 방법이 없어진다(_SessionTallySink는 알 수 없는 속성을 안으로 위임하지
+    # 않는다). 감싸기 전에 잡아둔다.
+    _fingerprint_sink = sinks
     # 체결 카운터/수수료는 sinks를 감싸서 센다 — 기존 sink 구성(MultiSink 등)을
     # 알 필요가 없고, run_cycle/_flatten_all/_process_approvals가 모두 이 래퍼를 쓴다.
     tally = _SessionTallySink(
@@ -2333,6 +2338,22 @@ async def run_paper_loop(
     while True:
         if settings.reload_if_changed(on_error=_on_settings_reload_error):
             logger.info("settings.yaml 변경 감지 — 리로드")
+            # 파라미터 지문 맵 갱신(2026-09-07, 진화가능성 평가 투자 #1~#2) — 장중
+            # settings.yaml 파라미터 편집이 이 리로드로 반영되므로, 그 시점부터
+            # 나가는 체결에는 새 지문이 찍혀야 한다. 이 파일은 quant.control을
+            # 임포트할 수 없으므로(아키텍처 규칙) 계산은 sink 쪽
+            # (TradeLedgerSink.refresh_params_fingerprints)에 맡기고 여기서는
+            # duck-typing으로 원시 설정 dict만 건넨다 — sink가 그 메서드를
+            # 노출하지 않으면(테스트 더블 등) 조용히 건너뛴다.
+            refresh_fp = getattr(_fingerprint_sink, "refresh_params_fingerprints", None)
+            if callable(refresh_fp):
+                try:
+                    refresh_fp(settings.raw.get("strategies", {}) or {})
+                except Exception as e:  # noqa: BLE001 — 지문 갱신 실패가 루프를 막으면 안 된다
+                    logger.warning(
+                        "파라미터 지문 갱신 실패(원장에는 예전 지문이 계속 찍힌다): %s: %s",
+                        type(e).__name__, e,
+                    )
         cycle_count += 1
         tally.cycles += 1  # 배관 점검용 — 세션 마감 요약이 "루프가 살아 있었나"의 증거로 쓴다
         if control.is_halted():

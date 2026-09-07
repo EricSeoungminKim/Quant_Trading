@@ -27,6 +27,12 @@ from __future__ import annotations
 import statistics
 from dataclasses import dataclass
 
+# 2026-09-07(진화가능성 평가 투자 #3): 이 파일은 독립적으로 20을 최소 표본선으로
+# 써 왔는데, `quant/control/ledger.py`(스코어보드 판정)·`quant/control/governor.py`
+# 는 이미 30(`MIN_TRIPS_FOR_JUDGEMENT`)을 쓴다 — 같은 질문("판단할 만큼 쌓였나")에
+# 파일마다 다른 답을 하고 있었다. ledger의 상수를 그대로 재사용해 하나로 합친다.
+from quant.control.ledger import MIN_TRIPS_FOR_JUDGEMENT
+
 
 @dataclass
 class StrategyStat:
@@ -37,7 +43,7 @@ class StrategyStat:
     stdev_bp: float
 
 
-def is_losing(stat: StrategyStat, *, min_samples: int = 20,
+def is_losing(stat: StrategyStat, *, min_samples: int = MIN_TRIPS_FOR_JUDGEMENT,
               confidence: float = 0.90) -> tuple[bool, str]:
     """이 전략이 "지고 있다고 말할 만한 증거"가 있는가.
 
@@ -85,7 +91,7 @@ class Demotion:
 def decide(stats: list[StrategyStat],
            current_fractions: dict[tuple[str, str], float],
            last_change_days: dict[str, int | None],
-           *, min_samples: int = 20, cooldown_days: int = 5,
+           *, min_samples: int = MIN_TRIPS_FOR_JUDGEMENT, cooldown_days: int = 5,
            factor: float = 0.5, floor: float = 0.05) -> list[Demotion]:
     """전략별 통계를 심사해 강등 후보 목록을 만든다.
 

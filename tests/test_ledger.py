@@ -34,11 +34,13 @@ class _InnerSink:
         self.fills.append(f)
 
 
-def _fill(symbol, side, qty, price, *, pnl=None, fee=0.0, strategy="orb_scan", ts=None):
+def _fill(symbol, side, qty, price, *, pnl=None, fee=0.0, strategy="orb_scan", ts=None,
+          params_fingerprint=None):
     return Fill(
         symbol=symbol, side=side, qty=qty, price=price,
         ts=ts or datetime(2026, 8, 10, 10, 0, tzinfo=UTC),
         strategy_id=strategy, fee=fee, realized_pnl=pnl,
+        params_fingerprint=params_fingerprint,
     )
 
 
@@ -58,6 +60,72 @@ def test_sink_write_failure_never_blocks_fill(tmp_path):
     sink = TradeLedgerSink(inner, path=bad / "trades.jsonl")
     sink.on_fill(_fill("TQQQ", Side.BUY, 1, 70.0))
     assert len(inner.fills) == 1, "원장 기록 실패해도 체결 처리는 계속"
+
+
+# ── params_fingerprint / schema (2026-09-07, 진화가능성 평가 투자 #1) ────────
+
+def test_sink_writes_schema_version_on_every_fill(tmp_path):
+    sink = TradeLedgerSink(_InnerSink(), path=tmp_path / "t.jsonl")
+    sink.on_fill(_fill("TQQQ", Side.BUY, 1, 70.0))
+    rows = load_trades(tmp_path / "t.jsonl")
+    assert rows[0]["schema"] == 2
+
+
+def test_sink_without_fingerprint_map_writes_none(tmp_path):
+    """맵도 안 주고 Fill에도 안 채웠으면 '모른다' — 0이나 빈 문자열로 위장하지
+    않는다(Fill.cash_after와 같은 계약)."""
+    sink = TradeLedgerSink(_InnerSink(), path=tmp_path / "t.jsonl")
+    sink.on_fill(_fill("TQQQ", Side.BUY, 1, 70.0))
+    rows = load_trades(tmp_path / "t.jsonl")
+    assert rows[0]["params_fingerprint"] is None
+
+
+def test_sink_looks_up_fingerprint_from_injected_map(tmp_path):
+    sink = TradeLedgerSink(
+        _InnerSink(), path=tmp_path / "t.jsonl",
+        params_fingerprint_of={"scalp_1m": "abc123"},
+    )
+    sink.on_fill(_fill("TQQQ", Side.BUY, 1, 70.0, strategy="scalp_1m"))
+    sink.on_fill(_fill("TQQQ", Side.BUY, 1, 70.0, strategy="gap_fade"))
+    rows = load_trades(tmp_path / "t.jsonl")
+    assert rows[0]["params_fingerprint"] == "abc123", "맵에 있는 전략은 그 지문을 찍는다"
+    assert rows[1]["params_fingerprint"] is None, "맵에 없는 전략은 None — 지어내지 않는다"
+
+
+def test_sink_explicit_fill_fingerprint_overrides_the_injected_map(tmp_path):
+    """Fill 자체에 지문이 명시돼 있으면(예: 백테스트가 트립마다 직접 채움) 그
+    값이 조립 시점 맵보다 우선한다."""
+    sink = TradeLedgerSink(
+        _InnerSink(), path=tmp_path / "t.jsonl",
+        params_fingerprint_of={"scalp_1m": "from-map"},
+    )
+    sink.on_fill(_fill("TQQQ", Side.BUY, 1, 70.0, strategy="scalp_1m",
+                        params_fingerprint="explicit"))
+    rows = load_trades(tmp_path / "t.jsonl")
+    assert rows[0]["params_fingerprint"] == "explicit"
+
+
+def test_sink_set_params_fingerprints_replaces_the_map(tmp_path):
+    sink = TradeLedgerSink(_InnerSink(), path=tmp_path / "t.jsonl",
+                            params_fingerprint_of={"scalp_1m": "old"})
+    sink.set_params_fingerprints({"scalp_1m": "new"})
+    sink.on_fill(_fill("TQQQ", Side.BUY, 1, 70.0, strategy="scalp_1m"))
+    rows = load_trades(tmp_path / "t.jsonl")
+    assert rows[0]["params_fingerprint"] == "new"
+
+
+def test_sink_refresh_params_fingerprints_recomputes_from_strategies_cfg(tmp_path):
+    """루프의 설정 핫 리로드 훅이 duck-typing으로 부르는 경로 — 원시
+    `strategies:` dict만 건네면 `quant.control.experiments.params_fingerprint`와
+    같은 값이 계산돼야 한다(둘이 갈라지면 원장과 param_changes.jsonl이 안 맞는다)."""
+    from quant.control.experiments import params_fingerprint
+
+    cfg = {"scalp_1m": {"class": "scalp_1m", "enabled": True, "params": {"x": 1}}}
+    sink = TradeLedgerSink(_InnerSink(), path=tmp_path / "t.jsonl")
+    sink.refresh_params_fingerprints(cfg)
+    sink.on_fill(_fill("TQQQ", Side.BUY, 1, 70.0, strategy="scalp_1m"))
+    rows = load_trades(tmp_path / "t.jsonl")
+    assert rows[0]["params_fingerprint"] == params_fingerprint(cfg["scalp_1m"])
 
 
 def test_round_trip_win_and_loss_math(tmp_path):
@@ -180,12 +248,12 @@ def test_dust_notice_us_threshold():
 # --- 세션 손익 리포트 (run session-pnl) --------------------------------------
 
 def _row(symbol, side, qty, price, ts, *, pnl=None, fee=0.0, strategy="orb_scan",
-         market=None, cash_after=None):
+         market=None, cash_after=None, params_fingerprint=None):
     """원장 raw dict를 직접 구성 — sink를 거치지 않고 세션 경계/통화 로직만 테스트."""
     return {
         "ts": ts, "strategy_id": strategy, "symbol": symbol, "side": side,
         "qty": qty, "price": price, "fee": fee, "realized_pnl": pnl,
-        "cash_after": cash_after,
+        "cash_after": cash_after, "params_fingerprint": params_fingerprint,
         "market": market or ("KR" if symbol.isdigit() and len(symbol) == 6 else "US"),
     }
 
@@ -661,6 +729,188 @@ def test_kr_session_cash_line_is_unchanged():
     ]
     text = session_pnl_text(session_pnl_summary(rows, "KR", date(2026, 8, 12)))
     assert "계좌 현금 변화(KRW, paper 브로커 체결시점 환산 반영) +102,000원" in text
+
+
+# ── 원장 소급 판본 태깅 (2026-09-07, 진화가능성 평가 투자 #2·#3) ─────────────
+# `docs/plans/evolvability-2026-09-07.md` 투자 #1(원장 행에 params_fingerprint)의
+# 소비자들 — 스코어보드가 "현재 판본만" 판정에 쓸 수 있게 트립을 가르고
+# (`annotate_params_version`), 과거 원장에 근사 지문을 매기는(`backfill_params_
+# sidecar`/`approx_fingerprint_at`) 진단 도구(`cli ledger-versions`)의 원자료.
+
+def test_round_trips_carries_entry_params_fingerprint():
+    trades = [
+        _row("TQQQ", "BUY", 10, 50.0, "2026-09-07T01:00:00+00:00", strategy="gap_fade",
+             params_fingerprint="fp-a"),
+        _row("TQQQ", "SELL", 10, 55.0, "2026-09-07T02:00:00+00:00", strategy="gap_fade",
+             pnl=50.0, params_fingerprint="fp-a"),
+    ]
+    (trip,) = round_trips(trades)
+    assert trip["entry_params_fingerprint"] == "fp-a", "트립의 진입 지문 = 첫 체결(매수)의 지문"
+
+
+def test_round_trips_entry_fingerprint_is_none_for_legacy_rows():
+    """구버전 원장 행(2026-09-07 이전)엔 필드 자체가 없다 — None으로 정직하게 남는다."""
+    trades = [
+        {"ts": "2026-09-07T01:00:00+00:00", "strategy_id": "gap_fade", "symbol": "TQQQ",
+         "side": "BUY", "qty": 10, "price": 50.0, "fee": 0.0, "market": "US"},
+        {"ts": "2026-09-07T02:00:00+00:00", "strategy_id": "gap_fade", "symbol": "TQQQ",
+         "side": "SELL", "qty": 10, "price": 55.0, "fee": 0.0, "realized_pnl": 50.0, "market": "US"},
+    ]
+    (trip,) = round_trips(trades)
+    assert trip["entry_params_fingerprint"] is None
+
+
+def _cfg(**params):
+    return {"class": "x", "enabled": True, "params": params}
+
+
+def test_annotate_params_version_splits_current_old_and_unknown():
+    from quant.control.experiments import params_fingerprint
+    from quant.control.ledger import annotate_params_version
+
+    cfg = {"gap_fade": _cfg(x=2)}  # "지금" 설정 — 지문은 params_fingerprint(cfg["gap_fade"])
+    current_fp = params_fingerprint(cfg["gap_fade"])
+    trips = [
+        {"strategy": "gap_fade", "entry_params_fingerprint": current_fp},
+        {"strategy": "gap_fade", "entry_params_fingerprint": "old-fp"},
+        {"strategy": "gap_fade", "entry_params_fingerprint": None},
+    ]
+    kept, stats = annotate_params_version(trips, cfg)
+    assert len(kept) == 1 and kept[0]["entry_params_fingerprint"] == current_fp
+    assert stats["gap_fade"] == {"current": 1, "total": 3, "unknown": 1}
+
+
+def test_annotate_params_version_falls_back_to_sidecar_when_row_field_missing():
+    from quant.control.experiments import params_fingerprint
+    from quant.control.ledger import annotate_params_version
+
+    cfg = {"gap_fade": _cfg(x=2)}
+    current_fp = params_fingerprint(cfg["gap_fade"])
+    trips = [{
+        "strategy": "gap_fade", "symbol": "TQQQ", "entry_ts": "2026-09-01T00:00:00+00:00",
+        "entry_params_fingerprint": None,
+    }]
+    sidecar = {("2026-09-01T00:00:00+00:00", "gap_fade", "TQQQ"): current_fp}
+    kept, stats = annotate_params_version(trips, cfg, sidecar)
+    assert len(kept) == 1, "원장 필드가 없어도 사이드카 근사로 현재 판본과 일치시킨다"
+    assert stats["gap_fade"]["unknown"] == 0
+
+
+def test_params_version_summary_lines_shows_unknown_count_only_when_present():
+    from quant.control.ledger import params_version_summary_lines
+
+    lines = params_version_summary_lines({
+        "gap_fade": {"current": 5, "total": 10, "unknown": 3},
+        "scalp_1m": {"current": 2, "total": 2, "unknown": 0},
+    })
+    assert lines[0] == "  [gap_fade] 현재 판본 트립 5 / 전체 10 (판본 미상 3건)"
+    assert lines[1] == "  [scalp_1m] 현재 판본 트립 2 / 전체 2"
+
+
+def test_load_params_sidecar_reads_ts_strategy_symbol_keyed_rows(tmp_path):
+    import json as _json
+
+    from quant.control.ledger import load_params_sidecar
+
+    p = tmp_path / "sidecar.jsonl"
+    p.write_text(_json.dumps({
+        "ts": "2026-09-01T00:00:00+00:00", "strategy_id": "gap_fade", "symbol": "TQQQ",
+        "side": "buy", "params_fingerprint": "approx-1", "approx": True,
+    }) + "\n", encoding="utf-8")
+    out = load_params_sidecar(p)
+    assert out[("2026-09-01T00:00:00+00:00", "gap_fade", "TQQQ")] == "approx-1"
+
+
+def test_load_params_sidecar_missing_file_returns_empty(tmp_path):
+    from quant.control.ledger import load_params_sidecar
+
+    assert load_params_sidecar(tmp_path / "missing.jsonl") == {}
+
+
+def test_approx_fingerprint_at_picks_the_last_change_before_ts():
+    from quant.control.ledger import approx_fingerprint_at
+
+    changes = [
+        {"strategy": "scalp_1m", "fingerprint": "fp-08-23", "recorded_at": "2026-08-23T09:00:00+00:00"},
+        {"strategy": "scalp_1m", "fingerprint": "fp-08-28", "recorded_at": "2026-08-28T09:00:00+00:00"},
+        {"strategy": "scalp_1m", "fingerprint": "fp-09-05", "recorded_at": "2026-09-05T09:00:00+00:00"},
+    ]
+    assert approx_fingerprint_at("scalp_1m", "2026-08-30T00:00:00+00:00", changes) == "fp-08-28"
+    assert approx_fingerprint_at("scalp_1m", "2026-08-20T00:00:00+00:00", changes) is None, \
+        "그 어떤 기록보다도 이른 체결은 판본 미상 — 지어내지 않는다"
+
+
+def test_backfill_params_sidecar_skips_rows_that_already_have_a_fingerprint(tmp_path):
+    from quant.control.ledger import backfill_params_sidecar, load_params_sidecar
+
+    changes = [
+        {"strategy": "gap_fade", "fingerprint": "fp-1", "recorded_at": "2026-08-01T00:00:00+00:00"},
+    ]
+    trades = [
+        _row("TQQQ", "BUY", 10, 50.0, "2026-09-01T00:00:00+00:00", strategy="gap_fade",
+             params_fingerprint="already-known"),
+        _row("TQQQ", "BUY", 5, 50.0, "2026-09-02T00:00:00+00:00", strategy="gap_fade"),
+    ]
+    out_path = tmp_path / "sidecar.jsonl"
+    n = backfill_params_sidecar(trades, changes, out_path)
+    assert n == 1, "이미 params_fingerprint가 있는 행은 근사가 필요 없다"
+    sidecar = load_params_sidecar(out_path)
+    assert ("2026-09-02T00:00:00+00:00", "gap_fade", "TQQQ") in sidecar
+    assert ("2026-09-01T00:00:00+00:00", "gap_fade", "TQQQ") not in sidecar
+
+
+def test_backfill_params_sidecar_never_touches_trades_jsonl(tmp_path):
+    """trades.jsonl은 절대 다시 쓰지 않는다 — 사이드카는 별도 파일에만 쓴다."""
+    from quant.control.ledger import backfill_params_sidecar
+
+    trades_path = tmp_path / "trades.jsonl"
+    trades = [_row("TQQQ", "BUY", 5, 50.0, "2026-09-02T00:00:00+00:00", strategy="gap_fade")]
+    trades_path.write_text('{"untouched": true}\n', encoding="utf-8")
+    backfill_params_sidecar(trades, [], tmp_path / "sidecar.jsonl")
+    assert trades_path.read_text(encoding="utf-8") == '{"untouched": true}\n'
+
+
+def test_backfill_params_sidecar_overwrites_rather_than_appends(tmp_path):
+    """재실행마다 param_changes.jsonl 기준으로 전체를 다시 계산한다 — append면
+    이전 실행의 낡은 근사가 남는다."""
+    from quant.control.ledger import backfill_params_sidecar
+
+    out_path = tmp_path / "sidecar.jsonl"
+    changes = [{"strategy": "gap_fade", "fingerprint": "fp-1", "recorded_at": "2026-08-01T00:00:00+00:00"}]
+    trades = [_row("TQQQ", "BUY", 5, 50.0, "2026-09-02T00:00:00+00:00", strategy="gap_fade")]
+    backfill_params_sidecar(trades, changes, out_path)
+    backfill_params_sidecar(trades, changes, out_path)  # 재실행
+    lines = [line for line in out_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == 1, "재실행해도 중복 누적되지 않는다"
+
+
+def test_strategy_version_table_counts_current_old_and_unknown():
+    from quant.control.ledger import strategy_version_table
+
+    changes = [
+        {"strategy": "scalp_1m", "fingerprint": "fp-old", "recorded_at": "2026-08-23T09:00:00+00:00"},
+        {"strategy": "scalp_1m", "fingerprint": "fp-new", "recorded_at": "2026-09-05T09:00:00+00:00"},
+    ]
+    trips = [
+        {"strategy": "scalp_1m", "entry_ts": "2026-08-25T00:00:00+00:00",
+         "entry_params_fingerprint": "fp-old", "pnl_known": True, "pnl": -1.0, "bps": -10.0},
+        {"strategy": "scalp_1m", "entry_ts": "2026-09-06T00:00:00+00:00",
+         "entry_params_fingerprint": "fp-new", "pnl_known": True, "pnl": 1.0, "bps": 20.0},
+        {"strategy": "scalp_1m", "entry_ts": "2026-01-01T00:00:00+00:00",
+         "entry_params_fingerprint": None, "pnl_known": True, "pnl": 0.0, "bps": 0.0},
+    ]
+    table = strategy_version_table(trips, changes)
+    row = table["scalp_1m"]
+    assert row["n_versions"] == 2
+    assert row["n_current"] == 1 and row["n_old"] == 1 and row["n_unknown"] == 1
+    assert row["current_win_rate"] == 1.0
+    assert row["current_avg_bps"] == pytest.approx(20.0)
+
+
+def test_versions_report_lines_handles_no_trips():
+    from quant.control.ledger import versions_report_lines
+
+    assert versions_report_lines([], []) == ["원장 소급 판본 태깅: 종결 트립 없음"]
 
 
 # ── A/B 갈래 비교 (2026-09-03) ────────────────────────────────────────────────

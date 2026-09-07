@@ -28,6 +28,7 @@ from quant.control.experiments import (
     record_death_watch,
     record_fingerprints,
     split_trips,
+    strategy_fingerprints,
     verdict,
 )
 
@@ -56,6 +57,38 @@ def test_fingerprint_changes_when_params_or_enabled_change():
     assert params_fingerprint(base) != params_fingerprint(_cfg(take_profit_bps=150))
     disabled = {**base, "enabled": False}
     assert params_fingerprint(base) != params_fingerprint(disabled)
+
+
+# ── strategy_fingerprints (2026-09-07, 진화가능성 평가 투자 #1) ──────────────
+# `TradeLedgerSink`/조립/hot-reload/ledger-versions 가 전부 이 함수 하나로 지문
+# 맵을 만든다 — 각자 params_fingerprint()를 반복 호출하며 베껴 쓰면 계산이
+# 갈라질 수 있어 단일 진입점으로 못박는다.
+
+def test_strategy_fingerprints_matches_per_strategy_params_fingerprint():
+    cfg = {"scalp_1m": _cfg(take_profit_bps=100), "gap_fade": _cfg(dip_bps=30)}
+    out = strategy_fingerprints(cfg)
+    assert out == {
+        "scalp_1m": params_fingerprint(cfg["scalp_1m"]),
+        "gap_fade": params_fingerprint(cfg["gap_fade"]),
+    }
+
+
+def test_strategy_fingerprints_enabled_only_default_drops_disabled():
+    cfg = {
+        "scalp_1m": _cfg(take_profit_bps=100),
+        "orb_scan": {**_cfg(x=1), "enabled": False},
+    }
+    out = strategy_fingerprints(cfg)
+    assert "orb_scan" not in out
+    assert "scalp_1m" in out
+
+
+def test_strategy_fingerprints_enabled_only_false_keeps_disabled():
+    """진단 도구(ledger-versions)처럼 과거 판본을 알아야 하는 호출부는 꺼진
+    전략도 지문을 받아야 한다 — `enabled_only=False`."""
+    cfg = {"orb_scan": {**_cfg(x=1), "enabled": False}}
+    out = strategy_fingerprints(cfg, enabled_only=False)
+    assert out == {"orb_scan": params_fingerprint(cfg["orb_scan"])}
 
 
 def test_first_run_records_baseline_and_does_not_create_experiments(tmp_path):

@@ -76,6 +76,26 @@ def params_fingerprint(strategy_cfg: dict) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
+def strategy_fingerprints(strategies_cfg: dict, *, enabled_only: bool = True) -> dict[str, str]:
+    """전략id → 현재 파라미터 지문 맵. `params_fingerprint()`를 전략마다 적용한 것뿐.
+
+    2026-09-07(진화가능성 평가 투자 #1) — `quant.control.ledger.TradeLedgerSink`가
+    체결 원장 행에 지문을 찍으려면 "지금 이 전략의 지문이 뭔가"를 알아야 하는데,
+    그 계산은 항상 이 함수 하나로 통일한다(assembly의 최초 조립, loop.py의 설정
+    핫 리로드 훅, ledger-versions 진단 CLI가 전부 이걸 쓴다) — 각자 베껴 쓰면
+    `record_fingerprints`가 원장에 남기는 값과 갈라질 수 있다.
+
+    `enabled_only=True`(기본)면 꺼진 전략은 맵에서 빠진다 — 어차피 체결이 안
+    나므로 sink가 조회할 일이 없다. 진단 도구(ledger-versions)처럼 과거 이력을
+    다루는 호출부는 `False`를 준다."""
+    out: dict[str, str] = {}
+    for sid, cfg in (strategies_cfg or {}).items():
+        if enabled_only and not cfg.get("enabled", True):
+            continue
+        out[sid] = params_fingerprint(cfg)
+    return out
+
+
 def load_changes(path: Path | str = DEFAULT_CHANGES_PATH) -> list[dict]:
     """변경 원장. 없거나 깨진 줄은 건너뛴다 — 복원 실패가 감시를 막으면 안 된다."""
     p = Path(path)
