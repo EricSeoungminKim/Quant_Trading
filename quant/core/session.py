@@ -44,6 +44,35 @@ _STATIC_SESSIONS: dict[str, tuple[ZoneInfo, dtime, dtime]] = {
     "KR": (ZoneInfo("Asia/Seoul"), dtime(9, 0), dtime(15, 30)),
 }
 
+# `StaticSessionCalendar`(라이브에서 `TossSessionCalendar` 조회가 실패했을 때만
+# 쓰는 폴백, 아래 클래스 docstring 참고)가 참조하는 정적 휴장일표(2026-09-07
+# 보안/견고성 감사 — 그 전까지는 주말만 걸러 평일 휴장일엔 폴백이 "장이 열려
+# 있다"고 오판했다). **유지보수 대상이다** — 매년 갱신해야 하고, 대체휴일·
+# 임시공휴일을 놓치면 다시 조용히 틀린다(`quant/analyze/opendays.py`가 리포트
+# 집계에 앵커 종목 실봉 방식을 쓰는 것과 같은 이유로 이 표는 "정답"이 아니라
+# "Toss API가 죽었을 때의 마지막 방어선"일 뿐이다 — 정상 경로는 이 표를
+# 참조하지 않는다). 다음 갱신 전까지 커버하는 범위: 2026년 하반기.
+_STATIC_HOLIDAYS: dict[str, set[dtdate]] = {
+    "KR": {
+        dtdate(2026, 9, 24),  # 추석 연휴
+        dtdate(2026, 9, 25),  # 추석
+        dtdate(2026, 10, 3),  # 개천절
+        dtdate(2026, 10, 9),  # 한글날
+        dtdate(2026, 12, 25),  # 크리스마스
+    },
+    "US": {
+        dtdate(2026, 11, 26),  # Thanksgiving
+        dtdate(2026, 12, 25),  # Christmas
+    },
+}
+
+# 조기폐장일 — 정규장이 열리지만 명목 마감보다 일찍 닫는다. 로컬 폐장 시각.
+_STATIC_EARLY_CLOSES: dict[str, dict[dtdate, dtime]] = {
+    "US": {
+        dtdate(2026, 11, 27): dtime(13, 0),  # Thanksgiving 다음날(추수감사절 연휴)
+    },
+}
+
 _MARKET_TZ: dict[str, ZoneInfo] = {m: tz for m, (tz, _, _) in _STATIC_SESSIONS.items()}
 
 # **가격이 발견되는 연속 거래 구간**. 위 `_STATIC_SESSIONS`(정규장 전체)와 다르다
@@ -107,9 +136,13 @@ def local_date(market: str, now: datetime) -> dtdate:
 
 
 class StaticSessionCalendar:
-    """고정 시간표. 휴장일과 조기폐장을 모른다 — 주말만 걸러낸다.
+    """고정 시간표 + 정적 휴장일표(`_STATIC_HOLIDAYS`/`_STATIC_EARLY_CLOSES`,
+    2026-09-07 추가). 주말과 표에 등재된 휴장일을 걸러내고, 등재된 조기폐장일은
+    이른 마감을 쓴다 — 그래도 **완전하지 않다**: 표에 없는 대체휴일·임시공휴일은
+    여전히 "장이 열려 있다"로 오판한다.
 
-    폴백 전용이다. 이걸로 라이브를 돌리면 위 docstring의 조기폐장 문제가 그대로 남는다.
+    폴백 전용이다(라이브는 `TossSessionCalendar`가 우선이고, 이건 그 조회가
+    실패했을 때만 쓰인다). 표를 매년 갱신하지 않으면 다시 조용히 틀린다.
     """
 
     def session(self, market: str, now: datetime) -> Session | None:
@@ -117,6 +150,9 @@ class StaticSessionCalendar:
         local = now.astimezone(tz)
         if local.weekday() >= 5:
             return None
+        if local.date() in _STATIC_HOLIDAYS.get(market, ()):
+            return None
+        close_t = _STATIC_EARLY_CLOSES.get(market, {}).get(local.date(), close_t)
         return Session(
             open=datetime.combine(local.date(), open_t, tzinfo=tz),
             close=datetime.combine(local.date(), close_t, tzinfo=tz),

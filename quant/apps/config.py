@@ -54,6 +54,83 @@ def _read_merged(path: Path) -> dict[str, Any]:
     return raw
 
 
+class SettingsValidationError(ValueError):
+    """settings.yaml이 문법적으로는 유효하지만 의미적으로 깨졌을 때(아래
+    `_validate_semantics` 참고)."""
+
+
+def _validate_semantics(raw: dict[str, Any]) -> list[str]:
+    """문법은 유효하지만 의미가 깨진 설정을 잡는다 (2026-09-07 보안/견고성 감사).
+
+    `yaml.safe_load`는 "파싱 가능한가"만 본다 — `capital_fraction: -1`,
+    `poll_seconds: "열"`, `per_strategy_initial_krw: "많이"` 같은 값도 전부
+    통과시킨다. 이런 값이 그대로 `reload_if_changed`를 타면 엔진이 조용히
+    잘못된 설정(음수 자본 배분 등)으로 넘어간다. 문제 목록(비어 있으면 유효)을
+    반환한다 — 예외를 던지지 않는다. 호출부(`reload_if_changed`는 이전 설정
+    유지, `load_settings`는 기동 거부)가 상황에 따라 다르게 반응해야 해서다.
+
+    **일부러 안 잡는 것 — 키 부재, `protected_strategies` 참조 무결성.**
+    처음엔 `strategies:` 자체가 없는 것과 `governor.protected_strategies`가
+    존재하지 않는 전략 id를 가리키는 것도 여기서 막았는데, 둘 다 실제
+    테스트를 깨뜨렸다: `Settings.strategies`/`.risk` 등은 이미 어디서나
+    `.get(key, {})`로 부재를 안전하게 흡수하고(빠지면 "전략 0개"로 조용히
+    안전한 방향일 뿐 위험한 방향이 아니다), `tests/test_backtest_intrabar.py`
+    처럼 실제 `config/settings.yaml`을 복사해 `strategies`만 단일 프로브로
+    갈아끼우는 정당한 테스트 패턴이 `protected_strategies`를 그대로 남겨
+    "존재하지 않는 전략 id"로 오탐됐다(2026-09-07 실측 — 도입 직후 12개
+    테스트 회귀). `protected_strategies`가 커밋된 `config/settings.yaml`과
+    맞는지는 `tests/test_governor_wiring.py::
+    test_protected_strategies_are_known_settings_yaml_strategies`(정적 검사,
+    그 파일 하나만 본다)가 이미 지킨다 — 여기서 모든 호출부에 강제하면
+    부작용이 이득보다 크다. 아래는 실제로 위험하고(오탐 없이) 확인된
+    필드만 남긴 것이다."""
+    errors: list[str] = []
+
+    def _is_number(value: Any) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+    strategies = raw.get("strategies")
+    if strategies is not None and not isinstance(strategies, dict):
+        errors.append(f"strategies: 가 dict가 아니다: {strategies!r}")
+        strategies = {}
+    strategies = strategies or {}
+
+    for sid, spec in strategies.items():
+        if not isinstance(spec, dict):
+            errors.append(f"strategies.{sid} 이 dict가 아니다: {spec!r}")
+            continue
+        cap = spec.get("capital_fraction")
+        if cap is None:
+            continue
+        if isinstance(cap, dict):
+            for market, value in cap.items():
+                if not _is_number(value):
+                    errors.append(
+                        f"strategies.{sid}.capital_fraction.{market} 이 숫자가 아니다: {value!r}"
+                    )
+                elif value < 0:
+                    errors.append(
+                        f"strategies.{sid}.capital_fraction.{market} 이 음수다: {value!r}"
+                    )
+        elif not _is_number(cap):
+            errors.append(f"strategies.{sid}.capital_fraction 이 숫자가 아니다: {cap!r}")
+        elif cap < 0:
+            errors.append(f"strategies.{sid}.capital_fraction 이 음수다: {cap!r}")
+
+    risk = raw.get("risk") or {}
+    for key in ("per_strategy_initial_krw", "per_strategy_initial_usd"):
+        if key in risk:
+            value = risk[key]
+            if not _is_number(value) or value <= 0:
+                errors.append(f"risk.{key} 가 양수가 아니다: {value!r}")
+
+    poll_seconds = (raw.get("engine") or {}).get("poll_seconds")
+    if poll_seconds is not None and (not _is_number(poll_seconds) or poll_seconds <= 0):
+        errors.append(f"engine.poll_seconds 가 양수가 아니다: {poll_seconds!r}")
+
+    return errors
+
+
 class Settings:
     """settings.yaml(+auto_params.yaml 오버레이)을 감싸는 얇은 typed 접근자.
     병합된 dict는 .raw로 접근 가능."""
@@ -126,7 +203,10 @@ class Settings:
             return False
         try:
             new_raw = _read_merged(self.path)
-        except (yaml.YAMLError, OSError) as e:
+            errors = _validate_semantics(new_raw)
+            if errors:
+                raise SettingsValidationError("; ".join(errors))
+        except (yaml.YAMLError, OSError, SettingsValidationError) as e:
             logger.error(
                 "settings.yaml 리로드 실패 — 마지막으로 성공한 설정을 유지합니다: %s: %s",
                 type(e).__name__, e,
@@ -168,11 +248,16 @@ def load_settings(settings_path: str = DEFAULT_SETTINGS_PATH) -> Settings:
     path = Path(settings_path)
     try:
         raw = _read_merged(path)
-    except (yaml.YAMLError, OSError) as e:
+        errors = _validate_semantics(raw)
+        if errors:
+            raise SettingsValidationError("; ".join(errors))
+    except (yaml.YAMLError, OSError, SettingsValidationError) as e:
         # 부팅 시점 실패는 핫 리로드(reload_if_changed)와 다르다 — 유지할 "마지막
         # 성공한 설정"이 아예 없으므로 여기는 진짜 치명적이다. 조용히 기본값으로
         # 넘어가지 않고 원인을 분명히 남긴 뒤 그대로 올린다(프로세스는 죽어야
-        # 한다 — 깨진 설정으로 기동하는 것보다 안전하다).
+        # 한다 — 깨진 설정으로 기동하는 것보다 안전하다). 문법은 유효하지만
+        # 의미가 깨진 설정(음수 capital_fraction, 숫자 자리의 문자열 등,
+        # `_validate_semantics` 참고)도 여기서 같이 잡는다.
         logger.error(
             "settings.yaml 로드 실패(기동 불가) — %s: %s: %s", path, type(e).__name__, e,
         )

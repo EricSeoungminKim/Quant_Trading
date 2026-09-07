@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -28,6 +29,7 @@ import yaml
 from quant.trade.control import TradingControl
 from quant.adapters.brokers.toss.client import TossClient
 from quant.core.models import market_of_symbol, trading_day
+from quant.core import log_redact as _redact
 from quant.core import tglanes
 from quant.collect.sources import telegram_channels
 
@@ -1584,6 +1586,23 @@ def _parse_watch_add_argv(argv: list[str]) -> tuple[str, list[str], bool, str]:
 
 
 if __name__ == "__main__":
+    # 시크릿 마스킹(2026-09-07 보안 감사) — `quant/core/log_redact.py` 모듈독스트링의
+    # 실측 사례(httpx INFO 로그의 `/bot<TOKEN>/sendMessage` 경로가 journalctl에
+    # 평문으로 381번 남음)가 바로 이 파일이 만드는 종류의 URL이다. 지금은 이
+    # 프로세스가 `logging.basicConfig()`를 부른 적이 없어 httpx의 INFO 로그가
+    # 어디에도 찍히지 않지만(핸들러가 없으면 WARNING 미만은 조용히 버려진다),
+    # 그건 "안전"이 아니라 "우연히 조용함"이다 — 나중에 누가 디버깅하려고
+    # `HTTPX_LOG_LEVEL=debug`를 걸거나 로깅을 켜는 순간 토큰이 다시 새고, 그
+    # 사실을 아무도 모른다. 핸들러를 먼저 걸어두고(레벨은 그대로 WARNING —
+    # 로그 볼륨을 늘리지 않는다) 그 핸들러에 마스킹 필터를 붙여, 나중에 레벨이
+    # 낮아져도 토큰만은 항상 가려지게 한다. `read_env_file`이 `.env.local`을
+    # 직접 파싱해 os.environ을 채우지 않으므로(TELEGRAM_BRIDGE_BOT_TOKEN/
+    # TOSS_CLIENT_SECRET 등) `known_secrets()`의 os.environ 스캔만으로는 못
+    # 잡는다 — `quant/apps/cli.py`의 `_redact.install(extra_secrets=...)`와
+    # 같은 패턴으로 이 파일의 env dict를 직접 넘긴다.
+    logging.basicConfig(level=logging.WARNING)
+    _redact.install(extra_secrets=_redact.known_secrets(env=read_env_file(ENV_LOCAL)))
+
     if len(sys.argv) >= 2 and sys.argv[1] == "watch-reset":
         # 개장 전 정기 초기화(크론) 경로 — 브리지 데몬과 같은 flock을 통과한다.
         # `watch-reset [KR|US]`. 시장 생략 시 전체 삭제.

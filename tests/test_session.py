@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -55,6 +56,44 @@ def test_bar_calendar_returns_none_for_a_day_with_no_bars():
     cal = BarSessionCalendar(_bar_index(date(2024, 11, 27), "09:30", "15:55"), 5, "US")
     # 추수감사절 — 봉이 없다.
     assert cal.session("US", datetime(2024, 11, 28, 12, 0, tzinfo=NY)) is None
+
+
+# --------------------------------------------- StaticSessionCalendar 휴장일표
+#
+# 2026-09-07 보안/견고성 감사: 이 표가 생기기 전에는 `StaticSessionCalendar`가
+# 주말만 걸렀다 — `TossSessionCalendar` 조회가 실패하는 순간(네트워크 장애·IP
+# 차단 등) 추석 같은 평일 휴장일에도 "장이 열려 있다"고 오판했다.
+
+
+def test_static_calendar_treats_registered_kr_holiday_as_closed():
+    calendar = StaticSessionCalendar()
+    chuseok = datetime(2026, 9, 25, 10, 0, tzinfo=KST)  # 추석, 목요일 — 주말 아님
+    assert chuseok.weekday() < 5
+    assert calendar.session("KR", chuseok) is None
+
+
+def test_static_calendar_treats_registered_us_holiday_as_closed():
+    calendar = StaticSessionCalendar()
+    thanksgiving = datetime(2026, 11, 26, 12, 0, tzinfo=NY)  # 목요일 — 주말 아님
+    assert thanksgiving.weekday() < 5
+    assert calendar.session("US", thanksgiving) is None
+
+
+def test_static_calendar_applies_registered_early_close():
+    calendar = StaticSessionCalendar()
+    day_after = datetime(2026, 11, 27, 10, 0, tzinfo=NY)
+    session = calendar.session("US", day_after)
+    assert session is not None
+    assert session.close.time() == dtime(13, 0)
+
+
+def test_static_calendar_ordinary_weekday_is_unaffected():
+    """휴장일표에 없는 평일은 기존과 동일하게 정상 개장으로 본다."""
+    calendar = StaticSessionCalendar()
+    ordinary = datetime(2026, 9, 21, 10, 0, tzinfo=KST)  # 월요일, 표에 없음
+    session = calendar.session("KR", ordinary)
+    assert session is not None
+    assert session.close.time() == dtime(15, 30)
 
 
 # ------------------------------------------------------------- Clock 통합
