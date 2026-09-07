@@ -3624,9 +3624,14 @@ def cmd_paper_epoch(args: argparse.Namespace) -> None:
 
     books = StrategyBooks.load(books_path, initial_krw=0.0)
     books.books = {}  # 에폭 이전 장부는 전부 버린다 — 새 시작점이지 이어달리기가 아니다.
+    # `load()`는 인자 0.0 이 아니라 **파일의 옛 최상위 initial_krw**(equal_split 시절 933,411원)
+    # 를 되살린다 — 그래서 09-06 에폭 리셋 때 KR 미참여(미국 전용) 레인 7개가 `_ensure` 폴백으로
+    # 933,411원짜리 KRW 장부를 받았다(사이트 총 시드 6.5M 부풀림, 2026-09-07 발견). 여기서
+    # 명시적으로 0 으로 못박고, 모든 활성 레인에 통화별 0.0 항목을 넣어 폴백 자체를 없앤다.
+    books.initial_krw = 0.0
     books.dual_currency = True
-    books.initial_by_strategy = krw_by_sid
-    books.initial_by_strategy_usd = usd_by_sid
+    books.initial_by_strategy = {sid: float(krw_by_sid.get(sid, 0.0)) for sid in active_strategy_ids}
+    books.initial_by_strategy_usd = {sid: float(usd_by_sid.get(sid, 0.0)) for sid in active_strategy_ids}
     books.seed(sorted(set(krw_by_sid) | set(usd_by_sid)))
     books.save()
 

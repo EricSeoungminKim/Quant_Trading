@@ -876,7 +876,18 @@ def _build_paper_epoch(trades: list[dict], strategies_cfg: dict | None) -> dict:
     strategy_rows = []
     overall_seed_krw = 0.0
     for sid in sorted(strategies_cfg):
-        start_capital = strategy_start_capital(sid)
+        start_capital = dict(strategy_start_capital(sid) or {})
+        # 참여하지 않는 시장의 통화는 계좌가 아니다(2026-09-07): settings 의
+        # `capital_fraction[market] == 0` 이면 장부 파일에 잔여 KRW/USD 가 남아 있어도
+        # (09-06 에폭 리셋이 옛 equal_split 상한 933,411원을 미국 전용 레인 7개에 남긴
+        # 실사고 — 총 시드가 6.5M 부풀려짐) 시드·곡선에서 뺀다. 원장은 건드리지 않는다.
+        fraction = (strategies_cfg.get(sid) or {}).get("capital_fraction")
+        if isinstance(fraction, dict):
+            if not float(fraction.get("KR", 0) or 0) > 0:
+                start_capital.pop("KRW", None)
+            if not float(fraction.get("US", 0) or 0) > 0:
+                start_capital.pop("USD", None)
+        start_capital = {k: v for k, v in start_capital.items() if v}
         if not start_capital:
             continue  # 이 전략엔 배정된 계좌가 없다 — "거래 없음"과 다르다
         overall_seed_krw += float(start_capital.get("KRW", 0.0))

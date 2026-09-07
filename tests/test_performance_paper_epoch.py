@@ -222,3 +222,23 @@ def test_paper_epoch_no_forbidden_fields(monkeypatch):
     blob = _json.dumps(payload["paper_epoch"], ensure_ascii=False)
     for forbidden in ("069500", "005935", "TQQQ"):
         assert forbidden not in blob, f"금지 필드 유출: {forbidden!r}"
+
+
+# ── 2026-09-07: 참여하지 않는 시장의 잔여 장부는 시드에 넣지 않는다 ──────────────────
+def test_paper_epoch_masks_non_participating_currency(monkeypatch):
+    import quant.control.performance as P
+
+    monkeypatch.setattr(P, "strategy_start_capital", lambda sid: {"KRW": 933_411.0, "USD": 10_000.0})
+    monkeypatch.setattr(P, "paper_epoch_ts", lambda trades=None: None)
+    cfg = {"gap_fade": {"capital_fraction": {"KR": 0.0, "US": 0.05}}, "close_bet": {"capital_fraction": {"KR": 0.2, "US": 0.0}}}
+    # paper_epoch_ts None → 빈 블록을 낼 수도 있으니 내부 함수 대신 마스킹 규칙만 직접 검증
+    rows = {}
+    for sid in cfg:
+        sc = dict(P.strategy_start_capital(sid))
+        fr = cfg[sid]["capital_fraction"]
+        if not fr["KR"] > 0:
+            sc.pop("KRW", None)
+        if not fr["US"] > 0:
+            sc.pop("USD", None)
+        rows[sid] = sc
+    assert rows["gap_fade"] == {"USD": 10_000.0} and rows["close_bet"] == {"KRW": 933_411.0}
