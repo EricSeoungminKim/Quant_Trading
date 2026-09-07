@@ -242,3 +242,19 @@ def test_paper_epoch_masks_non_participating_currency(monkeypatch):
             sc.pop("USD", None)
         rows[sid] = sc
     assert rows["gap_fade"] == {"USD": 10_000.0} and rows["close_bet"] == {"KRW": 933_411.0}
+
+
+# ── 2026-09-07 데이터 계보 감사: 손상된 ts 한 줄이 payload 전체를 죽이면 안 된다 ──
+def test_epoch_trades_skips_malformed_ts_instead_of_crashing(monkeypatch):
+    """실측 버그: `_epoch_trades`가 `_parse_ts`의 `ValueError`를 잡지 않아,
+    원장에 파싱 불가능한 `ts` 행이 하나만 섞여도 `_build_paper_epoch`(그리고
+    `build_performance_payload` 전체)가 그대로 죽었다 — `ledger.round_trips_
+    since_epoch`는 같은 상황에서 이미 그 행만 건너뛴다. 이 테스트는 그 방어가
+    회귀하지 않게 고정한다."""
+    _patch_epoch(monkeypatch)
+    trades = _ledger() + [
+        _trade(ts="이건-날짜가-아니다", strategy_id="gap_fade", symbol="069500",
+               side="buy", qty=1, price=1.0),
+    ]
+    payload = build_performance_payload(trades, EXECUTION_CFG, strategies_cfg=STRATEGIES_CFG)
+    assert payload["paper_epoch"], "손상된 ts 행 때문에 paper_epoch 서브트리가 통째로 비면 안 됨"

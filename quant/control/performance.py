@@ -225,6 +225,16 @@ def _parse_ts(trade: dict) -> datetime:
     return ts
 
 
+def _safe_parse_ts(trade: dict) -> datetime | None:
+    """`_parse_ts`와 같지만 예외를 삼킨다 — `build_performance_payload` 입구에서
+    깨진 `ts` 행을 걸러낼 때만 쓴다(그 외 이 파일의 다른 모든 곳은 입구를 통과한
+    행만 보므로 여전히 `_parse_ts`를 예외 없이 쓸 수 있다는 전제가 유효하다)."""
+    try:
+        return _parse_ts(trade)
+    except ValueError:
+        return None
+
+
 def _ts_iso(ts: datetime) -> str:
     """사람이 읽을 phases from/to용 — KST, 초 단위."""
     return ts.astimezone(_KST).isoformat(timespec="seconds")
@@ -775,7 +785,8 @@ def _is_epoch_marker(trade: dict) -> bool:
 def _epoch_trades(trades: list[dict], epoch_ts: datetime) -> list[dict]:
     """`epoch_ts` 이후 체결만(마커 행 제외) — 경계 이전 이력이 새 곡선에 새지
     않게 하는 단일 지점(소유자 지시: 에폭 이전 이력이 새 곡선에 leak 되면 안
-    된다)."""
+    된다). `trades`는 `build_performance_payload` 입구에서 이미 `ts` 파싱
+    가능한 행만 걸러진 뒤라(2026-09-07) `_parse_ts`를 예외 없이 쓸 수 있다."""
     return [t for t in trades if not _is_epoch_marker(t) and _parse_ts(t) >= epoch_ts]
 
 
@@ -991,6 +1002,15 @@ def build_performance_payload(
     — 그전에는 히어로의 "세션 2 · 체결 53" 옆에 257왕복 표가 나란히 찍혀 같은
     JSON이 스스로 모순돼 보였다."""
     now = now or datetime.now(_KST)
+    # `ts`가 파싱 불가능한 행은 여기서 걷어낸다(2026-09-07 데이터 계보 감사
+    # 발견) — 이 함수 안에서 `_parse_ts(t)`를 방어 없이 부르는 곳이 여럿이라
+    # (`_build_phases`, `_boundary_ts` 등) 원장에 그런 행이 하나만 섞여도
+    # `ValueError`가 그대로 올라와 공개 사이트 payload 발행 전체가 죽었다.
+    # `ledger.load_trades`가 이미 "깨진 줄은 건너뛴다"는 계약이므로(JSON 파싱
+    # 레벨), 여기서도 같은 관례를 "ts 필드가 깨진 행"에 맞춰 이어간다 — 파싱은
+    # 되지만 의미가 없는 값(예: `None`, 빈 문자열, 사람이 잘못 채운 문자열)까지
+    # 잡아야 진짜 방어가 된다.
+    trades = [t for t in trades if _safe_parse_ts(t) is not None]
     included, excluded = _split_excluded(trades)
     boundary_ts = _boundary_ts(excluded)
     carryover_krw, carryover_sourced = _carryover_position_krw(real_account_snapshot)
