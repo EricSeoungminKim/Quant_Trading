@@ -18,7 +18,7 @@
 | A2 | 하트비트 + 워치독(5분 데드맨) | ✅ | data/state/heartbeat.json 5일 무실패, server/scripts/watchdog.sh |
 | A3 | settings.yaml 핫리로드 파싱 오류에도 엔진이 죽지 않는다 | ✅ | quant/apps/config.py reload_if_changed(마지막 정상 설정 유지 + 운영 경보), tests/audit_2026_09_06/test_settings_hot_reload_yaml_error.py (2026-09-06) |
 | A4 | 재시작 시 포지션·손절 메타 복원 | ✅ | `_persist_position_meta` 테스트, lot state_update |
-| A5 | 재시작 시 일중 상태(쿨다운·일일 손실·주문 수) 복원 | 🟡 | `_save_day_state` 저장은 있으나 재시작 직후 공백 확인 필요 |
+| A5 | 재시작 시 일중 상태(쿨다운·일일 손실·주문 수) 복원 | ✅ | 2026-09-07 결함 주입(V2): 재시작 전후 위험 상태(일 카운터·일 시작 지분·손절 쿨다운·EoD 차단·전략별 일 상태) 디스크 왕복 후 결정 불변 확인, 포지션 meta(트레일·부분익절) portfolio.json 유지, 손상/구버전 상태 파일 안전 폴백 — tests/test_fault_state_restart.py 8건. _recent_entries(버스트 감지)만 의도적 미보존 |
 | A6 | 디스크 가득/저장 실패 시 장부-메모리 괴리 차단 | ✅ | Portfolio.save 원자화(fsync+rename) + PaperBroker 실패 시 롤백·재발생, tests/audit_2026_09_06/test_paper_broker_save_failure_divergence.py (2026-09-06) |
 | A7 | OS 자동 재시작 우회(needrestart 제외) | ✅ | deploy.sh 주석 + /etc/needrestart/conf.d |
 
