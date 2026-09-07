@@ -554,3 +554,20 @@ def test_render_trade_review_js_is_syntactically_valid_with_full_band():
         path = f.name
     result = subprocess.run(["node", "--check", path], capture_output=True, text=True)
     assert result.returncode == 0, f"생성된 JS 문법 오류:\n{result.stderr}"
+
+
+def test_render_strategy_table_best_worst_use_names():
+    """전략별 요약표의 최고/최저 셀도 '이름(코드)'로 나온다(2026-09-07 소유자: 종목번호만 오지 않게 —
+    EC2 재측정에서 이 셀만 코드 그대로 남아 있었다)."""
+    fills = [
+        _fill("scalp_1m", "105560", "buy", 10, 100.0, "2026-09-07T00:30:32+00:00",
+              reason="1분봉 스캘프 패턴B 진입: 105560 w=0.50 손절=95"),
+        _fill("scalp_1m", "105560", "sell", 10, 98.0, "2026-09-07T00:40:19+00:00",
+              reason="60선 이탈(잔량 트레일): 종가=98 MA60=99", pnl=-20.0),
+    ]
+    bars = _bars("105560", datetime(2026, 9, 7, 9, 0), 90, open_=100.0, step=0.02, tz="Asia/Seoul")
+    review = build_trade_review(fills, {"105560": bars}, {"scalp_1m": {"params": {}}}, "KR", date(2026, 9, 7),
+                                names={"105560": "KB금융"})
+    from quant.report.render.trade_review import render_trade_review
+    html = render_trade_review(review, "KR", date(2026, 9, 7))
+    assert html.count("KB금융(105560)") >= 2, "카드 제목과 요약표 최고/최저 셀 모두 이름(코드)여야 한다"

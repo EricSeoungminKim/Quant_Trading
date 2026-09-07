@@ -201,8 +201,8 @@ footer{margin-top:32px;font-size:var(--fs-2xs);color:var(--mute);text-align:cent
         <td class="num">{{ s.n_open }}</td>
         <td class="num">{{ fmt_pct(s.win_rate) }}</td>
         <td class="num">{{ fmt_bp(s.net_bp) }}</td>
-        <td>{% if s.best %}{{ s.best }} ({{ fmt_bp(s.best_bp) }}){% endif %}</td>
-        <td>{% if s.worst %}{{ s.worst }} ({{ fmt_bp(s.worst_bp) }}){% endif %}</td>
+        <td>{% if s.best %}{{ (s.best_name ~ '(' ~ s.best ~ ')') if (s.best_name and s.best_name != s.best) else s.best }} ({{ fmt_bp(s.best_bp) }}){% endif %}</td>
+        <td>{% if s.worst %}{{ (s.worst_name ~ '(' ~ s.worst ~ ')') if (s.worst_name and s.worst_name != s.worst) else s.worst }} ({{ fmt_bp(s.worst_bp) }}){% endif %}</td>
       </tr>
     {%- endfor %}
     </tbody>
