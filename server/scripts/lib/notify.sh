@@ -251,12 +251,13 @@ _notify_record_failure() {  # $1=text
   text="${1:-}"
   f="${NOTIFY_FAILURE_LEDGER:-$_NOTIFY_ROOT/data/ledger/notify_failures.jsonl}"
   mkdir -p "$(dirname "$f")" 2>/dev/null || true
-  printf '{"ts":"%s","source":"%s","lane":"%s","text":"%s"}\n' \
+  { flock 200 2>/dev/null; printf '{"ts":"%s","source":"%s","lane":"%s","text":"%s"}\n' \
     "$(date +%Y-%m-%dT%H:%M:%S%z)" \
     "$(_notify_json_escape "$(basename "${0:-unknown}" .sh)")" \
     "$(_notify_json_escape "${NOTIFY_LANE:-}")" \
     "$(_notify_json_escape "${text:0:200}")" \
     >> "$f" 2>/dev/null || true
+  } 200>>"${f}.lock" 2>/dev/null || true
 }
 
 # 레인별 레이트 리밋(2026-09-06) — 텔레그램 실측 한도(~20건/분/챗)에 안전마진을
@@ -309,11 +310,12 @@ _notify_record_sent() {  # $1=text — 성공 발송 기록(2026-09-07 감사성
   text="${1:-}"
   f="${NOTIFY_SENT_LEDGER:-$_NOTIFY_ROOT/data/ledger/notify_sent.jsonl}"
   mkdir -p "$(dirname "$f")" 2>/dev/null || true
-  printf '{"ts":"%s","source":"%s","lane":"%s","text":"%s"}\n' \
+  { flock 200 2>/dev/null; printf '{"ts":"%s","source":"%s","lane":"%s","text":"%s"}\n' \
     "$(date +%Y-%m-%dT%H:%M:%S%z)" \
     "$(_notify_json_escape "$(basename "${0:-unknown}" .sh)")" \
     "$(_notify_json_escape "${NOTIFY_LANE:-}")" \
     "$(_notify_json_escape "${text:0:1000}")" >> "$f" 2>/dev/null || true
+  } 200>>"${f}.lock" 2>/dev/null || true
 }
 
 _notify_send() {  # $1=text
@@ -347,10 +349,10 @@ _notify_send() {  # $1=text
     thread_args=(-d "message_thread_id=${thread_id}")
   fi
   resp="$(curl -s -m 15 "${TELEGRAM_API_BASE:-https://api.telegram.org}/bot${token}/sendMessage" \
-    -d "chat_id=${chat_id}" "${thread_args[@]}" -d "parse_mode=HTML" --data-urlencode "text=$text" 2>/dev/null)"
+    -d "chat_id=${chat_id}" ${thread_args[@]+"${thread_args[@]}"} -d "parse_mode=HTML" --data-urlencode "text=$text" 2>/dev/null)"
   case "$resp" in *'"ok":true'*) _notify_record_sent "$text"; return 0 ;; esac
   resp="$(curl -s -m 15 "${TELEGRAM_API_BASE:-https://api.telegram.org}/bot${token}/sendMessage" \
-    -d "chat_id=${chat_id}" "${thread_args[@]}" --data-urlencode "text=$text" 2>/dev/null)"
+    -d "chat_id=${chat_id}" ${thread_args[@]+"${thread_args[@]}"} --data-urlencode "text=$text" 2>/dev/null)"
   case "$resp" in *'"ok":true'*) _notify_record_sent "$text"; return 0 ;; esac
   _notify_record_failure "$text"
   return 1

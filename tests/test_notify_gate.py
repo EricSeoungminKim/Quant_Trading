@@ -67,6 +67,7 @@ def gate(tmp_path: Path):
                 # (2026-09-06) — 안 그러면 테스트가 실제 data/ledger·data/state 를
                 # 건드리고, 레이트 리밋 상태가 테스트 실행 사이에 누적된다.
                 "NOTIFY_FAILURE_LEDGER": str(failure_ledger),
+                "NOTIFY_SENT_LEDGER": str(tmp_path / "notify_sent.jsonl"),  # 실제 저장소 원장 오염 방지(2026-09-07)
                 "NOTIFY_RATE_DIR": str(rate_dir),
                 "NOTIFY_RATE_SLEEP": "0",  # 테스트에서는 실제로 쉬지 않는다
             }

@@ -278,8 +278,12 @@ def clock_findings(utc_offset_seconds: int | None, engine_stamp: str | None,
     if engine_stamp is None or age is None:
         out.append(Finding("clock", UNKNOWN, "엔진이 찍은 시각을 읽지 못했다"))
     elif abs(age) > tolerance:
+        # 초 단위 실측값을 문구에 넣으면 ops_watch 의 지문 중복 억제가 매 실행 다른 문구로 보고 매번
+        # 재발송한다(2026-09-07 V3 E2E: 7건 중 이 1건만 계속 재발송). 버킷으로만 쓴다.
+        skew = int(abs(age).total_seconds())
+        bucket = "1~5분" if skew < 300 else "5~30분" if skew < 1800 else "30분 이상"
         out.append(Finding("clock", ALERT,
-                           f"엔진 하트비트 시각이 관측 시각과 {int(abs(age).total_seconds())}초 어긋난다"))
+                           f"엔진 하트비트 시각이 관측 시각과 {bucket} 어긋난다"))
     return out
 
 
