@@ -964,6 +964,10 @@ strategies:
 
     validation:
       status: burn_in
+      # 2026-09-07 팀장 결정 ⑦: NO_GO 판정을 뒤집어 재활성한 레인은 판정일을 코드에 둔다(적립 3레인과
+      # 같은 한 달 창). 판정 규칙은 lane_review_reminder.sh 참고.
+      review_by: "2026-10-06"
+      evidence: "NO_GO — 원장 9트립 0승 −65bp + 10년 walk-forward 전부 음수(2026-09-05) — 관찰 재활성"
     params:
       # 봉 간격 선언(2026-09-03 감사 C4). 실제 봉은 5m(intraday_momentum.py `_INTERVAL`).
       # 쿨다운 봉 수는 전역값 4 → 5m x 4 = 20분.
@@ -1182,7 +1186,12 @@ strategies:
       # 없으므로 근거가 쌓일 때까지 관측만 한다. 저널의 `[게이트:차단후보 ...]`
       # 표기와 실제 손익을 n≥30 에서 대조해 block 승격을 판단한다.
       # block = 게이트 미충족 시 진입 차단 / off = 계산 자체를 하지 않음.
-      trend_gate_mode: shadow
+      # 2026-09-07 팀장 결정 ⑤(a): shadow → block. 원장 63트립(08-27~09-07) 실측 — 게이트 통과 16건
+      # 평균 +38.6bp / 차단후보 46건 +4.0bp, 09-07 차단후보 5건 중 4건 손실(MA60 트레일 잘림).
+      # params 는 앵커로 두 갈래(scalp_1m/_cat)가 공유하므로 둘 다 block — 별도 계좌 없이 동시
+      # A/B 는 불가하고, 판본 지문(params_fingerprint)으로 이전 판본과 전/후 비교한다(국면 교란
+      # 가능성은 기록). 2주 뒤 `scoreboard --current-params-only` 로 재판정.
+      trend_gate_mode: block
       adx_min: 25.0 # QuantConnect #407(Cross-Sectional Momentum with Trend Filter) 근거값 — 이 저장소 실데이터로 검증되지 않음
       max_atr_ratio: 0.10 # QuantConnect #478(Quantum Walk BQP) 변동성 억제기 근거값 — 이 저장소 실데이터로 검증되지 않음
   # ── A/B: 촉매 갈래 (2026-09-03 소유자 지시) ─────────────────────────────
@@ -1410,6 +1419,10 @@ strategies:
       US: 0.05
     validation:
       status: burn_in
+      # 2026-09-07 팀장 결정 ⑦: NO_GO 판정을 뒤집어 재활성한 레인은 판정일을 코드에 둔다(적립 3레인과
+      # 같은 한 달 창). 판정 규칙은 lane_review_reminder.sh 참고.
+      review_by: "2026-10-06"
+      evidence: "NO_GO — walk-forward NO_GO(2026-09-05) — 소유자 요청 관찰 레인"
     params: &letf_pair_params
       # F1 스펙 기본값(scratchpad/letf_spec.md "Defaults") 그대로 — 튜닝 없음.
       bar_interval_minutes: 15 # DECLARE(리스크 쿨다운 봉 간격용) — interval_minutes(M)와 같아야 한다(생성자가 대조)
@@ -1476,6 +1489,10 @@ strategies:
       US: 0.05 # letf_pair_qqq와 동일 근거 — fixed_dual에서 사이징에 안 쓰이는 boolean 게이트
     validation:
       status: burn_in
+      # 2026-09-07 팀장 결정 ⑦: NO_GO 판정을 뒤집어 재활성한 레인은 판정일을 코드에 둔다(적립 3레인과
+      # 같은 한 달 창). 판정 규칙은 lane_review_reminder.sh 참고.
+      review_by: "2026-10-06"
+      evidence: "NO_GO — walk-forward NO_GO(2026-09-05) — 소유자 요청 관찰 레인"
     params:
       <<: *letf_pair_params
       signal_symbol: "SOXX"
@@ -1955,3 +1972,8 @@ governor:
   # 대신 "사망 경보 지속 중 — 개선 실험 필요" 알림만 받는다(governor-apply,
   # 장외 시간 notify_auto) — 포지션 관리는 전략이 켜져 있는 한 그대로 계속된다.
   protected_strategies: [scalp_1m]
+  # `run scoreboard`가 기본적으로 "현재 파라미터 판본" 트립만 판정에 쓸지
+  # (2026-09-07, 진화가능성 평가 투자 #2·#4 — 원장 소급 판본 태깅). false(기본)면
+  # 기존과 동일하게 판본 무관 전체 트립을 쓰되 "현재 판본 트립 n/전체 N" 줄만
+  # 추가로 보여준다. true로 켜면 `--current-params-only` 없이도 항상 필터링된다.
+  judge_current_params_only: false
