@@ -44,6 +44,16 @@ def test_bridge_enables_read_tool_host_without_relaxing_permissions(tmp_path):
     assert "--dangerously-bypass-approvals-and-sandbox" not in args
 
 
+@pytest.mark.parametrize("platform,landlock", [("linux", True), ("darwin", False)])
+def test_bridge_uses_landlock_only_on_linux(tmp_path, monkeypatch, platform, landlock):
+    monkeypatch.setattr(tg_bridge.sys, "platform", platform)
+    args = tg_bridge.build_codex_argv(tmp_path / "reply.txt")
+    assert ("features.use_legacy_landlock=true" in args) is landlock
+    assert args[args.index("--sandbox") + 1] == "read-only"
+    assert args[args.index("--ask-for-approval") + 1] == "never"
+    assert "features.code_mode_host=true" in args
+
+
 def test_codex_reads_stdin_and_returns_final_message_only(tmp_path, monkeypatch):
     _fake_codex(tmp_path, monkeypatch, """
 args = sys.argv[1:]

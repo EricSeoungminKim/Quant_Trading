@@ -1307,6 +1307,9 @@ def build_codex_argv(output_path: Path) -> list[str]:
         argv += ["-c", f"features.{feature}=false"]
     # Codex 0.154의 허용된 읽기 도구도 실행 호스트가 필요하다. 샌드박스는 그대로다.
     argv += ["-c", "features.code_mode_host=true"]
+    if sys.platform == "linux":
+        # EC2의 bwrap 네트워크 네임스페이스 제약: 같은 읽기 전용 정책을 Landlock으로 강제한다.
+        argv += ["-c", "features.use_legacy_landlock=true"]
     if os.environ.get("CODEX_MODEL"):
         argv += ["--model", os.environ["CODEX_MODEL"]]
     return argv + ["--output-last-message", str(output_path), "-"]

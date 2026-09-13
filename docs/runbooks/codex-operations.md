@@ -80,6 +80,10 @@ Telegram 읽기 도구와 웹검색에는 같은 공식 릴리스의 `codex-code
 `bwrap`도 필요하다. 각각 배포 해시를 대조해 `~/.local/bin/`에 설치한다.
 브리지와 웹검색 helper만 실행 호스트를 켜며, 읽기 전용 sandbox와 승인 거부를
 유지한다. 도구 없는 리포트 서술에서는 호스트도 끈다.
+EC2에서는 bwrap의 loopback 생성이 `Operation not permitted`로 실패했다.
+Linux 브리지는 `features.use_legacy_landlock=true`로 동일한 읽기 전용 정책을
+적용한다. 실제 샌드박스에서 저장소 파일 읽기는 성공하고 임시 파일 쓰기와
+직접 TCP 연결은 `PermissionError`로 차단되는 것을 확인했다.
 
 텍스트 서술·Telegram 질의·JSON 분석은 Codex를 우선 사용한다. OpenRouter는
 실패 시 무료 폴백과 기존 Telegram 사진 해석에 남는다. JSON 분석(ai-trader,
