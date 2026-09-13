@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # llm_trader — 엔진 밖 판단 레인 (2026-08-30 신규). KR 정규장 중 10분마다 크론이
-# 부른다. 이 스크립트는 아무 주문도 내지 않는다 — headless `claude -p` 로 판단만
+# 부른다. 이 스크립트는 아무 주문도 내지 않는다 — headless `codex exec` 로 판단만
 # 받아 data/state/llm_trader_inbox.jsonl 에 append 하고, 그 인박스를 엔진(별도
 # 워커가 배선 중인 소비 전략)이 읽어 실제로 사고판다. quant/ 를 직접 임포트하지
 # 않는다 — server/scripts/llm_trader.py 도 마찬가지(인박스 파일 하나가 엔진과의
@@ -8,32 +8,22 @@
 # 프로세스를 엔진과 분리한다). peek(시세 조회)만 예외로 llm_trader.py 가 우리
 # CLI 를 서브프로세스로 부른다 — 이유는 아래 "도구 허용" 절 참고.
 #
-# 비용/부하 메모: 호출당 클로드 프로세스가 순간적으로 ~300MB 를 쓴다(관찰치 —
-# EC2 는 총 1.8GB). 2026-08-30 소유자 지시로 주기를 30분→10분으로 당겨 Max
-# 구독 사용량을 하루 **38회**(9:05~15:15, 10분 간격) 소모한다(기존 13회/일 대비
-# 증가). DeepSeek 등 다른 키로 판단 호출부를 바꾸고 싶으면 아래 "2. 판단 호출"
-# 절만 교체하면 된다 — 인박스 계약(llm_trader.py 상단 주석)은 그대로 유지해야
-# 엔진 쪽이 안 깨진다.
+# 호출 주기: 하루 38회(9:05~15:15, 10분 간격). Codex의 인증/모델은 서버
+# 배치 서술과 동일하며 CODEX_BIN/CODEX_MODEL로 지정할 수 있다. 판단 호출부를
+# 바꿔도 인박스 계약(llm_trader.py 상단 주석)은 그대로 유지해야 한다.
 #
-# 도구 허용 (2026-08-30 실측, claude CLI 2.1.233): 원래 지시는 "WebSearch/
-# WebFetch + quant.apps.cli peek 명령 패턴만" 허용하는 것이었다. 그런데
-# --allowedTools/--disallowedTools/--settings permissions.{allow,deny} 네
-# 조합을 EC2 에서 직접 실측한 결과 — Bash 를 막으면(이름이든 `Bash(패턴)`이든)
-# 패턴 예외 없이 Bash 도구 자체가 통째로 사라지고, Bash 를 막지 않으면
-# `--allowedTools`에 뭘 적든 임의 명령이 그대로 실행됐다(`id` 등). **이 CLI
-# 버전은 "Bash 중 이 명령 패턴만" 부분 허용을 지원하지 않는다** — 전부
-# 허용 아니면 전부 차단뿐이다. "무제한 Bash 는 금지"가 우선이므로 모델에게는
-# Bash 를 아예 안 준다. 그 대신 peek 조회는 이 스크립트(llm_trader.py context)
+# 도구 허용: Codex 내장 웹검색만 켠다. 셸/파일/플러그인/MCP/하위 에이전트는
+# codex_prompt.py가 차단하고, 프로젝트 밖 임시 디렉토리에서 실행한다.
+# peek 조회는 이 스크립트(llm_trader.py context)
 # 가 후보 심볼에 대해 미리 호출해 컨텍스트 텍스트에 실어 보낸다 — 데이터
 # API 활용이라는 목적은 달성하되, 모델이 임의 셸 명령을 실행할 길은 없다.
-# 남은 도구는 WebSearch/WebFetch 뿐이다.
+# 남은 도구는 웹검색뿐이다.
 #
-# 테스트: DRY_RUN=1 ./server/scripts/llm_trader.sh   (claude 호출 대신 고정 응답 주입)
+# DRY_RUN도 인박스에 기록한다. 테스트는 반드시 격리한 저장소에서 실행한다.
 set -u
 cd "$(dirname "$0")/../.."
 
 PY=.venv/bin/python
-CLAUDE_BIN="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
 LOG="data/llm_trader.log"
 LOCK="data/llm_trader.lock"
 mkdir -p data data/state
@@ -102,23 +92,13 @@ if [ "${DRY_RUN:-0}" = "1" ]; then
   # 리터럴 "}"가 bash 파라미터 확장의 닫는 중괄호로 잘못 읽혀 조기 종료된다.
   _DEFAULT_DRY_OUTPUT='[{"action":"buy","symbol":"005930","weight":0.15,"horizon":"스윙","reason":"DRY_RUN 테스트"}]'
   OUT="${LLM_TRADER_DRY_OUTPUT:-$_DEFAULT_DRY_OUTPUT}"
-  log "DRY_RUN — claude 호출 생략, 고정 응답 주입"
+  log "DRY_RUN — Codex 호출 생략, 고정 응답 주입"
 else
-  # 인자 순서 주의: 프롬프트를 -p 바로 뒤(포지셔널)에 두고 --disallowedTools 를
-  # 맨 뒤에 둔다. --disallowedTools/--allowedTools 는 가변 인자(variadic)라
-  # 프롬프트를 그 뒤에 붙이면 프롬프트 문장이 통째로 "허용/차단할 도구 이름"
-  # 목록에 먹혀버린다(2026-08-30 EC2 실측 — "Permission deny rule '위' matches
-  # no known tool" 식으로 깨짐). --allowedTools "WebSearch,WebFetch" 로 열어주고
-  # --disallowedTools 로 나머지(Bash 포함, 위 "도구 허용" 절 참고)를 막는다.
-  OUT="$(printf '%s' "$PROMPT_HEADER" | timeout 240 nice -n 10 "$CLAUDE_BIN" -p \
-    "위 지침대로 판단하고 JSON 배열만 출력하라." \
-    --model opus \
-    --allowedTools "WebSearch,WebFetch" \
-    --disallowedTools "Bash,Read,Write,Edit,Glob,Grep,NotebookEdit,Task,Agent,TodoWrite" \
-    2>>"$LOG")"
+  OUT="$(printf '%s' "$PROMPT_HEADER" | nice -n 10 "$PY" \
+    server/scripts/codex_prompt.py --timeout 240 --web-search 2>>"$LOG")"
   RC=$?
   if [ "$RC" -ne 0 ]; then
-    log "claude 호출 실패 exit=$RC — 무거래 처리"
+    log "Codex 호출 실패 exit=$RC — 무거래 처리"
     exit 0
   fi
 fi

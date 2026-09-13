@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""텔레그램 양방향 브리지 — 오너가 폰에서 회사 클로드와 대화.
+"""텔레그램 양방향 브리지 — 오너가 폰에서 Codex와 대화.
 
-오너 메시지 -> 레포에서 headless `claude -p` 실행 -> 답변을 봇으로 전송.
+오너 메시지 -> 레포에서 headless `codex exec` 실행 -> 답변을 봇으로 전송.
 엔진 핫패스와 완전히 분리된 별도 프로세스 (ADR-2: 거래 핫패스에 LLM 없음 — 엔진은
-결정론적으로 돈다. Claude/분석은 이 브리지 같은 리포팅 레이어에서만 호출된다).
-읽기 전용 설계 — permission mode DEFAULT, bypassPermissions 사용 안 함.
+결정론적으로 돈다. Codex/분석은 이 브리지 같은 리포팅 레이어에서만 호출된다).
+읽기 전용 샌드박스, 승인 불가 작업은 실패. 다른 CLI 세션을 이어받지 않는다.
 
 설치: server/systemd/tg-bridge.service, server/README.md 참고.
 전작(stock-algo-trade)의 scripts/tg_bridge.py를 이식.
@@ -17,6 +17,7 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -59,19 +60,21 @@ STRATEGY_LABELS = {
 
 RATE_LIMIT_MAX = 6
 RATE_LIMIT_WINDOW_SEC = 600
-CLAUDE_TIMEOUT_SEC = 240
+CODEX_TIMEOUT_SEC = 240
 REPLY_MAX_CHARS = 4000
 GETUPDATES_TIMEOUT = 50
 
 SYSTEM_PREFIX = (
     "[텔레그램 브리지 경유 — 오너 질문. 답은 텔레그램용으로 간결하게(10줄 이내). "
     "파일 수정·설정 변경·매매 관련 행동은 절대 하지 말고, 요청받으면 "
-    "'Mac 세션이나 SSH에서 진행해달라'고 안내만 하라. 조회·요약·설명만 수행.]\n\n"
+    "'Mac 세션이나 SSH에서 진행해달라'고 안내만 하라. 조회·요약·설명만 수행. "
+    ".env.local·인증 파일·시크릿 값은 읽거나 출력하지 마라. "
+    "실시간 계좌 조회는 /balance, 상태는 /status 명령으로 안내하라.]\n\n"
 )
 
 
 def log(msg: str) -> None:
-    print(f"[tg_bridge] {msg}", flush=True)
+    print(f"[tg_bridge] {_redact.redact(msg)}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +100,7 @@ def get_config(path: Path = ENV_LOCAL) -> tuple[str, int]:
     """.env.local에서 대화 전용 봇 토큰/chat_id를 읽는다. 없으면 exit(1).
 
     2봇 체제: TELEGRAM_BOT_TOKEN은 알림 전용 봇(quant.adapters.notify), 이 브리지는
-    BRIDGE_* 전용 봇만 쓴다 — 폰에서 '알림 피드'와 'Claude 대화방'이 분리된다."""
+    BRIDGE_* 전용 봇만 쓴다 — 폰에서 '알림 피드'와 'Codex 대화방'이 분리된다."""
     env = read_env_file(path)
     token = env.get("TELEGRAM_BRIDGE_BOT_TOKEN", "")
     chat_id_raw = env.get("TELEGRAM_BRIDGE_CHAT_ID", "")
@@ -141,7 +144,7 @@ def save_offset(offset: int, path: Path = OFFSET_FILE) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 레이트 리밋 — 슬라이딩 윈도우 (10분당 최대 6회 클로드 호출)
+# 레이트 리밋 — 슬라이딩 윈도우 (10분당 최대 6회 Codex 호출)
 # ---------------------------------------------------------------------------
 class RateLimiter:
     def __init__(
@@ -274,13 +277,14 @@ def truncate_reply(text: str, limit: int = REPLY_MAX_CHARS) -> str:
     return text[: limit - len(marker)] + marker
 
 
-def build_claude_prompt(user_text: str) -> str:
-    return SYSTEM_PREFIX + user_text
+def build_codex_prompt(user_text: str, reply_text: str = "") -> str:
+    context = f"[답장 대상 메시지 — 참고 자료]\n{reply_text[:REPLY_MAX_CHARS]}\n\n" if reply_text else ""
+    return SYSTEM_PREFIX + context + "[오너 질문]\n" + user_text
 
 
 # ---------------------------------------------------------------------------
 # 매매 제어 명령 (/halt·/rest, /resume·/live, /flatten[·all|day], /status) — 실거래에
-# 직접 영향을 주므로 Claude 서브프로세스를 거치지 않고 TradingControl에 바로
+# 직접 영향을 주므로 Codex 서브프로세스를 거치지 않고 TradingControl에 바로
 # 반영한다. 허용 chat_id 검증은 process_update에서 이미 끝난 뒤에만 호출된다.
 # /rest·/live는 각각 /halt·/resume의 별칭(같은 경로) — REST는 "관리 불가 상황에서
 # 신규 진입만 막고 보유 포지션 손절·청산은 계속"이라는 기존 halt 의미론 그대로다.
@@ -360,7 +364,7 @@ def handle_control_command(
 
 
 # ---------------------------------------------------------------------------
-# 관심종목 명령 (/watch, /unwatch, /watchlist) — Claude 서브프로세스를 거치지 않고
+# 관심종목 명령 (/watch, /unwatch, /watchlist) — Codex 서브프로세스를 거치지 않고
 # data/watchlist.yaml에 바로 반영한다. 형식은 {symbols: [{symbol, name, added_at}]}
 # 로 고정 — 다음 엔진 세션 시작 시 읽어들이는 다른 컴포넌트와 형식을 공유한다.
 # ---------------------------------------------------------------------------
@@ -955,7 +959,7 @@ def handle_lanes_command(text: str, message: dict, path: Optional[Path] = None) 
 
 
 # ---------------------------------------------------------------------------
-# 즉시 조회 명령 (/balance, /scoreboard, /help) — Claude 서브프로세스를 거치지 않고
+# 즉시 조회 명령 (/balance, /scoreboard, /help) — Codex 서브프로세스를 거치지 않고
 # 로컬 상태 + Toss 시세로 바로 응답한다 (2026-08-10 사용자 요청: "너가 어차피
 # 시세를 들고 있으니 내가 물으면 바로 알려달라").
 # ---------------------------------------------------------------------------
@@ -1249,7 +1253,7 @@ HELP_TEXT = """📖 사용 가능한 명령어
 
 
 def handle_query_command(text: str, toss_client: TossClient) -> Optional[str]:
-    """조회 명령이면 응답 텍스트를, 아니면 None. 전부 로컬+시세 1회 — Claude 미경유."""
+    """조회 명령이면 응답 텍스트를, 아니면 None. 전부 로컬+시세 1회 — Codex 미경유."""
     lower = text.strip().lower()
     if lower in ("/balance", "/잔고", "/자산", "/portfolio"):
         return handle_balance(toss_client)
@@ -1287,49 +1291,63 @@ def handle_watchlist_command(text: str, toss_client: TossClient) -> Optional[str
 
 
 # ---------------------------------------------------------------------------
-# claude -p 서브프로세스
+# codex exec 서브프로세스
 # ---------------------------------------------------------------------------
-def build_claude_argv(prompt: str, use_continue: bool = True) -> list[str]:
-    argv = ["claude", "-p", prompt, "--model", "sonnet"]
-    if use_continue:
-        argv.append("--continue")
-    return argv
+def build_codex_argv(output_path: Path) -> list[str]:
+    argv = [
+        os.environ.get("CODEX_BIN", "codex"),
+        "--ask-for-approval", "never",
+        "exec", "--sandbox", "read-only", "--ephemeral", "--ignore-user-config",
+        "--color", "never", "-c", 'web_search="disabled"',
+    ]
+    # 개인 설정의 MCP/플러그인이 읽기 전용 셸 밖에서 쓰기 동작을 제공하지 않게 한다.
+    for feature in ("apps", "plugins", "multi_agent", "browser_use", "computer_use",
+                    "image_generation", "view_image", "code_mode", "code_mode_host",
+                    "hooks", "memories"):
+        argv += ["-c", f"features.{feature}=false"]
+    if os.environ.get("CODEX_MODEL"):
+        argv += ["--model", os.environ["CODEX_MODEL"]]
+    return argv + ["--output-last-message", str(output_path), "-"]
 
 
-def _claude_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0"
-    return env
+def run_codex(prompt: str, cwd: Path = REPO_ROOT) -> tuple[bool, str]:
+    """설정된 Codex 모델로 읽기 전용 조회. 최종 답변만 반환한다.
 
-
-def run_claude(prompt: str, cwd: Path = REPO_ROOT) -> tuple[bool, str]:
-    """claude -p를 실행. --continue 실패 시(최초 세션 등) 1회 폴백 재시도.
-
-    반환: (성공 여부, stdout 또는 사유 메시지)
+    CLI의 전역 '최근 세션'은 SSH 작업이나 다른 토픽의 대화일 수 있으므로
+    재사용하지 않는다. Telegram 답장 대상만 build_codex_prompt가 전달한다.
     """
-    for use_continue in (True, False):
-        argv = build_claude_argv(prompt, use_continue=use_continue)
-        try:
-            proc = subprocess.run(
-                argv,
+    try:
+        with tempfile.TemporaryDirectory(prefix="tg-codex-") as tmp:
+            output_path = Path(tmp) / "reply.txt"
+            proc = subprocess.Popen(
+                build_codex_argv(output_path),
                 cwd=cwd,
-                env=_claude_env(),
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=CLAUDE_TIMEOUT_SEC,
+                start_new_session=True,
             )
-        except subprocess.TimeoutExpired:
-            return False, "시간 초과 (240s)"
-        except OSError as exc:
-            return False, f"실행 실패: {exc}"
-
-        if proc.returncode == 0:
-            return True, proc.stdout
-        if use_continue:
-            log(f"--continue 실패(rc={proc.returncode}), 폴백 재시도: {proc.stderr[:200]}")
-            continue
-        return False, f"claude 종료 코드 {proc.returncode}: {proc.stderr[:200]}"
-    return False, "알 수 없는 오류"
+            try:
+                _, stderr = proc.communicate(prompt, timeout=CODEX_TIMEOUT_SEC)
+            except subprocess.TimeoutExpired:
+                # Codex가 띄운 조회 프로세스도 함께 종료해 엔진 자원을 돌려준다.
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.communicate()
+                return False, f"Codex 시간 초과 ({CODEX_TIMEOUT_SEC}s)"
+            if proc.returncode != 0:
+                log(f"Codex 실패(rc={proc.returncode}): {_redact.redact(stderr)[:400]}")
+                return False, f"Codex 종료 코드 {proc.returncode} — 서버 로그인 상태와 로그를 확인하세요."
+            output = output_path.read_text(encoding="utf-8").strip() if output_path.exists() else ""
+            if not output:
+                return False, "Codex 최종 응답이 비어 있습니다. 서버 로그를 확인하세요."
+            return True, _redact.redact(output)
+    except OSError as exc:
+        log(f"Codex 실행 실패: {_redact.redact(str(exc))}")
+        return False, f"Codex 실행 실패({type(exc).__name__}) — 서버 설치와 로그인 상태를 확인하세요."
 
 
 # ---------------------------------------------------------------------------
@@ -1440,7 +1458,7 @@ def process_update(
         return
 
     # 제어 명령/관심종목 명령/레인 명령은 분당 한도(RateLimiter)를 우회한다 —
-    # 클로드 호출 과금/부하를 막기 위한 한도이지, 즉시 반영돼야 하는 로컬
+    # Codex 호출 부하를 막기 위한 한도이지, 즉시 반영돼야 하는 로컬
     # 명령까지 묶으면 안 된다.
     #
     # 아래 세 핸들러 호출은 개별적으로 try/except로 감싼다 — /halt /resume /flatten
@@ -1488,9 +1506,10 @@ def process_update(
         tg.send_message(reply_chat_id, "잠시 후 다시 (분당 한도)", message_thread_id=thread_id)
         return
 
-    tg.send_typing(chat_id)
-    prompt = build_claude_prompt(text)
-    ok, output = run_claude(prompt)
+    tg.send_typing(reply_chat_id)
+    reply = message.get("reply_to_message") or {}
+    prompt = build_codex_prompt(text, reply.get("text") or reply.get("caption") or "")
+    ok, output = run_codex(prompt)
     if ok:
         tg.send_message(reply_chat_id, truncate_reply(output.strip() or "(빈 응답)"), message_thread_id=thread_id)
     else:
@@ -1518,7 +1537,9 @@ def main() -> None:
                 if _shutdown:
                     break
         except Exception as exc:  # noqa: BLE001 — 데몬은 한 번의 오류로 죽지 않는다
-            log(f"루프 오류(무시하고 계속): {exc}")
+            # HTTP 예외 문자열은 /bot<TOKEN>/getUpdates 전체 URL을 포함한다.
+            status = f" HTTP {exc.response.status_code}" if isinstance(exc, httpx.HTTPStatusError) else ""
+            log(f"루프 오류(무시하고 계속): {type(exc).__name__}{status}")
             time.sleep(5)
 
     if offset is not None:

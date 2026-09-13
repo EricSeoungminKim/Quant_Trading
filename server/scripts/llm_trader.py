@@ -3,7 +3,7 @@
 
 server/scripts/llm_trader.sh 가 이 스크립트를 두 단계에서 부른다:
   llm_trader.py context   → 프롬프트에 실을 시스템 상태 텍스트를 stdout 에 낸다.
-  llm_trader.py record    → claude -p 의 원문 출력을 stdin 으로 받아 JSON 계약대로
+  llm_trader.py record    → Codex의 최종 출력을 stdin 으로 받아 JSON 계약대로
                              파싱·검증한 뒤 data/state/llm_trader_inbox.jsonl 에 append.
 
 quant/ 를 직접 임포트하지는 않는다(이 판단 프로세스 자체는 엔진과 분리된
@@ -23,7 +23,7 @@ Bash 를 막지 않으면 임의 명령(`id` 등)이 아무 제한 없이 그대
 **이 CLI 버전은 "Bash 를 특정 명령 패턴만 허용"하는 부분 허용을 지원하지
 않는다** — 전부 허용 아니면 전부 차단 둘 중 하나뿐이다. "무제한 Bash 는
 금지"라는 안전 원칙이 우선이므로, 모델에게는 Bash 자체를 아예 안 준다
-(llm_trader.sh 의 `--disallowedTools`에 `Bash` 포함). 그 대신 이 스크립트가
+(현재는 codex_prompt.py가 셸/파일 도구를 끄고 웹검색만 허용). 그 대신 이 스크립트가
 후보 심볼(리포트 상위 + 내 포지션)에 대해 **직접** peek 을 호출해 그 결과를
 컨텍스트 텍스트에 미리 실어 보낸다 — "우리 데이터 API 활용"이라는 목적은
 달성하되, 모델이 임의 셸 명령을 실행할 수단은 주지 않는다. peek 이 아직
@@ -322,7 +322,7 @@ def cmd_context() -> int:
 
 
 # ---------------------------------------------------------------------------
-# record — claude 출력 파싱·검증·인박스 append.
+# record — Codex 출력 파싱·검증·인박스 append.
 # ---------------------------------------------------------------------------
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 

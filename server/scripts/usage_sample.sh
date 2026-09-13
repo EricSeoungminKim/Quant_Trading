@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 서버 사용량 샘플러(2026-09-07, 소유자 질문 "최대 과부하 때와 평균 사용량") — 매분 한 줄을
-# data/ops/usage.jsonl 에 남긴다: 부하평균, 메모리(사용/가용/스왑), 엔진·브리지·claude CLI·
+# data/ops/usage.jsonl 에 남긴다: 부하평균, 메모리(사용/가용/스왑), 엔진·브리지·Codex CLI·
 # 리포트 프로세스의 RSS·CPU. 외부 패키지 없음(/proc + ps). 크론: `* * * * *`.
 # 분석: `quant.apps.cli usage-report --days 7` (평균/피크/시간대별) — 없으면 jq/pandas 로 직접.
 set -u
@@ -30,6 +30,6 @@ printf '{"ts":"%s","load":[%s,%s,%s],"cpu_pct":%s,"mem_used_mb":%d,"mem_avail_mb
   $(( (mem_total-mem_avail)/1024 )) $((mem_avail/1024)) $((mem_total/1024)) $(( (swap_total-swap_free)/1024 )) \
   "$(proc_json engine 'quant.apps.cli paper')" \
   "$(proc_json bridge 'tg_bridge.py')" \
-  "$(proc_json claude '.local/share/claude')" \
+  "$(proc_json codex '/codex ')" \
   "$(proc_json report 'quant.apps.report_cli')" \
   "$(proc_json other_py '.venv/bin/python')" >> data/ops/usage.jsonl

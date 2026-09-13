@@ -303,8 +303,8 @@ class FakeControl:
         return False
 
 
-def test_process_update_non_command_falls_through_to_claude(tmp_path, monkeypatch):
-    monkeypatch.setattr(tg_bridge, "run_claude", lambda prompt, cwd=None: (True, "안녕하세요"))
+def test_process_update_non_command_falls_through_to_codex(tmp_path, monkeypatch):
+    monkeypatch.setattr(tg_bridge, "run_codex", lambda prompt, cwd=None: (True, "안녕하세요"))
     tg = RecordingTelegramClient()
     limiter = tg_bridge.RateLimiter()
     control = FakeControl()
@@ -317,14 +317,14 @@ def test_process_update_non_command_falls_through_to_claude(tmp_path, monkeypatc
     assert toss.calls == []  # 관심종목 로직이 전혀 개입하지 않는다
 
 
-def test_process_update_watch_command_bypasses_claude_and_rate_limit(tmp_path, monkeypatch):
+def test_process_update_watch_command_bypasses_codex_and_rate_limit(tmp_path, monkeypatch):
     watch_path = tmp_path / "watchlist.yaml"
     monkeypatch.setattr(tg_bridge, "WATCHLIST_PATH", watch_path)
 
     def _boom(*args, **kwargs):
-        raise AssertionError("관심종목 명령은 claude 서브프로세스를 호출하면 안 된다")
+        raise AssertionError("관심종목 명령은 Codex 서브프로세스를 호출하면 안 된다")
 
-    monkeypatch.setattr(tg_bridge, "run_claude", _boom)
+    monkeypatch.setattr(tg_bridge, "run_codex", _boom)
     tg = RecordingTelegramClient()
     limiter = tg_bridge.RateLimiter()
     control = FakeControl()

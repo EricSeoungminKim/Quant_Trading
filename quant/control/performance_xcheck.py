@@ -152,7 +152,8 @@ def cross_check(
         curve = row.get("curve") or {}
         for mkey, market in (("asia", "KR"), ("us", "US")):
             points = curve.get(mkey) or []
-            payload_n = points[-1]["trips"] if points else 0
+            # 곡선의 trips는 일별 건수다. 에폭 전체 건수와 비교하려면 전 날짜를 합한다.
+            payload_n = sum(point["trips"] for point in points)
             payload_pnl = points[-1]["cum_native"] if points else 0.0
             stats = site_stats.get((sid, market))
             expected_n = stats["n"] if stats else 0
@@ -160,7 +161,7 @@ def cross_check(
             path = f"paper_epoch.strategies[id={sid}].curve.{mkey}"
             if payload_n != expected_n:
                 findings.append(Finding(
-                    "error", f"{path}[-1].trips",
+                    "error", f"{path}[*].trips",
                     f"공개 JSON 트립 수 불일치: json={payload_n} 재계산={expected_n}",
                 ))
             if abs(payload_pnl - expected_pnl) > _CUM_NATIVE_TOLERANCE:

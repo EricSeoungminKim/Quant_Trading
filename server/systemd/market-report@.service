@@ -39,7 +39,8 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/ubuntu/quant_trading_kiwoom/data /home/ubuntu/quant_trading_kiwoom/out
+# Codex 로그인 갱신·런타임 캐시만 허용한다. 나머지 home은 계속 읽기 전용이다.
+ReadWritePaths=/home/ubuntu/quant_trading_kiwoom/data /home/ubuntu/quant_trading_kiwoom/out /home/ubuntu/.codex
 
 # 1.8GB 박스. 메모리가 마르면 이 작업이 먼저 양보한다 — 거래 엔진
 # (OOMScoreAdjust=-500)이 마지막까지 살아남아야 한다.

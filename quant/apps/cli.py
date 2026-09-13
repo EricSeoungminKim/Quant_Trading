@@ -39,16 +39,14 @@ _redact.install(extra_secrets=_redact.known_secrets(env=_load_dotenv_secrets()))
 # `price_of` 주입과 같은 관례) — `narrator.py` 모듈 docstring 참고.
 
 def _narrate_call(timeout: int = 20):
-    """narrate()에 넘길 콜러블 — `OPS_NARRATOR=openrouter`일 때만 만든다.
-    다른 값(미설정/claude/none)이면 `None`을 돌려주고, `narrate(call=None)`은
-    시도조차 하지 않는다 — 리포트 서술은 OpenRouter 전용이다(claude CLI의
-    기본 180s 타임아웃은 분 단위 발행 파이프라인에 못 쓴다)."""
-    if (os.environ.get("OPS_NARRATOR") or "").strip().lower() != "openrouter":
-        return None
-    from quant.adapters.narrate import make_narrator
+    """텔레그램 산문도 Codex 기본값을 쓴다. CLI는 짧은 발행 예산을 지킨다."""
+    from quant.adapters.narrate import NullNarrator, make_narrator
 
-    narrator_obj = make_narrator(timeout=timeout)
-    if getattr(narrator_obj, "name", None) != "openrouter":
+    choice = (os.environ.get("OPS_NARRATOR") or "codex").strip().lower()
+    # CLI + 폴백 2회가 기존 OpenRouter 2회(2*timeout+2초) 예산을 넘지 않게 한다.
+    fallback_timeout = timeout if choice == "openrouter" else max(1, timeout // 2)
+    narrator_obj = make_narrator(timeout=fallback_timeout, cli_timeout=timeout)
+    if isinstance(narrator_obj, NullNarrator):
         return None
     return narrator_obj.narrate
 
@@ -4330,40 +4328,18 @@ def cmd_health(args: argparse.Namespace) -> None:
     raise SystemExit({"ok": 0, H.ALERT: 1, H.UNKNOWN: 2}[summary["verdict"]])
 
 
-def _ops_judge_narrator(claude_timeout: int):
-    """판단하는 워치독(`cmd_ops_judge`)의 LLM 백엔드 조립 — Claude CLI 1순위 +
-    OpenRouter 폴백(`quant.adapters.narrate.QualityFallbackNarrator`,
-    `lane="ops_judge"`, 2026-09-07 전송 수단 전환).
+def _ops_judge_narrator(cli_timeout: int):
+    """워치독의 Codex 기본 레인 + 무료 폴백. 사용 가능한 전송이 없으면 None."""
+    from quant.adapters.narrate import NullNarrator, QualityFallbackNarrator, make_narrator
 
-    `quant.control.ops_judge.run_judgment`은 순수 함수라 이 조립(환경변수
-    조회·서브프로세스 실행파일 존재 확인)을 하지 않는다 — 여기, 호출부에서
-    한다(`quant/report/collect/agent_interpret.py`의 `_agent_interpret_narrator`
-    와 같은 위치의 같은 패턴, lane 이름만 다르다). 테스트가 이 함수 자체를
-    몽키패치해 진짜 서브프로세스를 타지 않게 한다 — `CLAUDE_BIN`이 실제
-    설치된 머신에서 옛 `chat_with_tools`만 가짜로 바꾸면 Claude CLI 쪽은
-    그대로 실행돼 버리는 구멍을 그 모듈의 테스트가 이미 잡았다(같은 이유로
-    여기도 함수 자체를 교체 지점으로 둔다).
-
-    실행파일도 OpenRouter 키도 없으면 `None`(호출부가 `narrator="none"`으로
-    조용히 건너뛴다).
-    """
-    from quant.adapters.env import get_key
-    from quant.adapters.narrate import (
-        FALLBACK_OPENROUTER_TIMEOUT_S,
-        ClaudeCliNarrator,
-        NullNarrator,
-        OpenRouterNarrator,
-        QualityFallbackNarrator,
-    )
-
-    binary = (os.environ.get("CLAUDE_BIN") or "").strip() or os.path.expanduser("~/.local/bin/claude")
-    has_claude = os.path.exists(binary)
-    key = (os.environ.get("OPENROUTER_API_KEY") or "").strip() or (get_key("OPENROUTER_API_KEY") or "")
-    if not has_claude and not key:
+    narrator = make_narrator(cli_timeout=cli_timeout, lane="ops_judge")
+    if isinstance(narrator, NullNarrator):
         return None
-    primary = ClaudeCliNarrator(binary, timeout=claude_timeout) if has_claude else NullNarrator()
-    fallback = OpenRouterNarrator(key, timeout=FALLBACK_OPENROUTER_TIMEOUT_S) if key else NullNarrator()
-    return QualityFallbackNarrator(primary, fallback, lane="ops_judge")
+    if isinstance(narrator, QualityFallbackNarrator) and all(
+        isinstance(n, NullNarrator) for n in (narrator._primary, narrator._fallback)
+    ):
+        return None
+    return narrator
 
 
 def cmd_ops_judge(args: argparse.Namespace) -> None:
@@ -4386,7 +4362,7 @@ def cmd_ops_judge(args: argparse.Namespace) -> None:
     from pathlib import Path
 
     from quant.adapters import olap as OLAP
-    from quant.adapters.env import REPO_ROOT, get_key
+    from quant.adapters.env import REPO_ROOT
     from quant.adapters.kv import make_kv
     from quant.control import ops_judge as J
     from quant.control.ledger import load_trades
@@ -4519,17 +4495,12 @@ def cmd_ops_judge(args: argparse.Namespace) -> None:
     # 없어 크론 경로의 LLM 이 조용히 죽어 있었다) — `_ops_judge_narrator`
     # 내부가 이미 그 순서를 따른다.
     budget = args.time_budget if args.time_budget else 240
-    narrator = _ops_judge_narrator(claude_timeout=int(budget))
-    if narrator is None:
-        narrator_name = "none"
-    else:
-        binary = (os.environ.get("CLAUDE_BIN") or "").strip() or os.path.expanduser("~/.local/bin/claude")
-        or_key = os.environ.get("OPENROUTER_API_KEY", "").strip() or (get_key("OPENROUTER_API_KEY") or "")
-        narrator_name = "claude" if os.path.exists(binary) else ("openrouter" if or_key else "none")
-
+    narrator = _ops_judge_narrator(cli_timeout=int(budget))
     result = J.run_judgment(data, narrator, time_budget_seconds=args.time_budget)
 
     out = dict(result)
+    narrator_name = (getattr(narrator, "last_transport", None)
+                     or getattr(narrator, "name", "none"))
     out["narrator"] = narrator_name
     out["label"] = args.label
     out["checked_at"] = now.isoformat(timespec="seconds")
@@ -5353,7 +5324,6 @@ def cmd_param_propose(args: argparse.Namespace) -> None:
     실패 시 OpenRouter 무료 레인 폴백.
     """
     import json as _json
-    import os as _os
     from datetime import date as _date
     from pathlib import Path
 
@@ -5392,19 +5362,28 @@ def cmd_param_propose(args: argparse.Namespace) -> None:
         {sid: (settings.strategies[sid] or {}).get("params", {}) for sid in sorted(active)},
         allow_unicode=True, sort_keys=False)
 
-    # Claude CLI 1순위(논리 중요) → OpenRouter 무료 폴백. 폴백 사용 여부를
+    # Codex CLI 1순위(논리 중요) → OpenRouter 무료 폴백. 폴백 사용 여부를
     # 제안 원장에 남긴다(어느 모델의 제안이었는지가 나중의 메타 데이터다).
-    claude = make_narrator(env={**_os.environ, "OPS_NARRATOR": "claude"})
-    used = "claude-cli"
+    primary = make_narrator()
+    used = "codex-cli"
 
     def narrate(prompt: str) -> str | None:
         nonlocal used
-        out = claude.narrate(prompt)
+        out = primary.narrate(prompt)
         if out is not None:
+            used = getattr(primary, "last_transport", None) or primary.name
             return out
+        if primary.name == "none":
+            return None
         used = "openrouter-free"
-        logger.warning("param-propose: claude CLI 실패 — OpenRouter 무료 레인 폴백")
-        return make_json_narrator(max_tokens=4000).narrate(prompt)
+        logger.warning("param-propose: Codex CLI 실패 — OpenRouter 무료 레인 폴백")
+        from quant.adapters.env import get_key
+
+        fallback_env = {**os.environ, "OPS_NARRATOR": "openrouter",
+                        "OPENROUTER_API_KEY": os.environ.get("OPENROUTER_API_KEY")
+                        or get_key("OPENROUTER_API_KEY") or ""}
+        return make_json_narrator(env=fallback_env,
+                                  max_tokens=4000).narrate(prompt)
 
     result = param_proposer.propose(review_text, params_yaml, active, narrate)
     if result is None:
@@ -6702,35 +6681,10 @@ def _tg_digest_save_last_run(path, market: str, at) -> None:
 
 
 def _tg_digest_stance_call():
-    """스탠스 전용 마이크로프롬프트 콜러블. 2026-09-07(Claude CLI 주 레인
-    전환) 전까지는 `OPS_NARRATOR=openrouter`일 때만 동작했다 — 이제 기본값
-    (미설정/`claude`)에서도 Claude CLI 1순위 + OpenRouter 폴백
-    (`narrate.stance`)으로 동작한다. `OPS_NARRATOR=openrouter`면 명시적
-    선택을 존중해 OpenRouter 단독(`stance_only`)으로, `OPS_NARRATOR=none`이면
-    완전히 끈다(둘 다 기존 관례 유지). 반환은 이미 엄격 검증을 통과한
-    `{"stance","why"}` dict|None(`stance`/`stance_only` 계약) — `tg_digest`는
-    그대로 받아 표시만 한다.
+    """Codex 기본 스탠스. 명시적인 openrouter/none 설정도 그대로 존중한다."""
+    from quant.adapters.narrate import make_stance_call
 
-    `claude_timeout=20`(2026-09-07 tg-digest LLM 예산 지침) — 다이제스트
-    전체 LLM 시간 예산(기본 90초, `TG_DIGEST_LLM_BUDGET_S`)을 이 호출
-    하나가 다 쓰지 않게, digest 산문 호출(`_narrate_call`)과 비슷한 상한을
-    맞춘다."""
-    choice = (os.environ.get("OPS_NARRATOR") or "claude").strip().lower()
-    if choice == "none":
-        return None
-    from quant.adapters.env import get_key
-    from quant.adapters.narrate import stance, stance_only
-
-    key = (os.environ.get("OPENROUTER_API_KEY") or "").strip() or (get_key("OPENROUTER_API_KEY") or "").strip()
-    if choice == "openrouter":
-        if not key:
-            return None
-        return lambda prompt: stance_only(prompt, key)
-
-    binary = (os.environ.get("CLAUDE_BIN") or "").strip() or os.path.expanduser("~/.local/bin/claude")
-    if not os.path.exists(binary) and not key:
-        return None
-    return lambda prompt: stance(prompt, claude_binary=binary, claude_timeout=20, api_key=key or None)
+    return make_stance_call(cli_timeout=20)
 
 
 def _budgeted_call(fn, deadline: float, *, what: str):

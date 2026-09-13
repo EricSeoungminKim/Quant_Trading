@@ -23,9 +23,9 @@
 # 서술이 실패하면 결정론적 형식으로 그대로 보낸다.
 #
 # 서술기(narrator)는 갈아끼울 수 있다(`OPS_NARRATOR`):
-#   claude(기본) — 로컬 Claude Code CLI. **도구를 전부 차단한다**(daily_brief.sh 와
+#   codex(기본)  — 로컬 Codex CLI. **도구를 전부 차단한다**(daily_brief.sh 와
 #                  같은 계약): 텍스트→텍스트뿐이라 주문 경로에 닿을 방법이 없다.
-#   openrouter   — 경계만 뚫어둔 자리. 아직 미구현이고, 부르면 none 으로 떨어진다.
+#   openrouter   — 무료 LLM 폴백.
 #   none         — 결정론적 형식. 항상 동작하는 바닥.
 #
 # 테스트: DRY_RUN=1 ./server/scripts/ops_watch.sh
@@ -36,8 +36,8 @@ cd "$(dirname "$0")/../.."
 PY=.venv/bin/python
 LOG="data/ops_watch.log"
 # 라벨용일 뿐이다 — 실제 선택과 실행파일 경로 기본값은 make_narrator() 가 갖는다.
-# (CLAUDE_BIN 은 어댑터가 직접 env 에서 읽으므로 여기서 세팅하지 않는다.)
-NARRATOR="${OPS_NARRATOR:-claude}"
+# (CODEX_BIN 은 어댑터가 직접 env 에서 읽으므로 여기서 세팅하지 않는다.)
+NARRATOR="${OPS_NARRATOR:-codex}"
 
 mkdir -p data data/state
 log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
@@ -191,7 +191,7 @@ PYEOF
 }
 
 # 서술기 선택은 **셸에 없다.** `adapters.narrate.make_narrator()` 한 곳에만 있고
-# (claude / openrouter / none), 여기서는 그 결과가 있나 없나만 본다. 스위치를 양쪽에
+# (codex / openrouter / none), 여기서는 그 결과가 있나 없나만 본다. 스위치를 양쪽에
 # 두면 두 곳이 갈리고, 갈라진 쪽이 조용한 쪽이 된다.
 BODY="$(printf '%s' "$PROMPT" | timeout 200 nice -n 10 "$PY" -m quant.apps.cli narrate 2>>"$LOG")"
 

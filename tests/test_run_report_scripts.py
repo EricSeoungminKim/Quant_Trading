@@ -11,8 +11,11 @@ PATH 스텁 관례와 동일한 격리 원칙).
 """
 from __future__ import annotations
 
+import json
 import os
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -49,6 +52,10 @@ case "$args" in
     if [ -n "${FAKE_SUMMARY_STDOUT:-}" ]; then printf '%s\\n' "$FAKE_SUMMARY_STDOUT"; fi
     exit 0
     ;;
+  *"report_cli holiday-notice"*)
+    if [ -n "${FAKE_HOLIDAY_STDOUT:-}" ]; then printf '%s\\n' "$FAKE_HOLIDAY_STDOUT"; fi
+    exit 0
+    ;;
   *)
     exit 0
     ;;
@@ -72,6 +79,11 @@ def sandbox(tmp_path: Path):
         dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
         dst.chmod(0o755)
 
+    (repo / "server" / "scripts" / "lib").mkdir()
+    (repo / "server" / "scripts" / "lib" / "notify.sh").write_text(
+        (SCRIPTS / "lib" / "notify.sh").read_text(encoding="utf-8"), encoding="utf-8",
+    )
+
     fake_py = repo / ".venv" / "bin" / "python"
     fake_py.write_text(_FAKE_PY, encoding="utf-8")
     fake_py.chmod(0o755)
@@ -85,7 +97,7 @@ def sandbox(tmp_path: Path):
     curl.write_text(
         "#!/usr/bin/env bash\n"
         "printf '===CURL_CALL===\\n%s\\n' \"$*\" >> \"$CURL_LOG\"\n"
-        "printf '{\"ok\":true}'\n",
+        "if [ \"${FAKE_CURL_FAIL:-0}\" = 1 ]; then printf '{\"ok\":false}'; else printf '{\"ok\":true}'; fi\n",
         encoding="utf-8",
     )
     curl.chmod(0o755)
@@ -157,6 +169,71 @@ def test_holiday_skip_sends_no_alert(sandbox, script, market):
     r = sandbox.run(script, market=market, FAKE_BUILD_RC="3")
     assert r.returncode == 0, r.stderr
     assert sandbox.sends() == []
+
+
+@pytest.mark.parametrize("script", ["run_report.sh", "run_close_report.sh"])
+@pytest.mark.parametrize("build_rc", [0, 1, 3])
+def test_report_alert_routes_to_briefs_topic_immediately(sandbox, script, build_rc):
+    state = sandbox.root / "data" / "state"
+    state.mkdir()
+    (state / "tg_lanes.json").write_text(json.dumps({
+        "chat_id": -100123, "threads": {"briefs": 42},
+    }), encoding="utf-8")
+    result = sandbox.run(
+        script, FAKE_BUILD_RC=build_rc, FAKE_HOLIDAY_STDOUT="오늘은 휴장일입니다",
+        NOTIFY_NOW_HHMM="1430", NOTIFY_NOW_DOW="1",
+    )
+    assert result.returncode == (1 if build_rc == 1 else 0), result.stderr
+    sends = sandbox.sends()
+    assert len(sends) == 1
+    assert "chat_id=-100123" in sends[0]
+    assert "message_thread_id=42" in sends[0]
+    assert not (sandbox.root / "data" / "notify_queue.jsonl").exists()
+    sent = [json.loads(line) for line in (
+        sandbox.root / "data" / "ledger" / "notify_sent.jsonl"
+    ).read_text(encoding="utf-8").splitlines()]
+    assert len(sent) == 1
+    assert sent[0]["source"] == script.removesuffix(".sh")
+    assert sent[0]["lane"] == "briefs"
+
+
+@pytest.mark.parametrize("script", ["run_report.sh", "run_close_report.sh"])
+def test_report_alert_without_topic_uses_legacy_chat(sandbox, script):
+    result = sandbox.run(script)
+    assert result.returncode == 0, result.stderr
+    assert "chat_id=12345" in sandbox.sends()[0]
+    assert "message_thread_id=" not in sandbox.sends()[0]
+
+
+@pytest.mark.parametrize("script", ["run_report.sh", "run_close_report.sh"])
+def test_report_notification_failure_recorded_without_failing_build(sandbox, script):
+    result = sandbox.run(script, FAKE_CURL_FAIL="1")
+    assert result.returncode == 0, result.stderr
+    assert len(sandbox.sends()) == 2  # HTML 시도 + 평문 폴백
+    failure = json.loads((
+        sandbox.root / "data" / "ledger" / "notify_failures.jsonl"
+    ).read_text(encoding="utf-8"))
+    assert failure["source"] == script.removesuffix(".sh")
+    assert failure["lane"] == "briefs"
+    assert "발행 알림 전송 실패" in (
+        sandbox.root / "data" / "report.log"
+    ).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("script", ["run_report.sh", "run_close_report.sh"])
+def test_report_failure_tail_preserves_error_after_stdout(sandbox, script):
+    fake_py = sandbox.root / ".venv" / "bin" / "python"
+    failing_build = "print('정상 진행\\n' * 4); raise RuntimeError('리포트 실제 결함')"
+    fake_py.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        f'  *"report_cli build"*) exec {shlex.quote(sys.executable)} -c {shlex.quote(failing_build)} ;;\n'
+        '  *) exit 0 ;;\n'
+        'esac\n', encoding="utf-8",
+    )
+    result = sandbox.run(script)
+    assert result.returncode == 1, result.stderr
+    assert "RuntimeError: 리포트 실제 결함" in sandbox.sends()[0]
 
 
 def test_report_lint_gate_env_reaches_the_build_subprocess(sandbox):

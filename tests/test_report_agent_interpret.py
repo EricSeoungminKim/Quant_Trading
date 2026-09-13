@@ -4,7 +4,7 @@
 이전엔 OpenRouter 툴콜링 루프(`chat_with_tools` + `quant.analyze.
 agent_interpret.interpret_candidates`)가 라운드마다 모델이 도구를 스스로
 골라 호출했다. 이 세션에서 그 도구 선택을 없애고 "사실을 전부 미리 모아
-Claude CLI 에 한 번만 묻는다"로 바꿨다 — 사실 자체(도구 핸들러 로직)는
+Codex CLI 에 한 번만 묻는다"로 바꿨다 — 사실 자체(도구 핸들러 로직)는
 `quant.analyze.agent_interpret`의 기존 `_tool_get_*`를 그대로 재사용하므로
 그쪽 테스트(`tests/test_agent_interpret.py`)가 이미 검증한다. 여기서는
 새로 추가된 조립 함수(사실 모으기 → 프롬프트 → narrator 호출)만 검증한다.
@@ -101,36 +101,36 @@ def test_prompt_embeds_candidate_and_facts():
 # ── _agent_interpret_narrator ─────────────────────────────────────────────
 
 def test_narrator_is_none_when_nothing_available(monkeypatch):
-    monkeypatch.setenv("CLAUDE_BIN", "/nonexistent/claude")
+    monkeypatch.setenv("CODEX_BIN", "/nonexistent/codex")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    import quant.adapters.env as env_mod
+    import quant.adapters.narrate as env_mod
     monkeypatch.setattr(env_mod, "get_key", lambda name: None)
 
-    assert _agent_interpret_narrator(claude_timeout=30) is None
+    assert _agent_interpret_narrator(cli_timeout=30) is None
 
 
-def test_narrator_wraps_claude_primary_and_openrouter_fallback(monkeypatch):
-    monkeypatch.setenv("CLAUDE_BIN", __file__)
+def test_narrator_wraps_codex_primary_and_openrouter_fallback(monkeypatch):
+    monkeypatch.setenv("CODEX_BIN", __file__)
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
 
-    from quant.adapters.narrate import ClaudeCliNarrator, OpenRouterNarrator, QualityFallbackNarrator
+    from quant.adapters.narrate import CodexCliNarrator, OpenRouterNarrator, QualityFallbackNarrator
 
-    got = _agent_interpret_narrator(claude_timeout=42)
+    got = _agent_interpret_narrator(cli_timeout=42)
 
     assert isinstance(got, QualityFallbackNarrator)
-    assert isinstance(got._primary, ClaudeCliNarrator)
+    assert isinstance(got._primary, CodexCliNarrator)
     assert got._primary._timeout == 42
     assert isinstance(got._fallback, OpenRouterNarrator)
     assert got.name == "agent_interpret"
 
 
 def test_narrator_falls_back_to_openrouter_only_when_binary_missing(monkeypatch):
-    monkeypatch.setenv("CLAUDE_BIN", "/nonexistent/claude")
+    monkeypatch.setenv("CODEX_BIN", "/nonexistent/codex")
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
 
     from quant.adapters.narrate import NullNarrator, OpenRouterNarrator, QualityFallbackNarrator
 
-    got = _agent_interpret_narrator(claude_timeout=30)
+    got = _agent_interpret_narrator(cli_timeout=30)
 
     assert isinstance(got, QualityFallbackNarrator)
     assert isinstance(got._primary, NullNarrator)

@@ -1104,7 +1104,7 @@ def llm_health_findings(stats_by_lane: dict[str, dict | None]) -> list[Finding]:
             rate = failed / total
             if transport == "openrouter":
                 continue  # 폴백 레인 — 정보용, 경보하지 않는다
-            threshold = (LLM_CLAUDE_FAILURE_THRESHOLD if transport == "claude"
+            threshold = (LLM_CLAUDE_FAILURE_THRESHOLD if transport in {"codex", "claude"}
                         else LLM_LEGACY_FAILURE_THRESHOLD)
             if rate > threshold:
                 out.append(Finding("llm", ALERT,

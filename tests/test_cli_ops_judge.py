@@ -29,6 +29,8 @@ def _args(tmp_path, **over) -> argparse.Namespace:
 class _FakeNarrator:
     """`.narrate(prompt) -> str | None` 계약 하나짜리 테스트 더블."""
 
+    name = "codex"
+
     def __init__(self, text, capture: dict | None = None):
         self._text = text
         self._capture = capture
@@ -51,7 +53,7 @@ def test_degrades_to_review_without_llm_backend(tmp_path, monkeypatch, capsys):
     """narrator 를 아예 구성하지 못하면(자격증명 없음 등) LLM 을 부르지 않고
     review 로 떨어진다 — "정상"이 기본값이 아니다. 파일이 하나도 없는 빈
     저장소에서도 죽지 않는다(모든 사실 소스가 결측 상태로 조립된다)."""
-    _patch_narrator(monkeypatch, lambda claude_timeout: None)
+    _patch_narrator(monkeypatch, lambda cli_timeout: None)
 
     from quant.apps.cli import cmd_ops_judge
 
@@ -74,9 +76,15 @@ def test_wires_portfolio_file_into_facts_and_relays_verdict(tmp_path, monkeypatc
         json.dumps({"cash": -500.0, "positions": {}}), encoding="utf-8")
 
     captured: dict = {}
+    records = []
+    import quant.adapters.kv as kv_mod
+    import quant.control.opstate as opstate_mod
+    monkeypatch.setattr(kv_mod, "make_kv", lambda: None)
+    monkeypatch.setattr(opstate_mod, "record_run",
+                        lambda kv, job, **kwargs: records.append((job, kwargs)))
     _patch_narrator(
         monkeypatch,
-        lambda claude_timeout: _FakeNarrator(
+        lambda cli_timeout: _FakeNarrator(
             'ok\nVERDICT: {"level": "alert", "reasons": ["현금 음수"]}', captured),
     )
 
@@ -90,7 +98,8 @@ def test_wires_portfolio_file_into_facts_and_relays_verdict(tmp_path, monkeypatc
     out = json.loads(capsys.readouterr().out)
     assert out["level"] == "alert"
     assert out["reasons"] == ["현금 음수"]
-    assert out["narrator"] in ("claude", "openrouter")
+    assert out["narrator"] == "codex"
+    assert records == [("ops-judge", {"ok": True, "detail": "level=alert narrator=codex"})]
 
 
 def test_notifications_ledger_missing_file_is_none_not_empty(tmp_path, monkeypatch, capsys):
@@ -99,7 +108,7 @@ def test_notifications_ledger_missing_file_is_none_not_empty(tmp_path, monkeypat
     captured: dict = {}
     _patch_narrator(
         monkeypatch,
-        lambda claude_timeout: _FakeNarrator(
+        lambda cli_timeout: _FakeNarrator(
             'ok\nVERDICT: {"level": "ok", "reasons": ["x"]}', captured),
     )
 
@@ -121,7 +130,7 @@ def test_notifications_ledger_present_but_empty_file(tmp_path, monkeypatch, caps
     captured: dict = {}
     _patch_narrator(
         monkeypatch,
-        lambda claude_timeout: _FakeNarrator(
+        lambda cli_timeout: _FakeNarrator(
             'ok\nVERDICT: {"level": "ok", "reasons": ["x"]}', captured),
     )
 
@@ -149,7 +158,7 @@ def test_notifications_ledger_with_rows_is_wired_through_with_exact_text(tmp_pat
     captured: dict = {}
     _patch_narrator(
         monkeypatch,
-        lambda claude_timeout: _FakeNarrator(
+        lambda cli_timeout: _FakeNarrator(
             'ok\nVERDICT: {"level": "ok", "reasons": ["x"]}', captured),
     )
 
@@ -175,7 +184,7 @@ def test_notifications_ledger_read_cap_applies_before_facts_clamp(tmp_path, monk
     captured: dict = {}
     _patch_narrator(
         monkeypatch,
-        lambda claude_timeout: _FakeNarrator(
+        lambda cli_timeout: _FakeNarrator(
             'ok\nVERDICT: {"level": "ok", "reasons": ["x"]}', captured),
     )
 
@@ -193,7 +202,7 @@ def test_rule_based_json_from_stdin_marker_is_not_read_as_file(tmp_path, monkeyp
     `-`라는 이름의 파일을 찾지 않는다. narrator 가 없어 review 로 조기
     반환되는 경로라 stdin 을 실제로 소비하진 않지만(narrator 미구성 체크가
     먼저다), 최소한 크래시하지 않는지 확인한다."""
-    _patch_narrator(monkeypatch, lambda claude_timeout: None)
+    _patch_narrator(monkeypatch, lambda cli_timeout: None)
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO('{"verdict": "ok"}'))
 
     from quant.apps.cli import cmd_ops_judge

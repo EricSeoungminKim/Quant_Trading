@@ -11,6 +11,10 @@
 # KR 전용이다 — US 오후판은 없다(정규장 구조가 다르다, 설계 스펙 §비목표).
 set -u
 cd "$(dirname "$0")/../.."
+# stdout가 traceback 뒤에 몰려 실패 알림의 로그 꼬리를 가리지 않게 한다.
+export PYTHONUNBUFFERED=1
+. "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="briefs"
 
 MARKET="${1:-}"
 case "$MARKET" in
@@ -25,12 +29,10 @@ mkdir -p data
 log() { echo "[$(date '+%F %T')] [$MARKET 마감] $*" >> "$LOG"; }
 
 # 발행 알림 — run_report.sh notify() 와 같은 패턴(토큰/챗ID 없으면 조용히 건너뛴다).
-_env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
-
 notify() {
   local token chat url text SUMMARY TAIL
-  token="$(_env TELEGRAM_BOT_TOKEN)"
-  chat="$(_env TELEGRAM_CHAT_ID)"
+  token="$(_notify_token)"
+  chat="$(_notify_chat)"
   if [ -z "$token" ] || [ -z "$chat" ]; then
     log "발행 알림 건너뜀 (.env.local에 TELEGRAM_BOT_TOKEN/CHAT_ID 없음)"
     return 0
@@ -62,8 +64,8 @@ ${TAIL}"
     fi
     text="${text:0:3500}"
   fi
-  curl -s -m 10 "https://api.telegram.org/bot${token}/sendMessage" \
-    -d "chat_id=${chat}" --data-urlencode "text=${text}" >/dev/null 2>&1 || true
+  # 정시 리포트는 장중에도 즉시 전달한다. 공통 경로가 토픽 라우팅과 발송 원장을 맡는다.
+  notify_now "$text" || log "발행 알림 전송 실패 — data/ledger/notify_failures.jsonl 확인"
 }
 
 # TZ 가드 — 발행 시각이 KST 전제다(run_report.sh 와 동일한 방어).

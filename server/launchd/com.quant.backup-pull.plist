@@ -27,7 +27,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>-lc</string>
+    <string>-c</string>
     <!--
       경로를 사용자가 고쳐야 하는 유일한 줄. 저장소 위치가 사람마다 다르다.
 
@@ -44,7 +44,7 @@
       (`cli health` 의 `backup` 항목)가 오프사이트 사본 나이로 잡는다. 그래도
       경보 경로에 기대지 않고 여기서 막는다.
     -->
-    <string>cd "$HOME/Documents/GitHub/quant_trading_kiwoom" &amp;&amp; /bin/bash ./server/scripts/backup_pull.sh</string>
+    <string>cd "$HOME/Documents/GitHub/Quant_Trading" &amp;&amp; /bin/bash ./server/scripts/backup_pull.sh</string>
   </array>
   <key>StartCalendarInterval</key>
   <dict>

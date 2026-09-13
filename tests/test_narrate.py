@@ -15,6 +15,7 @@ from quant.adapters.narrate import (
     TOOL_MODEL_FALLBACK,
     VISION_MODEL,
     ClaudeCliNarrator,
+    CodexCliNarrator,
     NullNarrator,
     OpenRouterNarrator,
     QualityFallbackNarrator,
@@ -318,46 +319,46 @@ def test_stance_returns_none_when_nothing_available():
 
 # ── 팩토리 ───────────────────────────────────────────────────────────────
 
-def test_factory_defaults_to_claude_but_falls_back_when_binary_missing():
-    """기본값이 claude 인데 실행파일이 없으면 OpenRouter 폴백을 시도한다
+def test_factory_defaults_to_codex_but_falls_back_when_binary_missing():
+    """기본값이 codex 인데 실행파일이 없으면 OpenRouter 폴백을 시도한다
     (2026-09-07) — 키까지 없으면 그제서야 완전히 Null 이다, 예외가 아니다."""
-    got = make_narrator({"CLAUDE_BIN": "/nonexistent/claude"})
+    got = make_narrator({"CODEX_BIN": "/nonexistent/codex"})
     assert isinstance(got, QualityFallbackNarrator)
     assert isinstance(got._primary, NullNarrator)
     assert isinstance(got._fallback, NullNarrator)
 
 
-def test_factory_claude_default_wraps_claude_primary_and_openrouter_fallback():
-    """binary 가 있으면 1순위는 ClaudeCliNarrator, 폴백은 OpenRouterNarrator —
+def test_factory_codex_default_wraps_codex_primary_and_openrouter_fallback():
+    """binary 가 있으면 1순위는 CodexCliNarrator, 폴백은 OpenRouterNarrator —
     `make_quality_narrator`와 같은 조립을 lane="narrate"로 쓴다."""
     import sys
 
-    got = make_narrator({"CLAUDE_BIN": sys.executable, "OPENROUTER_API_KEY": "k"})
+    got = make_narrator({"CODEX_BIN": sys.executable, "OPENROUTER_API_KEY": "k"})
 
     assert isinstance(got, QualityFallbackNarrator)
-    assert isinstance(got._primary, ClaudeCliNarrator)
+    assert isinstance(got._primary, CodexCliNarrator)
     assert isinstance(got._fallback, OpenRouterNarrator)
     assert got.name == "narrate"
 
 
-def test_factory_claude_default_falls_back_to_openrouter_only_when_binary_missing():
-    got = make_narrator({"CLAUDE_BIN": "/nonexistent/claude", "OPENROUTER_API_KEY": "k"})
+def test_factory_codex_default_falls_back_to_openrouter_only_when_binary_missing():
+    got = make_narrator({"CODEX_BIN": "/nonexistent/codex", "OPENROUTER_API_KEY": "k"})
 
     assert isinstance(got, QualityFallbackNarrator)
     assert isinstance(got._primary, NullNarrator)
     assert isinstance(got._fallback, OpenRouterNarrator)
 
 
-def test_factory_claude_default_fallback_timeout_is_bounded():
-    """폴백은 45초 예산(2*20+2) 아래로 묶는다 — Claude 가 이미 시간을 쓴 뒤의
+def test_factory_codex_default_fallback_timeout_is_bounded():
+    """폴백은 45초 예산(2*20+2) 아래로 묶는다 — Codex 가 이미 시간을 쓴 뒤의
     마지막 시도라 report build/tg-digest 예산을 잠식하면 안 된다."""
-    got = make_narrator({"CLAUDE_BIN": "/nonexistent/claude", "OPENROUTER_API_KEY": "k"})
+    got = make_narrator({"CODEX_BIN": "/nonexistent/codex", "OPENROUTER_API_KEY": "k"})
     assert got._fallback._timeout == 20
 
 
-def test_factory_claude_default_honours_explicit_timeout_for_fallback():
+def test_factory_codex_default_honours_explicit_timeout_for_fallback():
     got = make_narrator(
-        {"CLAUDE_BIN": "/nonexistent/claude", "OPENROUTER_API_KEY": "k"}, timeout=5,
+        {"CODEX_BIN": "/nonexistent/codex", "OPENROUTER_API_KEY": "k"}, timeout=5,
     )
     assert got._fallback._timeout == 5
 
@@ -952,14 +953,14 @@ def test_make_quality_narrator_off_switch_is_case_insensitive_and_trims():
     assert isinstance(got, NullNarrator)
 
 
-def test_make_quality_narrator_wraps_claude_primary_and_openrouter_fallback():
-    """binary 가 존재하면 1순위는 ClaudeCliNarrator, 폴백은 OpenRouterNarrator다."""
+def test_make_quality_narrator_wraps_codex_primary_and_openrouter_fallback():
+    """binary 가 존재하면 1순위는 CodexCliNarrator, 폴백은 OpenRouterNarrator다."""
     import sys
 
-    got = make_quality_narrator({"CLAUDE_BIN": sys.executable, "OPENROUTER_API_KEY": "k"})
+    got = make_quality_narrator({"CODEX_BIN": sys.executable, "OPENROUTER_API_KEY": "k"})
 
     assert isinstance(got, QualityFallbackNarrator)
-    assert isinstance(got._primary, ClaudeCliNarrator)
+    assert isinstance(got._primary, CodexCliNarrator)
     assert isinstance(got._fallback, OpenRouterNarrator)
 
 
@@ -967,12 +968,12 @@ def test_make_quality_narrator_generous_timeout_for_long_report_prompts():
     """리포트 프롬프트(수천 자)는 기본 180s 로는 빠듯할 수 있어 넉넉히 잡는다."""
     import sys
 
-    got = make_quality_narrator({"CLAUDE_BIN": sys.executable})
+    got = make_quality_narrator({"CODEX_BIN": sys.executable})
     assert got._primary._timeout == 240
 
 
 def test_make_quality_narrator_falls_back_to_openrouter_only_when_binary_missing():
-    got = make_quality_narrator({"CLAUDE_BIN": "/nonexistent/claude", "OPENROUTER_API_KEY": "k"})
+    got = make_quality_narrator({"CODEX_BIN": "/nonexistent/codex", "OPENROUTER_API_KEY": "k"})
 
     assert isinstance(got, QualityFallbackNarrator)
     assert isinstance(got._primary, NullNarrator)
@@ -980,7 +981,7 @@ def test_make_quality_narrator_falls_back_to_openrouter_only_when_binary_missing
 
 
 def test_make_quality_narrator_is_fully_null_when_nothing_available():
-    got = make_quality_narrator({"CLAUDE_BIN": "/nonexistent/claude"})
+    got = make_quality_narrator({"CODEX_BIN": "/nonexistent/codex"})
 
     assert isinstance(got, QualityFallbackNarrator)
     assert isinstance(got._primary, NullNarrator)
@@ -989,7 +990,7 @@ def test_make_quality_narrator_is_fully_null_when_nothing_available():
 
 def test_make_quality_narrator_honours_model_override_for_fallback():
     got = make_quality_narrator(
-        {"CLAUDE_BIN": "/nonexistent/claude", "OPENROUTER_API_KEY": "k"},
+        {"CODEX_BIN": "/nonexistent/codex", "OPENROUTER_API_KEY": "k"},
         model="google/gemma-4-31b-it:free",
     )
     assert got._fallback._model == "google/gemma-4-31b-it:free"

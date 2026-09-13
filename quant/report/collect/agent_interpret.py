@@ -26,7 +26,6 @@ agent_interpret`의 `_tool_get_*`를 재사용하므로 달라지지 않는다 �
 from __future__ import annotations
 
 import json as _json
-import os as _os
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -260,36 +259,18 @@ def _build_deterministic_prompt(candidate: dict, facts: dict) -> str:
     )
 
 
-def _agent_interpret_narrator(claude_timeout: int):
-    """Claude CLI 1순위 + OpenRouter 1회 폴백(2026-09-07) — 전 레인 공통
-    패턴(`narrate.QualityFallbackNarrator`)을 그대로 쓴다. 옛 툴콜링 루프
-    (`chat_with_tools`, 라운드마다 1·2순위 모델을 각각 재시도)는 유지하지
-    않는다 — 결정론 사실 수집으로 도구 선택 자체가 필요 없어졌으니 나머지
-    호출부(`make_quality_narrator` 등)와 같은 단일 호출 계약으로 맞추는 게
-    맞다. 폴백 timeout 은 `FALLBACK_OPENROUTER_TIMEOUT_S`(전 레인 공통 45초
-    예산)를 그대로 쓴다. `lane="agent_interpret"`로 계측해 `narrate`/`tool`
-    lane 과 섞이지 않게 한다.
+def _agent_interpret_narrator(cli_timeout: int):
+    """Codex 기본 레인과 무료 폴백을 조립한다. 둘 다 없으면 기존 skip 상태다."""
+    from quant.adapters.narrate import NullNarrator, QualityFallbackNarrator, make_narrator
 
-    Claude 실행파일도 OpenRouter 키도 없으면 `None`(호출부가 기존
-    `"skipped_no_key"` status 로 조용히 건너뛴다 — 이름은 남기되 의미는
-    "쓸 수 있는 전송 수단이 하나도 없다"로 넓어졌다)."""
-    from quant.adapters.env import get_key
-    from quant.adapters.narrate import (
-        FALLBACK_OPENROUTER_TIMEOUT_S,
-        ClaudeCliNarrator,
-        NullNarrator,
-        OpenRouterNarrator,
-        QualityFallbackNarrator,
-    )
-
-    binary = (_os.environ.get("CLAUDE_BIN") or "").strip() or _os.path.expanduser("~/.local/bin/claude")
-    has_claude = _os.path.exists(binary)
-    key = (_os.environ.get("OPENROUTER_API_KEY") or "").strip() or (get_key("OPENROUTER_API_KEY") or "").strip()
-    if not has_claude and not key:
+    narrator = make_narrator(cli_timeout=cli_timeout, lane="agent_interpret")
+    if isinstance(narrator, NullNarrator):
         return None
-    primary = ClaudeCliNarrator(binary, timeout=claude_timeout) if has_claude else NullNarrator()
-    fallback = OpenRouterNarrator(key, timeout=FALLBACK_OPENROUTER_TIMEOUT_S) if key else NullNarrator()
-    return QualityFallbackNarrator(primary, fallback, lane="agent_interpret")
+    if isinstance(narrator, QualityFallbackNarrator) and all(
+        isinstance(n, NullNarrator) for n in (narrator._primary, narrator._fallback)
+    ):
+        return None
+    return narrator
 
 
 def _interpret_candidates_deterministic(
@@ -384,10 +365,10 @@ def _build_agent_interpret(
         return [], "skipped_no_candidates"
     try:
         if time_budget_seconds is not None:
-            claude_timeout = max(15, min(90, int(time_budget_seconds / len(candidates))))
+            cli_timeout = max(15, min(90, int(time_budget_seconds / len(candidates))))
         else:
-            claude_timeout = 60
-        narrator = _agent_interpret_narrator(claude_timeout)
+            cli_timeout = 60
+        narrator = _agent_interpret_narrator(cli_timeout)
         if narrator is None:
             return [], "skipped_no_key"
 

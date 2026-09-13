@@ -225,9 +225,9 @@ def test_process_update_routes_forwarded_post_and_skips_command_handling(tmp_pat
     monkeypatch.setattr(tg_bridge, "TELEGRAM_LEDGER_PATH", ledger_path)
 
     def _boom(*args, **kwargs):
-        raise AssertionError("포워드된 메시지는 claude 서브프로세스를 호출하면 안 된다")
+        raise AssertionError("포워드된 메시지는 Codex 서브프로세스를 호출하면 안 된다")
 
-    monkeypatch.setattr(tg_bridge, "run_claude", _boom)
+    monkeypatch.setattr(tg_bridge, "run_codex", _boom)
     tg = RecordingTelegramClient()
     limiter = tg_bridge.RateLimiter()
     control = FakeControl()
@@ -276,7 +276,7 @@ def test_process_update_non_forwarded_command_unaffected(tmp_path, monkeypatch):
 
 
 def test_process_update_non_forwarded_chat_unaffected(monkeypatch):
-    monkeypatch.setattr(tg_bridge, "run_claude", lambda prompt, cwd=None: (True, "안녕하세요"))
+    monkeypatch.setattr(tg_bridge, "run_codex", lambda prompt, cwd=None: (True, "안녕하세요"))
     tg = RecordingTelegramClient()
     limiter = tg_bridge.RateLimiter()
     control = FakeControl()

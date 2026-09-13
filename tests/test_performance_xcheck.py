@@ -126,6 +126,40 @@ def test_cross_check_passes_on_a_consistent_synthetic_ledger(monkeypatch):
     assert findings == [], f"일치해야 할 합성 원장에서 불일치 발견: {[f.to_dict() for f in findings]}"
 
 
+def _multi_day_ledger() -> list[dict]:
+    return _consistent_ledger() + [
+        _trade(ts="2026-09-08T01:00:00+00:00", strategy_id="gap_fade", symbol="069500",
+               side="buy", qty=1, price=10000.0, realized_pnl=0.0),
+        _trade(ts="2026-09-08T02:00:00+00:00", strategy_id="gap_fade", symbol="069500",
+               side="sell", qty=1, price=10100.0, realized_pnl=100.0),
+    ]
+
+
+def test_cross_check_sums_daily_trip_counts_across_curve(monkeypatch):
+    _patch_epoch(monkeypatch)
+    trades = _multi_day_ledger()
+    assert cross_check(trades, STRATEGIES_CFG, EXECUTION_CFG) == []
+
+
+@pytest.mark.parametrize("point_index", [0, -1])
+def test_cross_check_rejects_corrupted_daily_trip_counts(monkeypatch, point_index):
+    _patch_epoch(monkeypatch)
+    build_payload = performance_module.build_performance_payload
+
+    def corrupt_payload(*args, **kwargs):
+        payload = build_payload(*args, **kwargs)
+        strategy = next(s for s in payload["paper_epoch"]["strategies"] if s["id"] == "gap_fade")
+        strategy["curve"]["asia"][point_index]["trips"] += 1
+        return payload
+
+    monkeypatch.setattr("quant.control.performance_xcheck.build_performance_payload", corrupt_payload)
+    findings = cross_check(_multi_day_ledger(), STRATEGIES_CFG, EXECUTION_CFG)
+    assert any(
+        f.severity == "error" and f.path == "paper_epoch.strategies[id=gap_fade].curve.asia[*].trips"
+        for f in findings
+    )
+
+
 def test_cross_check_catches_a_broken_site_side_epoch_boundary(monkeypatch):
     """사이트 경로(`_epoch_trades`)가 스코어보드 경로(`round_trips_since_epoch`)와
     다른 경계를 쓰게 되면(예: `>=` 대신 `>`로 착오) 대조가 반드시 잡아야 한다 —

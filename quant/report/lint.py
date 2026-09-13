@@ -315,13 +315,15 @@ def _parse_auto_watch(auto_watch: object) -> dict[str, set[str]]:
 
 def _lint_auto_watch_contradiction(payload: dict) -> list[Finding]:
     """"매수 후보"(AUTO_WATCH에 NEWS로 편입 — 오늘 호재로 후보에 오른 것)와
-    "매수 유의"(그 종목 자체의 `bearish_markers` — 목표가 하향·어닝쇼크 등
+    "매수 유의"(그 종목 자체의 `news_bearish_markers` — 목표가 하향·어닝쇼크 등
     명백한 악재 표지)가 같은 종목에 동시에 붙으면 모순이다.
 
     `quant.analyze.render.candidates_line`은 `today_articles>0 and not
-    bearish_markers(c)`일 때만 NEWS 태그를 준다(render.py) — 그러니 정상
+    _title_bearish_markers(c)`일 때만 NEWS 태그를 준다(render.py) — 그러니 정상
     경로에서는 이 함수가 항상 빈 리스트를 내야 한다. 이게 걸리면 태그 생성과
-    `bearish_markers` 계산 사이 어딘가 리팩터링으로 어긋난 것이다(회귀 감지용).
+    제목 악재 계산 사이 어딘가 리팩터링으로 어긋난 것이다(회귀 감지용).
+    표시용 `bearish_markers`는 RANK만 막는 가격 급락도 포함한다. 새 필드가
+    없는 과거 payload는 기존의 보수적 검사로 남긴다.
 
     **버렸던 대안**: 처음엔 `ranking_bullish=False`인데 RANK 태그가 붙은
     경우를 봤지만, RANK는 그날 랭킹 보드 편입(`ranking_bullish` 게이트)
@@ -340,10 +342,11 @@ def _lint_auto_watch_contradiction(payload: dict) -> list[Finding]:
         tags = tokens.get(code)
         if not tags:
             continue
-        if "NEWS" in tags and sym.get("bearish_markers"):
+        news_markers = sym.get("news_bearish_markers", sym.get("bearish_markers"))
+        if "NEWS" in tags and news_markers:
             out.append(Finding(
                 ERROR, "candidates",
-                f"{sym.get('name') or code}({code}): 악재 표지({sym['bearish_markers']})가 있는데 "
+                f"{sym.get('name') or code}({code}): 악재 표지({news_markers})가 있는데 "
                 "AUTO_WATCH에 NEWS(매수 후보)로 편입 — 매수 후보/매수 유의 모순",
             ))
     return out

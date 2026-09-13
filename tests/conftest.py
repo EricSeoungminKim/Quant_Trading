@@ -15,24 +15,21 @@ NY = ZoneInfo("America/New_York")
 
 @pytest.fixture(autouse=True)
 def isolate_claude_bin(monkeypatch):
-    """`CLAUDE_BIN`을 존재하지 않는 경로로 못박는다(전 테스트 자동 적용,
-    2026-09-07 Claude CLI 주 레인 전환 세션).
+    """CLI와 무료 폴백을 실제 계정에서 격리하되 기본 Codex 선택은 유지한다.
 
-    이 저장소 소유자 머신(로컬 Mac·EC2 둘 다)엔 실제로 `~/.local/bin/claude`
-    가 설치돼 있다(구독 기반, `narrate.py` 모듈독스트링 참고). `make_narrator()`
-    기본값이 Claude CLI 1순위로 바뀌면서, `CLAUDE_BIN`을 명시하지 않는 아무
-    테스트나 `make_narrator()`/`make_quality_narrator()`/
-    `_agent_interpret_narrator()`/`_tg_digest_stance_call()` 등을 거치면
-    조용히 **진짜 Claude CLI 서브프로세스**를 불렀다 — 실측 사고(2026-09-07):
-    리포트 AI 심층 해석 테스트 여럿이 실행당 17초 넘는 진짜 호출을 타면서
-    전체 테스트 스위트가 느려지고, 네트워크/구독 상태에 테스트 결과가
-    좌우되는 상태였다.
+    테스트별 env/runner/poster 주입은 이 기본값을 덮어쓴다. load_settings가
+    테스트 도중 실제 .env를 읽어도 기본 HTTP 전송은 결측 응답으로 끝난다.
+    실연결은 EC2 수용 검사에서 별도로 검증한다.
+    """
+    from quant.adapters import narrate
 
-    Claude CLI 경로를 실제로 검증하고 싶은 테스트는 자기 안에서
-    `monkeypatch.setenv("CLAUDE_BIN", ...)`로 명시적으로 덮어쓴다 — 같은
-    `monkeypatch` 인스턴스에 나중에 적용된 `setenv`가 이 기본값을 이긴다
-    (`isolate_heartbeat_file`과 같은 전역 격리 관례)."""
     monkeypatch.setenv("CLAUDE_BIN", "/nonexistent/claude-test-isolation")
+    monkeypatch.setenv("CODEX_BIN", "/nonexistent/codex-test-isolation")
+    monkeypatch.delenv("OPS_NARRATOR", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(narrate, "get_key", lambda name: None)
+    monkeypatch.setattr(narrate.OpenRouterNarrator, "_httpx_poster", staticmethod(lambda *a, **kw: None))
+    monkeypatch.setattr(narrate, "_tool_httpx_poster", lambda *a, **kw: None)
 
 
 @pytest.fixture(autouse=True)

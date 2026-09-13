@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# 매일 08:40 KST — 회사 데일리 리포트를 Claude Code 세션으로 해석해 텔레그램 브리핑.
+# 레거시 수동 폴백(크론에서 제거됨) — 회사 리포트를 Codex로 해석해 텔레그램 브리핑.
 #
 # 설계 원칙:
 # - 거래 엔진(quant-engine.service)과 완전 분리된 별도 프로세스 (ADR-0002: LLM은
 #   리포팅 레이어에만). 이 스크립트가 죽어도 거래는 아무 영향 없다.
-# - Claude 세션은 **--disallowedTools로 도구를 명시 차단**하고, 이 스크립트는
+# - Codex 세션은 **codex_prompt.py로 도구를 전면 차단**하고, 이 스크립트는
 #   .env.local을 전역 export하지 않는다(텔레그램 토큰 2개만 지역 변수로 읽음) —
 #   리포트 본문(평문 HTTP, 신뢰 불가)이 프롬프트에 들어가므로, 주입이 성공해도
 #   세션이 읽을 시크릿도 도구도 없게 한다. 2026-08-10 적대적 리뷰 C4 반영.
@@ -22,12 +22,12 @@ cd "$(dirname "$0")/../.."   # 리포 루트
 BASE_URL="http://13.209.240.206:9999"
 DATE_PATH="${REPORT_DATE:-$(date +%Y/%m/%d)}"
 TODAY="${DATE_PATH//\//-}"
-CLAUDE_BIN="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
-SKILL=".claude/skills/daily-market-brief/SKILL.md"
+SKILL=".agents/skills/daily-market-brief/SKILL.md"
+[ -f "$SKILL" ] || SKILL=".claude/skills/daily-market-brief/SKILL.md"  # 기존 배포본의 추적 파일
 LOG="data/brief.log"
 mkdir -p data
 
-# .env.local에서 텔레그램 토큰 2개만 지역 변수로 — export 금지. Claude/파이썬
+# .env.local에서 텔레그램 토큰 2개만 지역 변수로 — export 금지. Codex/파이썬
 # 서브프로세스는 시크릿을 env로 물려받지 않는다(watch-score와 watch-add는 각자
 # .env.local을 직접 읽는다 — load_settings / read_env_file).
 _env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
@@ -89,15 +89,14 @@ $(cat data/state/regime.json 2>/dev/null || echo '(없음)')
 $(cat data/watchlist.yaml 2>/dev/null || echo '(없음)')
 
 ===== [회사 리포트 본문: ${REPORT_FILE}] =====
-$REPORT_BODY"
+$REPORT_BODY
 
-# --- 3. Claude 세션 (도구 없음, stdout = 텔레그램 본문) ---
-# --disallowedTools: 리포트 본문(평문 HTTP, 신뢰 불가)이 프롬프트에 들어가므로
-# 주입 성공을 가정하고 세션의 손발을 자른다. env에도 시크릿 없음(위 참고) — 리뷰 C4.
-BRIEF="$(printf '%s' "$INPUT" | timeout 600 nice -n 10 "$CLAUDE_BIN" -p \
-  --disallowedTools "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,NotebookEdit,Task,Agent,TodoWrite" \
-  "위 스킬 지침(daily-market-brief)을 그대로 따라, 주어진 시스템 상태와 회사 리포트를 분석해 출력 형식대로만 답하라. 오늘 날짜는 ${TODAY}." \
-  2>>"$LOG")"
+위 스킬 지침(daily-market-brief)을 따라, 주어진 시스템 상태와 회사 리포트를 분석해
+출력 형식대로만 답하라. 오늘 날짜는 ${TODAY}."
+
+# --- 3. Codex 세션 (도구 없음, stdout = 텔레그램 본문) ---
+BRIEF="$(printf '%s' "$INPUT" | nice -n 10 .venv/bin/python \
+  server/scripts/codex_prompt.py --timeout 600 2>>"$LOG")"
 
 if [ -z "$BRIEF" ]; then
   notify_auto "daily_brief" "🗞 ${TODAY} 분석 세션 실패 (출력 없음) — data/brief.log 확인"

@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
 from collections.abc import Callable
 
@@ -160,6 +161,72 @@ class ClaudeCliNarrator:
                        [self._binary, "-p", "--disallowedTools", CLAUDE_DISALLOWED_TOOLS],
                        prompt, self._timeout, what="claude")
         return (out or "").strip() or None
+
+
+class CodexCliNarrator:
+    """Codex 구독 CLI로 주어진 사실만 서술한다. 파일·셸·외부 도구는 끈다.
+
+    사용자 설정/프로젝트 지시와 세션 기록을 읽지 않고 임시 빈 디렉터리에서
+    실행한다. 인증은 기존 Codex 로그인으로 처리하며 키를 프롬프트에 넣지 않는다.
+    """
+
+    name = "codex"
+
+    def __init__(self, binary: str, timeout: int = 180, runner=None, model: str | None = None):
+        self._binary = binary
+        self._timeout = timeout
+        self._model = model
+        self._runner = runner or self._subprocess_runner
+
+    @staticmethod
+    def _subprocess_runner(cmd: list[str], stdin: str, timeout: int) -> str | None:
+        import signal
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory(prefix="quant-narrate-") as workdir:
+            output = Path(workdir) / "final.txt"
+            cmd = [*cmd, "--cd", workdir, "--output-last-message", str(output), "-"]
+            proc = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, cwd=workdir, start_new_session=True,
+            )
+            try:
+                proc.communicate(input=stdin, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate()
+                raise
+            if proc.returncode != 0:
+                # stderr에는 프롬프트·계정 정보가 섞일 수 있으므로 원문을 로그에 싣지 않는다.
+                log.warning("codex CLI 실패 rc=%s", proc.returncode)
+                return None
+            return output.read_text(encoding="utf-8") if output.exists() else None
+
+    def narrate(self, prompt: str) -> str | None:
+        cmd = [self._binary, "exec", "--ephemeral", "--ignore-user-config",
+               "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never",
+               "-c", 'approval_policy="never"', "-c", 'web_search="disabled"',
+               "-c", "project_doc_max_bytes=0"]
+        for feature in ("shell_tool", "unified_exec", "apps", "plugins", "multi_agent",
+                        "browser_use", "computer_use", "image_generation", "view_image",
+                        "code_mode", "code_mode_host", "hooks", "memories"):
+            cmd += ["-c", f"features.{feature}=false"]
+        if self._model:
+            cmd += ["--model", self._model]
+        out = _quietly(self._runner, cmd, prompt, self._timeout, what="codex")
+        return (out or "").strip() or None
+
+
+def cli_binary(env: dict[str, str] | None = None, *, provider: str = "codex") -> str:
+    """명시 경로 → PATH → EC2 사용자 설치 경로. 주입 환경은 실제 환경과 섞지 않는다."""
+    e = os.environ if env is None else env
+    explicit = (e.get(f"{provider.upper()}_BIN") or "").strip()
+    if explicit:
+        return explicit
+    return (shutil.which(provider, path=e.get("PATH", ""))
+            or os.path.expanduser(f"~/.local/bin/{provider}"))
 
 
 # 무료 레인 추론 모델(nemotron 계열)은 간헐적으로 **영어 사고과정을 최종 답에
@@ -421,8 +488,18 @@ def stance_via_claude(prompt: str, binary: str, timeout: int = 25) -> dict | Non
     return result
 
 
+def stance_via_codex(prompt: str, binary: str, timeout: int = 25) -> dict | None:
+    """Codex도 같은 엄격 JSON 계약으로 검증하고 별도 transport로 계측한다."""
+    t0 = time.monotonic()
+    narrator = CodexCliNarrator(binary, timeout=timeout, model=os.environ.get("CODEX_MODEL"))
+    result = _parse_stance_json(narrator.narrate(prompt))
+    _record_llm_call("stance", result is not None, time.monotonic() - t0, transport="codex")
+    return result
+
+
 def stance(
     prompt: str, *, claude_binary: str | None = None, claude_timeout: int = 25,
+    codex_binary: str | None = None, codex_timeout: int = 25,
     api_key: str | None = None, model: str = DEFAULT_OPENROUTER_MODEL,
     fallback_model: str = STANCE_FALLBACK_MODEL, poster=None, openrouter_timeout: int = 20,
 ) -> dict | None:
@@ -439,6 +516,10 @@ def stance(
     시도하는 클래스라 자체 기록이 필요했지만, 여긴 두 leaf 함수가 이미
     스스로 기록하는 계약이라 얹을 필요가 없다).
     """
+    if codex_binary and os.path.exists(codex_binary):
+        result = stance_via_codex(prompt, codex_binary, timeout=codex_timeout)
+        if result is not None:
+            return result
     if claude_binary and os.path.exists(claude_binary):
         result = stance_via_claude(prompt, claude_binary, timeout=claude_timeout)
         if result is not None:
@@ -447,6 +528,21 @@ def stance(
         return None
     return stance_only(prompt, api_key, model=model, fallback_model=fallback_model,
                        poster=poster, timeout=openrouter_timeout)
+
+
+def make_stance_call(cli_timeout: int = 25):
+    """리포트·텔레그램 스탠스가 동일한 서술기 선택/킬스위치를 따른다."""
+    choice = (os.environ.get("OPS_NARRATOR") or "codex").strip().lower()
+    if choice not in {"codex", "claude", "openrouter"}:
+        return None
+    key = (os.environ.get("OPENROUTER_API_KEY") or "").strip() or (get_key("OPENROUTER_API_KEY") or "").strip()
+    if choice == "openrouter":
+        return (lambda prompt: stance_only(prompt, key)) if key else None
+    binary = cli_binary(provider=choice)
+    if not os.path.exists(binary) and not key:
+        return None
+    kwargs = {f"{choice}_binary": binary, f"{choice}_timeout": cli_timeout}
+    return lambda prompt: stance(prompt, api_key=key or None, **kwargs)
 
 
 # 텔레그램 채널 사진 해석(서브프로젝트 S part 3, 2026-08-17) — `Narrator` 포트가
@@ -677,33 +773,17 @@ def _make_openrouter_narrator(
 
 def make_narrator(
     env: dict[str, str] | None = None, model: str | None = None, timeout: int | None = None,
+    *, cli_timeout: int = 180, lane: str = "narrate",
 ):
-    """`OPS_NARRATOR` 로 고른다. **절대 예외를 던지지 않는다** — 고를 수 없으면
-    `NullNarrator` 이고, 호출자는 결정론적 형식으로 떨어진다.
+    """OPS_NARRATOR: codex(기본), openrouter, none. claude는 명시 선택만 지원한다.
 
-    `kv.py: make_kv()` 와 같은 계약이다.
-
-    `model`(선택) — openrouter 선택 시, 또는 claude 선택 시의 **폴백**
-    OpenRouter 호출에 `OPENROUTER_MODEL` 환경변수/기본값보다 **우선**한다
-    (서브프로젝트 W part 2, 2026-08-17: 중기 관심종목 산문 요약은
-    U(툴콜링 해석 에이전트)가 실측한 1순위 모델(`TOOL_MODEL`)을 명시적으로
-    쓰고 싶은 호출부가 있다 — `make_narrator(model=TOOL_MODEL)`). claude
-    1순위 자체는 모델 개념이 없어 무시한다.
-
-    `timeout`(선택, 2026-09-04) — claude 선택 시의 폴백을 포함해 OpenRouter
-    호출에만 의미가 있다(claude CLI는 별도 timeout 인자를 이미 생성자에서
-    받는다). 텔레그램 리포트 서술처럼 짧은 상한이 필요한 호출부가 쓴다.
-
-    `choice == "claude"`(기본값, 2026-09-07 전환): 무료 OpenRouter 레인이
-    한도 초과로 상시 실패하기 시작해(owner 실측: 최근 24시간 44건 중 28건,
-    64%) 구독 기반 Claude CLI를 주 레인으로 승격했다. 실행파일이 없거나
-    호출이 실패하면(레이트리밋·미로그인 등) `QualityFallbackNarrator`가
-    OpenRouter로 1회 폴백한다 — `make_quality_narrator()`와 동일한 조립,
-    `lane="narrate"`로 계측한다는 점만 다르다. 둘 다 안 되면(OpenRouter
-    키도 없음) `NullNarrator`로 낙착 — 예외를 던지지 않는다.
+    Codex 구독 CLI를 먼저 쓰고 실패하면 OpenRouter 무료 레인으로 폴백한다.
+    실행파일/키가 없어도 예외 없이 None 서술로 떨어져 결정론 보고를 유지한다.
+    model/timeout은 OpenRouter 선택 또는 폴백에만 적용한다. Codex 모델은
+    CODEX_MODEL, CLI 시간 예산은 cli_timeout, 계측 레인은 lane으로 정한다.
     """
     e = os.environ if env is None else env
-    choice = (e.get("OPS_NARRATOR") or "claude").strip().lower()
+    choice = (e.get("OPS_NARRATOR") or "codex").strip().lower()
 
     if choice == "none":
         return NullNarrator()
@@ -712,16 +792,17 @@ def make_narrator(
         narrator = _make_openrouter_narrator(env, model, timeout)
         return narrator if narrator is not None else NullNarrator()
 
-    if choice == "claude":
-        binary = (e.get("CLAUDE_BIN") or "").strip() or os.path.expanduser("~/.local/bin/claude")
+    if choice in {"codex", "claude"}:
+        binary = cli_binary(env, provider=choice)
         if os.path.exists(binary):
-            primary = ClaudeCliNarrator(binary)
+            primary = (CodexCliNarrator(binary, timeout=cli_timeout, model=e.get("CODEX_MODEL"))
+                       if choice == "codex" else ClaudeCliNarrator(binary, timeout=cli_timeout))
         else:
-            log.warning("claude 실행파일 없음(%s) — OpenRouter 폴백만 시도한다", binary)
+            log.warning("%s 실행파일 없음(%s) — OpenRouter 폴백만 시도한다", choice, binary)
             primary = NullNarrator()
         fb_timeout = timeout if timeout is not None else FALLBACK_OPENROUTER_TIMEOUT_S
         fallback = _make_openrouter_narrator(env, model, fb_timeout) or NullNarrator()
-        return QualityFallbackNarrator(primary, fallback, lane="narrate")
+        return QualityFallbackNarrator(primary, fallback, lane=lane, primary_transport=choice)
 
     log.warning("알 수 없는 OPS_NARRATOR=%r — 서술 없이 동작한다", choice)
     return NullNarrator()
@@ -729,111 +810,79 @@ def make_narrator(
 
 def make_json_narrator(env: dict[str, str] | None = None, model: str | None = None,
                        max_tokens: int = 4000, timeout: int = 120):
-    """JSON 계약용 좁은 팩토리 (2026-08-26, ai_trader 토론) — `make_narrator` 와
-    같은 절대-예외-없음 계약. OpenRouter 전용이다(claude CLI 경로는 산문 계약).
+    """JSON 토론/리뷰도 Codex 기본값 + OpenRouter JSON 폴백을 쓴다.
 
-    산문용 기본값과 다른 이유:
-    - `json_mode=True` — 사고과정 유출 가드가 JSON(영문 키 위주)을 오탐한다.
-    - `max_tokens=4000` — 종목 30개 verdict JSON 은 700 토큰에 잘린다(추론
-      모델은 "생각"에도 토큰을 쓴다 — `_narrate_once` 주석 참고).
-    - `timeout=120` — 긴 출력 + 무료 레인 지연.
-
-    키가 없으면 NullNarrator — 호출부(ai_trader)는 결근 처리로 떨어진다.
+    출력 스키마 검증은 기존 소비자(ai_trader/risk_review 등)가 계속 맡는다.
+    OPS_NARRATOR=none/openrouter도 존중한다. timeout은 CLI 시간 예산이며
+    OpenRouter 단독에서도 기존대로 적용한다. CLI 폴백은 최대 20초/회다.
     """
     e = os.environ if env is None else env
+    choice = (e.get("OPS_NARRATOR") or "codex").strip().lower()
+    if choice not in {"codex", "claude", "openrouter"}:
+        return NullNarrator()
     # env 를 명시하면 그 dict 만 본다(테스트 결정성) — 미지정이면 get_key 가
     # os.environ + .env.local 파일 폴백까지 본다(크론은 export 를 안 한다).
     key = (e.get("OPENROUTER_API_KEY") or "").strip()
     if not key and env is None:
         key = (get_key("OPENROUTER_API_KEY") or "").strip()
-    if not key:
-        log.warning("OPENROUTER_API_KEY 없음 — JSON 서술 없이 동작한다(ai_trader 결근)")
-        return NullNarrator()
     chosen = (model or e.get("OPENROUTER_MODEL") or "").strip() or DEFAULT_OPENROUTER_MODEL
-    return OpenRouterNarrator(key, model=chosen, timeout=timeout,
-                              max_tokens=max_tokens, json_mode=True)
+    fallback_timeout = timeout if choice == "openrouter" else min(timeout, FALLBACK_OPENROUTER_TIMEOUT_S)
+    fallback = (OpenRouterNarrator(key, model=chosen, timeout=fallback_timeout,
+                                   max_tokens=max_tokens, json_mode=True)
+                if key else NullNarrator())
+    if choice == "openrouter":
+        return fallback
+    binary = cli_binary(env, provider=choice)
+    if not os.path.exists(binary):
+        return fallback
+    primary = (CodexCliNarrator(binary, timeout=timeout, model=e.get("CODEX_MODEL"))
+               if choice == "codex" else ClaudeCliNarrator(binary, timeout=timeout))
+    return QualityFallbackNarrator(primary, fallback, lane="narrate", primary_transport=choice)
 
 
 class QualityFallbackNarrator:
-    """Claude CLI(구독) 1순위, 실패하면 OpenRouter 무료 레인 폴백(2026-08-18,
-    품질 레인). `make_quality_narrator()`가 `lane="quality"`로 조립하고,
-    2026-09-07부터 `make_narrator()`의 기본(`OPS_NARRATOR=claude`)도 이
-    래퍼를 `lane="narrate"`로 조립한다 — Claude CLI 를 전 레인의 주 전송
-    수단으로 승격하면서, "claude 실행 자체는 됐는데 이 프롬프트에서만
-    실패했다"를 폴백 없이 조용히 서술 없음으로 떨어뜨리지 않기 위해서다.
+    """선택한 CLI(기본 Codex) 실패 시 무료 OpenRouter로 폴백한다.
 
-    사용자 A/B 실측 근거(`compare_narrators.html`, 같은 스냅샷): OpenRouter
-    무료판은 Exec Summary 영어 사고과정 유출·시황 산문 누락·4섹션 해석
-    누락이 있었고, Claude 구독판은 전부 고품질이었다 — "느린 건 상관없어,
-    정확도가 중요해"라는 사용자 결정에 따라 품질 민감 서술만 이 레인으로 옮긴다.
-
-    이 클래스 자체는 가드·재시도 로직을 갖지 않는다 — 그건 이미 `primary`/
-    `fallback`(`ClaudeCliNarrator`/`OpenRouterNarrator`) 각자가 갖고 있다.
-    여기서 하는 일은 둘뿐이다: (1) 1순위 실패 시 폴백으로 넘기기 (2) 두
-    시도를 각각 `lane`으로, `transport`("claude"|"openrouter")를 구분해
-    계측하기(2026-09-07, `_record_llm_call` transport 인자) — 1순위가
-    성공하면 1건("claude", 성공)만, 실패하면 2건("claude", 실패) +
-    ("openrouter", 폴백 결과)을 남긴다. 그래야 `llm_health_findings`가
-    "주 레인(claude)이 맛이 갔다"와 "폴백(openrouter)은 원래 가끔 실패한다"를
-    구분해 임계값을 다르게 적용할 수 있다. 폴백이 실제로 쓰인 호출은
-    `OpenRouterNarrator.narrate`가 이미 자체적으로 lane="narrate"를
-    기록하므로 이중 기록된다 — 의도한 동작이다(narrate 레인은 OpenRouter
-    실사용량을, 이 레인은 전체 성공률을 답한다).
+    quality/narrate/agent_interpret/ops_judge 레인이 공유한다. 2026-08에
+    품질 서술용으로 도입했고, 현재 CLI 전송은 Codex가 기본이다. 각 시도의
+    transport를 구분해 계측하고 성공한 전송은 last_transport에 남긴다.
+    폴백 자체의 narrate 계측과 이 레인의 계측은 기존대로 함께 기록한다.
     """
 
-    def __init__(self, primary, fallback, lane: str = "quality"):
+    def __init__(self, primary, fallback, lane: str = "quality", primary_transport: str | None = None):
         self._primary = primary
         self._fallback = fallback
         self._lane = lane
+        self._primary_transport = primary_transport or getattr(primary, "name", "claude")
+        self.last_transport: str | None = None
         self.name = lane
 
     def narrate(self, prompt: str) -> str | None:
         t0 = time.monotonic()
         text = self._primary.narrate(prompt)
-        _record_llm_call(self._lane, text is not None, time.monotonic() - t0, transport="claude")
+        _record_llm_call(self._lane, text is not None, time.monotonic() - t0,
+                         transport=self._primary_transport)
         if text is not None:
+            self.last_transport = self._primary_transport
             return text
-        log.warning("%s 레인 1순위(Claude CLI) 실패 — OpenRouter 폴백", self._lane)
+        log.warning("%s 레인 1순위(%s) 실패 — OpenRouter 폴백", self._lane, self._primary_transport)
         t1 = time.monotonic()
         text = self._fallback.narrate(prompt)
         _record_llm_call(self._lane, text is not None, time.monotonic() - t1, transport="openrouter")
+        self.last_transport = "openrouter" if text is not None else None
         return text
 
 
 def make_quality_narrator(env: dict[str, str] | None = None, model: str | None = None):
-    """품질 민감 서술 전용 레인(2026-08-18) — `report_cli._emit`(아침판)의
-    Exec Summary/시황 다이제스트/4섹션 AI 해석/중기 관심종목 산문 4곳 전용.
-    오후판(`_emit_close`)은 13:50 발행→13:55 자동편입→14:00 유니버스 롤
-    체인이 분 단위라 속도가 정확도의 전제라서 기존 무료 레인(`make_narrator`)을
-    그대로 쓴다 — 이 함수를 부르지 않는다.
+    """아침판 품질 서술: OPS_NARRATOR 선택을 존중하고 CLI에 240초를 준다.
 
-    킬스위치: env `QUALITY_NARRATOR=off`면 `make_narrator(env, model=model)`를
-    그대로 반환한다(전량 무료 레인 복귀 — 첫 실전이 틀어졌을 때 한 변수로
-    롤백할 수 있게).
-
-    Claude CLI 실행파일이 없거나(미설치) 인증 실패·미로그인 등으로
-    `narrate()`가 실패해도 예외 없이 `None`을 돌려주므로(`ClaudeCliNarrator`
-    의 `_quietly` 계약) 그대로 OpenRouter 폴백으로 흐른다 — 여기서 추가로
-    감쌀 필요가 없다.
-
-    `model`(선택) — `make_narrator(model=...)`와 같은 계약. OpenRouter
-    폴백에 강제할 모델을 넘긴다.
+    기본은 Codex CLI + 무료 OpenRouter 폴백이다. OPS_NARRATOR=none이면
+    품질 레인도 끄고, openrouter면 그 전송만 쓴다. QUALITY_NARRATOR=off는
+    일반 make_narrator의 예산/레인으로 돌아간다. 무료 레인 강제가 아니다.
+    model 인자는 OpenRouter 폴백 모델에만 적용한다.
     """
     e = os.environ if env is None else env
     if (e.get("QUALITY_NARRATOR") or "").strip().lower() == "off":
         return make_narrator(env, model=model)
 
-    binary = (e.get("CLAUDE_BIN") or "").strip() or os.path.expanduser("~/.local/bin/claude")
-    if os.path.exists(binary):
-        # 리포트 프롬프트(수천 자)는 기본 180s 로는 빠듯할 수 있어 넉넉히
-        # 잡는다 — EC2 실측 콜당 소요는 아직 없어 보수적으로 240s.
-        primary = ClaudeCliNarrator(binary, timeout=240)
-    else:
-        log.warning("claude 실행파일 없음(%s) — 품질 레인은 OpenRouter 단독", binary)
-        primary = NullNarrator()
-
-    # 폴백 timeout 은 고정 상한을 쓴다(2026-09-07, FALLBACK_OPENROUTER_TIMEOUT_S
-    # 상단 주석) — 품질 레인은 Claude 1순위(240s)가 이미 넉넉해, 실패 후
-    # 폴백까지 60s(기존 기본값)를 더 주면 report build 예산을 잠식한다.
-    fallback = _make_openrouter_narrator(env, model, FALLBACK_OPENROUTER_TIMEOUT_S) or NullNarrator()
-    return QualityFallbackNarrator(primary, fallback)
+    return make_narrator(env, model=model, cli_timeout=240, lane="quality")

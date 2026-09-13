@@ -12,7 +12,7 @@ EC2 상시 배포 관련 스크립트/설정 모음 — **Python 소스 코드�
 
 - `scripts/setup_ec2.sh` — 서버 최초 셋업(idempotent).
 - `scripts/deploy.sh` — 로컬 `git push` + 서버 `git pull && uv sync && systemctl restart`.
-- `scripts/tg_bridge.py` — Telegram ↔ Claude 양방향 브리지(`/halt` `/resume`
+- `scripts/tg_bridge.py` — Telegram ↔ Codex 양방향 브리지(`/halt` `/resume`
   `/flatten` `/status` `/watch` 등 제어 명령).
 - `scripts/own_brief.sh {KR|US}` — **현행 자동 유니버스 편입 경로**(KR 08:12 /
   US 21:50). 자체 리포트 engine.json을 읽어 `watch-score`로 등록, LLM 없음.
@@ -112,6 +112,18 @@ ssh ubuntu@<ElasticIP> "sudo systemctl restart quant-engine tg-bridge"
 
 ## 4. 확인
 
+브리지의 일반 대화는 EC2 `ubuntu` 사용자의 Codex CLI 로그인을 쓴다.
+`codex login status`로 인증 상태를 확인한다(인증 파일이나 키를 출력하지 않는다).
+기본 실행 파일은 PATH의 `codex`이고, 다른 경로는 `CODEX_BIN`으로 지정한다.
+모델은 Codex 기본값을 쓰며 `CODEX_MODEL`로 지정할 수 있다. 개인 Codex 설정의
+MCP·플러그인·훅은 불러오지 않는다. `/balance`·`/status` 등 기존 명령은 AI를
+거치지 않고 계속 직접 조회한다.
+
+일반 대화는 읽기 전용 샌드박스에서 실행되며 실시간 네트워크 조회가 제한된다.
+각 질문은 독립 세션이고, 이전 답변에 Telegram 답장을 달면 그 메시지를 문맥으로
+전달한다. 기존 CLI의 전역 최근 세션을 공유하지 않는다. 시간 초과(240초) 시
+Codex와 그 조회 자식 프로세스를 함께 종료한다.
+
 ```bash
 sudo systemctl status quant-engine tg-bridge
 journalctl -u quant-engine -f      # 엔진 로그
@@ -140,7 +152,7 @@ systemctl restart quant-engine`을 실행한다. `settings.yaml` 파라미터 �
   crontab 주석의 시각 기준까지 전부 KST로 통일.
 - **SIGTERM(exit 143)은 정상 종료로 취급한다** (`SuccessExitStatus=143`) — 재배포
   때마다 재시작이 'Failed'로 오경보되는 것을 방지.
-- **tg-bridge는 MemoryMax=400M, CPUQuota=50%로 격리한다** — 브리지가 클로드
+- **tg-bridge는 MemoryMax=400M, CPUQuota=50%로 격리한다** — 브리지가 Codex
   서브프로세스를 띄우다 폭주해도 엔진(quant-engine)의 자원을 빼앗지 않도록.
 - **Toss API는 등록된 IP만 허용한다** — Elastic IP를 반드시 허용목록에 등록해야
   주문/조회가 동작한다 (§0).

@@ -10,6 +10,10 @@
 # (거래 저장소가 고정 크론으로 겪은 '동계에 한 시간 밀림' 사고를 반복하지 않는다.)
 set -u
 cd "$(dirname "$0")/../.."
+# stdout가 traceback 뒤에 몰려 실패 알림의 로그 꼬리를 가리지 않게 한다.
+export PYTHONUNBUFFERED=1
+. "$(dirname "$0")/lib/notify.sh"
+NOTIFY_LANE="briefs"
 
 MARKET="${1:-}"
 case "$MARKET" in
@@ -39,12 +43,10 @@ log() { echo "[$(date '+%F %T')] [$MARKET] $*" >> "$LOG"; }
 # 키가 없으면 **조용히 건너뛴다** — 알림은 부가 기능이라 리포트 생성을 죽이지
 # 않는다. 켜는 법은 .env.local.example 참고(거래 봇과 같은 봇을 써도 되고 별도
 # 봇을 파도 된다 — 이 박스는 거래 시크릿을 갖고 있지 않다).
-_env() { grep "^$1=" .env.local 2>/dev/null | head -1 | cut -d= -f2-; }
-
 notify() {
   local token chat url text SUMMARY TAIL
-  token="$(_env TELEGRAM_BOT_TOKEN)"
-  chat="$(_env TELEGRAM_CHAT_ID)"
+  token="$(_notify_token)"
+  chat="$(_notify_chat)"
   if [ -z "$token" ] || [ -z "$chat" ]; then
     log "발행 알림 건너뜀 (.env.local에 TELEGRAM_BOT_TOKEN/CHAT_ID 없음)"
     return 0
@@ -111,22 +113,8 @@ ${TAIL}"
     # 동일하게 3500자에서 자른다(평문 curl 이라 HTML 이스케이프는 필요 없다).
     text="${text:0:3500}"
   fi
-  # 성공 기록(2026-09-07) — 이 스크립트는 lib/notify.sh 를 거치지 않는 자체 발송이라
-  # data/ledger/notify_sent.jsonl 에 남지 않았다(텔레그램 카탈로그 §3.5 격차). 응답의
-  # "ok":true 일 때만 같은 스키마로 한 줄 남긴다 — 기록 실패는 발송 결과를 바꾸지 않는다.
-  local resp
-  resp="$(curl -s -m 10 "https://api.telegram.org/bot${token}/sendMessage" \
-    -d "chat_id=${chat}" --data-urlencode "text=${text}" 2>/dev/null || true)"
-  case "$resp" in *'"ok":true'*)
-    SENT_TEXT="$text" .venv/bin/python - <<'PY' 2>/dev/null || true
-import json, os, datetime
-row = {"ts": datetime.datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S%z"), "source": "run_report",
-       "lane": "briefs", "text": os.environ.get("SENT_TEXT", "")[:1000]}
-os.makedirs("data/ledger", exist_ok=True)
-with open("data/ledger/notify_sent.jsonl", "a", encoding="utf-8") as f:
-    f.write(json.dumps(row, ensure_ascii=False) + "\n")
-PY
-  ;; esac
+  # 정시 리포트는 장중에도 즉시 전달한다. 공통 경로가 토픽 라우팅과 발송 원장을 맡는다.
+  notify_now "$text" || log "발행 알림 전송 실패 — data/ledger/notify_failures.jsonl 확인"
 }
 
 # TZ 가드 — 발행 시각이 전부 KST 전제다. 호스트가 다른 존이면 조용히 엉뚱한

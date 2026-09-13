@@ -376,6 +376,8 @@ def machine_payload(
             # q(당일 시세)를 함께 넘겨 가격 급락 거부권도 반영한다(위
             # PRICE_BEARISH_VETO_PCT 주석, 2026-09-07).
             "bearish_markers": bearish_markers(c, q),
+            # NEWS 거부권은 제목 악재만이다. 가격 급락은 표시 및 RANK 거부권에 남긴다.
+            "news_bearish_markers": _title_bearish_markers(c),
         }
         if q:
             entry["close"] = q.get("close")
