@@ -72,6 +72,8 @@ def test_trader_codex_has_only_web_search_and_preserves_order_contract(isolated_
     assert 'approval_policy="never"' in args
     assert args[args.index("--sandbox") + 1] == "read-only"
     assert "--ignore-user-config" in args and "--ephemeral" in args
+    assert "features.code_mode_host=true" in args
+    assert "features.code_mode_host=false" not in args
     for feature in ("shell_tool", "unified_exec", "apps", "plugins", "multi_agent", "hooks", "code_mode"):
         assert f"features.{feature}=false" in args
     assert args[args.index("--model") + 1] == "test-model"
@@ -102,6 +104,8 @@ def test_batch_prompt_without_web_flag_has_no_tools(isolated_server):
     call = json.loads((root / "codex-call.json").read_text())
     assert 'web_search="disabled"' in call["args"]
     assert "features.shell_tool=false" in call["args"]
+    assert "features.code_mode_host=false" in call["args"]
+    assert "features.code_mode_host=true" not in call["args"]
     assert call["prompt"] == "주어진 사실만 요약"
 
 

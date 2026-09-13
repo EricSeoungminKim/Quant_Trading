@@ -25,8 +25,10 @@ def run(prompt: str, *, timeout: int, web_search: bool) -> str | None:
         ]
         for feature in ("shell_tool", "unified_exec", "apps", "plugins", "multi_agent",
                         "browser_use", "computer_use", "image_generation", "view_image",
-                        "code_mode", "code_mode_host", "hooks", "memories"):
+                        "code_mode", "hooks", "memories"):
             cmd += ["-c", f"features.{feature}=false"]
+        # 웹검색 실행에도 호스트가 필요하다. 도구 없는 서술 모드는 계속 차단한다.
+        cmd += ["-c", f"features.code_mode_host={str(web_search).lower()}"]
         if os.environ.get("CODEX_MODEL"):
             cmd += ["--model", os.environ["CODEX_MODEL"]]
         cmd += ["--cd", workdir, "--output-last-message", str(output), "-"]

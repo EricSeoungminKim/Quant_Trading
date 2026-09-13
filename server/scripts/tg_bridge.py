@@ -1295,16 +1295,18 @@ def handle_watchlist_command(text: str, toss_client: TossClient) -> Optional[str
 # ---------------------------------------------------------------------------
 def build_codex_argv(output_path: Path) -> list[str]:
     argv = [
-        os.environ.get("CODEX_BIN", "codex"),
+        os.environ.get("CODEX_BIN", "").strip() or "codex",
         "--ask-for-approval", "never",
         "exec", "--sandbox", "read-only", "--ephemeral", "--ignore-user-config",
         "--color", "never", "-c", 'web_search="disabled"',
     ]
     # 개인 설정의 MCP/플러그인이 읽기 전용 셸 밖에서 쓰기 동작을 제공하지 않게 한다.
     for feature in ("apps", "plugins", "multi_agent", "browser_use", "computer_use",
-                    "image_generation", "view_image", "code_mode", "code_mode_host",
+                    "image_generation", "view_image", "code_mode",
                     "hooks", "memories"):
         argv += ["-c", f"features.{feature}=false"]
+    # Codex 0.154의 허용된 읽기 도구도 실행 호스트가 필요하다. 샌드박스는 그대로다.
+    argv += ["-c", "features.code_mode_host=true"]
     if os.environ.get("CODEX_MODEL"):
         argv += ["--model", os.environ["CODEX_MODEL"]]
     return argv + ["--output-last-message", str(output_path), "-"]

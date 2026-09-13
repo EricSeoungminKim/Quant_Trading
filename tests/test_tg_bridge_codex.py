@@ -24,6 +24,26 @@ def _fake_codex(tmp_path, monkeypatch, body):
     monkeypatch.setenv("CODEX_BIN", str(executable))
 
 
+@pytest.mark.parametrize("binary", ["", "   "])
+def test_blank_codex_binary_uses_path_default(tmp_path, monkeypatch, binary):
+    monkeypatch.setenv("CODEX_BIN", binary)
+    assert tg_bridge.build_codex_argv(tmp_path / "reply.txt")[0] == "codex"
+
+
+def test_bridge_enables_read_tool_host_without_relaxing_permissions(tmp_path):
+    args = tg_bridge.build_codex_argv(tmp_path / "reply.txt")
+    assert "features.code_mode_host=true" in args
+    assert "features.code_mode_host=false" not in args
+    assert args[args.index("--sandbox") + 1] == "read-only"
+    assert args[args.index("--ask-for-approval") + 1] == "never"
+    assert "--ignore-user-config" in args
+    assert 'web_search="disabled"' in args
+    for feature in ("apps", "plugins", "multi_agent", "browser_use", "computer_use",
+                    "image_generation", "view_image", "code_mode", "hooks", "memories"):
+        assert f"features.{feature}=false" in args
+    assert "--dangerously-bypass-approvals-and-sandbox" not in args
+
+
 def test_codex_reads_stdin_and_returns_final_message_only(tmp_path, monkeypatch):
     _fake_codex(tmp_path, monkeypatch, """
 args = sys.argv[1:]
