@@ -628,9 +628,8 @@
 #
 # `nice -n 10`은 셸 스크립트 안(ops_judge.sh)에서 판단 단계에만 건다(1.8GB
 # 박스에서 엔진과 자원 경쟁하지 않도록 — ops_watch.sh narrate 호출과 같은 관례).
-# LLM 예산은 OPS_JUDGE_TIME_BUDGET(기본 240초) — close_report.sh 처럼 OpenRouter
-# 무료 레인(chat_with_tools, 도구 호출 루프)을 쓴다. OPENROUTER_API_KEY 가 없으면
-# "review"(확인 필요)로 안전하게 떨어진다(narrate.py 와 같은 무자격증명 안전망).
+# LLM 예산은 OPS_JUDGE_TIME_BUDGET(기본 240초). 사실 수집 후 Codex 단발 서술,
+# 실패 시 OpenRouter 무료 폴백. 응답이 없으면 "review"(확인 필요)로 떨어진다.
 10 13 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/ops_judge.sh kr-midday >> data/ops_judge.log 2>&1
 30 1 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/ops_judge.sh us-midsession >> data/ops_judge.log 2>&1
 # Codex CLI 갱신은 검증 후 수동 배포한다. 기존 Claude 주간 자동 갱신은 제거(2026-09-13).
@@ -642,8 +641,10 @@
 
 # 공개 포트폴리오 사이트 데이터 갱신(2026-09-02) — publish_performance.sh 직후.
 # 배포 키(~/.ssh/id_portfolio)가 GitHub 에 등록돼 있을 때만 동작, 아니면 조용히 스킵.
-25 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_portfolio.sh >> data/portfolio_publish.log 2>&1
-25 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_portfolio.sh >> data/portfolio_publish.log 2>&1
+# 2026-09-14: 자동 승인 검토가 공개 데이터 게시를 거절해 소유자의 공개 승인 대기.
+# 승인 후 아래 두 PUBLICATION_HOLD 접두만 제거하고 다시 설치한다.
+# PUBLICATION_HOLD: 25 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_portfolio.sh >> data/portfolio_publish.log 2>&1
+# PUBLICATION_HOLD: 25 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_portfolio.sh >> data/portfolio_publish.log 2>&1
 
 # LLM 섀도우 판단(Phase 7.4, 2026-09-02 배선) — 만들어진 지 2주가 넘도록 크론에
 # 등록된 적이 없던 "조립됐지만 배선 안 됨" 사례를 감사에서 발견해 연결한다.
