@@ -641,10 +641,8 @@
 
 # 공개 포트폴리오 사이트 데이터 갱신(2026-09-02) — publish_performance.sh 직후.
 # 배포 키(~/.ssh/id_portfolio)가 GitHub 에 등록돼 있을 때만 동작, 아니면 조용히 스킵.
-# 2026-09-14: 자동 승인 검토가 공개 데이터 게시를 거절해 소유자의 공개 승인 대기.
-# 승인 후 아래 두 PUBLICATION_HOLD 접두만 제거하고 다시 설치한다.
-# PUBLICATION_HOLD: 25 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_portfolio.sh >> data/portfolio_publish.log 2>&1
-# PUBLICATION_HOLD: 25 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_portfolio.sh >> data/portfolio_publish.log 2>&1
+25 16 * * 1-5 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_portfolio.sh >> data/portfolio_publish.log 2>&1
+25 6 * * 2-6 cd /home/ubuntu/quant_trading_kiwoom && ./server/scripts/publish_portfolio.sh >> data/portfolio_publish.log 2>&1
 
 # LLM 섀도우 판단(Phase 7.4, 2026-09-02 배선) — 만들어진 지 2주가 넘도록 크론에
 # 등록된 적이 없던 "조립됐지만 배선 안 됨" 사례를 감사에서 발견해 연결한다.

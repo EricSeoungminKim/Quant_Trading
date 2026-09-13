@@ -61,6 +61,8 @@ _STATIC_HOLIDAYS: dict[str, set[dtdate]] = {
         dtdate(2026, 12, 25),  # 크리스마스
     },
     "US": {
+        dtdate(2026, 7, 3),  # Independence Day (observed)
+        dtdate(2026, 9, 7),  # Labor Day
         dtdate(2026, 11, 26),  # Thanksgiving
         dtdate(2026, 12, 25),  # Christmas
     },
@@ -70,6 +72,7 @@ _STATIC_HOLIDAYS: dict[str, set[dtdate]] = {
 _STATIC_EARLY_CLOSES: dict[str, dict[dtdate, dtime]] = {
     "US": {
         dtdate(2026, 11, 27): dtime(13, 0),  # Thanksgiving 다음날(추수감사절 연휴)
+        dtdate(2026, 12, 24): dtime(13, 0),  # Christmas Eve
     },
 }
 

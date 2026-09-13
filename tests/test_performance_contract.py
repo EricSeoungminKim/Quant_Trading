@@ -7,12 +7,15 @@
 from __future__ import annotations
 
 import copy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from quant.control.performance import FX_KRW_PER_USD
 from quant.control.performance_contract import Finding, validate_payload
+
+# 합성 payload와 검증 시계를 함께 고정한다. 실제 실행 날짜에 의존하지 않는다.
+_NOW = datetime(2026, 9, 6, 12, tzinfo=UTC)
 
 
 def _equity_book(currency: str) -> dict:
@@ -143,13 +146,13 @@ def _has_path(findings: list[Finding], path: str) -> bool:
 
 
 def test_valid_payload_has_no_findings():
-    assert validate_payload(_valid_payload()) == []
+    assert validate_payload(_valid_payload(), now=_NOW) == []
 
 
 def test_valid_payload_with_paper_epoch_has_no_findings():
     payload = _valid_payload()
     payload["paper_epoch"] = _valid_paper_epoch()
-    assert validate_payload(payload) == []
+    assert validate_payload(payload, now=_NOW) == []
 
 
 def test_finding_to_dict():
@@ -161,11 +164,11 @@ def test_unknown_top_level_keys_are_ignored():
     """다른 워커가 얹는 report_accuracy 같은 미지의 최상위 키는 무시한다."""
     payload = _valid_payload()
     payload["report_accuracy"] = {"whatever": "shape", "it": ["wants"]}
-    assert validate_payload(payload) == []
+    assert validate_payload(payload, now=_NOW) == []
 
 
 def test_payload_not_a_dict():
-    findings = validate_payload([])  # type: ignore[arg-type]
+    findings = validate_payload([], now=_NOW)  # type: ignore[arg-type]
     assert _errors(findings) and findings[0].path == "$"
 
 
@@ -191,14 +194,14 @@ def test_payload_not_a_dict():
 def test_missing_required_top_level_key_is_error(key, expected_path):
     payload = _valid_payload()
     del payload[key]
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any(f.path == expected_path for f in findings), findings
 
 
 def test_wrong_type_for_required_field_is_error():
     payload = _valid_payload()
     payload["disclaimer"] = 12345  # 문자열이어야 함
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any(f.path == "$.disclaimer" for f in findings)
 
 
@@ -207,7 +210,7 @@ def test_optional_field_absent_is_fine():
     del payload["prior_paper"]
     del payload["paper_epoch"]
     del payload["disclaimer_en"]
-    assert validate_payload(payload) == []
+    assert validate_payload(payload, now=_NOW) == []
 
 
 # ---------------------------------------------------------------------------
@@ -218,28 +221,28 @@ def test_optional_field_absent_is_fine():
 def test_nan_number_is_error():
     payload = _valid_payload()
     payload["costs"]["kr_tax_bp"] = float("nan")
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any("costs" in f.path and "NaN" in f.message for f in findings)
 
 
 def test_inf_number_is_error():
     payload = _valid_payload()
     payload["equity_asia"]["rows"][0]["day_pct"] = float("inf")
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any("equity_asia.rows[0]" in f.path for f in findings)
 
 
 def test_null_where_number_required_is_error():
     payload = _valid_payload()
     payload["period"]["sessions"] = None
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any(f.path == "period.sessions" for f in findings)
 
 
 def test_null_allowed_where_type_says_nullable():
     payload = _valid_payload()
     payload["equity_asia"]["seed"] = None  # EquityBook.seed: number | null
-    assert validate_payload(payload) == []
+    assert validate_payload(payload, now=_NOW) == []
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +253,7 @@ def test_null_allowed_where_type_says_nullable():
 def test_non_iso_date_is_error():
     payload = _valid_payload()
     payload["equity_asia"]["rows"][0]["date"] = "09/01/2026"
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any("equity_asia.rows[0].date" in f.path for f in findings)
 
 
@@ -258,14 +261,14 @@ def test_reversed_dates_in_curve_is_error():
     payload = _valid_payload()
     rows = payload["equity_asia"]["rows"]
     rows[0]["date"], rows[1]["date"] = rows[1]["date"], rows[0]["date"]
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any("역순" in f.message for f in findings)
 
 
 def test_duplicate_dates_in_curve_is_error():
     payload = _valid_payload()
     payload["equity_asia"]["rows"][1]["date"] = payload["equity_asia"]["rows"][0]["date"]
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any("역순" in f.message or "중복" in f.message for f in findings)
 
 
@@ -278,7 +281,7 @@ def test_large_gap_without_weekend_excuse_is_warn():
     payload = _valid_payload()
     # 화(09-01) → 그 다음 화(09-08): 영업일 환산으로도 5일 공백
     payload["equity_asia"]["rows"][1]["date"] = "2026-09-08"
-    findings = _warns(validate_payload(payload))
+    findings = _warns(validate_payload(payload, now=_NOW))
     assert any("거래일 공백" in f.message for f in findings)
 
 
@@ -287,7 +290,7 @@ def test_weekend_gap_is_not_flagged():
     # 금(09-04) → 월(09-07): 주말 2일 뿐이라 영업일 환산 공백은 1일
     payload["equity_asia"]["rows"][0]["date"] = "2026-09-04"
     payload["equity_asia"]["rows"][1]["date"] = "2026-09-07"
-    findings = validate_payload(payload)
+    findings = validate_payload(payload, now=_NOW)
     assert not any("거래일 공백" in f.message for f in findings)
 
 
@@ -298,7 +301,7 @@ def test_holiday_covered_gap_is_not_flagged():
     payload["equity_asia"]["rows"][0]["date"] = "2026-09-07"
     payload["equity_asia"]["rows"][1]["date"] = "2026-09-14"
     holidays = {"2026-09-08", "2026-09-09", "2026-09-10", "2026-09-11"}
-    findings = validate_payload(payload, holidays=holidays)
+    findings = validate_payload(payload, holidays=holidays, now=_NOW)
     assert not any("거래일 공백" in f.message for f in findings)
 
 
@@ -310,7 +313,7 @@ def test_holiday_covered_gap_is_not_flagged():
 def test_win_rate_out_of_0_1_is_error():
     payload = _valid_payload()
     payload["strategies"][0]["total"]["win_rate"] = 1.5
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any("strategies[0].total" in f.path for f in findings)
 
 
@@ -318,21 +321,21 @@ def test_ci_low_greater_than_ci_high_is_error():
     payload = _valid_payload()
     payload["strategies"][0]["total"]["ci_low"] = 0.9
     payload["strategies"][0]["total"]["ci_high"] = 0.1
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any("ci_low" in f.message and "ci_high" in f.message for f in findings)
 
 
 def test_wins_greater_than_trips_is_error():
     payload = _valid_payload()
     payload["strategies"][0]["total"]["wins"] = 999
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any("wins" in f.path for f in findings)
 
 
 def test_extreme_day_pct_is_warn_not_error():
     payload = _valid_payload()
     payload["equity_asia"]["rows"][0]["day_pct"] = 500.0  # 하루 500% — 상식 밖이지만 하드 오류는 아님
-    findings = validate_payload(payload)
+    findings = validate_payload(payload, now=_NOW)
     assert not _errors(findings)
     assert any("day_pct" in f.path for f in _warns(findings))
 
@@ -346,7 +349,7 @@ def test_enabled_count_mismatch_is_error():
     payload = _valid_payload()
     payload["enabled_count"] = 1
     strategies_cfg = {"donchian": {"enabled": True}, "gap_fade": {"enabled": True}}
-    findings = _errors(validate_payload(payload, strategies_cfg=strategies_cfg))
+    findings = _errors(validate_payload(payload, strategies_cfg=strategies_cfg, now=_NOW))
     assert any(f.path == "enabled_count" for f in findings)
 
 
@@ -354,14 +357,14 @@ def test_enabled_count_match_is_clean():
     payload = _valid_payload()
     payload["enabled_count"] = 1
     strategies_cfg = {"donchian": {"enabled": True}, "gap_fade": {"enabled": False}}
-    findings = validate_payload(payload, strategies_cfg=strategies_cfg)
+    findings = validate_payload(payload, strategies_cfg=strategies_cfg, now=_NOW)
     assert not any(f.path == "enabled_count" for f in findings)
 
 
 def test_enabled_count_check_skipped_without_settings():
     payload = _valid_payload()
     payload["enabled_count"] = 999  # 뭐가 됐든 settings 없이는 대조 안 함
-    assert validate_payload(payload) == []
+    assert validate_payload(payload, now=_NOW) == []
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +376,7 @@ def test_enabled_strategy_missing_from_list_is_warn():
     payload = _valid_payload()
     payload["enabled_count"] = 2
     strategies_cfg = {"donchian": {"enabled": True}, "gap_fade": {"enabled": True}}
-    findings = validate_payload(payload, strategies_cfg=strategies_cfg)
+    findings = validate_payload(payload, strategies_cfg=strategies_cfg, now=_NOW)
     assert not _errors(findings)
     assert any("gap_fade" in f.path for f in _warns(findings))
 
@@ -382,7 +385,7 @@ def test_enabled_strategy_present_but_missing_name_ko_is_error():
     payload = _valid_payload()
     payload["strategies"][0]["name_ko"] = ""
     strategies_cfg = {"donchian": {"enabled": True}}
-    findings = _errors(validate_payload(payload, strategies_cfg=strategies_cfg))
+    findings = _errors(validate_payload(payload, strategies_cfg=strategies_cfg, now=_NOW))
     assert any("name_ko" in f.path for f in findings)
 
 
@@ -390,7 +393,7 @@ def test_enabled_strategy_present_but_missing_help_is_warn():
     payload = _valid_payload()
     payload["strategies"][0]["help"] = None
     strategies_cfg = {"donchian": {"enabled": True}}
-    findings = validate_payload(payload, strategies_cfg=strategies_cfg)
+    findings = validate_payload(payload, strategies_cfg=strategies_cfg, now=_NOW)
     assert not _errors(findings)
     assert any("help" in f.path for f in _warns(findings))
 
@@ -398,7 +401,7 @@ def test_enabled_strategy_present_but_missing_help_is_warn():
 def test_disabled_strategy_absent_is_not_flagged():
     payload = _valid_payload()
     strategies_cfg = {"donchian": {"enabled": True}, "gap_fade": {"enabled": False}}
-    findings = validate_payload(payload, strategies_cfg=strategies_cfg)
+    findings = validate_payload(payload, strategies_cfg=strategies_cfg, now=_NOW)
     assert findings == []
 
 
@@ -412,7 +415,7 @@ def test_paper_epoch_strategy_missing_start_capital_is_error():
     pe = _valid_paper_epoch()
     del pe["strategies"][0]["start_capital"]
     payload["paper_epoch"] = pe
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any("start_capital" in f.path for f in findings)
 
 
@@ -421,7 +424,7 @@ def test_paper_epoch_strategy_empty_start_capital_is_error():
     pe = _valid_paper_epoch()
     pe["strategies"][0]["start_capital"] = {}
     payload["paper_epoch"] = pe
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any("start_capital" in f.path for f in findings)
 
 
@@ -430,14 +433,14 @@ def test_paper_epoch_negative_start_capital_is_error():
     pe = _valid_paper_epoch()
     pe["strategies"][0]["start_capital"]["KRW"] = -1000
     payload["paper_epoch"] = pe
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any("start_capital.KRW" in f.path for f in findings)
 
 
 def test_empty_paper_epoch_skips_start_capital_check():
     payload = _valid_payload()
     payload["paper_epoch"] = {}
-    assert validate_payload(payload) == []
+    assert validate_payload(payload, now=_NOW) == []
 
 
 # ---------------------------------------------------------------------------
@@ -450,7 +453,7 @@ def test_overall_seed_mismatch_is_error():
     pe = _valid_paper_epoch()
     pe["overall"]["seed_krw"] = 1.0  # 명백히 합과 안 맞음
     payload["paper_epoch"] = pe
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any(f.path == "paper_epoch.overall.seed_krw" for f in findings)
 
 
@@ -459,7 +462,7 @@ def test_overall_seed_within_rounding_is_clean():
     pe = _valid_paper_epoch()
     pe["overall"]["seed_krw"] = round(pe["overall"]["seed_krw"], 0)  # 반올림 오차만
     payload["paper_epoch"] = pe
-    findings = validate_payload(payload)
+    findings = validate_payload(payload, now=_NOW)
     assert not any(f.path == "paper_epoch.overall.seed_krw" for f in findings)
 
 
@@ -484,10 +487,32 @@ def test_fresh_generated_at_is_clean():
     assert not any(f.path == "generated_at" for f in findings)
 
 
+@pytest.mark.parametrize("now", [
+    datetime(2026, 9, 6, 12, tzinfo=UTC),
+    datetime(2030, 1, 1, 0, tzinfo=UTC),
+    datetime(2040, 6, 30, 23, tzinfo=UTC),
+])
+@pytest.mark.parametrize("age,expired", [
+    (timedelta(hours=36) - timedelta(seconds=1), False),
+    (timedelta(hours=36), False),
+    (timedelta(hours=36, seconds=1), True),
+])
+def test_freshness_boundary_is_independent_of_calendar_date(now, age, expired):
+    payload = _valid_payload()
+    payload["generated_at"] = (now - age).isoformat()
+    errors = _errors(validate_payload(payload, now=now))
+    if expired:
+        assert len(errors) == 1
+        assert errors[0].path == "generated_at"
+        assert "36시간 기준 초과" in errors[0].message
+    else:
+        assert errors == []
+
+
 def test_non_iso_generated_at_is_error():
     payload = _valid_payload()
     payload["generated_at"] = "not-a-timestamp"
-    findings = _errors(validate_payload(payload))
+    findings = _errors(validate_payload(payload, now=_NOW))
     assert any(f.path == "generated_at" for f in findings)
 
 
@@ -500,7 +525,7 @@ def test_trade_count_decrease_vs_previous_is_error():
     previous = _valid_payload()
     current = copy.deepcopy(previous)
     current["strategies"][0]["total"]["trips"] = 10  # 이전 40 → 이번 10
-    findings = _errors(validate_payload(current, previous=previous))
+    findings = _errors(validate_payload(current, previous=previous, now=_NOW))
     assert any(f.path == "strategies" and "유실" in f.message for f in findings)
 
 
@@ -509,7 +534,7 @@ def test_trade_count_increase_vs_previous_is_clean():
     current = copy.deepcopy(previous)
     current["strategies"][0]["total"]["trips"] = 41
     current["strategies"][0]["total"]["wins"] = 22
-    findings = validate_payload(current, previous=previous)
+    findings = validate_payload(current, previous=previous, now=_NOW)
     assert not any(f.path == "strategies" for f in _errors(findings))
 
 
@@ -517,11 +542,11 @@ def test_trade_count_check_skipped_without_previous():
     payload = _valid_payload()
     payload["strategies"][0]["total"]["trips"] = 0
     payload["strategies"][0]["total"]["wins"] = 0
-    assert validate_payload(payload) == []
+    assert validate_payload(payload, now=_NOW) == []
 
 
 def test_trade_count_equal_vs_previous_is_clean():
     previous = _valid_payload()
     current = copy.deepcopy(previous)
-    findings = validate_payload(current, previous=previous)
+    findings = validate_payload(current, previous=previous, now=_NOW)
     assert not any(f.path == "strategies" for f in _errors(findings))

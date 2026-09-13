@@ -5,6 +5,21 @@
 
 ## 운영 구조
 
+백엔드는 **Ports & Adapters(헥사고날)를 적용한 Python 모듈러 모놀리스**다.
+`quant/apps/assembly.py`가 `quant/core/ports.py`의 Protocol을 통해 전략·리스크·
+시세·주문·알림 구현을 조립한다. 실행 기반은 argparse CLI와 asyncio이며,
+거래 엔진·Telegram polling 봇·배치·정적 웹 서버는 별도 프로세스다.
+
+수집·분석·거래·제어의 4개 평면을 나누고 임포트 금지 방향을 테스트로 강제한다.
+체결과 금전 상태의 원본은 JSONL/파일이고, MySQL은 후속 분석 색인, Redis는
+재계산 가능한 캐시, Parquet/DuckDB는 시계열 저장·조회에 사용한다. 리포트는
+Jinja2로 HTML을 만들고 Python `http.server`가 제공한다.
+
+`llm_trader`는 외부 AI 판단을 검증한 JSONL 인박스로 받아 주문 신호에 반영한다.
+엔진 내부에서 LLM을 호출하지 않는 경계와, AI 판단이 주문에 영향을 줄 수 있다는
+사실을 함께 이해해야 한다. 초기 ADR의 전체 단일 프로세스 설명과 달리 현재는
+여러 운영 프로세스이며, apps의 파일 조립 등 I/O 예외도 실제 코드에 존재한다.
+
 ```mermaid
 flowchart TD
     A[뉴스·텔레그램 채널·DART·시장 API] --> B[수집 원장·캐시·심화 분석]
@@ -61,10 +76,11 @@ flowchart TD
 종료 시각에 따른다. 휴장일은 리포트를 만들지 않고 다음 개장일 안내를 보낸다.
 `report_cli when --market KR|US`와 타이머가 날짜별 기준이다.
 
-**09-14 현재 공개 포트폴리오 게시 두 작업은 소유자 공개 승인 대기 중이다.**
-자동 승인 검토가 537왕복 성과 JSON의 GitHub/공개 사이트 게시를 거절했다.
-`server/crontab.txt`의 `PUBLICATION_HOLD` 두 줄만 보류했으며, 성과 생성은 계속된다.
-승인 후 그 두 접두를 제거하고 배포해 일정을 복원한다. 승인 전에 복원하지 않는다.
+09-14 소유자가 공개 게시와 자동 갱신 재개를 명시적으로 승인했다. 임시
+`PUBLICATION_HOLD`를 제거해 위 두 게시 일정을 복원한다. 22개 전략·537왕복의
+검증된 JSON은 공개 저장소와 Vercel에 반영됐으며, 공개 응답의 SHA-256이
+원본과 일치했다. Vercel 검증기의 누적 반올림 오차 결함은 별도 저장소
+`cd560fc`에서 수정했고 성과 숫자는 바꾸지 않았다.
 
 ## 키와 Codex 인증
 

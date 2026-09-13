@@ -72,17 +72,18 @@ def test_static_calendar_treats_registered_kr_holiday_as_closed():
     assert calendar.session("KR", chuseok) is None
 
 
-def test_static_calendar_treats_registered_us_holiday_as_closed():
+@pytest.mark.parametrize("day", [date(2026, 7, 3), date(2026, 9, 7), date(2026, 11, 26), date(2026, 12, 25)])
+def test_static_calendar_treats_registered_us_holiday_as_closed(day):
     calendar = StaticSessionCalendar()
-    thanksgiving = datetime(2026, 11, 26, 12, 0, tzinfo=NY)  # 목요일 — 주말 아님
-    assert thanksgiving.weekday() < 5
-    assert calendar.session("US", thanksgiving) is None
+    holiday = datetime.combine(day, dtime(12, 0), tzinfo=NY)
+    assert holiday.weekday() < 5
+    assert calendar.session("US", holiday) is None
 
 
-def test_static_calendar_applies_registered_early_close():
+@pytest.mark.parametrize("day", [date(2026, 11, 27), date(2026, 12, 24)])
+def test_static_calendar_applies_registered_early_close(day):
     calendar = StaticSessionCalendar()
-    day_after = datetime(2026, 11, 27, 10, 0, tzinfo=NY)
-    session = calendar.session("US", day_after)
+    session = calendar.session("US", datetime.combine(day, dtime(10, 0), tzinfo=NY))
     assert session is not None
     assert session.close.time() == dtime(13, 0)
 
@@ -255,6 +256,24 @@ def test_toss_calendar_falls_back_loudly_and_retries(caplog):
 
     cal.session("US", now)
     assert client.calls == 2, "실패를 캐시하면 일시적 장애가 하루 종일 지속된다"
+
+
+@pytest.mark.parametrize("day,close_time", [
+    (date(2026, 7, 3), None),
+    (date(2026, 9, 7), None),
+    (date(2026, 12, 24), dtime(13, 0)),
+])
+def test_toss_calendar_failure_keeps_registered_us_holiday_hours(caplog, day, close_time):
+    client = _FakeTossClient(error=RuntimeError("calendar unavailable"))
+    calendar = TossSessionCalendar(client)
+    with caplog.at_level("WARNING"):
+        session = calendar.session("US", datetime.combine(day, dtime(12, 0), tzinfo=NY))
+    if close_time is None:
+        assert session is None
+    else:
+        assert session is not None
+        assert session.close == datetime.combine(day, close_time, tzinfo=NY)
+    assert client.calls == 1 and "폴백" in caplog.text
 
 
 def test_toss_calendar_api_failure_on_a_real_holiday_misjudges_market_as_open(caplog):

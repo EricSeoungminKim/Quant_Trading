@@ -55,17 +55,16 @@ def test_is_trading_day_false_on_weekend_via_static_calendar():
 
 
 def test_is_trading_day_false_on_a_weekday_holiday():
-    """정적 캘린더는 못 잡는 것 — 평일 공휴일(US 노동절, 2026-09-07 월요일)은
-    달력 기반(Toss/가짜) 캘린더가 있어야 잡힌다."""
+    """평일 휴장(US 노동절)은 공급자 응답과 등록된 정적 폴백 모두 인식한다."""
     labor_day = date(2026, 9, 7)
     assert labor_day.weekday() == 0  # 월요일임을 픽스처 스스로 확인
     cal = _FakeCalendar(closed={labor_day})
 
     assert report_cli._is_trading_day("US", labor_day, cal) is False
-    # 정적 캘린더는 평일이라 이 공휴일을 놓친다 — 그래서 실캘린더가 필요하다.
+    # 공급자를 사용할 수 없어도 등록된 노동절은 개장으로 오인하지 않는다.
     assert StaticSessionCalendar().session(
         "US", datetime.combine(labor_day, datetime.min.time(), tzinfo=NY)
-    ) is not None
+    ) is None
 
 
 # ── _next_trading_day ──────────────────────────────────────────────────────

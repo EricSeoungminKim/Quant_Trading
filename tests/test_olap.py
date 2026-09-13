@@ -49,8 +49,9 @@ def test_empty_month_file_does_not_break_the_whole_glob(history: Path):
 
 def test_coverage_reports_the_real_window(history: Path):
     c = coverage("TQQQ", "15m", root=history)
-    assert c.first_ts.startswith("2026-06-01")
-    assert c.last_ts.startswith("2026-07-01")
+    # DuckDB는 연결 시간대(PDT 등)로 표시한다. UTC fixture의 정확한 시각을 비교한다.
+    assert pd.Timestamp(c.first_ts).tz_convert("UTC") == pd.Timestamp("2026-06-01T00:00:00Z")
+    assert pd.Timestamp(c.last_ts).tz_convert("UTC") == pd.Timestamp("2026-07-01T00:30:00Z")
     assert c.n_days == 2
 
 
