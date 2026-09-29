@@ -1,6 +1,6 @@
 """ML 학습 하네스 v2 — selection⋈forward_return 라벨을 다중 타깃·다중 모델로
-학습하고 purged walk-forward로 검증한다. 매 실행이 직전 실행과 비교돼 "돌릴 때마다
-유의미한 변화가 보인다"를 산출물로 증명한다 (로컬 맥 원버튼 파이프라인 전용,
+학습하고 과거 데이터만 사용하는 purged walk-forward로 검증한다. 같은 평가 방식의
+직전 실행과 표본·지표 변화를 비교한다(개선을 보장하지 않는다) (로컬 맥 원버튼 파이프라인 전용,
 2026-08-30 v1 신설 → 2026-08-30 v2 고도화, `local/ml/run.sh` → `make ml`).
 
 ## 이 모듈이 하는 일과 안 하는 일
@@ -44,15 +44,14 @@ OOS 성적을 재고, 더 표현력 있는 모델이 릿지보다, 그리고 **�
 5. **모델 레지스트리 + 델타**: `local/ml/registry.jsonl`에 실행마다 한 줄
    append. 직전 줄과 비교해 "지난번보다 AUC +0.02, 표본 +N일" 같은 델타 절을
    리포트에 낸다.
-6. **하이퍼파라미터 탐색**: v1은 탐색 0회였다(표본이 게이트 미만이라 탐색 자체가
-   과최적합 위험). v2는 게이트(30거래일)를 넘긴 시장에 한해 `d1_direction`
-   분류 타깃에서만 8콤보 그리드를 outer purged OOS 폴드로 직접 선택한다 —
-   **nested CV가 아니다**(같은 OOS 폴드로 콤보를 고르고 그 폴드로 다시
-   성적을 보고하므로 약간의 낙관 편향이 있다). 나머지 두 타깃은 여기서 고른
-   하이퍼파라미터를 재사용해 탐색 예산을 추가로 쓰지 않는다 — 타깃 수만큼
-   다중검정 노출을 배로 늘리지 않기 위해서다. 조합 수·타깃 수·모델 수는
-   리포트에 그대로 신고한다(§E, `quant.control.leaderboard.required_t`로
-   보정 요구 t도 참고 표시).
+6. **사전 고정 파라미터**(2026-09-29): 기본 실행은 기존 기본값
+   `n_estimators=100, max_depth=3, learning_rate=0.1`을 모든 타깃에 사용하고
+   탐색 횟수는 0으로 기록한다. 기존 v2가 같은 평가 폴드로 8콤보를 고른 후
+   성적을 재보고하던 선택 편향을 제거했다. `select_hyperparams`는 명시적
+   탐색 실험용으로만 남겨 두며 기본 실행에서 호출하지 않는다. 초기 블록은
+   warmup, 각 평가 블록은 그보다 과거의 확장 훈련 창만 사용한다. 라벨 지평과
+   embargo만큼 경계를 비운다. 이전 K-fold 방식과의 델타는 비교하지 않는다.
+   고정값 역시 과거 연구의 영향을 받을 수 있으며 새 기간의 검증이 필요하다.
 
 ## 표본이 왜 작은가 (다시 재지 마라, `local/ml/run.sh`가 실측한다)
 
@@ -108,6 +107,7 @@ JSONL은 append-only 로그라 대량 조인·purged 폴드 연산에 MySQL만�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import subprocess
@@ -120,7 +120,7 @@ from pathlib import Path
 import numpy as np
 
 from quant.analyze import ml_scorer
-from quant.backtest.purged_cv import purged_splits
+from quant.backtest.purged_cv import embargo_size, fold_blocks
 from quant.control.leaderboard import daily_rank_ic, required_t
 
 log = logging.getLogger(__name__)
@@ -132,6 +132,7 @@ DEFAULT_EMBARGO_PCT = 0.01
 DEFAULT_RANDOM_STATE = 42
 DEFAULT_TOP_N = 5
 DEFAULT_REGISTRY_PATH = Path("local/ml/registry.jsonl")
+EVALUATION_PROTOCOL = "expanding_past_only_available_labels_fixed_v2"
 
 # 타깃 하나가 게이트(ml_scorer.MIN_TRAIN_DAYS)를 넘긴 시장 안에서도, D+5처럼
 # 라벨 성숙에 시간이 걸리는 타깃은 표본이 더 작을 수 있다. 이 문턱 미만이면
@@ -144,8 +145,8 @@ TARGET_MIN_DAYS = 10
 # 가치가 있다. 다만 승격 자체는 여전히 leaderboard의 20일 문턱을 통과해야 한다.
 MIN_DAYS_FOR_BASELINE_EDGE = 10
 
-# 하이퍼파라미터 그리드 — d1_direction 분류 타깃에서만 쓴다(모듈 docstring
-# §6). 순서 고정(재현성). 2(n_estimators) × 2(max_depth) × 2(learning_rate) = 8.
+# 명시적 탐색 실험 전용 그리드 — 기본 실행에서는 사용하지 않는다.
+# 순서 고정(재현성). 2(n_estimators) × 2(max_depth) × 2(learning_rate) = 8.
 HYPERPARAM_GRID: list[dict] = [
     {"n_estimators": n, "max_depth": d, "learning_rate": lr}
     for n in (50, 100)
@@ -222,10 +223,16 @@ def day_purged_splits(
 ) -> list[tuple[list[int], list[int]]]:
     """거래일 단위 purge+embargo를 행 인덱스로 환산한 `(train_idx, test_idx)` 목록.
 
-    같은 거래일의 행은 절대 train/test로 갈라지지 않는다 — `purged_cv.purged_splits`
-    가 거래일 인덱스에서 뭘 버릴지 정하고, 여기서 그 거래일에 속한 행 전체를
-    한쪽으로 몰아준다. 모듈 docstring 참고."""
+    첫 블록은 warmup, 나머지 n_folds개 블록은 시간순 테스트다. 훈련은
+    테스트 이전의 확장 창만 쓰며 label_horizon + floor(N * embargo_pct)일을
+    경계에서 제외한다. 같은 날의 모든 행은 같은 쪽에 둔다. 훈련이 빈
+    fold도 반환해 호출부가 표본 부족을 명시하게 한다."""
+    if n_folds < 2:
+        raise ValueError(f"n_folds는 2 이상이어야 한다: {n_folds!r}")
+    if label_horizon < 0:
+        raise ValueError(f"label_horizon은 음수일 수 없다: {label_horizon!r}")
     days = sorted_distinct_days(rows, date_key)
+    gap = label_horizon + embargo_size(len(days), embargo_pct)
     day_idx = {d: i for i, d in enumerate(days)}
     rows_per_day: dict[int, list[int]] = {}
     for i, r in enumerate(rows):
@@ -233,7 +240,9 @@ def day_purged_splits(
         rows_per_day.setdefault(d, []).append(i)
 
     out: list[tuple[list[int], list[int]]] = []
-    for train_days, test_days in purged_splits(len(days), n_folds, embargo_pct, label_horizon):
+    for start, end in fold_blocks(len(days), n_folds + 1)[1:]:
+        train_days = range(max(0, start - gap))
+        test_days = range(start, end + 1)
         train_idx = [i for d in train_days for i in rows_per_day.get(d, [])]
         test_idx = [i for d in test_days for i in rows_per_day.get(d, [])]
         out.append((train_idx, test_idx))
@@ -322,14 +331,26 @@ def evaluate_target_oos(
     perm_importances: list[np.ndarray] = []
     calibration_methods: list[str] = []
 
+    availability_key = f"label_available_d{spec.label_horizon}"
     for train_idx, test_idx in day_purged_splits(rows, n_folds, embargo_pct, spec.label_horizon):
+        test_days = sorted_distinct_days([rows[i] for i in test_idx])
+        train_idx = [i for i in train_idx if availability_key not in rows[i]
+                     or (rows[i][availability_key] is not None
+                         and str(rows[i][availability_key]) < test_days[0])]
+        train_days = sorted_distinct_days([rows[i] for i in train_idx])
+        split_meta = {
+            "train_start": train_days[0] if train_days else None,
+            "train_end": train_days[-1] if train_days else None,
+            "test_start": test_days[0], "test_end": test_days[-1],
+            "n_train_days": len(train_days), "n_test_days": len(test_days),
+        }
         if len(train_idx) < 10 or len(test_idx) == 0:
-            fold_metrics.append({"n_train": len(train_idx), "n_test": len(test_idx),
+            fold_metrics.append({**split_meta, "n_train": len(train_idx), "n_test": len(test_idx),
                                  "skipped": "표본 부족"})
             continue
         y_tr, y_te = y_all[train_idx], y_all[test_idx]
         if spec.kind == "classification" and (len(set(y_tr.tolist())) < 2 or len(set(y_te.tolist())) < 2):
-            fold_metrics.append({"n_train": len(train_idx), "n_test": len(test_idx),
+            fold_metrics.append({**split_meta, "n_train": len(train_idx), "n_test": len(test_idx),
                                  "skipped": "train/test 한쪽이 단일 클래스"})
             continue
 
@@ -344,6 +365,7 @@ def evaluate_target_oos(
             for i, idx in enumerate(test_idx):
                 oos_preds[idx] = float(proba[i])
             fold_metrics.append({
+                **split_meta,
                 "auc": float(roc_auc_score(y_te, proba)),
                 "precision": float(precision_score(y_te, pred, zero_division=0)),
                 "brier": float(brier_score_loss(y_te, proba)),
@@ -363,6 +385,7 @@ def evaluate_target_oos(
             for i, idx in enumerate(test_idx):
                 oos_preds[idx] = float(pred[i])
             fold_metrics.append({
+                **split_meta,
                 "rmse": float(root_mean_squared_error(y_te, pred)),
                 "mae": float(mean_absolute_error(y_te, pred)),
                 "r2": float(r2_score(y_te, pred)) if len(y_te) > 1 else None,
@@ -390,6 +413,12 @@ def evaluate_target_oos(
         "n_folds": n_folds,
         "folds": fold_metrics,
         "hyperparams": params,
+        "split_method": "expanding_past_only",
+        "embargo_days": embargo_size(train_day_count(rows), embargo_pct),
+        "gap_days": spec.label_horizon + embargo_size(train_day_count(rows), embargo_pct),
+        "n_oos_rows": len(oos_preds),
+        "n_oos_days": len({rows[i]["session_date"] for i in oos_preds}),
+        "label_availability_rows": sum(r.get(availability_key) is not None for r in rows),
     }
     if spec.kind == "classification":
         metrics["base_rate"] = base_rate
@@ -432,9 +461,9 @@ def select_hyperparams(
     n_folds: int = DEFAULT_N_FOLDS, embargo_pct: float = DEFAULT_EMBARGO_PCT,
     random_state: int = DEFAULT_RANDOM_STATE,
 ) -> tuple[dict, list[dict]]:
-    """`d1_direction` 분류 타깃 하나에서만 부른다(모듈 docstring §6). outer
-    purged OOS 폴드로 콤보를 직접 고르는 non-nested 탐색이라 약간의 낙관
-    편향이 있다는 걸 호출부가 리포트에 신고해야 한다."""
+    """명시적 탐색 실험용이며 기본 실행에서는 호출하지 않는다. 이 함수가
+    선택에 쓴 폴드 성적을 독립 평가 성적으로 재사용하면 선택 편향이 생긴다.
+    호출자는 별도의 미래 평가 구간과 탐색 횟수 기록을 마련해야 한다."""
     trials: list[dict] = []
     best_params = HYPERPARAM_GRID[0]
     best_score = float("-inf")
@@ -596,7 +625,7 @@ def compute_deltas(current: dict, previous: dict | None) -> dict:
     """`{market: {"n_days_delta": int, "targets": {target: {metric: delta}}}}`.
     직전 레지스트리 줄이 없거나 같은 시장/타깃이 없으면 그 항목은 비운다 —
     "처음 도는 실행"과 "델타가 0인 실행"을 구분해야 한다."""
-    if previous is None:
+    if previous is None or current.get("evaluation_protocol") != previous.get("evaluation_protocol"):
         return {}
     out: dict = {}
     prev_markets = previous.get("markets") or {}
@@ -635,9 +664,14 @@ _METRIC_LABELS = {
 def _render_target_section(name: str, spec_desc: str, r: dict) -> list[str]:
     m = r["metrics"]
     lines = [f"#### {name} — {spec_desc}", ""]
-    lines.append(f"- 표본: 거래일 {m['n_days']}일, 행 {m['n_rows']}개 "
-                f"(purge+embargo 폭: label_horizon={m['label_horizon']}거래일)")
+    lines.append(f"- 표본: 고유 선정일 {m['n_days']}일, 행 {m['n_rows']}개 "
+                f"(라벨 지평: label_horizon={m['label_horizon']}거래일)")
     lines.append(f"- 하이퍼파라미터: {m['hyperparams']}")
+    lines.append(f"- 라벨 확인일 기록: {m.get('label_availability_rows', 0)}/{m['n_rows']}행. "
+                 "기록이 있으면 평가 시작일보다 먼저 확인된 라벨만 학습한다.")
+    if "n_oos_days" in m:
+        lines.append(f"- 실제 OOS 표본: {m['n_oos_days']}일, {m['n_oos_rows']}행; "
+                    f"경계 제외 {m['gap_days']}일(라벨 {m['label_horizon']} + embargo {m['embargo_days']})")
     if m["kind"] == "classification":
         if m.get("base_rate") is not None:
             lines.append(f"- 기저율(양수 수익 비율): {m['base_rate']:.1%}")
@@ -661,6 +695,9 @@ def _render_target_section(name: str, spec_desc: str, r: dict) -> list[str]:
     lines.append("")
     lines.append("##### fold별 상세")
     for i, f in enumerate(m["folds"]):
+        if "test_start" in f:
+            lines.append(f"  - fold {i} 기간: train {f['train_start']} ~ {f['train_end']}, "
+                        f"test {f['test_start']} ~ {f['test_end']}")
         if f.get("skipped"):
             lines.append(f"  - fold {i}: 건너뜀({f['skipped']}, train={f['n_train']} test={f['n_test']})")
         elif m["kind"] == "classification":
@@ -713,7 +750,7 @@ def _render_baseline_section(cmp: dict) -> list[str]:
 def _render_delta_section(market_delta: dict | None) -> list[str]:
     lines = ["### 직전 실행 대비 델타", ""]
     if not market_delta:
-        lines.append("- 직전 레지스트리 기록 없음(첫 실행이거나 이 시장이 직전엔 게이트 미달) "
+        lines.append("- 비교 가능한 직전 기록 없음(첫 실행·시장 게이트 미달·평가 방식 변경) "
                     "— 델타 없음.")
         lines.append("")
         return lines
@@ -748,22 +785,27 @@ def render_report_md(
     skipped: dict[str, int] | None = None,
     min_train_days: int = ml_scorer.MIN_TRAIN_DAYS,
     deltas: dict | None = None,
-    n_targets: int = len(TARGETS), hyperparam_trials: int = len(HYPERPARAM_GRID),
+    n_targets: int = len(TARGETS), hyperparam_trials: int = 0,
 ) -> str:
     """`results[market]` = {"metrics": {target: evaluate_target_oos 결과}, "baseline": compare_to_baseline 결과}."""
-    lines = [f"# ML 학습 리포트 v2 — {run_date} (git {git_sha})", ""]
+    lines = [f"# ML 학습 리포트 v2 — {run_date} (git {git_sha})", "", "**연구·관찰 전용:** 날짜는 거래소 세션이 아닌 선정 기록 날짜이며 주말을 포함할 수 있다. 원천 라벨의 기업행사·가격 기준·시작 지평은 미검증이다. 이 결과로 매매 승격을 결정하지 않는다.", ""]
 
     n_markets = len(results)
-    total_trials = max(n_targets * max(n_markets, 1), 1) + hyperparam_trials
+    evaluated_targets = sum(len(r["metrics"]) for r in results.values())
+    total_trials = max(evaluated_targets + hyperparam_trials, 1)
     lines.append("## 실행 메타 · 다중검정 신고")
     lines.append("")
-    lines.append(f"- 타깃 수 {n_targets} × 시장 수 {n_markets} = 모델 적합 {n_targets * max(n_markets, 1)}회"
-                f" + 하이퍼파라미터 탐색 {hyperparam_trials}콤보(d1_direction 한정, 시장별) "
+    lines.append(f"- 계획 타깃 수 {n_targets} × 시장 수 {n_markets}, 실제 평가 조합 {evaluated_targets}개"
+                f" + 하이퍼파라미터 탐색 {hyperparam_trials}콤보 "
                 f"= 유효 시행 근사 {total_trials}회.")
     lines.append(f"- 참고(Bonferroni 근사) 요구 t: {required_t(total_trials):.2f} "
                 f"— `quant.control.leaderboard.required_t` 재사용, 리더보드 운영 승격과 같은 척도.")
-    lines.append("- 하이퍼파라미터 탐색은 outer purged OOS 폴드로 직접 콤보를 고르는 "
-                "non-nested 방식이라 약간의 낙관 편향이 있다(모듈 docstring §6).")
+    lines.append("- 시간순 expanding walk-forward: 최초 블록은 warmup, 각 테스트보다 "
+                "과거인 데이터만 학습한다. 라벨 지평 + floor(전체 라벨 날짜 수 × embargo_pct)일을 제외한다.")
+    lines.append(f"- 기본 실행은 사전 고정 파라미터 {DEFAULT_HYPERPARAMS}를 사용한다. "
+                "평가 구간으로 파라미터를 선택하지 않는다.")
+    lines.append("- 예측 지표와 상위 N 전방수익률은 거래 수수료·슬리피지를 차감한 전략 성과가 아니다. "
+                "반복 연구·타깃 선택에 따른 편향과 짧은 표본의 불확실성은 남는다.")
     lines.append("")
 
     for market, r in results.items():
@@ -801,10 +843,8 @@ def _run_market(market_rows: list[dict], n_folds: int, embargo_pct: float,
                 random_state: int, out_dir: Path, market: str,
                 top_n: int) -> tuple[dict, dict, dict]:
     """한 시장의 다중 타깃 학습 전체. `(metrics_by_target, baseline_cmp, target_skip_days)`."""
-    d1_spec = next(s for s in TARGETS if s.name == "d1_direction")
-    d1_rows = rows_for_target(market_rows, d1_spec)
-    best_params, hp_trials = select_hyperparams(d1_rows, d1_spec, n_folds, embargo_pct, random_state)
-    log.info("[%s] 하이퍼파라미터 탐색 %d콤보 — 최적: %s", market, len(hp_trials), best_params)
+    best_params = DEFAULT_HYPERPARAMS.copy()
+    log.info("[%s] 하이퍼파라미터 탐색 0콤보 — 사전 고정: %s", market, best_params)
 
     metrics_by_target: dict[str, dict] = {}
     target_skip_days: dict[str, int] = {}
@@ -819,12 +859,36 @@ def _run_market(market_rows: list[dict], n_folds: int, embargo_pct: float,
             continue
         target_n_folds = max(2, min(n_folds, days // 3))
         result = evaluate_target_oos(target_rows, spec, best_params, target_n_folds, embargo_pct, random_state)
+        result["metrics"]["hyperparam_selection"] = "predeclared_fixed"
         metrics_by_target[spec.name] = result
         model = fit_final_model(target_rows, spec, best_params, random_state)
         if model is not None:
             out_dir.mkdir(parents=True, exist_ok=True)
             import joblib
-            joblib.dump(model, out_dir / f"model_{market}_{spec.name}.joblib")
+            model_path = out_dir / f"model_{market}_{spec.name}.joblib"
+            joblib.dump(model, model_path)
+            # fit_final_model과 같은 전체 훈련 행의 중앙값을 함께 동결한다.
+            _, medians = ml_scorer.impute_median(_feature_matrix(target_rows))
+            train_days = sorted_distinct_days(target_rows)
+            manifest = {
+                "market": market, "target": spec.name,
+                "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                "feature_names": list(ml_scorer.FEATURE_NAMES),
+                "imputation_medians": medians.tolist(),
+                "train_start": train_days[0], "train_end": train_days[-1],
+                "n_train_rows": len(target_rows),
+                "training_labels_available_through": max(
+                    (str(r[f'label_available_d{spec.label_horizon}']) for r in target_rows
+                     if r.get(f'label_available_d{spec.label_horizon}')), default=None),
+                "evaluation_protocol": EVALUATION_PROTOCOL,
+                "hyperparams": best_params,
+                "model_sha256": hashlib.sha256(model_path.read_bytes()).hexdigest(),
+                "calibrated": False,
+                "label_quality": "unverified_source_prices_and_horizons",
+                "promotion_allowed": False,
+            }
+            model_path.with_suffix(".manifest.json").write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         if spec.name == "d1_return_bps":
             d1_return_oos_preds = result["oos_preds"]
             d1_return_rows = target_rows
@@ -898,7 +962,8 @@ def main(argv: list[str] | None = None) -> int:
             }
             for market, r in results.items()
         },
-        "n_targets": len(TARGETS), "hyperparam_trials": len(HYPERPARAM_GRID),
+        "n_targets": len(TARGETS), "hyperparam_trials": 0,
+        "evaluation_protocol": EVALUATION_PROTOCOL,
     }
     previous = load_last_registry_entry(args.registry)
     deltas = compute_deltas(registry_current, previous)

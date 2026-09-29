@@ -6,6 +6,7 @@ OOS permutation importance·베이스라인 head-to-head·모델 레지스트리
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -127,6 +128,36 @@ def test_day_purged_splits_uses_wider_purge_for_longer_label_horizon():
     n_train_d1 = sum(len(tr) for tr, _ in splits_d1)
     n_train_d5 = sum(len(tr) for tr, _ in splits_d5)
     assert n_train_d5 < n_train_d1
+
+
+@pytest.mark.parametrize("horizon", [1, 5])
+def test_day_purged_splits_only_uses_past_days_with_label_and_embargo_gap(horizon):
+    rows = list(reversed(_synthetic_rows(40, symbols_per_day=3)))
+    days = sorted({r["session_date"] for r in rows})
+    splits = ml_train.day_purged_splits(rows, n_folds=4, embargo_pct=0.1,
+                                       label_horizon=horizon)
+    assert len(splits) == 4
+    tested = set()
+    previous_train = set()
+    for train, test in splits:
+        train_days = {days.index(rows[i]["session_date"]) for i in train}
+        test_days = {days.index(rows[i]["session_date"]) for i in test}
+        if train_days:
+            assert max(train_days) + horizon + 4 < min(test_days)
+        assert previous_train <= train_days
+        assert not (tested & test_days)
+        previous_train = train_days
+        tested.update(test_days)
+    assert max(tested) == 39
+    assert previous_train
+
+
+def test_compute_deltas_does_not_compare_different_evaluation_protocols():
+    metrics = {"markets": {"KR": {"n_days": 30, "targets": {
+        "d1_direction": {"mean_oos_auc": 0.6},
+    }}}}
+    current = {**metrics, "evaluation_protocol": "expanding_past_only_available_labels_fixed_v2"}
+    assert ml_train.compute_deltas(current, metrics) == {}
 
 
 def test_load_labeled_rows_round_trips_json(tmp_path):
@@ -433,6 +464,16 @@ def test_main_trains_multi_target_writes_report_and_registry(tmp_path, capsys):
     entry = ml_train.load_last_registry_entry(registry)
     assert entry["markets"]["KR"]["n_days"] == 35
     assert "d1_direction" in entry["markets"]["KR"]["targets"]
+    assert entry["hyperparam_trials"] == 0
+    assert entry["evaluation_protocol"] == "expanding_past_only_available_labels_fixed_v2"
+    for metrics in entry["markets"]["KR"]["targets"].values():
+        assert metrics["hyperparams"] == ml_train.DEFAULT_HYPERPARAMS
+        assert metrics["hyperparam_selection"] == "predeclared_fixed"
+        assert metrics["n_oos_rows"] > 0
+        for fold in metrics["folds"]:
+            if fold["n_train"]:
+                assert fold["train_end"] < fold["test_start"]
+    assert "하이퍼파라미터 탐색 0" in report
 
 
 def test_main_second_run_reports_delta_against_first(tmp_path):
@@ -463,6 +504,29 @@ def test_main_second_run_reports_delta_against_first(tmp_path):
     assert "거래일" in report2
 
 
+def test_run_market_saves_training_imputer_and_model_identity_for_inference(tmp_path):
+    pytest.importorskip("sklearn")
+    import joblib
+    import numpy as np
+
+    rows = _synthetic_rows(15, symbols_per_day=4)
+    rows[0]["relative_volume"] = None
+    ml_train._run_market(rows, 3, 0.01, 42, tmp_path, "KR", 5)
+    path = tmp_path / "model_KR_d1_return_bps.joblib"
+    manifest = json.loads((tmp_path / "model_KR_d1_return_bps.manifest.json").read_text())
+    assert manifest["model_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert manifest["feature_names"] == list(ml_scorer.FEATURE_NAMES)
+    assert manifest["train_start"] == "2026-01-01"
+    assert manifest["train_end"] == "2026-01-15"
+    assert manifest["n_train_rows"] == 60
+    feature_idx = manifest["feature_names"].index("relative_volume")
+    assert manifest["imputation_medians"][feature_idx] == -1.0
+    model = joblib.load(path)
+    missing_row = np.array([[np.nan] * len(manifest["feature_names"])])
+    filled = ml_scorer.fill_missing(missing_row, np.array(manifest["imputation_medians"]))
+    assert np.isfinite(model.predict(filled)).all()
+
+
 def test_evaluate_target_oos_reports_zero_hyperparameter_grid_leak_into_metrics():
     """평가 자체는 하이퍼파라미터 탐색을 하지 않는다 — 탐색은 select_hyperparams가
     별도로 한다(§6). evaluate_target_oos는 넘겨받은 파라미터를 그대로 신고할 뿐."""
@@ -491,3 +555,14 @@ def test_remote_dump_py_has_valid_python_syntax():
         capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_late_available_labels_cannot_train_earlier_test_windows():
+    pytest.importorskip("sklearn")
+    rows = _synthetic_rows(30)
+    for row in rows:
+        row["label_available_d1"] = "2026-12-31"
+    spec = next(t for t in ml_train.TARGETS if t.name == "d1_return_bps")
+    result = ml_train.evaluate_target_oos(rows, spec, ml_train.DEFAULT_HYPERPARAMS, n_folds=3)
+    assert result["oos_preds"] == {}
+    assert all(f["n_train"] == 0 for f in result["metrics"]["folds"])

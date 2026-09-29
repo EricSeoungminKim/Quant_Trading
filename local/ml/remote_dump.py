@@ -54,7 +54,8 @@ try:
         cur.execute(
             "SELECT s.session_date AS session_date, s.symbol AS symbol, "
             f"s.market AS market, {cols_sql}{baseline_sql}, "
-            "fr1.return_bps AS return_bps, fr5.return_bps AS return_bps_d5 "
+            "fr1.return_bps AS return_bps, fr5.return_bps AS return_bps_d5, "
+            "fr1.asof_date AS label_available_d1, fr5.asof_date AS label_available_d5 "
             "FROM selection s "
             "JOIN forward_return fr1 "
             "ON s.market = fr1.market AND s.symbol = fr1.symbol "

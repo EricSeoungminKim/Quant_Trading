@@ -90,8 +90,12 @@ mkdir -p "$OUT_DIR"
 uv sync --group research --quiet
 
 echo "[ml] 표본 게이트 판정 + (충족 시) 학습 실행"
-uv run python -m quant.research.ml_train \
+uv run python -m local.ml.prepare_labels \
   --labeled-json "$CACHE_DIR/train_labeled.json" \
+  --selections "$CACHE_DIR/selections.jsonl" \
+  --out "$CACHE_DIR/train_comparison.json"
+uv run python -m quant.research.ml_train \
+  --labeled-json "$CACHE_DIR/train_comparison.json" \
   --out-dir "$OUT_DIR" \
   | tee "$OUT_DIR/run.log"
 
