@@ -1,9 +1,23 @@
-# Active Project Context — 2026-09-29 ML observation
+# Active Project Context — 2026-09-30 KR briefing + ML observation
 
 ## Invariants
 - Preserve four-plane boundaries; no model/network calls in trading hot path.
 - Current deployment is paper. Do not change strategy, capital, orders or watchlist for this experiment.
 - Preserve unrelated dirty research files and previous report-link fixes.
+
+## KR briefing milestone (deployed d625f50)
+- New report entry_environment: dated fixed heuristic, context evidence, keyword provenance, first-publication freeze.
+- Score is unvalidated, not probability; Fed/news/sectors/BTC context never arbitrarily adds points.
+- Independent review fixed temporal/core conflict/OHLC/corrupt row/partial result/frozen explanation issues.
+- Exact-session Naver OHLC primary, Yahoo fallback. No retrospective forecasts; n=0 at deployment.
+- Persistent feedback timer16:40/07:10KST installed; service success. Report07:30 starts,08:00 target.
+- FRED bounds12994 rows backfilled with fetched_at. EnginePID624 unchanged.
+- Public preview:/preview/entry-environment/2026/09/29/KR_report.html (historical, evaluation-excluded).
+- Full suite7336pass/10skip/25deselect/1xfail; final44focusedpass; two smokes exit0; mobile390/desktop1280 verified.
+- Heartbeat automation:KST08:15 daily; LA15:15/16:15 wakes with KST gate for DST; app availability required.
+- First actual forecast9/30KR morning; evaluation9/30close; next trading-day report compares it.
+- Next: confirm scheduled first publication/Telegram and forecast hash, then outcome population; do not invent past scores.
+- Runbook:docs/runbooks/entry-environment.md. Preserve existing ML observation schedules below.
 
 ## Completed
 - Portfolio current metrics fixed/deployed: engine cd3b01b, site28e29de.

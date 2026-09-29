@@ -10,6 +10,6 @@ Spec: User request 2026-09-29. Score is an uncalibrated environment index, never
 - [x] Morning assembly, concise collapsible section, Telegram summary and mobile checks.
 - [x] Persistent daily outcome schedule plus in-session daily briefing automation.
 - [x] Independent numeric/code review, full tests and smoke commands.
-- [ ] Deploy only report components, verify public artifacts and schedules, record evidence.
+- [x] Deploy only report components, verify public artifacts and schedules, record evidence.
 
 Ownership: numeric agent entry_environment + its tests; UI agent rendering files after contract; parent persistence/control/assembly/deployment. Preserve unrelated working tree edits.
