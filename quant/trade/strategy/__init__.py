@@ -276,6 +276,10 @@ def build_strategies(
 ) -> list:
     """cfg["strategies"] 블록을 읽어 활성화된 전략 인스턴스 리스트를 만든다.
 
+    선택적 `markets: [KR, US]`는 감시할 시장을 제한한다. 생략하면 기존 동작을
+    유지하고, 명시하면 빈 목록/알 수 없는 시장을 거부한다. 보유 종목도 이 제한을
+    우회하지 않으므로 시장을 제거하기 전에 해당 보유분을 청산해야 한다.
+
     `leverage_of`는 `MeanReversionStrategy`처럼 레버리지 정보를 생성자에서 받는
     전략에만, `tags_of`는 `NewsMomentumStrategy`/`NewsScalpStrategy`/
     `FrgnAccumulateStrategy`처럼 관심종목 태그(EVENT/EVENT_SCALP/FRGN 등)를
@@ -317,6 +321,13 @@ def build_strategies(
         # `market`은 **필터 전** 심볼로 정한다 — 필터가 목록을 비워도 전략의
         # 시장 판정이 US 로 미끄러지지 않게(기존 동작 보존).
         market = markets.get(symbols[0], "US") if symbols else "US"
+        if "markets" in strat_cfg:
+            allowed = strat_cfg["markets"]
+            if (not isinstance(allowed, list) or not allowed
+                    or any(m not in ("KR", "US") for m in allowed)):
+                raise ValueError(f"strategies.{strat_id}.markets must be a non-empty list of KR/US")
+            symbols = [s for s in symbols if market_of_symbol(s) in allowed]
+            market = market_of_symbol(symbols[0]) if symbols else allowed[0]
         spec = strat_cfg.get("universe_filter")
         if spec:
             filtered_ids.append(strat_id)

@@ -37,6 +37,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SETTINGS_PATH = _REPO_ROOT / "config" / "settings.yaml"
 
 
+def _activate_fixture_strategies(settings, *strategy_ids: str) -> None:
+    """Exercise these mechanisms independently of the current operating roster."""
+    for sid, block in settings.raw["strategies"].items():
+        block["enabled"] = sid in strategy_ids
+
+
 def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """개발자 로컬 .env.local에 실 자격증명이 있어도 테스트가 그 값에 우연히 기대지
     않도록, 이 조립 경로가 참조하는 자격증명 변수를 모두 지운 뒤 필요한 값만 가짜로
@@ -128,6 +134,13 @@ def test_local_history_fallback_route_activates_when_data_exists(tmp_path, monke
     벽시계를 물려준다 — 이게 없으면 라우트는 등록되지만 여전히 빈 값만 준다.
     """
     settings = load_settings(str(_SETTINGS_PATH))
+    # The historical source under test contains US ETF bars, regardless of which
+    # market/strategy the deployment currently runs.
+    settings.raw["strategies"] = {"history_fixture": {
+        "class": "vol_breakout", "enabled": True, "symbols": ["TQQQ", "SQQQ"],
+        "params": {"bar_interval_minutes": 5},
+        "capital_fraction": {"KR": 0.0, "US": 0.1},
+    }}
     monkeypatch.chdir(tmp_path)
     _clean_env(monkeypatch)
     monkeypatch.setenv("TOSS_CLIENT_ID", "fake-client-id")
@@ -586,6 +599,7 @@ def test_declared_seeds_each_book_with_its_own_declared_amount(tmp_path, monkeyp
     """조립 경로 회귀: 전략마다 **서로 다른** 시작 명목자본으로 시딩된다
     (equal_split처럼 전부 같은 값이 아니다)."""
     settings = load_settings(str(_SETTINGS_PATH))
+    _activate_fixture_strategies(settings, "scalp_1m", "news_momentum")
     monkeypatch.chdir(tmp_path)
     _clean_env(monkeypatch)
     monkeypatch.setenv("TOSS_CLIENT_ID", "fake-client-id")
@@ -672,6 +686,9 @@ def test_fixed_dual_seeds_each_strategy_with_its_market_specific_books(tmp_path,
     맞는 장부가 만들어지는지 확인한다. 총현금 조회가 전혀 필요 없다는 것도
     같이 증명한다(START_CAPITAL_KRW를 세팅하지 않는다)."""
     settings = load_settings(str(_SETTINGS_PATH))
+    _activate_fixture_strategies(
+        settings, "scalp_1m", "letf_pair_qqq", "frgn_accumulate", "news_accumulate",
+    )
     monkeypatch.chdir(tmp_path)
     _clean_env(monkeypatch)
     monkeypatch.setenv("TOSS_CLIENT_ID", "fake-client-id")
@@ -721,6 +738,10 @@ def test_ab_arms_receive_disjoint_symbol_sets_from_real_settings():
     """scalp_1m(기준)과 scalp_1m_cat(촉매)이 같은 관심종목에서 **서로 겹치지 않는**
     집합을 받는다 — KR 은 FRGN 단일 요인, US 는 EVENT+TREND."""
     settings = load_settings(str(_SETTINGS_PATH))
+    _activate_fixture_strategies(
+        settings, "scalp_1m", "scalp_1m_cat", "pullback_impulse", "pullback_impulse_cat",
+        "vol_breakout", "vol_breakout_cat",
+    )
     symbols = ["005930", "000660", "TQQQ", "SOXL"]
     tags_of = {
         "005930": ["FRGN"],            # KR 촉매(외국인 순매수)
@@ -762,6 +783,7 @@ def test_held_symbol_survives_universe_filter_so_open_position_stays_managed():
     """보유 중인 종목은 태그가 사라져도 갈래에 남는다 — 안 그러면 그 포지션의
     손절·청산 로직이 통째로 사라진다(고아 포지션)."""
     settings = load_settings(str(_SETTINGS_PATH))
+    _activate_fixture_strategies(settings, "scalp_1m", "scalp_1m_cat")
     from quant.trade.strategy import build_strategies
 
     raw = {**settings.raw, "_held_symbols": ["005930"], "strategies": {

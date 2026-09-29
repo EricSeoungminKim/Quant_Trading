@@ -503,7 +503,7 @@ strategies:
     # / 30분 타임아웃)로 단타 청산한다. news_momentum.py 상단 docstring에 정직성
     # 경고([미검증], 개장가 진입의 구조적 불리함, 타이트한 손절, 상한가급 목표)를
     # 명시했다 — 여기서 다시 반복하지 않는다. 수익성 주장 없음, paper 번인 시작.
-    enabled: true
+    enabled: false
     # 2026-08-12 시장별 분리(파일 상단 표 참고): US 0.0은 성과 판단이 아니라
     # EVENT 태그 소스(회사 데일리 리포트) 자체가 한국 종목에만 있어서다.
     # 2026-08-17: KR 0.2 → 0.1 — 갈래 A/B(spec §5)에 KR 50%를 내주려 갈래 C
@@ -558,7 +558,7 @@ strategies:
   # 확인 효과를 페이퍼에서 잰다. fixed_dual 이라 자기 계좌 1,000만원. `run scoreboard --ab` 로 판정.
   news_momentum_cat:
     class: news_momentum
-    enabled: true
+    enabled: false
     capital_fraction:
       KR: 0.1
       US: 0.0
@@ -591,7 +591,7 @@ strategies:
     # "같은 유니버스 · 다른 진입 시점"을 잰다 — 둘 다 촉매 가설을 때리는 각도가
     # 다르다. 유니버스 게이트는 설계 그대로 EVENT_SCALP(코드의 tags_of) 이므로
     # universe_filter 를 걸지 않는다.
-    enabled: true
+    enabled: false
     # KR 0.1 → 0.04 (2026-09-03): 표본을 쌓는 게 목적이라 최소 규모로 재가동한다.
     # 프로토콜 바닥(0.03) 바로 위 — tests/test_validation_gate.py 가 강제한다.
     capital_fraction:
@@ -640,7 +640,7 @@ strategies:
     # 보유 자체가 이제 "허용된 자동 레인" 목록에 명시적으로 있다
     # (risk.overnight_strategies/loop.py _OVERNIGHT_STRATEGIES가 여전히 EoD
     # 강제청산에서 제외한다, 동작 변화 없음).
-    enabled: true
+    enabled: false
     capital_fraction:
       KR: 0.14
 
@@ -685,7 +685,7 @@ strategies:
     # 청산" 절). exit_tag 배선이 나중에 완성되면 그 경로도 함께 살아있다(둘은
     # 서로 다른 연속 카운터를 쓴다 — 어느 한쪽이 다른 쪽을 가리지 않는다).
     class: frgn_accumulate
-    enabled: true
+    enabled: false
     capital_fraction:
       # news_momentum과 같은 시장 범위(KR 전용) — EVENT 태그 데이터 소스가
       # 한국 뉴스다. fixed_dual에서 이 값은 사이징이 아니라 boolean 게이트다.
@@ -733,7 +733,7 @@ strategies:
     # 종가배팅(이 전략) + 긍정뉴스 적립 + 퀀트 레인(오버나이트 명시 허용). 위
     # 2026-09-03 "단타만" 방침을 뒤집는다 — frgn_accumulate 블록의 같은 날짜
     # 주석 참고.
-    enabled: true
+    enabled: false
     # 2026-09-03: KR 0.1→0.2 + target_weight 0.1→0.5. 실측(EC2 9/2 15:00) '배분 자금
     # 부족(예산 95,888원)' — 종가배팅은 한 종목을 통째로 사는 전략인데 예산이
     # 200,000원대 대형주 1주도 못 샀다(8/25 이후 체결 0건의 원인). declared 정책
@@ -816,7 +816,7 @@ strategies:
     # 근거: 원장 실측 — scalp_1m 손절 건의 **76%(35/46)가 당일 진입가 위로 회복**
     # (중앙 +105bp). 방향은 맞고 진입 지점이 틀렸다는 뜻(파동 고점에서 산다).
     # 같은 신호를 눌림 이후에 산다. 회복폭 중앙 105bp 가 손익분기 목표와 같은 스케일.
-    enabled: true
+    enabled: false
     universe: watchlist
     symbols: []
     capital_fraction:
@@ -847,7 +847,7 @@ strategies:
     # A/B 촉매 갈래 — 규칙은 위와 **완전히 동일**(params 앵커 공유), 종목만 다르다.
     # 자세한 배경은 아래 scalp_1m_cat 블록 위의 주석에 한 번만 적었다.
     class: pullback_impulse
-    enabled: true
+    enabled: false
     universe: watchlist
     symbols: []
     capital_fraction:
@@ -867,7 +867,7 @@ strategies:
     # 불가능하다 — scalp_1m 의 실패 모드가 정의상 재발할 수 없다.
     # 정직한 사전 기대: 문헌이 "스프레드 조정 시 단기 반전의 유의성 급감"을
     # 반복 경고한다 — KR 개별주에서 먼저 죽고 US·KR ETF 에서만 살아남을 수 있다.
-    enabled: true
+    enabled: false
     universe: watchlist
     symbols: []
     capital_fraction:
@@ -899,7 +899,7 @@ strategies:
     # Larry Williams 변동성 돌파 — 시가 + k×전일범위 상향 돌파를 추종, 목표 없이
     # 마감 청산. 상승 확장 국면 레인. KR 은 ETF 만(왕복 ~4bp 실측 — 유일한
     # 엣지>비용 venue), US 는 TQQQ.
-    enabled: true
+    enabled: false
     # 122630(KODEX레버리지) 첫날 제외 사유(2026-08-29 검수): 레버리지 배수 조회
     # (stock_info leverageFactor)가 실패하면 헤어컷 없이 비레버리지 취급되어
     # 리스크 예산이 조용히 2배가 된다(assembly.py 부팅 조회 1회 의존) —
@@ -927,6 +927,8 @@ strategies:
       eod_exit_min: 5
       target_weight: 0.5
   vol_breakout_cat:
+    # 2026-09-30: 소유자 결정 — 한국장 촉매형만 모의 검증. 과거 계좌/원장은 유지.
+    markets: [KR]
     # A/B 촉매 갈래. **주의 — 이 쌍은 대칭이 아니다**: 기준 갈래는 고정 ETF
     # 바스켓(069500/122630/TQQQ)을 보고, 이 갈래는 관심종목 중 촉매 태그가 붙은
     # 종목을 본다. 즉 "ETF 바스켓 vs 촉매 개별주"의 비교라 유니버스 분할이 아니다.
@@ -956,7 +958,7 @@ strategies:
     # 그 판정을 뒤집은 게 아니라, capital_policy: fixed_dual 전환에 맞춰 **한
     # 달짜리 측정 구간**(paper-epoch 이후)에 다시 태워 표본을 더 쌓기 위함이다.
     # 한 달 뒤 재판정 시 09-05 증거 + 이번 구간 증거를 함께 본다.
-    enabled: true
+    enabled: false
     symbols: [] # 심볼은 params 의 signal/long/short 3개로 내부 구성(전략이 무시)
     capital_fraction:
       KR: 0.0
@@ -993,7 +995,7 @@ strategies:
     # 갭하락 되돌림 — 야간-주간 반전 문헌(Della Corte·Kosowski, Akbas 2022) 기반.
     # 단 선물(MNQ) 반증 연구가 있어 **근거 혼재**(모듈 docstring 정직 고지) —
     # 8개 레인 중 가장 약한 근거라는 것을 알고 소액으로 출전시킨다.
-    enabled: true
+    enabled: false
     universe: watchlist
     symbols: []
     capital_fraction:
@@ -1061,7 +1063,7 @@ strategies:
     # 진입 + 부분 익절로 진입 방식만 달리한 병행 전략. quant/trade/strategy/
     # scalp_1m.py 상단 docstring 참고. 태그 게이트 없음(watchlist 유니버스 전체가
     # 대상 — news_scalp/frgn_accumulate와 달리 EVENT_SCALP/FRGN 태그를 읽지 않는다).
-    enabled: true
+    enabled: false
     # (2026-09-02) 아래 값은 `risk.capital_mode: per_strategy`인 지금 **크기를
     # 정하지 않는다** — KR/US 각각 "거래 허용(>0)" 여부만 뜻한다. 실제 1회 진입
     # 규모는 params.target_weight × 전략자본(equal_split)이다. 근거는
@@ -1230,7 +1232,7 @@ strategies:
   # 한쪽을 지운다(quant/trade/strategy/CLAUDE.md 의 같은 항목에도 적어 뒀다).
   scalp_1m_cat:
     class: scalp_1m
-    enabled: true
+    enabled: false
     capital_fraction:
       # 2026-09-05 base 와 같이 하한으로(A/B 짝은 비례 유지).
       KR: 0.03 # 기준 갈래와 반씩(0.15 분할)
@@ -1257,7 +1259,7 @@ strategies:
   # 가드레일은 quant/trade/strategy/llm_trader.py 모듈 docstring.
   llm_trader:
     class: llm_trader
-    enabled: true
+    enabled: false
     symbols: [] # 인박스가 유니버스를 대신한다 — universe: watchlist 가 아니다
     capital_fraction:
       KR: 0.08 # KR 전용 — 인박스가 KR 6자리 심볼만 받는다(llm_trader.py 가드레일 1번)
@@ -1417,7 +1419,7 @@ strategies:
     # 17폴드가 NO_GO 판정을 냈지만(위 커밋 로그 "KR 레버리지 페어 일봉 방향
     # 규칙 검증 NO_GO"), 소유자가 "그래도 페이퍼로 지켜보자"고 결정 — 승격
     # 후보가 아니라 관찰 대상이라는 뜻에서 validation.status는 burn_in에 둔다.
-    enabled: true
+    enabled: false
     symbols: [] # 전략이 params의 signal/long/short 3개로 내부 구성(전략이 무시)
     capital_fraction:
       KR: 0.0
@@ -1490,7 +1492,7 @@ strategies:
     # 관찰 레인 — walk-forward NO_GO(변경기록 2026-09-05), 소유자 요청으로
     # 페이퍼 관찰(2026-09-06) — letf_pair_qqq와 같은 근거·같은 결정.
     class: letf_pair
-    enabled: true
+    enabled: false
     symbols: []
     capital_fraction:
       KR: 0.0

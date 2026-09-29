@@ -1,0 +1,15 @@
+[Unit]
+Description=Archive known KR catalyst inputs for prospective research
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/quant_trading_kiwoom
+ExecStart=/home/ubuntu/quant_trading_kiwoom/.venv/bin/python -m quant.apps.strategy_focus --root /home/ubuntu/quant_trading_kiwoom
+ExecStart=/home/ubuntu/quant_trading_kiwoom/.venv/bin/python -m quant.research.vol_breakout_review --ledger data/state/trades.jsonl --since 2026-09-07 --out data/research/vol_breakout_cat/review-history.json
+ExecStart=/home/ubuntu/quant_trading_kiwoom/.venv/bin/python -m quant.research.vol_breakout_review --ledger data/state/trades.jsonl --since 2026-09-30 --out data/research/vol_breakout_cat/review-focus.json
+Environment=TZ=Asia/Seoul
+Nice=10
+CPUQuota=25%
+MemoryMax=200M
+TimeoutStartSec=60

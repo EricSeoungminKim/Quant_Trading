@@ -1,0 +1,11 @@
+[Unit]
+Description=Capture KR catalyst inputs before open and after close
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:28:00 Asia/Seoul
+OnCalendar=Mon..Fri *-*-* 16:45:00 Asia/Seoul
+Persistent=true
+Unit=strategy-focus-capture.service
+
+[Install]
+WantedBy=timers.target

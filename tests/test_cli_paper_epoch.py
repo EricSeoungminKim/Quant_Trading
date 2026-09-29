@@ -5,6 +5,8 @@
 격리하고 cwd는 그대로 둔다(pytest는 저장소 루트에서 실행되므로 `load_settings()`
 의 상대경로 "config/settings.yaml"이 실제 파일을 그대로 읽는다 — 지금 실제
 설정은 `capital_policy: fixed_dual`이라 이 도구의 정상 경로를 그대로 태운다).
+장부 생성 테스트는 KR/US 양쪽 전략과 US 전용 전략을 fixture에서 활성화한다.
+운영 로스터 변경이 에폭 리셋 도구 자체의 검증을 바꾸지 않게 한다.
 
 고정하는 것:
 - 지금 `capital_policy`가 `fixed_dual`이 아니면 거부한다.
@@ -32,6 +34,21 @@ def _state_dir(tmp_path: Path) -> Path:
     return d
 
 
+@pytest.fixture
+def epoch_roster(monkeypatch):
+    from quant.apps import config as config_module
+
+    real_load_settings = config_module.load_settings
+
+    def load_fixture_settings():
+        settings = real_load_settings()
+        for sid, block in settings.raw["strategies"].items():
+            block["enabled"] = sid in {"scalp_1m", "letf_pair_qqq"}
+        return settings
+
+    monkeypatch.setattr(config_module, "load_settings", load_fixture_settings)
+
+
 def test_refuses_when_capital_policy_is_not_fixed_dual(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("quant.adapters.env.REPO_ROOT", tmp_path)
     from quant.apps import config as config_module
@@ -52,7 +69,7 @@ def test_refuses_when_capital_policy_is_not_fixed_dual(tmp_path, monkeypatch, ca
     assert not (tmp_path / "data" / "state" / "strategy_books.json").exists()
 
 
-def test_dry_run_prints_books_but_writes_nothing(tmp_path, monkeypatch, capsys):
+def test_dry_run_prints_books_but_writes_nothing(tmp_path, monkeypatch, capsys, epoch_roster):
     monkeypatch.setattr("quant.adapters.env.REPO_ROOT", tmp_path)
     from quant.apps.cli import cmd_paper_epoch
 
@@ -68,14 +85,14 @@ def test_dry_run_prints_books_but_writes_nothing(tmp_path, monkeypatch, capsys):
     assert result["capital_policy"] == "fixed_dual"
     assert result["per_strategy_initial_krw"] == pytest.approx(10_000_000.0)
     assert result["per_strategy_initial_usd"] == pytest.approx(10_000.0)
-    # scalp_1m은 KR/US 양쪽에 계좌가 있다 — 실제 로스터를 태운 증거.
+    # fixture의 scalp_1m은 KR/US 양쪽, letf_pair_qqq는 US 전용 계좌다.
     assert result["books"]["scalp_1m"] == {"KRW": 10_000_000.0, "USD": 10_000.0}
     assert result["books"]["letf_pair_qqq"] == {"KRW": 0.0, "USD": 10_000.0}
     assert result["krw_wallet_total"] > 0
     assert result["usd_wallet_total"] > 0
 
 
-def test_real_run_writes_fresh_books_and_epoch_marker(tmp_path, monkeypatch, capsys):
+def test_real_run_writes_fresh_books_and_epoch_marker(tmp_path, monkeypatch, capsys, epoch_roster):
     monkeypatch.setattr("quant.adapters.env.REPO_ROOT", tmp_path)
     from quant.apps.cli import cmd_paper_epoch
 
@@ -103,7 +120,7 @@ def test_real_run_writes_fresh_books_and_epoch_marker(tmp_path, monkeypatch, cap
     assert result["archived"] == []
 
 
-def test_real_run_archives_existing_state_before_overwriting(tmp_path, monkeypatch):
+def test_real_run_archives_existing_state_before_overwriting(tmp_path, monkeypatch, epoch_roster):
     monkeypatch.setattr("quant.adapters.env.REPO_ROOT", tmp_path)
     from quant.apps.cli import cmd_paper_epoch
 

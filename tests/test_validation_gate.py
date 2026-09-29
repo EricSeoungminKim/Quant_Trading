@@ -146,33 +146,15 @@ def test_production_settings_yaml_passes_the_gate_as_intended():
     cfg = yaml.safe_load(open("config/settings.yaml", encoding="utf-8"))
     fractions = validated_capital_fractions(cfg)
 
-    # 2026-09-03 A/B 분할: `<id>`/`<id>_cat` 은 기준 배분을 반씩 나눠 가진다
-    # (시장 합계 불변). news_scalp 는 같은 날 "after" 갈래로 재활성됐다.
-    # 2026-09-03(같은 날 저녁, 소유자 결정 갱신) — 자동매매는 단타·스캘핑만:
-    # close_bet/frgn_accumulate(KR)·overnight_drift/rsi2_dip(US)·rsi2_dip(KR)를
-    # 비활성화했다(전부 오버나이트·다일 보유가 전략 정의). capital_fraction 값은
-    # 손대지 않았으므로(코드·params·배분 보존 방침) 레인 목록에서만 뺀다 —
-    # 비활성 전략은 validated_capital_fractions의 active 판정에서 제외되고
-    # 이 테스트의 nonzero 대조는 active 기준이라 자동으로 맞는다.
-    # 2026-09-06 소유자 최종 결정("final form" 로스터, capital_policy: fixed_dual
-    # 전환과 동시) — frgn_accumulate/close_bet(외국인 수급 적립·종가배팅, 오버나이트
-    # 허용)를 다시 켜고 news_accumulate(긍정뉴스 적립, 같은 클래스)를 새로 추가했다.
-    kr_lanes = ("news_momentum", "news_scalp",
-                "scalp_1m", "scalp_1m_cat", "vol_breakout", "vol_breakout_cat", "news_momentum_cat",
-                "llm_trader", "frgn_accumulate", "close_bet", "news_accumulate")
-    # intraday_momentum 은 2026-09-05 비활성됐다가(소유자 위임 결정 — 원장 9트립
-    # 0승 −65bp, 같은 계열 10년 walk-forward 전부 음수; 변경기록 2026-09-05)
-    # 2026-09-06 "기존 전략 한 달 더 관찰" 결정으로 재활성 — 09-05 판정은 철회되지
-    # 않았다(settings.yaml intraday_momentum 블록 주석 참고). letf_pair_qqq/sox는
-    # walk-forward NO_GO(변경기록 2026-09-05)였지만 소유자 요청으로 페이퍼 관찰
-    # 레인으로 켰다(settings.yaml letf_pair_qqq 블록 주석 참고) — capital_fraction의
-    # US 비중은 fixed_dual에서 사이징에 쓰이지 않는 boolean 게이트일 뿐이지만, 이
-    # 게이트 자체(burn_in 캡·바닥)는 정책과 무관하게 여전히 검산 대상이다.
-    us_lanes = ("scalp_1m", "scalp_1m_cat", "pullback_impulse", "pullback_impulse_cat",
-                "mr_vwap_quiet", "vol_breakout", "vol_breakout_cat",
-                "gap_fade", "intraday_momentum", "letf_pair_qqq", "letf_pair_sox")
+    # 2026-09-30 소유자 결정: KR cat 단독 관찰. US capital_fraction은 과거
+    # 계좌/성과 보존을 위해 유지되며, 실제 시장 진입은 markets:[KR]로 제한한다.
+    kr_lanes = ("vol_breakout_cat",)
+    us_lanes = ("vol_breakout_cat",)
+    assert cfg["strategies"]["vol_breakout_cat"]["markets"] == ["KR"]
+    assert cfg["strategies"]["vol_breakout_cat"]["validation"]["status"] == "burn_in"
 
     active = [sid for sid, c in cfg["strategies"].items() if c.get("enabled", True)]
+    assert active == ["vol_breakout_cat"]
     for market, lanes in (("KR", kr_lanes), ("US", us_lanes)):
         for sid in lanes:
             f = fractions[sid][market]
