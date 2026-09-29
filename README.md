@@ -15,7 +15,7 @@ The answers shaped the architecture:
 | Problem | Answer in this repo |
 |---|---|
 | A scraping bug should never place an order | 4-plane architecture where the *import graph itself* is tested — news code physically cannot reach order code |
-| Backtests lie | Costs modeled to the venue's actual fee schedule (KR transaction tax 20bp, SEC fee, FINRA TAF); walk-forward OOS only; sample sizes and multiple-testing counts reported with every number |
+| Backtests lie | Configured fees and taxes are charged in paper results; small US regulatory fees and realized live slippage are not established by this record. Research evaluates OOS evidence, sample size and cost stress |
 | "It works" isn't evidence | 7,000+ regression tests, plus a forensics layer that replays every closed trade against 1-minute bars to measure *why* it won or lost (MFE/MAE, exit efficiency, entry-position control groups) |
 | Parameter changes go unevaluated | An experiments loop fingerprints strategy configs daily, waits for sample size, then judges each change with **difference-in-differences** against unchanged strategies as market controls — and messages the verdict |
 | Silent failure is the default failure mode | Heartbeats on every job, a rules-based watchdog for staleness/drift, an LLM ops judge that cross-checks data sources for contradictions, and alert dedup so real alerts never drown |
@@ -62,7 +62,7 @@ The loop found real things. Example from the ledger (August 2026): strategies we
 
 ## Reports
 
-A second pipeline (same repo, separate processes) publishes research reports before each session — Korean morning/close reports and a US pre-open report — combining Naver market data, 12 Telegram channels, FRED macro, DART filings, and an overnight **US→KR sector bridge** (S&P sector ETFs mapped to KRX industries via their shared GICS taxonomy). Deterministic scoring picks candidates; an LLM lane (Codex CLI with OpenRouter fallback) writes prose *about* already-computed numbers and is forbidden from creating facts. Reports feed the watchlist through a no-LLM confidence gate.
+A second pipeline (same repo, separate processes) publishes research reports before each session — Korean morning/close reports and a US pre-open report — combining Naver market data, configured Telegram channels, FRED macro, DART filings, and an overnight **US→KR sector bridge** (S&P sector ETFs mapped to KRX industries via their shared GICS taxonomy). Deterministic scoring picks candidates; an LLM lane (Codex CLI with OpenRouter fallback) writes prose *about* already-computed numbers and is forbidden from creating facts. Reports feed the watchlist through a no-LLM confidence gate.
 
 ## Honesty rules (encoded, not aspirational)
 

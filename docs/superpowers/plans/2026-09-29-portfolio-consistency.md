@@ -10,4 +10,4 @@
 - [x] Frontend: use one current-period view in headline, charts and tables; remove lifetime curve fallback; expose separate historical stats and meaningful regression tests.
 - [x] Content: correct overnight, external AI, observation lanes and paper execution descriptions in both languages; add submission-oriented engineering evidence and data provenance; document keyless demo.
 - [x] Verification: focused tests, full repository pytest + required smoke commands, site data checks/typecheck/lint/build, independent numeric and code reviews, desktop/mobile UI checks.
-- [ ] Deployment: commit only task changes, update EC2 reporting modules without restarting trading engine, regenerate from actual ledger and cross-check, publish current JSON + site and verify deployed text/data.
+- [x] Deployment: commit only task changes, update EC2 reporting modules without restarting trading engine, regenerate from actual ledger and cross-check, publish current JSON + site and verify deployed text/data.
