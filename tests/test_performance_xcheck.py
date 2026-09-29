@@ -212,3 +212,24 @@ def test_cum_native_rounding_is_within_tolerance():
     json_value, recomputed = -58398.84, -58398.841732500325
     assert abs(json_value - recomputed) <= _CUM_NATIVE_TOLERANCE
     assert abs(-58398.84 - (-58399.90)) > _CUM_NATIVE_TOLERANCE  # 원 단위 어긋남은 계속 잡는다
+
+
+def test_cross_check_accepts_explicit_unassigned_market_exclusion(monkeypatch):
+    _patch_epoch(monkeypatch)
+    cfg = {**STRATEGIES_CFG, 'gap_fade': {'enabled': True, 'capital_fraction': {'KR': 0, 'US': 1}}}
+    assert cross_check(_consistent_ledger(), cfg, EXECUTION_CFG) == []
+
+
+def test_cross_check_rejects_current_stats_using_lifetime_counts(monkeypatch):
+    import quant.control.performance_xcheck as module
+    _patch_epoch(monkeypatch)
+    build_payload = module.build_performance_payload
+
+    def corrupted(*args, **kwargs):
+        payload = build_payload(*args, **kwargs)
+        payload['paper_epoch']['strategies'][0]['by_market']['asia']['trips'] += 1
+        return payload
+
+    monkeypatch.setattr(module, 'build_performance_payload', corrupted)
+    assert any(f.severity == 'error' and f.path.endswith('.by_market.asia.trips')
+               for f in cross_check(_consistent_ledger(), STRATEGIES_CFG, EXECUTION_CFG))

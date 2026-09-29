@@ -258,3 +258,97 @@ def test_epoch_trades_skips_malformed_ts_instead_of_crashing(monkeypatch):
     ]
     payload = build_performance_payload(trades, EXECUTION_CFG, strategies_cfg=STRATEGIES_CFG)
     assert payload["paper_epoch"], "손상된 ts 행 때문에 paper_epoch 서브트리가 통째로 비면 안 됨"
+
+
+def test_epoch_stats_books_and_costs_share_closed_trip_scope(monkeypatch):
+    _patch_epoch(monkeypatch)
+    trades = _ledger()
+    trades[2]['fee'] = 10.0
+    trades[3]['fee'] = 20.0
+    # Open-position fee is an actual fill, but not part of closed-trip results.
+    trades.append(_trade(ts='2026-09-08T01:00:00+00:00', strategy_id='gap_fade',
+                         symbol='005930', side='buy', qty=1, price=1000, fee=50))
+    payload = build_performance_payload(trades, EXECUTION_CFG, strategies_cfg=STRATEGIES_CFG)
+    pe = payload['paper_epoch']
+    assert pe['period']['start'] == '2026-09-07'
+    assert pe['period']['end'] == '2026-09-08'
+    assert pe['period']['sessions'] == 2
+    assert pe['period']['total_fills'] == 7
+    gap = next(s for s in pe['strategies'] if s['id'] == 'gap_fade')
+    assert gap['total']['trips'] == 2
+    assert gap['by_market']['asia']['trips'] == 1
+    assert gap['by_market']['asia']['expectancy_bp'] == 470.0
+    assert gap['activity']['by_market']['asia']['avg_hold_minutes'] == 60.0
+    assert gap['name_ko'] and gap['name_en'] and gap['help']
+    assert pe['equity_asia']['seed'] == 30_000_000
+    assert pe['equity_us']['seed'] == 20_000
+    assert pe['equity_asia']['rows'][-1]['cum_pct'] == round(570 / 30_000_000 * 100, 4)
+    assert pe['equity_us']['rows'][-1]['cum_pct'] == 0.01
+    assert sum(r['fills'] for r in pe['equity_asia']['rows']) == 5
+    assert pe['costs']['fee_drag_pct_of_gross'] == round(30 / (600 + 2 * FX_KRW_PER_USD) * 100, 2)
+    empty = next(s for s in pe['strategies'] if s['id'] == 'never_traded')
+    assert empty['total']['trips'] == 0
+    assert empty['total']['win_rate'] is None
+    assert empty['by_market']['asia']['expectancy_bp'] is None
+    assert empty['by_market']['us'] is None
+
+
+def test_epoch_numerator_excludes_unassigned_accounts(monkeypatch):
+    _patch_epoch(monkeypatch)
+    cfg = {**STRATEGIES_CFG, 'gap_fade': {'enabled': True, 'capital_fraction': {'KR': 0, 'US': 1}}}
+    pe = build_performance_payload(_ledger(), EXECUTION_CFG, strategies_cfg=cfg)['paper_epoch']
+    # KR gap_fade is explicitly not assigned. Its +500 cannot enter any numerator.
+    assert pe['overall']['rows'][-1]['cum_krw'] == round(100 + 2 * FX_KRW_PER_USD, 2)
+    assert pe['equity_asia']['seed'] == 20_000_000
+    assert pe['period']['total_fills'] == 4
+    assert sum(s['total']['trips'] for s in pe['strategies']) == 2
+    assert pe['excluded_unassigned']['total_fills'] == 2
+
+
+def test_current_view_passes_contract_and_rejects_scope_mismatch(monkeypatch):
+    from copy import deepcopy
+    from quant.control.performance_contract import validate_payload
+
+    _patch_epoch(monkeypatch)
+    payload = build_performance_payload(_ledger(), EXECUTION_CFG, strategies_cfg=STRATEGIES_CFG)
+    assert not [f for f in validate_payload(payload) if f.severity == 'error']
+    mutations = [
+        ('paper_epoch.equity_asia.seed', lambda pe: pe['equity_asia'].update(seed=1_000)),
+        ('paper_epoch.equity_asia.max_drawdown_pct', lambda pe: pe['equity_asia'].update(max_drawdown_pct=99)),
+        ('paper_epoch.period.total_fills', lambda pe: pe['period'].update(total_fills=999)),
+        ('paper_epoch.strategies[0].by_market.asia.trips', lambda pe: pe['strategies'][0]['by_market']['asia'].update(trips=999)),
+    ]
+    for path, mutate in mutations:
+        broken = deepcopy(payload)
+        mutate(broken['paper_epoch'])
+        assert any(f.severity == 'error' and f.path == path for f in validate_payload(broken)), path
+
+
+def test_epoch_keeps_catalyst_account_identity(monkeypatch):
+    _patch_epoch(monkeypatch)
+    monkeypatch.setattr(performance_module, 'strategy_start_capital', lambda sid: {'KRW': 10_000_000})
+    trades = [dict(t, strategy_id='gap_fade_cat') for t in _ledger()[2:4]]
+    pe = build_performance_payload(trades, EXECUTION_CFG, strategies_cfg={'gap_fade_cat': {'enabled': True}})['paper_epoch']
+    assert pe['period']['total_fills'] == 2
+    assert pe['excluded_unassigned']['total_fills'] == 0
+    assert pe['strategies'][0]['total']['trips'] == 1
+
+
+def test_epoch_carry_markers_are_not_fills_or_unassigned_trades(monkeypatch):
+    from quant.control.ledger import SEEDING_CARRY_MARKER
+
+    _patch_epoch(monkeypatch)
+    trades = [
+        _trade(ts='2026-09-08T01:00:00+00:00', strategy_id=sid,
+               symbol='005930', side='buy', qty=1, price=1000,
+               reason=SEEDING_CARRY_MARKER)
+        for sid in ('gap_fade', 'unassigned')
+    ]
+    pe = build_performance_payload(trades, EXECUTION_CFG, strategies_cfg=STRATEGIES_CFG)['paper_epoch']
+    assert pe['period']['sessions'] == 0
+    assert pe['period']['total_fills'] == 0
+    assert pe['period']['end'] is None
+    assert pe['excluded_unassigned']['total_fills'] == 0
+    assert pe['equity_asia']['rows'] == []
+    assert pe['overall']['rows'] == []
+    assert sum(s['total']['trips'] for s in pe['strategies']) == 0

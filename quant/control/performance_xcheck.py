@@ -151,11 +151,12 @@ def cross_check(
         sid = row.get("id")
         curve = row.get("curve") or {}
         for mkey, market in (("asia", "KR"), ("us", "US")):
+            currency = "KRW" if market == "KR" else "USD"
             points = curve.get(mkey) or []
             # 곡선의 trips는 일별 건수다. 에폭 전체 건수와 비교하려면 전 날짜를 합한다.
             payload_n = sum(point["trips"] for point in points)
             payload_pnl = points[-1]["cum_native"] if points else 0.0
-            stats = site_stats.get((sid, market))
+            stats = site_stats.get((sid, market)) if currency in row.get("start_capital", {}) else None
             expected_n = stats["n"] if stats else 0
             expected_pnl = stats["pnl"] if stats else 0.0
             path = f"paper_epoch.strategies[id={sid}].curve.{mkey}"
@@ -169,6 +170,16 @@ def cross_check(
                     "error", f"{path}[-1].cum_native",
                     f"공개 JSON 손익 불일치: json={payload_pnl} 재계산={expected_pnl}",
                 ))
+            published = (row.get("by_market") or {}).get(mkey)
+            if isinstance(published, dict):
+                for field, expected, tolerance in (
+                    ("trips", expected_n, 0),
+                    ("win_rate", round(stats["win_rate"], 4) if stats else None, 0.0001),
+                    ("expectancy_bp", round(stats["expectancy_bp"], 2) if stats else None, 0.01),
+                ):
+                    actual = published.get(field)
+                    if (actual is None) != (expected is None) or (actual is not None and expected is not None and abs(actual - expected) > tolerance):
+                        findings.append(Finding("error", f"paper_epoch.strategies[id={sid}].by_market.{mkey}.{field}", f"공개 JSON 통계 불일치: json={actual} 재계산={expected}"))
 
     # 전체 지분(overall) = 전략별 계좌 합 (오너 정의 2026-09-06: "사이트 전체
     # 지분곡선은 여러 독립 계좌의 합").

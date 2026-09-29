@@ -2,7 +2,7 @@
 
 **An autonomous, self-auditing quantitative trading system for Korean (KRX) and US equities** — running live in paper mode on AWS EC2, 24/7, across both market sessions.
 
-Built solo as a long-running engineering project: 12 strategies live as of 2026-09-03 (`config/settings.yaml` `strategies:` `enabled` is the source of truth — more are coded but currently off, kept as measurement baselines), a dual-market research-report pipeline, and an operations layer that detects its own defects, measures its own edge, and reports over Telegram — designed so the system keeps improving from its own trade ledger even when nobody is watching.
+Built solo as a long-running engineering project: multiple independently funded paper strategies (`config/settings.yaml` `strategies:` `enabled` is the source of truth; observation lanes include hypotheses that have not passed research validation), a dual-market research-report pipeline, and an operations layer that detects its own defects, measures its own edge, and reports over Telegram — designed so the system keeps improving from its own trade ledger even when nobody is watching.
 
 > ⚠️ **Disclaimer** — This is a personal research/portfolio project. It trades a paper account. Nothing here is investment advice, and past simulated performance implies nothing about future results.
 
@@ -16,13 +16,13 @@ The answers shaped the architecture:
 |---|---|
 | A scraping bug should never place an order | 4-plane architecture where the *import graph itself* is tested — news code physically cannot reach order code |
 | Backtests lie | Costs modeled to the venue's actual fee schedule (KR transaction tax 20bp, SEC fee, FINRA TAF); walk-forward OOS only; sample sizes and multiple-testing counts reported with every number |
-| "It works" isn't evidence | 5,600+ tests (as of 2026-09-03), plus a forensics layer that replays every closed trade against 1-minute bars to measure *why* it won or lost (MFE/MAE, exit efficiency, entry-position control groups) |
+| "It works" isn't evidence | 7,000+ regression tests, plus a forensics layer that replays every closed trade against 1-minute bars to measure *why* it won or lost (MFE/MAE, exit efficiency, entry-position control groups) |
 | Parameter changes go unevaluated | An experiments loop fingerprints strategy configs daily, waits for sample size, then judges each change with **difference-in-differences** against unchanged strategies as market controls — and messages the verdict |
 | Silent failure is the default failure mode | Heartbeats on every job, a rules-based watchdog for staleness/drift, an LLM ops judge that cross-checks data sources for contradictions, and alert dedup so real alerts never drown |
 
 ## Architecture
 
-Code is partitioned by **cost of failure**, not by feature. Boundaries are enforced by `tests/test_architecture.py`, which parses the import graph and fails CI on violations.
+Code is partitioned by **cost of failure**, not by feature. Boundaries are enforced by `tests/test_architecture.py`, which parses the import graph and fails the architecture test suite on violations.
 
 ```
 ┌────────────────────── information layer (failures lose data, not money) ─────┐
@@ -62,7 +62,7 @@ The loop found real things. Example from the ledger (August 2026): strategies we
 
 ## Reports
 
-A second pipeline (same repo, separate processes) publishes research reports before each session — Korean morning/close reports and a US pre-open report — combining Naver market data, 12 Telegram channels, FRED macro, DART filings, and an overnight **US→KR sector bridge** (S&P sector ETFs mapped to KRX industries via their shared GICS taxonomy). Deterministic scoring picks candidates; an LLM lane (Claude CLI with OpenRouter fallback) writes prose *about* already-computed numbers and is forbidden from creating facts. Reports feed the watchlist through a no-LLM confidence gate.
+A second pipeline (same repo, separate processes) publishes research reports before each session — Korean morning/close reports and a US pre-open report — combining Naver market data, 12 Telegram channels, FRED macro, DART filings, and an overnight **US→KR sector bridge** (S&P sector ETFs mapped to KRX industries via their shared GICS taxonomy). Deterministic scoring picks candidates; an LLM lane (Codex CLI with OpenRouter fallback) writes prose *about* already-computed numbers and is forbidden from creating facts. Reports feed the watchlist through a no-LLM confidence gate.
 
 ## Honesty rules (encoded, not aspirational)
 
@@ -73,13 +73,43 @@ A second pipeline (same repo, separate processes) publishes research reports bef
 
 ## Stack
 
-Python 3.12 · pandas · httpx · websockets · Jinja2 · DuckDB/Parquet · MySQL · Redis · systemd + cron on EC2 · pytest (5,600+ tests as of 2026-09-03) · uv
+Python 3.12 · pandas · httpx · websockets · Jinja2 · DuckDB/Parquet · MySQL · Redis · systemd + cron on EC2 · pytest · uv
+
+## Public evidence and measurement limits
+
+[Portfolio website](https://quant-portfolio-eta.vercel.app) ·
+[Public performance JSON](https://quant-portfolio-eta.vercel.app/data/performance.json) ·
+[Measurement notes and reproduction](https://quant-portfolio-eta.vercel.app/measurement-notes.md)
+
+Current website panels use the independent paper-account epoch consistently. Returns
+and drawdown are based on closed-trade realized net P&L, exclude open-position valuation,
+and include idle allocated capital. The combined account uses a disclosed fixed FX rate.
+Win-rate intervals compared with 50% do **not** test profitability. Historical trade
+statistics and research decisions are presented separately.
+
+The trade loop does not call an LLM. The experimental `llm_trader` lane does consume
+external AI proposals through a validated inbox and deterministic risk checks. Designated
+accumulation and close-bet observation lanes may hold overnight. Paper operation is not
+proof of research acceptance or readiness for real capital.
+
+## Run a demo without credentials
+
+```bash
+uv sync
+uv run python -m quant.apps.cli backtest --strategy donchian --days 90 --source stub
+uv run pytest -q tests/test_architecture.py tests/e2e/test_backtest_determinism.py
+```
+
+The demo uses deterministic **synthetic** market data and prints trade counts, costs and
+accounting residuals. It demonstrates the pipeline, not investment performance. The default
+test suite excludes `live` and shell end-to-end markers; passing it does not establish live
+broker availability. Integration tests exercise paper execution and account changes.
 
 ## Running
 
 ```bash
 uv sync
-cp .env.example .env.local        # fill in your own keys — nothing runs without them
+cp .env.example .env.local        # credentials are needed for external data and broker integrations
 uv run pytest                     # full suite
 make test-fast                    # same suite, parallel via pytest-xdist (local dev only)
 uv run python -m quant.apps.cli backtest --strategy donchian --days 90

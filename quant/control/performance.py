@@ -85,6 +85,7 @@ from quant.control.ledger import (
     _verdict,
     _wilson_ci,
     base_strategy_id,
+    is_seeding_carry,
     is_seeding_liquidation,
     paper_epoch_ts,
     round_trips,
@@ -500,6 +501,12 @@ def _round_trip_stats(known: list[dict]) -> dict:
     이 블록을 재사용한다 — `MIN_TRIPS_FOR_JUDGEMENT` 임계는 항상 자기
     표본 `n` 기준이라 by_market 호출분은 시장별로 각각 30건 임계가 걸린다."""
     n = len(known)
+    if not n:
+        return {
+            "trips": 0, "wins": 0, "win_rate": None, "ci_low": None,
+            "ci_high": None, "expectancy_bp": None, "verdict": "표본 부족",
+            "sample_warning": True,
+        }
     wins = [t for t in known if t["pnl"] > 0]
     losses = [t for t in known if t["pnl"] <= 0]
     wr = len(wins) / n
@@ -564,15 +571,12 @@ def _strategy_stats(trades: list[dict], strategies_cfg: dict | None = None) -> l
         total["markets"] = sorted({t["market"] for t in known})
         known_kr = [t for t in known if t["market"] == "KR"]
         known_us = [t for t in known if t["market"] == "US"]
-        days = {trading_day(_parse_ts({"ts": t["entry_ts"]})) for t in known if t.get("entry_ts")}
-        holds = [m for m in (_trip_hold_minutes(t) for t in known) if m is not None]
         stats.append({
             "id": sid,
             "name_ko": _strategy_name_ko(sid),
             "name_en": _strategy_name_en(sid),
             "total": total,
-            "trades_per_day": round(len(known) / len(days), 2) if days else None,
-            "avg_hold_minutes": round(sum(holds) / len(holds), 1) if holds else None,
+            **_trip_activity(known),
             "enabled": bool((strategies_cfg.get(sid) or {}).get("enabled", False)),
             # 공개 사이트 "전략 설명" 드로어용 콘텐츠(2026-09-04) — 가설·진입·
             # 청산·사이징·근거. quant.control.strategy_help가 종목/파라미터를
@@ -591,6 +595,15 @@ def _strategy_stats(trades: list[dict], strategies_cfg: dict | None = None) -> l
             },
         })
     return stats
+
+
+def _trip_activity(known: list[dict]) -> dict:
+    days = {trading_day(_parse_ts({"ts": t["entry_ts"]})) for t in known if t.get("entry_ts")}
+    holds = [m for m in (_trip_hold_minutes(t) for t in known) if m is not None]
+    return {
+        "trades_per_day": round(len(known) / len(days), 2) if days else None,
+        "avg_hold_minutes": round(sum(holds) / len(holds), 1) if holds else None,
+    }
 
 
 def _strategy_curve(known: list[dict]) -> list[dict]:
@@ -734,11 +747,12 @@ def _max_drawdown_pct(rows: list[dict]) -> float | None:
     """지분곡선 최대 낙폭(%, 양수) — `cum_pct`(시드 대비 누적 %)에서 직접 계산.
 
     `1 + cum_pct/100`을 지분 배수로 보고 고점 대비 최대 하락률을 낸다. 유효한
-    점이 2개 미만이면 None — 낙폭은 두 점이 있어야 정의된다(지어내지 않는다)."""
+    최초 고점은 시작자본(1.0)이다. 첫날 손실도 낙폭에 포함하며 관측이 없으면
+    None을 낸다. 실현손익 곡선의 낙폭이며 미청산 평가손익은 포함하지 않는다."""
     values = [1 + r["cum_pct"] / 100 for r in rows if r.get("cum_pct") is not None]
-    if len(values) < 2:
+    if not values:
         return None
-    peak = values[0]
+    peak = 1.0
     worst = 0.0
     for v in values:
         peak = max(peak, v)
@@ -849,7 +863,34 @@ def _epoch_overall_rows(known_all: list[dict], overall_seed_krw: float | None) -
     return rows
 
 
-def _build_paper_epoch(trades: list[dict], strategies_cfg: dict | None) -> dict:
+def _epoch_equity_book(known: list[dict], fills: list[dict], seed: float, currency: str) -> dict:
+    """Closed-trip realized returns, with actual fill counts on their trading dates."""
+    curve = {r["date"]: r for r in _epoch_market_curve(known, seed or None)}
+    fill_counts: dict[str, int] = {}
+    for fill in fills:
+        day = trading_day(_parse_ts(fill)).isoformat()
+        fill_counts[day] = fill_counts.get(day, 0) + 1
+    rows = []
+    cum_pct = 0.0 if seed else None
+    for day in sorted(set(curve) | set(fill_counts)):
+        point = curve.get(day)
+        if point:
+            cum_pct = point["cum_pct"]
+        rows.append({
+            "date": day, "cum_pct": cum_pct,
+            "day_pct": round(point["day_native"] / seed * 100, 4) if point and seed else (0.0 if seed else None),
+            "fills": fill_counts.get(day, 0), "phase": "paper_epoch",
+        })
+    return {
+        "currency": currency, "seed": seed or None,
+        "seed_basis": "배정된 독립 모의계좌 시작자본 합계(미거래 계좌 포함)",
+        "seed_basis_en": "Assigned independent paper-account starting capital, including idle accounts",
+        "rows": rows, "max_drawdown_pct": _max_drawdown_pct(rows),
+        "chart": {"y_axis": _chart_axis(rows), "phase_boundaries": []},
+    }
+
+
+def _build_paper_epoch(trades: list[dict], strategies_cfg: dict | None, execution_cfg: dict | None = None) -> dict:
     """2026-09-06 오너 결정 서브트리 — `{}` 또는:
 
     - `epoch`: 에폭 시각(KST, 초 단위 ISO).
@@ -885,6 +926,7 @@ def _build_paper_epoch(trades: list[dict], strategies_cfg: dict | None) -> dict:
     known_all = [t for t in trips if t["pnl_known"]]
 
     strategy_rows = []
+    assigned: set[tuple[str, str]] = set()
     overall_seed_krw = 0.0
     for sid in sorted(strategies_cfg):
         start_capital = dict(strategy_start_capital(sid) or {})
@@ -901,11 +943,21 @@ def _build_paper_epoch(trades: list[dict], strategies_cfg: dict | None) -> dict:
         start_capital = {k: v for k, v in start_capital.items() if v}
         if not start_capital:
             continue  # 이 전략엔 배정된 계좌가 없다 — "거래 없음"과 다르다
+        assigned.update((sid, market) for market, currency in (("KR", "KRW"), ("US", "USD")) if currency in start_capital)
         overall_seed_krw += float(start_capital.get("KRW", 0.0))
         overall_seed_krw += float(start_capital.get("USD", 0.0)) * FX_KRW_PER_USD
-        strip = [t for t in known_all if t["strategy"] == sid]
+        strip = [t for t in known_all if t["strategy"] == sid and (sid, t["market"]) in assigned]
+        by_market = {"asia": [t for t in strip if t["market"] == "KR"], "us": [t for t in strip if t["market"] == "US"]}
+        activity = _trip_activity(strip)
         strategy_rows.append({
             "id": sid,
+            "name_ko": _strategy_name_ko(sid), "name_en": _strategy_name_en(sid),
+            "enabled": bool((strategies_cfg.get(sid) or {}).get("enabled", False)),
+            "help": build_strategy_help(sid, strategies_cfg),
+            "total": {**_round_trip_stats(strip), "markets": sorted({market for strategy, market in assigned if strategy == sid})},
+            "by_market": {key: _round_trip_stats(by_market[key]) if currency in start_capital else None for key, currency in (("asia", "KRW"), ("us", "USD"))},
+            **activity,
+            "activity": {"total": activity, "by_market": {key: _trip_activity(value) for key, value in by_market.items()}},
             "start_capital": start_capital,
             "curve": {
                 "asia": (
@@ -919,22 +971,48 @@ def _build_paper_epoch(trades: list[dict], strategies_cfg: dict | None) -> dict:
             },
         })
 
+    # Numerators and denominators must refer to exactly the same assigned accounts.
+    known_all = [t for t in known_all if (t["strategy"], t["market"]) in assigned]
+    actual_fills = [t for t in scoped if not is_seeding_liquidation(t) and not is_seeding_carry(t)]
+    eligible = [t for t in actual_fills if (str(t.get("strategy_id") or ""), str(t.get("market") or "US")) in assigned]
+    dates = sorted({trading_day(_parse_ts(t)).isoformat() for t in eligible})
     overall_rows = _epoch_overall_rows(known_all, overall_seed_krw or None)
+    gross = sum((t["pnl"] + t["fees"]) * (FX_KRW_PER_USD if t["market"] == "US" else 1) for t in known_all)
+    fees = sum(t["fees"] * (FX_KRW_PER_USD if t["market"] == "US" else 1) for t in known_all)
+    costs = _costs(execution_cfg or {}, round(fees / abs(gross) * 100, 2) if gross else None)
+    costs["scope"] = "paper_epoch_closed_round_trips"
     return {
         "epoch": _ts_iso(epoch_ts),
+        "period": {
+            "start": epoch_ts.astimezone(ZoneInfo("Asia/Seoul")).date().isoformat(),
+            "end": dates[-1] if dates else None, "sessions": len(dates), "total_fills": len(eligible),
+            "scope": "paper_epoch", "note": "독립 모의계좌 재시작 이후",
+            "note_en": "Since independent paper-account restart",
+        },
+        "measurement_note": "배정된 계좌의 종결 왕복 순손익(수수료 차감), 미청산 평가손익 제외. 현재 배정이 없는 계좌는 분자·분모 모두 제외.",
+        "measurement_note_en": "Closed round-trip net P&L after fees for assigned accounts; unrealized P&L excluded. Currently unassigned accounts are excluded from both P&L and capital.",
+        "excluded_unassigned": {"total_fills": len(actual_fills) - len(eligible)},
+        "costs": costs,
+        **{
+            key: _epoch_equity_book(
+                [t for t in known_all if t["market"] == market],
+                [t for t in eligible if str(t.get("market") or "US") == market],
+                sum(float(s["start_capital"].get(currency, 0)) for s in strategy_rows), currency,
+            ) for key, market, currency in (("equity_asia", "KR", "KRW"), ("equity_us", "US", "USD"))
+        },
         "account_model": {
             "kr_start_krw": EPOCH_KR_START_KRW,
             "us_start_usd": EPOCH_US_START_USD,
             "note_ko": (
                 "전략마다 독립된 모의계좌 — KR 1,000만원 / US $10,000로 각각 "
-                "2026-09-07 00:00 KST에 시작한다. 토스는 체결·수수료 산정용 "
-                "거래소일 뿐, 계좌 간 자금은 섞이지 않는다."
+                "2026-09-07 00:00 KST에 시작한다. 체결은 모의 브로커로 기록하고 "
+                "수수료·세금은 설정된 비용 가정을 적용한다. 계좌 간 자금은 섞이지 않는다."
             ),
             "note_en": (
                 "Each strategy runs its own independent paper account, starting at "
-                "10,000,000 KRW (KR) / $10,000 (US) from 2026-09-07 00:00 KST. Toss "
-                "is used only as the execution venue for fills and fees — capital is "
-                "not pooled across accounts."
+                "10,000,000 KRW (KR) / $10,000 (US) from 2026-09-07 00:00 KST. "
+                "Fills are recorded by a paper broker using configured fee and tax "
+                "assumptions. Capital is not pooled across accounts."
             ),
         },
         "overall": {
@@ -1047,7 +1125,7 @@ def build_performance_payload(
         "seed_basis_en": asia_basis_en,
         "rows": asia_rows,
         # 최대 낙폭(%, 양수) — 곡선을 프론트가 다시 훑지 않게 서버가 낸다(렌더
-        # 준비 완료 원칙). 점 2개 미만이면 None.
+        # 준비 완료 원칙). 관측이 없으면 None, 최초 고점은 시작자본이다.
         "max_drawdown_pct": _max_drawdown_pct(asia_rows),
         "chart": {"y_axis": _chart_axis(asia_rows), "phase_boundaries": _phase_boundaries(asia_rows, phases)},
     }
@@ -1125,7 +1203,7 @@ def build_performance_payload(
         # 2026-09-06 오너 결정 — 전략별 독립 모의계좌 재시작. 위 필드들과는 별개
         # 경계(에폭)·별개 스코프를 쓰는 독립 서브트리(`_build_paper_epoch`
         # docstring 참고) — 착륙 전 의존성이 없으면 `{}`.
-        "paper_epoch": _build_paper_epoch(trades, strategies_cfg),
+        "paper_epoch": _build_paper_epoch(trades, strategies_cfg, execution_cfg),
         # 2026-09-06 — 리포트 정확도 스코어카드(소유자 지시 priority-1). 한 번도
         # 안 돈 상태면 `{}`(위 함수 docstring 참고).
         "report_accuracy": _build_report_accuracy_block(report_accuracy_latest),

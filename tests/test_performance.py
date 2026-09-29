@@ -790,3 +790,9 @@ def test_build_performance_payload_is_deterministic():
     second = build_performance_payload(trades, EXECUTION_CFG, now=now)
     assert first == second
     assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
+
+
+@pytest.mark.parametrize('values,expected', [([-5], 5), ([5], 0), ([-5, -10], 10), ([10, -1], 10), ([], None)])
+def test_drawdown_includes_initial_capital(values, expected):
+    from quant.control.performance import _max_drawdown_pct
+    assert _max_drawdown_pct([{'cum_pct': value} for value in values]) == expected

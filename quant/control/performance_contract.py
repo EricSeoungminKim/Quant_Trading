@@ -271,10 +271,11 @@ def _check_market_stats(v: _V, d: object, path: str) -> None:
         return
     _int_field(v, d, "trips", path, min_=0)
     _int_field(v, d, "wins", path, min_=0)
-    _num_field(v, d, "win_rate", path, min_=0.0, max_=1.0, bound_severity="error")
-    _num_field(v, d, "ci_low", path, min_=0.0, max_=1.0, bound_severity="error")
-    _num_field(v, d, "ci_high", path, min_=0.0, max_=1.0, bound_severity="error")
-    _num_field(v, d, "expectancy_bp", path, min_=-100_000, max_=100_000, bound_severity="warn")
+    empty = d.get("trips") == 0
+    _num_field(v, d, "win_rate", path, allow_null=empty, min_=0.0, max_=1.0, bound_severity="error")
+    _num_field(v, d, "ci_low", path, allow_null=empty, min_=0.0, max_=1.0, bound_severity="error")
+    _num_field(v, d, "ci_high", path, allow_null=empty, min_=0.0, max_=1.0, bound_severity="error")
+    _num_field(v, d, "expectancy_bp", path, allow_null=empty, min_=-100_000, max_=100_000, bound_severity="warn")
     _str_field(v, d, "verdict", path, allow_empty=False)
     _bool_field(v, d, "sample_warning", path)
     trips, wins = d.get("trips"), d.get("wins")
@@ -727,6 +728,89 @@ def _check_paper_epoch_overall_sum(v: _V, payload: dict) -> None:
         )
 
 
+def _check_epoch_current_view(v: _V, payload: dict, holidays: set[str]) -> None:
+    """Check the current view's independent books, statistics and date scope agree."""
+    pe = payload.get("paper_epoch")
+    if not isinstance(pe, dict) or "period" not in pe:
+        return  # Older payloads predate the additive current-view fields.
+    strategies = pe.get("strategies")
+    if not isinstance(strategies, list) or not all(isinstance(s, dict) for s in strategies):
+        return
+    for index, strategy in enumerate(strategies):
+        path = f"paper_epoch.strategies[{index}]"
+        _check_strategy_total(v, strategy.get("total"), f"{path}.total")
+        markets = strategy.get("by_market")
+        curves = strategy.get("curve")
+        capital = strategy.get("start_capital")
+        if not isinstance(markets, dict) or not isinstance(curves, dict) or not isinstance(capital, dict):
+            v.error(path, "현재 구간 통계·곡선이 필요함")
+            continue
+        total_trips = 0
+        for key, currency in (("asia", "KRW"), ("us", "USD")):
+            stats, points = markets.get(key), curves.get(key)
+            if currency not in capital:
+                if stats is not None or points:
+                    v.error(f"{path}.by_market.{key}", "배정되지 않은 시장에 통계/곡선 존재")
+                continue
+            _check_market_stats(v, stats, f"{path}.by_market.{key}")
+            if isinstance(stats, dict) and isinstance(points, list):
+                counts = [r.get("trips") for r in points if isinstance(r, dict)]
+                if all(isinstance(n, int) for n in counts):
+                    expected = sum(counts)
+                    total_trips += expected
+                    if stats.get("trips") != expected:
+                        v.error(f"{path}.by_market.{key}.trips", "구간 통계와 곡선 왕복 수 불일치")
+        if isinstance(strategy.get("total"), dict) and strategy["total"].get("trips") != total_trips:
+            v.error(f"{path}.total.trips", "시장별 곡선 왕복 합과 불일치")
+    dates: set[str] = set()
+    total_fills = 0
+    for key, currency, curve_key in (("equity_asia", "KRW", "asia"), ("equity_us", "USD", "us")):
+        local = _V()
+        _check_equity_book(local, pe, key, currency, holidays)
+        v.findings.extend(Finding(f.severity, f"paper_epoch.{f.path}", f.message) for f in local.findings)
+        book = pe.get(key)
+        if not isinstance(book, dict) or not isinstance(book.get("rows"), list):
+            continue
+        seed = sum(s.get("start_capital", {}).get(currency, 0) for s in strategies if isinstance(s.get("start_capital"), dict) and _is_number(s["start_capital"].get(currency, 0)))
+        if book.get("seed") != (seed or None):
+            v.error(f"paper_epoch.{key}.seed", "배정된 시장 계좌 시작자본 합과 불일치")
+        peak, worst = 1.0, 0.0
+        valid_pct = False
+        for row in book["rows"]:
+            if not isinstance(row, dict):
+                continue
+            day, pct, fills = row.get("date"), row.get("cum_pct"), row.get("fills")
+            if isinstance(day, str) and isinstance(fills, int):
+                if fills:
+                    dates.add(day)
+                total_fills += fills
+            if _is_number(pct):
+                valid_pct = True
+                value = 1 + pct / 100
+                peak = max(peak, value)
+                worst = max(worst, (peak - value) / peak)
+        expected_mdd = round(worst * 100, 4) if valid_pct else None
+        if book.get("max_drawdown_pct") != expected_mdd:
+            v.error(f"paper_epoch.{key}.max_drawdown_pct", "시작자본 고점을 포함한 낙폭과 불일치")
+        native = 0.0
+        for strategy in strategies:
+            curves = strategy.get("curve")
+            points = curves.get(curve_key) if isinstance(curves, dict) else None
+            if isinstance(points, list) and points and isinstance(points[-1], dict) and _is_number(points[-1].get("cum_native")):
+                native += points[-1]["cum_native"]
+        if book["rows"] and isinstance(book["rows"][-1], dict) and seed:
+            actual = book["rows"][-1].get("cum_pct")
+            if _is_number(actual) and abs(actual - native / seed * 100) > 0.0002:
+                v.error(f"paper_epoch.{key}.rows[-1].cum_pct", "시장별 전략 곡선 순손익 합과 불일치")
+    period = pe.get("period")
+    if not isinstance(period, dict):
+        v.error("paper_epoch.period", "object가 아님")
+        return
+    for field, expected in (("sessions", len(dates)), ("total_fills", total_fills), ("end", max(dates) if dates else None)):
+        if period.get(field) != expected:
+            v.error(f"paper_epoch.period.{field}", "현재 구간 시장별 체결 집계와 불일치")
+
+
 def _check_generated_at_freshness(v: _V, payload: dict, now: datetime | None) -> None:
     raw = payload.get("generated_at")
     if not isinstance(raw, str):
@@ -826,6 +910,7 @@ def validate_payload(
     _check_enabled_count(v, payload, strategies_cfg)
     _check_enabled_strategies_present(v, payload, strategies_cfg)
     _check_paper_epoch_overall_sum(v, payload)
+    _check_epoch_current_view(v, payload, holidays_set)
     _check_generated_at_freshness(v, payload, now)
     _check_trade_count_monotonic(v, payload, previous)
 
