@@ -35,6 +35,8 @@ _BASE_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 # 이 파일 밖으로 새지 않는다(regime_indicators.FileMacroIndicatorClient도 "us_10y"
 # 로만 요청한다).
 SERIES: dict[str, str] = {
+    "fed_target_upper": "DFEDTARU",
+    "fed_target_lower": "DFEDTARL",
     "us_10y": "DGS10",
     "us_2y": "DGS2",
     "term_spread_10y2y": "T10Y2Y",

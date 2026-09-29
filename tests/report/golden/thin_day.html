@@ -255,11 +255,11 @@ svg{max-width:100%}
 .cat:first-of-type{margin-top:2px}
 .foot{font-size:var(--fs-2xs);color:var(--mute);margin-top:16px;line-height:1.7;
   padding-top:12px;border-top:1px dashed var(--hair)}
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(200px,100%),1fr));gap:16px}
 .flow-line{font-size:var(--fs-lg);font-weight:600;line-height:1.55;margin-bottom:18px;
   padding:14px 18px;background:var(--paper);border-radius:var(--radius-md);
   border-left:3px solid var(--ink)}
-.themes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.themes{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:16px}
 .theme{min-width:0}
 .theme-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
   margin-bottom:6px}
@@ -270,7 +270,7 @@ svg{max-width:100%}
 .theme ul{margin:0;padding-left:15px}
 .theme li{font-size:var(--fs-2xs);color:var(--body);line-height:1.45;margin-bottom:3px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rank-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
+.rank-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:16px}
 .rank-col{min-width:0}
 .rank-col .cat{margin-top:0}
 .rank-list{list-style:none;margin:0;padding:0}
@@ -516,7 +516,7 @@ a{color:inherit}
    6장 종목 후보 머리·부록 시세 표 머리 3곳에서 재사용한다. */
 .quote-time{font-size:var(--fs-2xs);color:var(--mute);font-family:var(--font-mono)}
 /* ── 지수별 전망 카드(3장, index_outlook) ── */
-.idx-outlook-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+.idx-outlook-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(230px,100%),1fr));
   gap:16px;margin-top:14px}
 .idx-outlook-card .v{font-size:var(--fs-xl)}
 /* 상승/하락 확률 쌍 + 가로 게이지(2026-09-02, 확률 엔진 v2 필드 — up_prob/
@@ -572,14 +572,29 @@ a{color:inherit}
    옆으로 밀리고 페이지는 안 밀린다). (2) 다열 그리드는 auto-fit/auto-fill 로
    이미 1열로 붕괴하지만, AAII 카드 하나만 인라인 스타일로 고정 2열
    (grid-column span 을 2 로 강제)을 걸어 실제 가로 스크롤의 원인이었다 —
-   클래스로 옮겨 좁은 화면에서 1열로 되돌린다. (3) html 에 overflow-x:hidden 을 겹으로 걸어
-   두 번째 방어선을 둔다(위 규칙이 실패해도 스크롤바 자체가 생기지 않는다). */
-html{overflow-x:hidden}
+   클래스로 옮겨 좁은 화면에서 1열로 되돌린다. 좁은 그리드의 최소폭과 긴
+   텍스트 줄바꿈을 해결하며 페이지 overflow를 숨겨 내용을 잘라내지 않는다. */
+.wrap,.mod,.card,.key .kv,.stance > div{min-width:0;overflow-wrap:anywhere}
+.trend-row svg{min-width:0;flex:1 1 80px}
+.entry-overview{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:24px;align-items:center}
+.entry-overview.is-held{grid-template-columns:1fr;gap:8px}
+.entry-score strong{font-size:48px;font-weight:650;line-height:1.1}
+.entry-score .entry-hold{font-size:26px}
+.entry-label{font-size:var(--fs-xl);font-weight:650;margin:0 0 8px}
+.entry-risks{margin-top:18px;padding-top:14px;border-top:1px solid var(--rule)}
+.entry-risks ul{margin:8px 0;padding-left:20px}
+.entry-topics{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.entry-feedback{font-size:var(--fs-sm);padding:12px 0;border-top:1px solid var(--rule)}
+.entry-evidence > summary{cursor:pointer;min-height:44px;padding:10px 0;color:var(--accent)}
+.entry-news{padding-left:20px}
+.entry-news li{margin:8px 0}
 .mkt-tab-bar{flex-wrap:wrap}
 .chapter-head{flex-wrap:wrap}
 .card.card-wide{grid-column:span 2}
 @media(max-width:640px){
   .card.card-wide{grid-column:span 1}
+  .entry-overview{grid-template-columns:1fr;gap:16px}
+  .chip,.fac,.grade-badge,.badge-carry{max-width:100%;white-space:normal;overflow-wrap:anywhere}
   /* .sym 카드(뉴스 노출 상위·중기 관심·AI 심층 해석 등 여러 절이 공유하는
      카드) 모바일 1열 붕괴 — 이 규칙은 본 정의(.sym, 위 434행 부근)보다 뒤에
      있어야 캐스케이드 동률에서 이긴다(2026-08-29 실기기 확인, .sym-scalp 와

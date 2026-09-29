@@ -62,7 +62,7 @@ mkdir -p data
 # 위에서 저장소 루트로 cd 하므로 "." 이 곧 이 저장소다.
 MARKET_REPORT_DIR="${MARKET_REPORT_DIR:-.}"
 # 리포트 웹서버는 Tailscale 인터페이스에만 바인딩돼 있다(공개 노출 없음).
-REPORT_URL_BASE="${REPORT_URL_BASE:-https://ip-172-31-63-20.tailfee6e9.ts.net}"
+REPORT_URL_BASE="${REPORT_URL_BASE:-https://ip-172-31-0-244.tailfee6e9.ts.net}"
 
 _SESSION_TAG=""
 [ "$SESSION" = "close" ] && _SESSION_TAG="/close"

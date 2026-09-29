@@ -211,6 +211,8 @@ def test_fetch_cnn_fear_greed_builds_expected_dict(monkeypatch):
         "rating_ko": "탐욕",
         "prev_close": 61,
         "prev_week": 60,
+        "observed_at": "2026-08-12T00:59:57+00:00",
+        "as_of": "2026-08-12",
     }
 
 
@@ -278,3 +280,12 @@ def test_missing_or_bad_as_of_is_passed_through():
     assert mark_stale(None, date(2026, 8, 12)) is None
     assert mark_stale({"value": 1}, date(2026, 8, 12)) == {"value": 1}
     assert "stale" not in mark_stale({"as_of": "not-a-date"}, date(2026, 8, 12))
+
+
+def test_cnn_preserves_source_observation_timestamp():
+    from quant.collect.sources.sentiment import parse_cnn_fear_greed
+    data = {'fear_and_greed': {'score': 50, 'rating': 'neutral', 'previous_close': 49,
+            'previous_1_week': 45, 'timestamp': '2026-09-28T20:30:00+00:00'}}
+    result = parse_cnn_fear_greed(data)
+    assert result['observed_at'] == '2026-09-28T20:30:00+00:00'
+    assert result['as_of'] == '2026-09-28'

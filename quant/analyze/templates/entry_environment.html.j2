@@ -1,0 +1,99 @@
+{% set env = entry_environment %}
+{% set statuses = {'ok':'확인됨', 'observed':'관측됨', 'missing':'결측', 'missing_value':'수치 결측', 'invalid_value':'수치 검증 실패', 'stale':'오래된 자료', 'future':'미래 시점 제외', 'unknown_date':'시점 미확인', 'unknown_timestamp':'관측 시각 미확인', 'source_conflict':'출처 간 수치 불일치', 'provisional':'당일봉 미확정', 'reference_only':'참고용', 'insufficient_dated_sectors':'시점 확인 업종 부족'} %}
+<section class="mod entry-environment" id="entry-environment" aria-labelledby="entry-heading">
+  <h2 id="entry-heading">오늘의 진입 환경<span class="sub">{{ env.session_date }}</span></h2>
+  {% if env.forecast_status %}<p class="foot">기록 상태: {{ {'prospective':'개장 전 고정 기록', 'retrospective':'사후 재생성 — 예측 성과에서 제외', 'late':'발행 지연 — 예측 성과에서 제외'}.get(env.forecast_status, env.forecast_status) }}</p>{% endif %}
+  <div class="entry-overview{% if env.score is none %} is-held{% endif %}">
+    <div class="entry-score">
+      {% if env.score is not none %}<strong>{{ '%g'|format(env.score) }}</strong><span> / 100</span>
+      {% else %}<strong class="entry-hold">판단 보류</strong>{% endif %}
+      <div class="idx-sub">자료 충족 {{ '%g'|format(env.coverage) }}%</div>
+    </div>
+    <div>
+      {% if env.score is not none %}
+      <p class="entry-label">{{ env.label }}</p>
+      <p class="idx-sub">관찰 노출 구간: {{ env.exposure_band }}</p>
+      {% endif %}
+      <p class="foot">확률 아님 · 미검증 환경 점수. 자동 매매 설정에는 반영하지 않습니다.</p>
+    </div>
+  </div>
+  {% if env.risks %}
+  <div class="entry-risks"><b>먼저 확인할 위험</b>
+    <ul>{% for risk in env.risks[:3] %}<li>{{ risk.label }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+  {% if env.keywords and env.keywords.topics %}
+  <p class="idx-sub entry-topics"><b>반복된 키워드</b>
+    {% for topic in env.keywords.topics[:5] %}<span class="chip">{{ topic.keyword }} · {{ topic.count }}건</span>{% endfor %}
+  </p>
+  {% endif %}
+  <p class="entry-feedback">{% if env.feedback and env.feedback.summary %}
+    <b>이전 세션 평가{% if env.feedback.session_date %} · {{ env.feedback.session_date }}{% endif %}</b><br>{{ env.feedback.summary }}
+    {% else %}이 점수의 이전 세션 평가 없음 — 미검증{% endif %}</p>
+  <details class="entry-evidence">
+    <summary>점수 근거 · 자료 시점 · 뉴스 펼치기</summary>
+    <p class="foot">규칙 버전 {{ env.version }}{% if env.generated_at %} · 생성 {{ env.generated_at }}{% endif %}</p>
+    {% if env.feedback %}
+    {% if env.feedback.stats and env.feedback.stats.benchmarks %}
+    <h3 class="cat">고정 규칙의 누적 평가 · 미검증</h3>
+    {% for benchmark, stat in env.feedback.stats.benchmarks.items() %}
+    <p class="idx-sub"><b>{{ benchmark }}</b> · 실제값 {{ stat.n_outcomes }} / 방향 판정 {{ stat.n_forecasts }}<br>
+      {% if stat.n_forecasts %}방향 적중 {{ '%g'|format(stat.accuracy_pct) }}%{% if stat.accuracy_ci %} · 95% 구간 {{ '%.0f'|format(stat.accuracy_ci[0] * 100) }}%–{{ '%.0f'|format(stat.accuracy_ci[1] * 100) }}%{% endif %}
+      · 항상 상승 {{ stat.always_up_hits }}/{{ stat.n_forecasts }} · 항상 보합 {{ stat.always_flat_hits }}/{{ stat.n_forecasts }}
+      {% else %}표본 없음{% endif %}<br>점수–수익률 순위상관 {% if stat.rank_ic is not none %}{{ '%+.3f'|format(stat.rank_ic) }}{% else %}산출 불가{% endif %}</p>
+    {% endfor %}
+    <p class="foot">같은 표본의 단순 기준선과 비교합니다. 개별 적중이나 짧은 표본으로 예측력을 확정하지 않으며 매일 가중치를 조정하지 않습니다.</p>
+    {% endif %}
+    {% if env.feedback.review %}<ul>{% for line in env.feedback.review %}<li>{{ line }}</li>{% endfor %}</ul>{% endif %}
+    {% if env.feedback.factor_changes %}
+    <h3 class="cat">이전 기록과 달라진 요인</h3>
+    <ul>{% for change in env.feedback.factor_changes %}<li>{{ change.label }}: {{ change.previous if change.previous is not none else '결측' }} → {{ change.current if change.current is not none else '결측' }}{% if change.change is not none %} (관측값 변화 {{ '%+g'|format(change.change) }}){% endif %}</li>{% endfor %}</ul>
+    {% endif %}
+    {% endif %}
+    {% set context = env.market_context or {} %}
+    {% if env.context_note %}<p class="foot">{{ env.context_note }}</p>{% endif %}
+    {% if context %}
+    <h3 class="cat">시장 관측값</h3>
+    <ul class="entry-news">
+      {% for symbol, quote in (context.quotes or {}).items() %}
+      <li>{{ quote.label or symbol }}:
+        {% if quote.get('close') is not none %}{{ '{:,.2f}'.format(quote.close) }}{{ {'CL=F':' USD/배럴', 'HG=F':' USD/파운드', 'GC=F':' USD/온스', 'KRW=X':' 원/USD'}.get(symbol, 'pt') }}{% endif %}
+        {% if quote.get('change_pct') is not none %} ({{ '%+g'|format(quote.change_pct) }}%){% elif quote.get('close') is none %}{% if quote.value is not none %}{{ '%g'|format(quote.value) }}{{ '점' if symbol == 'sentiment' else ('pt' if symbol in ['^VIX', 'VIX'] else '%') }}{% else %}결측{% endif %}{% endif %}
+        <span class="idx-sub"> · {{ quote.date or '시점 미확인' }} · {{ statuses.get(quote.status, '자료 상태 확인 필요') }}</span></li>
+      {% endfor %}
+      {% if context.btc %}<li>비트코인: {% if context.btc.get('close') is not none %}{{ '{:,.2f}'.format(context.btc.close) }} USD · {% endif %}{% if context.btc.change_pct is not none %}{{ '%+g'|format(context.btc.change_pct) }}%{% else %}결측{% endif %}
+        <span class="idx-sub"> · {{ context.btc.date or '시점 미확인' }} · {{ statuses.get(context.btc.status, '자료 상태 확인 필요') }} · 참고용, 점수 제외</span></li>{% endif %}
+      {% for name, rate in (context.fed or {}).items() %}<li>연준 정책금리 {{ '상단' if name == 'fed_target_upper' else '하단' }}:
+        {% if rate.value is not none %}{{ '%g'|format(rate.value) }}%{% else %}결측{% endif %}
+        <span class="idx-sub"> · {{ rate.date or '시점 미확인' }} · {{ statuses.get(rate.status, '자료 상태 확인 필요') }}{% if rate.last_change_bp is not none %} · 최근 변경 {{ '%+g'|format(rate.last_change_bp) }}bp ({{ rate.last_change_date }}){% endif %}</span></li>{% endfor %}
+      {% if context.sectors %}<li>상승 업종 비중 {% if context.sectors.positive_breadth_pct is not none %}{{ '%g'|format(context.sectors.positive_breadth_pct) }}%{% else %}결측{% endif %}
+        <span class="idx-sub"> · 시점 확인 {{ context.sectors.n_dated or 0 }}개 · {{ statuses.get(context.sectors.status, '자료 상태 확인 필요') }}</span>
+        {% if context.sectors.positive_breadth_pct is not none and context.sectors.positive_breadth_pct < 50 %}<span class="idx-sub"> · 업종 전반 약세 — 상승 주도 업종 판단 보류</span>{% endif %}
+        {% if context.sectors.leaders %}<ul>{% for sector in context.sectors.leaders %}<li>{{ sector.name }} {{ '%+g'|format(sector.change_pct) }}% · {{ sector.date }}</li>{% endfor %}</ul>{% endif %}</li>{% endif %}
+    </ul>
+    {% endif %}
+    <div class="tw">
+      <table><thead><tr><th>요인</th><th>비중</th><th>관측값</th><th>점수</th><th>자료 시점 · 근거</th></tr></thead>
+      <tbody>{% for factor in env.factors or [] %}<tr>
+        <td>{{ factor.label }}</td><td>{{ factor.weight }}</td>
+        <td>{{ '%g'|format(factor.value) if factor.value is not none else '결측' }}</td>
+        <td>{{ '%g'|format(factor.score) if factor.score is not none else '판단 보류' }}</td>
+        <td>{{ factor.date or '시점 미확인' }} · {{ factor.reason }}</td>
+      </tr>{% endfor %}</tbody></table>
+    </div>
+    {% if env.keywords %}
+    <p class="foot">키워드 집계 {{ statuses.get(env.keywords.status, '자료 상태 확인 필요') }} · 포함 {{ env.keywords.accepted_messages or 0 }}건 · 제외 {{ env.keywords.excluded_messages or 0 }}건.
+    반복 언급은 상승 근거가 아니라 관심 집중도입니다.</p>
+    {% if env.keywords.missing_channels %}<p class="foot">채널 결측: {{ env.keywords.missing_channels|join(' · ') }}</p>{% endif %}
+    <ul>{% for topic in env.keywords.topics or [] %}<li>{{ topic.keyword }} {{ topic.count }}건 · {{ topic.channels|join(' · ') }}
+      {% for url in topic.urls or [] %}{% if url.startswith('https://') or url.startswith('http://') %} · <a href="{{ url }}" target="_blank" rel="noopener">원문 {{ loop.index }}</a>{% endif %}{% endfor %}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if env.news and env.news.get('items') %}
+    <h3 class="cat">확인할 뉴스</h3>
+    <ul class="entry-news">{% for item in env.news.get('items') %}<li>
+      {% if item.url and (item.url.startswith('https://') or item.url.startswith('http://')) %}<a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}
+      <span class="idx-sub"> · {% if item.direction_tag %}{{ item.direction_tag }} · {% endif %}{{ item.classification }}{% if item.published %} · {{ item.published }}{% endif %}</span>
+    </li>{% endfor %}</ul>
+    {% endif %}
+  </details>
+</section>

@@ -1120,6 +1120,7 @@ def render(
     sector_daily: dict | None = None,
     channel_digest: object | None = None,
     report_accuracy: dict | None = None,
+    entry_environment: dict | None = None,
 ) -> str:
     from quant.analyze.indicators import describe
 
@@ -1310,6 +1311,7 @@ def render(
         # `report_accuracy.report_summary()` 결과. 없으면(호출부 하위호환)
         # 방향콜 라벨 옆 참고용 줄도 '리포트 정확도' 박스도 안 보인다.
         report_accuracy=report_accuracy,
+        entry_environment=entry_environment,
         # 오늘의 시황/오늘의 뉴스 흐름 불릿의 "관련 종목" 칩(2026-08-29 소유자
         # 피드백) — cont 에서 파생한 순수 조회(link_to_symbols), 새 데이터 아님.
         link_symbols=link_to_symbols(cont),
@@ -1341,7 +1343,7 @@ def write_html(
     usnews_headlines=None, us_kr_bridge=None, us_wrap=None,
     index_outlook=None, holiday_synthesis=None, symbol_payload=None,
     money_flow=None, name_map=None, sector_daily=None, channel_digest=None,
-    report_accuracy=None,
+    report_accuracy=None, entry_environment=None,
 ) -> Path:
     path = _dated_dir(root, snap) / f"{snap.market}_report.html"
     path.write_text(
@@ -1364,7 +1366,7 @@ def write_html(
                index_outlook=index_outlook, holiday_synthesis=holiday_synthesis,
                symbol_payload=symbol_payload, money_flow=money_flow,
                name_map=name_map, sector_daily=sector_daily, channel_digest=channel_digest,
-               report_accuracy=report_accuracy),
+               report_accuracy=report_accuracy, entry_environment=entry_environment),
         encoding="utf-8",
     )
     return path

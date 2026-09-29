@@ -40,7 +40,7 @@ NOTIFY_LANE="briefs"  # 텔레그램 포럼 토픽 레인 — docs/runbooks/tele
 # 날짜 하나만 맞으면 된다).
 DATE="$(date +%F)"
 
-URL_BASE="${REPORT_URL_BASE:-https://ip-172-31-63-20.tailfee6e9.ts.net}"
+URL_BASE="${REPORT_URL_BASE:-https://ip-172-31-0-244.tailfee6e9.ts.net}"
 
 OUT="$(timeout 300 .venv/bin/python -m quant.apps.report_cli trade-review \
   --market "$MARKET" --date "$DATE" --url-base "$URL_BASE" 2>>"$LOG")"

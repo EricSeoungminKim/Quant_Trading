@@ -50,6 +50,7 @@ def write_open_report(model: ReportModel, snap: Snapshot, out_root: Path) -> tup
         name_map=model.name_map, sector_daily=model.sector_daily,
         channel_digest=model.channel_digest,
         report_accuracy=model.report_accuracy,
+        entry_environment=model.entry_environment,
     )
     jp = _render.write_machine(model.payload, snap, out_root)
     cp = _render.write_candidates(model.payload["auto_watch"], snap, out_root)

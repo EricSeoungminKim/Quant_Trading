@@ -32,7 +32,24 @@ def _format_summary(payload: dict) -> str:
     위장하지 않는다(baseline.py 계약과 동일). 채점된 심볼이 하나도 없으면
     2행 자체를 만들지 않는다.
     """
-    lines = [f"후보 {_auto_watch_count(payload.get('auto_watch'))}개"]
+    lines = []
+    environment = payload.get("entry_environment")
+    if environment:
+        score = environment.get("score")
+        display = f"{score:g}/100" if score is not None else "판단 보류"
+        coverage = environment.get("coverage", 0)
+        lines.append(f"진입 환경 {display} · {environment.get('label', '판단 보류')} "
+                     f"· 자료 충족 {coverage:g}% · 확률 아님/미검증")
+        risks = [str(item["label"]) for item in environment.get("risks", []) if item.get("label")]
+        band = environment.get("exposure_band") if score is not None else "판단 보류"
+        lines.append(f"관찰 노출 구간 {band or '판단 보류'}(자동설정 미반영)"
+                     + (f" · 주의: {' / '.join(risks[:2])}" if risks else ""))
+        topics = (environment.get("keywords") or {}).get("topics") or []
+        if topics:
+            lines.append("키워드: " + " · ".join(str(topic["keyword"]) for topic in topics[:3]))
+        feedback = environment.get("feedback") or {}
+        lines.append("이전 평가: " + str(feedback.get("summary") or "아직 없음 — 미검증"))
+    lines.append(f"후보 {_auto_watch_count(payload.get('auto_watch'))}개")
 
     def _chg(s: dict) -> float:
         v = s.get("change_pct")

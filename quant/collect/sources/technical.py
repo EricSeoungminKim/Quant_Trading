@@ -162,7 +162,8 @@ def fetch_sectors() -> dict:
         c = float(series.iloc[-1])
         prev = float(series.iloc[-2])
         change_pct = round((c / prev - 1) * 100, 2) if prev else 0.0
-        sectors.append({"ticker": sym, "name": name, "change_pct": change_pct})
+        sectors.append({"ticker": sym, "name": name, "change_pct": change_pct,
+                        "date": series.index[-1].date().isoformat()})
 
     if not sectors:
         raise ValueError("섹터 등락률 조회 실패 — 유효 데이터 0건")

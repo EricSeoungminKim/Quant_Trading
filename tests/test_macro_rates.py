@@ -173,3 +173,9 @@ def test_file_macro_client_kr_bond_still_none_no_fake_data(tmp_path):
     for symbol in ("KR_BOND_10Y", "KR_BOND_2Y", "KR_BOND_30Y", "KOSPI"):
         assert c.indicator_price(symbol) is None
         assert c.indicator_prev_close(symbol) is None
+
+
+def test_fed_target_series_are_target_bounds_not_effective_rate():
+    from quant.adapters.macro.fred import SERIES
+    assert SERIES['fed_target_upper'] == 'DFEDTARU'
+    assert SERIES['fed_target_lower'] == 'DFEDTARL'

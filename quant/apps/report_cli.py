@@ -821,8 +821,12 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
     # 기준으로 계산했으니 여기서 다시 건드리지 않는다 — 아래 표시 필터는
     # write_html 에 넘길 사본에만 적용한다(`_visible_intraday` docstring).
     intraday_display = _visible_intraday(intraday_view)
+    from quant.apps.entry_environment import build_view as build_entry_environment_view
+
+    payload["entry_environment"] = build_entry_environment_view(snap, root)
     model = ReportModel(
         payload=payload, cont=cont, delta=delta, brief=brief, sym_quotes=sym_quotes,
+        entry_environment=payload["entry_environment"],
         details=details, view=view, scores=scores, relations=relations,
         sector_view=sector_view, flow_rows=flow_rows, youtube=youtube, blog=blog,
         top_movers=top_movers, carried_candidates=carried_candidates,
@@ -854,6 +858,20 @@ def _emit(snap, root: Path, out_root: Path, snap_root: Path) -> None:
     )
     _fill_report_symbol_names(model, root)
     _lint_and_gate(model, root)
+    if model.entry_environment is not None:
+        from quant.adapters.entry_environment import ForecastStore
+        from quant.core.report_clock import KST
+
+        store = ForecastStore(root)
+        frozen = store.forecast_for(snap.session_date)
+        if frozen is None and record_ledger:
+            frozen = store.freeze(model.entry_environment, now=datetime.now(KST))
+        if frozen is not None:
+            # Rebuilds render the same prediction that will be evaluated.
+            frozen["forecast_status"] = "장전 최초 기록 고정"
+            model.entry_environment = payload["entry_environment"] = frozen
+        else:
+            model.entry_environment["forecast_status"] = "평가 제외 — 장전 실시간 최초 기록 아님"
     hp, jp, cp = write_open_report(model, snap, out_root)
     print(f"HTML   {hp}\n엔진   {jp}\n후보   {cp}")
     if snap.missing():

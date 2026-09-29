@@ -75,6 +75,8 @@ def parse_cnn_fear_greed(data: dict) -> dict:
         "rating_ko": fg_rating_ko(value),
         "prev_close": round(fg["previous_close"]),
         "prev_week": round(fg["previous_1_week"]),
+        "observed_at": fg.get("timestamp"),
+        "as_of": str(fg["timestamp"])[:10] if fg.get("timestamp") else None,
     }
 
 

@@ -2499,12 +2499,12 @@ def test_mobile_media_query_collapses_card_wide_to_single_column():
     assert "@media(max-width:640px){\n  .card.card-wide{grid-column:span 1}" in style
 
 
-def test_html_has_overflow_x_hidden_backstop():
-    """어떤 규칙이 실패해도 페이지 자체에 가로 스크롤바가 생기지 않도록 하는
-    2차 방어선."""
+def test_html_does_not_clip_overflowing_content():
+    """좁은 화면의 내용은 숨기지 않고 컨테이너 안에서 줄바꿈한다."""
     html = render(_snap(), _cont())
     style = html[html.index("<style>"):html.index("</style>")]
-    assert "html{overflow-x:hidden}" in style
+    assert "html{overflow-x:hidden}" not in style
+    assert "min-width:0;overflow-wrap:anywhere" in style
 
 
 # ── 기사 불릿 리스트 + 관련 종목 칩(소유자 피드백 2026-08-29) ──────────────

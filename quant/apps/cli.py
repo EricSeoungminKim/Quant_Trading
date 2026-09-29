@@ -69,7 +69,7 @@ def _narrated_text(kind: str, facts: dict, deterministic: str, *, no_narrate: bo
 def _trade_review_url(market: str, on) -> str:
     """상시 매매 리뷰 페이지(`report_cli trade-review`가 발행) URL — 캡션 전용,
     `_daily_report_url`과 같은 규칙."""
-    base = os.environ.get("REPORT_URL_BASE") or "https://ip-172-31-63-20.tailfee6e9.ts.net"
+    base = os.environ.get("REPORT_URL_BASE") or "https://ip-172-31-0-244.tailfee6e9.ts.net"
     return f"{base}/{on.year:04d}/{on.month:02d}/{on.day:02d}/{market}_trade_review.html"
 
 
@@ -157,7 +157,7 @@ def _daily_report_url(market: str, on) -> str:
     같은 기본값(Tailscale 내부 호스트)을 쓴다 — 링크는 참고용이라 리포트가
     실제로 그 시각에 존재하는지는 여기서 확인하지 않는다(텔레그램에서 열어보고
     없으면 404일 뿐, 발송 자체를 막을 이유는 아니다)."""
-    base = os.environ.get("REPORT_URL_BASE") or "https://ip-172-31-63-20.tailfee6e9.ts.net"
+    base = os.environ.get("REPORT_URL_BASE") or "https://ip-172-31-0-244.tailfee6e9.ts.net"
     return f"{base}/{on.year:04d}/{on.month:02d}/{on.day:02d}/{market}_report.html"
 
 
@@ -5301,7 +5301,8 @@ def cmd_macro_collect(args: argparse.Namespace) -> None:
             continue
         if cutoff is not None:
             points = [(d, v) for d, v in points if d >= cutoff]
-        rows = [{"date": d, "series": name, "value": v} for d, v in points]
+        fetched_at = datetime.now(UTC).isoformat()
+        rows = [{"date": d, "series": name, "value": v, "fetched_at": fetched_at} for d, v in points]
         append_macro_rows(rows, path=ledger_path)
         parts.append(f"{name} {len(rows)}건")
 

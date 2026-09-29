@@ -104,7 +104,7 @@ def main() -> int:
     ap.add_argument("--report-dir", default=str(DEFAULT_REPORT_DIR),
                     help="market_report 저장소 루트 (기본: $MARKET_REPORT_DIR 또는 ~/market_report)")
     ap.add_argument("--date", default=None, help="YYYY-MM-DD (기본: 오늘 KST)")
-    ap.add_argument("--url-base", default="", help="예: https://ip-172-31-63-20.tailfee6e9.ts.net")
+    ap.add_argument("--url-base", default="", help="예: https://ip-172-31-0-244.tailfee6e9.ts.net")
     ap.add_argument("--session", default="live", choices=["live", "close"],
                     help="live(기본, 개장 전 08:12/21:50) | close(13:55 마감 포지션 리포트)")
     ap.add_argument("--watchlist-path", default="data/watchlist.yaml",

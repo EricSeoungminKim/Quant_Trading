@@ -21,6 +21,7 @@ class ReportModel:
     """아침(open) 리포트 — `_emit`가 조립해 `write_html`/`write_machine`에 넘긴다."""
 
     payload: dict  # engine.json 그대로 (write_machine 입력)
+    entry_environment: dict | None = None
     cont: dict = field(default_factory=dict)
     delta: object = None
     brief: object = None

@@ -365,11 +365,11 @@ svg{max-width:100%}
 .cat:first-of-type{margin-top:2px}
 .foot{font-size:var(--fs-2xs);color:var(--mute);margin-top:16px;line-height:1.7;
   padding-top:12px;border-top:1px dashed var(--hair)}
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(200px,100%),1fr));gap:16px}
 .flow-line{font-size:var(--fs-lg);font-weight:600;line-height:1.55;margin-bottom:18px;
   padding:14px 18px;background:var(--paper);border-radius:var(--radius-md);
   border-left:3px solid var(--ink)}
-.themes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+.themes{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(280px,100%),1fr));gap:16px}
 .theme{min-width:0}
 .theme-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px;
   margin-bottom:6px}
@@ -380,7 +380,7 @@ svg{max-width:100%}
 .theme ul{margin:0;padding-left:15px}
 .theme li{font-size:var(--fs-2xs);color:var(--body);line-height:1.45;margin-bottom:3px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rank-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
+.rank-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:16px}
 .rank-col{min-width:0}
 .rank-col .cat{margin-top:0}
 .rank-list{list-style:none;margin:0;padding:0}
@@ -626,7 +626,7 @@ a{color:inherit}
    6장 종목 후보 머리·부록 시세 표 머리 3곳에서 재사용한다. */
 .quote-time{font-size:var(--fs-2xs);color:var(--mute);font-family:var(--font-mono)}
 /* ── 지수별 전망 카드(3장, index_outlook) ── */
-.idx-outlook-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+.idx-outlook-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(230px,100%),1fr));
   gap:16px;margin-top:14px}
 .idx-outlook-card .v{font-size:var(--fs-xl)}
 /* 상승/하락 확률 쌍 + 가로 게이지(2026-09-02, 확률 엔진 v2 필드 — up_prob/
@@ -682,14 +682,29 @@ a{color:inherit}
    옆으로 밀리고 페이지는 안 밀린다). (2) 다열 그리드는 auto-fit/auto-fill 로
    이미 1열로 붕괴하지만, AAII 카드 하나만 인라인 스타일로 고정 2열
    (grid-column span 을 2 로 강제)을 걸어 실제 가로 스크롤의 원인이었다 —
-   클래스로 옮겨 좁은 화면에서 1열로 되돌린다. (3) html 에 overflow-x:hidden 을 겹으로 걸어
-   두 번째 방어선을 둔다(위 규칙이 실패해도 스크롤바 자체가 생기지 않는다). */
-html{overflow-x:hidden}
+   클래스로 옮겨 좁은 화면에서 1열로 되돌린다. 좁은 그리드의 최소폭과 긴
+   텍스트 줄바꿈을 해결하며 페이지 overflow를 숨겨 내용을 잘라내지 않는다. */
+.wrap,.mod,.card,.key .kv,.stance > div{min-width:0;overflow-wrap:anywhere}
+.trend-row svg{min-width:0;flex:1 1 80px}
+.entry-overview{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:24px;align-items:center}
+.entry-overview.is-held{grid-template-columns:1fr;gap:8px}
+.entry-score strong{font-size:48px;font-weight:650;line-height:1.1}
+.entry-score .entry-hold{font-size:26px}
+.entry-label{font-size:var(--fs-xl);font-weight:650;margin:0 0 8px}
+.entry-risks{margin-top:18px;padding-top:14px;border-top:1px solid var(--rule)}
+.entry-risks ul{margin:8px 0;padding-left:20px}
+.entry-topics{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.entry-feedback{font-size:var(--fs-sm);padding:12px 0;border-top:1px solid var(--rule)}
+.entry-evidence > summary{cursor:pointer;min-height:44px;padding:10px 0;color:var(--accent)}
+.entry-news{padding-left:20px}
+.entry-news li{margin:8px 0}
 .mkt-tab-bar{flex-wrap:wrap}
 .chapter-head{flex-wrap:wrap}
 .card.card-wide{grid-column:span 2}
 @media(max-width:640px){
   .card.card-wide{grid-column:span 1}
+  .entry-overview{grid-template-columns:1fr;gap:16px}
+  .chip,.fac,.grade-badge,.badge-carry{max-width:100%;white-space:normal;overflow-wrap:anywhere}
   /* .sym 카드(뉴스 노출 상위·중기 관심·AI 심층 해석 등 여러 절이 공유하는
      카드) 모바일 1열 붕괴 — 이 규칙은 본 정의(.sym, 위 434행 부근)보다 뒤에
      있어야 캐스케이드 동률에서 이긴다(2026-08-29 실기기 확인, .sym-scalp 와
@@ -743,6 +758,7 @@ html{overflow-x:hidden}
 </nav>
 
 <div class="chapter-head" id="ch1"><span class="chapter-no">1</span><h2 class="chapter-title">한눈 요약</h2></div>
+{% if entry_environment %}{% include "entry_environment.html.j2" %}{% endif %}
 {# ── Executive Summary(서브프로젝트 L, L-1) ── 리포트 최상단 통합 요약.
    quant.analyze.exec_summary.summarize 가 상위 사건 본문 + 수급 수치를
    근거로 세 문단(시장 흐름/수급/주요 재료)을 만든다. narrator 없음/실패/
@@ -752,8 +768,8 @@ html{overflow-x:hidden}
 <p class="foot" style="margin:6px 0 10px">⚠️ AI 서술 레인 실패 — {{ narration_status.failed|join(', ') }} 생략(서술기: {{ narration_status.narrator }}). 이 리포트는 결정론 섹션만 담고 있습니다 — 사유는 data/report.log.</p>
 {% endif %}
 {% if exec_summary %}
-<section class="mod exec-summary">
-  <h2>Executive Summary<span class="sub">본문 근거 기반 AI 통합 요약</span></h2>
+<{{ "details" if entry_environment else "section" }} class="mod exec-summary" id="executive-summary">
+  <{{ "summary" if entry_environment else "h2" }}>Executive Summary<span class="sub">본문 근거 기반 AI 통합 요약</span>{% if entry_environment %}<span class="mod-tldr">시장 흐름 · 수급 · 주요 재료의 AI 설명</span>{% endif %}</{{ "summary" if entry_environment else "h2" }}>
   <p class="exec-p">{{ exec_summary.market }}</p>
   <p class="exec-p">{{ exec_summary.flow }}</p>
   <p class="exec-p">{{ exec_summary.catalyst }}</p>
@@ -761,12 +777,12 @@ html{overflow-x:hidden}
     <span class="chip">AI 생성 — 근거는 본문 참조</span>
     {%- if exec_summary.sources %} · 근거 매체: {{ exec_summary.sources|join(' · ') }}{% endif %}
   </p>
-</section>
+</{{ "details" if entry_environment else "section" }}>
 {% endif %}
 
 {% if view or spine %}
 <div class="key">
-  {% if view and view.label %}
+  {% if view and view.label and not entry_environment %}
   <div class="kv"><span class="k">오늘 스탠스</span>
     <span class="v">{{ view.label }} · {{ view.score100 }}점</span></div>
   {% endif %}
@@ -792,8 +808,8 @@ html{overflow-x:hidden}
    그대로 나온다(모듈 docstring 참고). 신규 메시지·명시적 결측 사유가 하나도
    없으면(빈 창) 섹션 자체를 생략한다. #}
 {% if channel_digest and (channel_digest.has_content() or channel_digest.channel_notices) %}
-<section class="mod">
-  <h2>📡 채널 브리핑 종합<span class="sub">텔레그램 8개 채널 · 신규 메시지 요약</span>{% if tldr.channel_digest %}<span class="mod-tldr">{{ tldr.channel_digest }}</span>{% endif %}</h2>
+<{{ "details" if entry_environment else "section" }} class="mod" id="channel-digest">
+  <{{ "summary" if entry_environment else "h2" }}>📡 채널 브리핑 종합<span class="sub">텔레그램 8개 채널 · 신규 메시지 요약</span>{% if tldr.channel_digest %}<span class="mod-tldr">{{ tldr.channel_digest }}</span>{% endif %}</{{ "summary" if entry_environment else "h2" }}>
   {# 스탠스는 늘 보인다 — 결정론 프로그램 스탠스(program_stance_display(),
      LLM 무관, 유료 레인 불필요 — 소유자 결정 2026-09-05)가 먼저, 그 아래
      LLM 스탠스(선택 — 성공이면 실제 판정, 아니면 stance_display()가
@@ -827,10 +843,11 @@ html{overflow-x:hidden}
   {% if channel_digest.number_claims %}
   <p class="idx-sub"><b>숫자 검증(채널 주장 — ✓ 표시만 우리 시세로 확인됨)</b></p>
   <ul>
-  {% for n in channel_digest.number_claims %}
+  {% for n in (channel_digest.number_claims[:20] if entry_environment else channel_digest.number_claims) %}
     <li class="idx-sub">{{ label(n.symbol, n.name) }} {{ n.value }} ({{ n.handle }}) — {{ n.status }}</li>
   {% endfor %}
   </ul>
+  {% if entry_environment and channel_digest.number_claims|length > 20 %}<p class="foot">전체 {{ channel_digest.number_claims|length }}건 중 20건 표시 · 원문은 부록의 채널 링크에서 확인할 수 있습니다.</p>{% endif %}
   {% else %}
   <p class="idx-sub"><b>숫자 검증</b>: 검증 가능한 수치 주장 없음</p>
   {% endif %}
@@ -838,7 +855,7 @@ html{overflow-x:hidden}
   <p class="idx-sub">{% for handle, notice in channel_digest.channel_notices.items() %}{{ handle }}: {{ notice }}{% if not loop.last %} · {% endif %}{% endfor %}</p>
   {% endif %}
   <p class="foot">채널 발 숫자·주장은 검증 전 참고용이다 — 우리가 확인한 것만 ✓다. 원문 발췌는 부록 "텔레그램 인사이트"에서 확인할 수 있다.</p>
-</section>
+</{{ "details" if entry_environment else "section" }}>
 {% endif %}
 
 {% if holiday_synthesis %}
@@ -990,7 +1007,7 @@ html{overflow-x:hidden}
 
 {% set idx_names = {"kospi": "코스피", "kosdaq": "코스닥", "sp500": "S&P500", "nasdaq": "나스닥"} %}
 {% if index_outlook %}
-<details class="mod" open>
+<details class="mod"{% if not entry_environment %} open{% endif %}>
   <summary>지수별 전망<span class="sub">코스피/코스닥 또는 S&amp;P500/나스닥 · 점수 + 경험적 상승확률</span>{% if tldr.index_outlook %}<span class="mod-tldr">{{ tldr.index_outlook }}</span>{% endif %}</summary>
   <p class="idx-sub">
     <b>점수</b>는 오늘 조건(지수 모멘텀·수급·VIX·앵커·임박 이벤트)을 규칙으로 가감한 것이고,
@@ -1071,7 +1088,7 @@ html{overflow-x:hidden}
    docstring)로 결정된다 — 실패/결측이면 fallback_text(결정론 문장)를
    대신 보여준다(us_kr_bridge/index_outlook과 같은 무LLM 폴백 관례). #}
 {% if money_flow %}
-<details class="mod" open>
+<details class="mod"{% if not entry_environment %} open{% endif %}>
   <summary>돈의 흐름<span class="sub">유가·금리·환율·VIX 매크로 원장 · 결정론 판정</span>{% if tldr.money_flow %}<span class="mod-tldr">{{ tldr.money_flow }}</span>{% endif %}</summary>
   <div class="key">
     {% for name, s in money_flow.series.items() %}

@@ -51,7 +51,7 @@ notify() {
     log "발행 알림 건너뜀 (.env.local에 TELEGRAM_BOT_TOKEN/CHAT_ID 없음)"
     return 0
   fi
-  url="${REPORT_URL_BASE:-https://ip-172-31-63-20.tailfee6e9.ts.net}/$(date +%Y/%m/%d)/${MARKET}_report.html"
+  url="${REPORT_URL_BASE:-https://ip-172-31-0-244.tailfee6e9.ts.net}/$(date +%Y/%m/%d)/${MARKET}_report.html"
   if [ "$1" = "holiday" ]; then
     # 휴장일 안내(2026-09-07) — URL 도 로그 꼬리도 없다. 문구는 report_cli holiday-notice 가 만든다.
     text="$2"
