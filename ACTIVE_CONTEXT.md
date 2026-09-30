@@ -1,50 +1,41 @@
-# Active Project Context — 2026-09-30 KR briefing + ML observation
+# Active Project Context — 2026-09-30 KR catalyst focus
 
-## Invariants
-- Preserve four-plane boundaries; no model/network calls in trading hot path.
-- Current deployment is paper. Do not change strategy, capital, orders or watchlist for this experiment.
-- Preserve unrelated dirty research files and previous report-link fixes.
+## Invariants / authorization
+- Four planes remain isolated; no LLM/network calls in trading hot path.
+- Owner explicitly requested only KR vol_breakout_cat PAPER, no real funds; supersedes earlier no-settings-change ML observation restriction.
+- Preserve all historical capital assignments, ledger and losses. No paper-epoch reset.
+- Keep k0.5/min_stop_bp40/eod5/target_weight0.5 and FRGN gate; markets:[KR] excludes US without erasing historical US account.
+- Preserve unrelated dirty history/resample/research files and earlier mixed vault edits.
 
-## KR briefing milestone (deployed d625f50)
-- New report entry_environment: dated fixed heuristic, context evidence, keyword provenance, first-publication freeze.
-- Score is unvalidated, not probability; Fed/news/sectors/BTC context never arbitrarily adds points.
-- Independent review fixed temporal/core conflict/OHLC/corrupt row/partial result/frozen explanation issues.
-- Exact-session Naver OHLC primary, Yahoo fallback. No retrospective forecasts; n=0 at deployment.
-- Persistent feedback timer16:40/07:10KST installed; service success. Report07:30 starts,08:00 target.
-- FRED bounds12994 rows backfilled with fetched_at. EnginePID624 unchanged.
-- Public preview:/preview/entry-environment/2026/09/29/KR_report.html (historical, evaluation-excluded).
-- Full suite7336pass/10skip/25deselect/1xfail; final44focusedpass; two smokes exit0; mobile390/desktop1280 verified.
-- Heartbeat automation:KST08:15 daily; LA15:15/16:15 wakes with KST gate for DST; app availability required.
-- First actual forecast9/30KR morning; evaluation9/30close; next trading-day report compares it.
-- Next: confirm scheduled first publication/Telegram and forecast hash, then outcome population; do not invent past scores.
-- Runbook:docs/runbooks/entry-environment.md. Preserve existing ML observation schedules below.
+## Completed focus transition
+- Backend0e901ed deployed EC2; portfolio2ef843f+6a343a2 published https://quant-portfolio-eta.vercel.app.
+- Host: tailscale ssh ubuntu@100.87.129.113, /home/ubuntu/quant_trading_kiwoom.
+- Old PID624 PAPER halted; normal flatten closed all13 old-strategy symbols at09:00. Verified every lot0 and pending_flatten null.
+- New PID834717 MODE=paper restarted; assembled only KRcat, active_markets KR,1 eligible candidate. Resumed09:01; heartbeat market_open=true/halted=false.
+- All historical strategy_books identical before/after restart; account/ledger not reset. No existing cat holding during transition.
+- Input capture timer installed08:28/16:45KST; service success/exit0. Actual first capture09:01:37, not backdated to pre-open.
+- Capture: raw base settings/watchlist, hashes/code4hashes, tick path/size. Does not prove engine cache or historical tag knowledge; EC2 auto_params absent.
+- Review: whole-ledger pairing then entry cutoff, source hash checked around read, generated_at; concentration/slippage, no NAV/OOS/live claim.
+- Artifacts:data/research/vol_breakout_cat/{inputs/YYYY-MM-DD/,review-history.json,review-focus.json}. History36trades; focus0 initially.
+- KR ticks continued2128→4096bytes. Parameter search not executed; first collect valid prospective coverage.
+- Portfolio mainKRcat curve + decision story + deferral evidence; earlier aggregate losses archived visibly, KO/EN current roster aligned.
+- Public09:02:06JSON enabled_count1,1075closed trips; validate-performance and performance-xcheck pass with date-gap warnings only.
+- KRcat36trades/+9.3594%; historical UScat57trades/-1.0742% retained. Main curve includes preselection, not focus-period result.
+- Full7357pass/10skip/25deselect/1xfail; final29focused; required2smokes pass. Website16tests/type/lint/build pass;390/1280 no overflow.
+- Runbooks:docs/runbooks/strategy-focus.md, docs/research/vol-breakout-focus-2026-09-30.md.
+- Automation automation-2 ACTIVE: KST17:00 review, LA00/01 gate; notify only meaningful changes/errors. Read-only, no Telegram duplicate or auto-tuning.
 
-## Completed
-- Portfolio current metrics fixed/deployed: engine cd3b01b, site28e29de.
-- ML code77c4a79 pushed/deployed. Past-only evaluation, fixed settings, actual label availability gate.
-- Tailscale authenticated snapshot:10,335 rows; KR33/US34 unique selection dates, including weekends.
-- Same-input historical baseline partial restoration; no fabricated scores.
-- Final run: local/ml/out/2026-09-29/report.md, summary.json, provenance.json, model manifests.
-- Earlier evaluation before availability fix preserved in local/ml/out/2026-09-29-initial/.
-- Full pytest7301 pass,10skip,25deselect,1xfail; focusedML53pass; both required smokes exit0.
-- Known warnings: All-NaN, joblib/NumPy, existing Kiwoom WS reconnect after interpreter shutdown.
+## Next observations
+- Check16:45 capture/reviews and17:00 heartbeat, fresh ticks/known-time candidates and first focus trades. Zero trips means insufficient evidence.
+- Compare new samples to frozen baseline; require data coverage and cost/concentration tests before the preregistered7candidate temporal study.
+- Website currently tracks original KR account; separate focus-period entry-cutoff statistics are research files, not a published new baseline curve.
+- Preserve existing macro/ML read-only observations below; no other trading strategy reactivation without owner instruction.
 
-## Next session observation
-- Host: tailscale ssh ubuntu@100.87.129.113; repo/home/ubuntu/quant_trading_kiwoom.
-- Separate .venv-ml-shadow; no engine restart (PID624, started9/22).
-- Frozen model dir:data/ml_models/2026-09-29; only d1_return_bps used.
-- Joblib SHA prefixes: KR3c74941719c4; US99b8534574a0. Version hashes complete manifest too.
-- One-time timers:quant-ml-shadow-kr-20260930 at9/30 08:24KST; us at22:05KST.
-- Limits:CPU25%,Memory350M,nice10,timeout90; transient timers lost on server reboot.
-- Output:data/ml_shadow/2026-09-30_{KR,US}.{json,md}, producer ml_shadow in judgments ledger.
-- Codex heartbeat ml:9/30 08:40KST (LA9/29 16:40), one result report in this thread; no external messages.
-- User asked to see change tomorrow. Application preference unanswered; recommended observation scope used.
-
-## Material limitations / next actions
-- Current models are data-quality diagnostic observations, not validated strategy improvements.
-- US labels contain >1000% D1 outliers; source corporate actions/price basis must be verified, never clip to improve score.
-- Report selection dates, reference-close dates and label horizons can differ; do not call these clean trading sessions.
-- Final KR matched-subset top5 raw forward mean -6.30bp vs baseline-31.95bp (19dates/204rows); not cost-adjusted performance.
-- US AUC~0.501; no adoption evidence. No change to trading based on this run.
-- First confirm next-day timer actually ran; report candidate coverage and same-universe top5 changes.
-- To evaluate improvement, collect prospective outcomes with auditable price dates and corporate-action treatment.
+## Existing report / ML observations (keep)
+- Backend1861719 includes d625f50 entry_environment; first9/30 morning published, frozen49.7 neutral coverage100, first prospective outcome pending.
+- Report07:30 build,08:00 target; environment feedback16:40/07:10; automation briefing08:15KST.
+- ML77c4a79 is observation only, not strategy improvement evidence. .venv-ml-shadow separate; models data/ml_models/2026-09-29.
+- One-time ML timers9/30 KR08:24 andUS22:05KST; transient/reboot-sensitive. automation ml08:40 result report.
+- ML limitations: US extreme forward labels/corporate actions unverified, retrospective selection dates differ from price dates; never clip to improve results.
+- Historical KRcat36trades/15exitdays: +935935KRW, PF1.6309, win30.56%; largest trade excluded -76224KRW. Not OOS/live validation.
+- Fresh post-selection samples and historical catalyst availability evidence required before limited preregistered parameter comparison; no parameter sweep executed.
