@@ -157,3 +157,46 @@ def test_build_strategy_help_is_deterministic():
         first = build_strategy_help(sid, _SETTINGS_STRATEGIES)
         second = build_strategy_help(sid, _SETTINGS_STRATEGIES)
         assert first == second, sid
+
+
+def test_kr_focus_help_does_not_inherit_retired_base_claims():
+    help_ = build_strategy_help("vol_breakout_cat", _SETTINGS_STRATEGIES)
+    assert "FRGN" in help_["entry_ko"]
+    assert "EVENT" not in help_["entry_ko"]
+    assert "TREND" not in help_["entry_en"]
+    assert "KR" in help_["sizing_ko"]
+    assert "US capital allocation" not in help_["sizing_en"]
+    assert "자본배분 7%" not in help_["sizing_ko"]
+    assert "비활성" in help_["evidence_ko"]
+    for field in ("evidence_ko", "evidence_en"):
+        assert "실측 0" not in help_[field]
+        assert "zero measurements" not in help_[field]
+        assert "ETF 전용" not in help_[field]
+        assert "TQQQ" not in help_[field]
+
+
+def test_catalyst_help_distinguishes_all_any_and_exclusion():
+    cfg = {"vol_breakout_cat": {
+        "enabled": True, "markets": ["KR"],
+        "universe_filter": {"KR": {"require_all": ["A", "B"],
+                                   "require_any": ["C", "D"], "exclude_any": ["E"]},
+                            "US": {"require_all": ["UNUSED"]}},
+    }}
+    help_ = build_strategy_help("vol_breakout_cat", cfg)
+    assert "all A/B" in help_["entry_en"]
+    assert "any C/D" in help_["entry_en"]
+    assert "exclude any E" in help_["entry_en"]
+    assert "UNUSED" not in help_["entry_en"]
+
+
+def test_disabled_lane_help_does_not_claim_current_trading():
+    help_ = build_strategy_help("vol_breakout", _SETTINGS_STRATEGIES)
+    assert "현재 비활성" in help_["sizing_ko"]
+    assert "currently disabled" in help_["sizing_en"]
+
+
+def test_target_ceiling_is_not_described_as_mandatory_take_profit():
+    help_ = build_strategy_help("vol_breakout_cat", _SETTINGS_STRATEGIES)
+    assert "목표가가 있을 때" in help_["sizing_ko"]
+    assert "강제 익절은 별도 설정" in help_["sizing_ko"]
+    assert "if a target exists" in help_["sizing_en"]

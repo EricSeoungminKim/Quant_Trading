@@ -295,6 +295,8 @@ class VolBreakoutPureStrategy:
             return None
         price = float(quote.price)
         if price < trigger:
+            # 데이터가 복구된 정상 대기에서 개장 직후의 결손 사유를 재집계하지 않는다.
+            last_reject.pop(symbol, None)
             return None  # 아직 트리거 미달 — 정상 대기, 사유를 남기지 않는다
 
         entry = price

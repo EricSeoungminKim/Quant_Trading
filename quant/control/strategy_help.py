@@ -794,8 +794,8 @@ _SPECS: dict[str, dict] = {
         "theory_ko": "시가에 전일 레인지의 일정 비율을 더한 값을 상향 돌파하면 그날 상승이 확장된다는 변동성 돌파 가설(Larry Williams 원 공식).",
         "theory_en": "Volatility-breakout hypothesis that a break above open + a fraction of the prior day's range signals expanding upside for the day (Larry Williams' original formula).",
         "entry": _entry_vol_breakout, "exit": _exit_vol_breakout,
-        "evidence_ko": "burn_in — Larry Williams 원 공식 인용, 우리 원장 실측 0. KR은 ETF 전용(왕복 ~4bp 실측 — 비용을 이기는 유일한 KR venue), US는 TQQQ.",
-        "evidence_en": "burn_in — a citation of Larry Williams' original formula, zero measurements from our own ledger. KR trades ETFs only (measured ~4bp round-trip cost, the only KR venue that beats cost); US trades TQQQ.",
+        "evidence_ko": "burn_in — 변동성 돌파 가설을 관찰 중. 표본·비용 후 손익은 해당 기간의 원장 집계를 참조한다. 문헌 인용이나 주력 선정은 표본 외 검증·실거래 수익성 입증이 아니다.",
+        "evidence_en": "burn_in — observing the volatility-breakout hypothesis. See period-specific ledger statistics for samples and net results. Selection does not establish OOS or live profitability.",
         "refs": [],
     },
     "intraday_momentum": {
@@ -950,14 +950,24 @@ def _sizing(strategies_cfg: dict, sid: str, base: str) -> tuple[str, str]:
     clauses_ko: list[str] = []
     clauses_en: list[str] = []
     if kr:
-        clauses_ko.append(f"KR 자본배분 {_pct(kr)}%")
-        clauses_en.append(f"KR capital allocation {_pct(kr)}%")
+        clauses_ko.append(f"KR 설정 계수(capital_fraction) {_pct(kr)}%")
+        clauses_en.append(f"KR capital_fraction {_pct(kr)}%")
     if us:
-        clauses_ko.append(f"US 자본배분 {_pct(us)}%")
-        clauses_en.append(f"US capital allocation {_pct(us)}%")
+        clauses_ko.append(f"US 설정 계수(capital_fraction) {_pct(us)}%")
+        clauses_en.append(f"US capital_fraction {_pct(us)}%")
     if not clauses_ko:
         clauses_ko.append("현재 배분 없음(0%)")
         clauses_en.append("no current allocation (0%)")
+    if kr or us:
+        clauses_ko.append("고정 독립 계좌에서 이 계수는 참여 선언이며 주문 비중이 아님")
+        clauses_en.append("fixed books: participation flags, not order weights")
+    if cfg.get("enabled") is False:
+        clauses_ko.insert(0, "현재 비활성 — 과거 계좌 기록 보존")
+        clauses_en.insert(0, "currently disabled; historical books retained")
+    elif cfg.get("markets"):
+        scope = "/".join(cfg["markets"])
+        clauses_ko.insert(0, f"현재 거래 허용 시장: {scope}")
+        clauses_en.insert(0, f"current permitted markets: {scope}")
     tw = params.get("target_weight")
     if tw is not None:
         clauses_ko.append(f"1회 진입 규모 = 전략자본 x {_pct(tw)}%(target_weight)")
@@ -966,8 +976,8 @@ def _sizing(strategies_cfg: dict, sid: str, base: str) -> tuple[str, str]:
         clauses_ko.append("오버나이트 보유형 — 장중 손절 −5%/목표 +10% 하드레일 적용 제외")
         clauses_en.append(f"overnight-carry design — exempt from the intraday -{_HARD_STOP_PCT:g}%/+{_TARGET_CAP_PCT:g}% hard stop/target rail")
     else:
-        clauses_ko.append(f"장중 하드레일: 손절 상한 −{_HARD_STOP_PCT:g}%/목표 상한 +{_TARGET_CAP_PCT:g}%")
-        clauses_en.append(f"intraday hard rail: stop capped at -{_HARD_STOP_PCT:g}%, target capped at +{_TARGET_CAP_PCT:g}%")
+        clauses_ko.append(f"장중 손절 상한 −{_HARD_STOP_PCT:g}%; 목표가가 있을 때 +{_TARGET_CAP_PCT:g}% 상한, 강제 익절은 별도 설정")
+        clauses_en.append(f"stop cap -{_HARD_STOP_PCT:g}%; +{_TARGET_CAP_PCT:g}% ceiling if a target exists; forced take-profit is separately configured")
     if kr:
         clauses_ko.append(f"KR: 전일·당일 상한가(+{_LIMIT_UP_PCT:g}%) 종목 진입 금지 레일 적용")
         clauses_en.append(f"KR: blocked from entering prior-day/same-day limit-up (+{_LIMIT_UP_PCT:g}%) stocks")
@@ -978,16 +988,31 @@ def _catalyst_sentence(strategies_cfg: dict, sid: str, base: str) -> tuple[str, 
     """A/B 촉매 갈래(`<id>_cat`)의 진입 규칙 뒤에 붙이는 한 문장 — 실제
     `universe_filter`(config/settings.yaml)를 읽어 어떤 태그를 보는지 그
     자리에서 낸다(하드코딩 아님)."""
-    uf = (strategies_cfg.get(sid) or {}).get("universe_filter") or {}
-    tags: set[str] = set()
-    for market_filter in uf.values():
-        if isinstance(market_filter, dict):
-            for key in ("require_any", "require_all", "exclude_any", "exclude_all"):
-                tags.update(market_filter.get(key) or [])
-    tag_str = "/".join(sorted(tags)) if tags else "촉매"
-    ko = f" (A/B 촉매 갈래 — {tag_str} 태그가 붙은 종목만 대상)"
-    en = f" (A/B catalyst arm — only trades symbols tagged {tag_str})"
-    return ko, en
+    cfg = strategies_cfg.get(sid) or {}
+    uf = cfg.get("universe_filter") or {}
+    allowed = cfg.get("markets") or ["KR", "US"]
+    clauses_ko, clauses_en = [], []
+    labels = {
+        "require_all": ("모두 필요", "all"), "require_any": ("하나 이상 필요", "any"),
+        "exclude_all": ("모두 있으면 제외", "exclude all"), "exclude_any": ("하나라도 있으면 제외", "exclude any"),
+    }
+    for market in allowed:
+        spec = uf.get(market, uf)
+        if not isinstance(spec, dict):
+            continue
+        ko, en = [], []
+        for key, (ko_label, en_label) in labels.items():
+            if spec.get(key):
+                tags = "/".join(sorted(spec[key]))
+                ko.append(f"{tags} {ko_label}")
+                en.append(f"{en_label} {tags}")
+        if ko:
+            clauses_ko.append(f"{market}: " + ", ".join(ko))
+            clauses_en.append(f"{market}: " + ", ".join(en))
+    return (
+        " (촉매 갈래·A/B 비교용 — " + ("; ".join(clauses_ko) or "태그 조건 미제공") + ")",
+        " (catalyst arm for A/B comparison — " + ("; ".join(clauses_en) or "tag conditions unavailable") + ")",
+    )
 
 
 def build_strategy_help(sid: str, strategies_cfg: dict | None = None) -> dict:
@@ -1027,8 +1052,11 @@ def build_strategy_help(sid: str, strategies_cfg: dict | None = None) -> dict:
         cat_ko, cat_en = _catalyst_sentence(strategies_cfg, sid, base)
         help_["entry_ko"] = help_["entry_ko"] + cat_ko
         help_["entry_en"] = help_["entry_en"] + cat_en
-        note_ko = f" {base}와 파라미터는 동일, 유니버스만 다른 A/B 짝 — `run scoreboard --ab`(양쪽 n≥30 전엔 판단 불가)로 판정."
-        note_en = f" An A/B pair with {base}: identical parameters, different universe — judged via `run scoreboard --ab` (n>=30 both arms)."
+        note_ko = f" {base}와 가격 규칙을 공유한다. 유니버스·기간·파라미터를 맞춘 비교가 필요하며 표본 수만으로 검증을 통과하지 않는다."
+        note_en = f" Shares price rules with {base}; comparisons need matched universes, periods and parameters, not just a minimum trade count."
+        if (strategies_cfg.get(base) or {}).get("enabled") is False:
+            note_ko += " 기본 갈래는 현재 비활성이다."
+            note_en += " The base arm is currently disabled."
         help_["evidence_ko"] = help_["evidence_ko"] + note_ko
         help_["evidence_en"] = help_["evidence_en"] + note_en
 

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from datetime import date, datetime
 from datetime import time as dtime
 from zoneinfo import ZoneInfo
@@ -178,6 +179,75 @@ def test_no_entry_when_price_below_trigger():
     d = _strategy().decide(_snap(price=TRIGGER - 0.01), {})
     assert d.signals == ()
     assert US_SYM not in d.next_state["entries_today"]
+
+
+def test_kr_opening_data_recovery_clears_old_rejection_without_changing_signals():
+    strategy = _strategy(symbols=(KR_SYM,))
+    opening = _snap(symbol=KR_SYM, market="KR", price=TRIGGER - 1,
+                    now=datetime.combine(DAY, dtime(9, 1), tzinfo=KST))
+    opening = replace(opening, bars={**opening.bars, (KR_SYM, "5m"): pd.DataFrame()})
+    rejected = strategy.decide(opening, {})
+    assert rejected.signals == ()
+    assert rejected.next_state["last_reject"][KR_SYM] == "당일 세션 시가 확인 불가"
+    before = copy.deepcopy(rejected.next_state)
+
+    recovered = _snap(symbol=KR_SYM, market="KR", price=TRIGGER - 1,
+                      now=datetime.combine(DAY, dtime(9, 5), tzinfo=KST))
+    recovered = replace(recovered, bars={**recovered.bars,
+                                        (KR_SYM, "5m"): recovered.bars[(KR_SYM, "5m")].head(1)})
+    waiting = strategy.decide(recovered, rejected.next_state)
+    assert waiting.signals == strategy.decide(recovered, {}).signals == ()
+    assert waiting.next_state["last_reject"] == {}
+    assert waiting.next_state["entries_today"] == {}
+    assert rejected.next_state == before
+
+    breakout = replace(recovered, quotes={KR_SYM: Quote(KR_SYM, recovered.now, TRIGGER)})
+    entered = strategy.decide(breakout, waiting.next_state)
+    baseline = strategy.decide(breakout, {})
+    assert entered.signals == baseline.signals
+    assert len(entered.signals) == 1
+    assert entered.signals[0].stop == pytest.approx(102.5)
+    assert entered.signals[0].target_weight == pytest.approx(0.5)
+
+
+def test_kr_recovered_open_reports_a_new_data_failure():
+    strategy = _strategy(symbols=(KR_SYM,))
+    state = {"session_date": {"KR": DAY.isoformat()}, "entries_today": {},
+             "last_reject": {KR_SYM: "당일 세션 시가 확인 불가"}}
+    decision = strategy.decide(
+        _snap(symbol=KR_SYM, market="KR", price=TRIGGER - 1, daily_missing=True), state,
+    )
+    assert decision.signals == ()
+    assert decision.next_state["last_reject"][KR_SYM] == "전일 고저 확인 불가"
+
+
+def test_shell_does_not_recount_recovered_session_open_failure(caplog):
+    from types import SimpleNamespace
+
+    from quant.core.ports import Context
+
+    shell = VolBreakoutShell([KR_SYM], {}, market="KR", id="vol_breakout_cat")
+    snap = _snap(symbol=KR_SYM, market="KR", price=TRIGGER - 1,
+                 now=datetime.combine(DAY, dtime(9, 1), tzinfo=KST))
+    snap = replace(snap, bars={**snap.bars, (KR_SYM, "5m"): pd.DataFrame()})
+    ctx = Context(
+        clock=SimpleNamespace(now=lambda: snap.now, is_market_open=lambda m: True,
+                              minutes_to_close=lambda m: 300, cadence_minutes=lambda: 5),
+        data=SimpleNamespace(history=lambda s, interval, n: snap.bars[(s, interval)].tail(n),
+                             quote=lambda s: snap.quotes.get(s)),
+        broker=SimpleNamespace(positions=lambda: {}),
+    )
+    with caplog.at_level("INFO"):
+        assert shell.on_cycle(ctx) == []
+        for hour, minute in ((9, 5), (9, 10), (10, 1)):
+            snap = _snap(symbol=KR_SYM, market="KR", price=TRIGGER - 1,
+                         now=datetime.combine(DAY, dtime(hour, minute), tzinfo=KST))
+            snap = replace(snap, bars={**snap.bars,
+                                      (KR_SYM, "5m"): snap.bars[(KR_SYM, "5m")].head(1)})
+            assert shell.on_cycle(ctx) == []
+    summaries = [r.message for r in caplog.records if "거부 요약" in r.message]
+    assert len(summaries) == 1
+    assert "당일 세션 시가 확인 불가=1" in summaries[0]
 
 
 # ============================================================ ③ 전일 데이터 없으면 거부
