@@ -25,6 +25,15 @@
 - Runbooks:docs/runbooks/strategy-focus.md, docs/research/vol-breakout-focus-2026-09-30.md.
 - Automation automation-2 ACTIVE: KST17:00 review, LA00/01 gate; notify only meaningful changes/errors. Read-only, no Telegram duplicate or auto-tuning.
 
+## 9/30 evening correction and reconciliation
+- b82c2d5 deployed; full7365passed/10skip/25deselect/1xfail, both required smokes and ruff pass; server56targeted pass.
+- Fixed stale last_reject during valid price-below-trigger waiting; signals/parameters unchanged. Repeated4126 missing-open messages were stale recounts, NOT evidence of4126 actual feed failures.
+- Persisted-cache retrospective replay:09:01 no complete5m open;09:06 onward218000 open and rejection cleared. Trigger232000 vs recordedminutehigh231000. Not contemporaneous memory evidence.
+- Closed-market PAPER restart18:28 PID888596, onlyKRcat/010060, positions0/pendingnull; settings and allstrategybooks unchanged; freshheartbeat unhalted/closed.
+- Publicda4aee9/Vercel success, JSON18:28:40 and rendered help verified KR/FRGN/currentstatus/participationflags/conditionaltargetcap. All financial stats and curves identical before/after help regeneration, xcheck/validation pass (existing date-gap warnings).
+- Epoch9/7 totals:KR230/-3747133.99KRW;US500/-4341.95415USD;combined730/-9724702.27KRW/-3.7197% atfixed1376.7FX. Currentdayroundtripnet-90143.96 differs from same-dayfillnet-68161.84; never add them.
+- HistoricalKRcat36/+935935.07KRW; postselection0. Rawledger/settings/history remain intact.
+
 ## Next observations
 - Check16:45 capture/reviews and17:00 heartbeat, fresh ticks/known-time candidates and first focus trades. Zero trips means insufficient evidence.
 - Compare new samples to frozen baseline; require data coverage and cost/concentration tests before the preregistered7candidate temporal study.
