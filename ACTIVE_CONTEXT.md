@@ -2,9 +2,9 @@
 
 ## Current repair / deployment checkpoint
 - Owner authorized flow collection recovery, stale FRGN blocking, Telegram formatting fix, E2E and EC2 deploy.
-- New Naver stock/index JSON paths verified live; fresh source dates10/22,20rows. Current decisions exclude unfinished/future/stale/gapped series.
+- New Naver stock/index JSON paths verified live; fresh stock65symbols×20rows and both indices latest10/22. Current decisions exclude unfinished/future/stale/gapped series.
 - Assembly revalidates persisted FRGN labels and preserves held symbols; report/manual candidates share explicit-date gate. Watch alert HTML escaped.
-- Clean checkout: 7279 tests passed; E2E137 passed; architecture9 passed; CLI smokes passed. Server deployment pending. No parameter/capital/order changes authorized by repair.
+- Clean checkout: 7279 tests passed; E2E137 passed; architecture9 passed; CLI smokes passed. 1e29098 deployed07:59KST; server172 passed, financial/config hashes unchanged. 10/23 report rebuilt/public bytes match; source missing only after_hours. 08:12 scheduled brief delivered; gate admitted FRGN028050 only. 08:27:03 runtime confirmed vol_breakout_cat:[028050], other3 excluded, halted=false; final4 hashes unchanged08:27:39. No parameter/capital/order changes authorized by repair.
 - Static KR holiday table remains maintenance-dependent; unknown holidays conservatively abstain. Historical ledger untouched.
 
 ## Invariants / authorization
