@@ -92,7 +92,7 @@ def _build_foreign_view(
     path = root / "data" / "ledger" / "frgn_flow.jsonl"
     rows: list[dict] = []
     for symbol, c in cont.items():
-        series = frgn_flow_ledger.load_series(path, symbol, days=20)
+        series = frgn_flow_ledger.load_fresh_series(path, symbol, as_of=snap.session_date, days=20)
         if not series:
             continue
         result = foreign_trend.classify(series)

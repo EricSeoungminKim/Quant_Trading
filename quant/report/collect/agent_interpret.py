@@ -67,7 +67,7 @@ get_track_record(과거 성적)가 있으면 확신도를 그 실측치에 정�
 """
 
 
-def _build_agent_foreign_flow(root: Path, symbols: set[str]) -> dict[str, list[dict]]:
+def _build_agent_foreign_flow(root: Path, symbols: set[str], session: date) -> dict[str, list[dict]]:
     """AI 심층 해석 입력 — 후보별 외국인/기관 시계열 원본(`get_foreign_flow` 툴).
 
     `_build_intraday_view` 도 같은 원장을 읽지만 `foreign_score_v2` 채점용
@@ -75,7 +75,7 @@ def _build_agent_foreign_flow(root: Path, symbols: set[str]) -> dict[str, list[d
     (`get_foreign_flow` 가 `foreign_trend.classify` 라벨을 직접 계산한다).
     """
     path = root / "data" / "ledger" / "frgn_flow.jsonl"
-    return {symbol: frgn_flow_ledger.load_series(path, symbol, days=20) for symbol in symbols}
+    return {symbol: frgn_flow_ledger.load_fresh_series(path, symbol, as_of=session, days=20) for symbol in symbols}
 
 
 def _build_agent_news_items(
@@ -376,7 +376,7 @@ def _build_agent_interpret(
         session = snap.session_date
         data = AgentData(
             session_date=session.isoformat(),
-            foreign_flow=_build_agent_foreign_flow(root, symbols),
+            foreign_flow=_build_agent_foreign_flow(root, symbols, session),
             news_items=_build_agent_news_items(root, symbols, session),
             disclosures=_build_agent_disclosures(root, symbols, session),
             telegram_mentions={s: telegram_mentions.get(s) or {} for s in symbols},

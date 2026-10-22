@@ -5,6 +5,7 @@ Phase D 엔진 분리(2026-08-19) — `quant/apps/report_cli.py`에서 그대로
 """
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 from quant.analyze.bullish_markers import classify_titles, classify_titles_dated
@@ -106,7 +107,7 @@ def _build_intraday_view(
     - `today_articles`/`trending_score100` 은 `machine_payload` 가 이미
       `payload["symbols"]` 항목에 얹은 값(entry) — 없으면 `cont` 로 폴백한다.
     - `foreign_v2_score` 는 종목별 `frgn_flow.jsonl` 시계열(최근 20일,
-      `frgn_flow_ledger.load_series`)에 `foreign_score_v2()`를 적용한 원점수다
+      `frgn_flow_ledger.load_fresh_series`)에 `foreign_score_v2()`를 적용한 원점수다
       (2026-08-17, 서브프로젝트 O — `foreign_trend.classify()` 라벨 대신).
       `_build_foreign_view`의 표시용 `series`(최근 10일, `inst_net` 없음)는
       쌍끌이·20일 정합 판정에 부족해 재사용하지 않는다 — 원장을 독립적으로
@@ -164,6 +165,10 @@ def _build_intraday_view(
             foreign_label_by_symbol[row["symbol"]] = row["label"]
 
     frgn_flow_path = root / "data" / "ledger" / "frgn_flow.jsonl"
+    try:
+        flow_as_of = date.fromisoformat(str(payload.get("session_date")))
+    except ValueError:
+        flow_as_of = None
 
     # 3단계 등급(scalp_grade)의 "섹터 호재 뉴스" 입력 — 오늘 `cont`에 잡힌
     # 전체 종목(top-8 후보로 좁히기 전)을 업종별로 묶어 호재 히트 수를
@@ -195,7 +200,10 @@ def _build_intraday_view(
             tag for tag in (classify_report(label) for label in disclosures.get(symbol) or [])
             if tag
         })
-        flow_series = frgn_flow_ledger.load_series(frgn_flow_path, symbol, days=20)
+        flow_series = (
+            frgn_flow_ledger.load_fresh_series(frgn_flow_path, symbol, as_of=flow_as_of, days=20)
+            if flow_as_of is not None else []
+        )
         foreign_v2_score = foreign_score_v2(flow_series, {})[0] if flow_series else None
         score_inputs[symbol] = {
             "today_articles": entry.get("news_articles_today", c.get("today_articles") or 0),

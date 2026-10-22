@@ -40,11 +40,11 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
 
 def test_build_agent_foreign_flow_reads_series_per_symbol(tmp_path):
     _write_jsonl(tmp_path / "data" / "ledger" / "frgn_flow.jsonl", [
-        {"date": "2026-08-14", "symbol": "005930", "foreign_net": 100, "inst_net": 50},
-        {"date": "2026-08-15", "symbol": "005930", "foreign_net": 200, "inst_net": 80},
+        {"date": "2026-08-13", "symbol": "005930", "foreign_net": 100, "inst_net": 50},
+        {"date": "2026-08-14", "symbol": "005930", "foreign_net": 200, "inst_net": 80},
     ])
 
-    out = report_cli._build_agent_foreign_flow(tmp_path, {"005930", "000660"})
+    out = report_cli._build_agent_foreign_flow(tmp_path, {"005930", "000660"}, date(2026, 8, 17))
 
     assert len(out["005930"]) == 2
     assert out["000660"] == []

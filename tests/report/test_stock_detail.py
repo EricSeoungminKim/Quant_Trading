@@ -359,3 +359,28 @@ def test_fetch_stock_detail_flow_daily_caps_at_20_when_more_rows_parsed(monkeypa
     assert len(detail["flow_daily"]) == 20
     assert detail["flow_daily"][0]["date"] == "2026-01-01"
     assert detail["flow_daily"][-1]["date"] == "2026-01-20"
+
+
+def test_current_investor_api_preserves_krx_values():
+    raw = (FRGN_FIXTURE.parent / "naver_investor_trend_005930.json").read_bytes()
+    rows = parse_investor_flow(raw)
+    assert len(rows) == 2
+    assert rows[0] == {
+        "date": "2026-10-22", "close": 214500, "change_pct": -4.03,
+        "volume": 11418430, "inst_net": -400833, "foreign_net": -585787,
+        "foreign_hold_pct": 46.13,
+    }
+    # Use regular-market closing price, not the after-hours composite.
+    import json
+    item = json.loads(raw)["items"][1]
+    assert rows[1]["close"] == int(item["krx"]["regularMarketClosingPrice"])
+
+
+@pytest.mark.parametrize("bad", [None, "", "not-a-number"])
+def test_current_investor_api_rejects_missing_flow(bad):
+    import json
+    payload = json.loads((FRGN_FIXTURE.parent / "naver_investor_trend_005930.json").read_bytes())
+    payload["items"] = payload["items"][:1]
+    payload["items"][0]["krx"]["foreignNetVolume"] = bad
+    with pytest.raises(ValueError):
+        parse_investor_flow(json.dumps(payload).encode())

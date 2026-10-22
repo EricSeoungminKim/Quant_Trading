@@ -1,20 +1,23 @@
 """개별 종목 투자자 수급 + 애널리스트 컨센서스 — 네이버금융 / 컴퍼니가이드.
 
-수급은 finance.naver.com/item/frgn.naver(외국인/기관 매매동향), 컨센서스는
+수급은 stock.naver.com의 investor-trend/v2 JSON(외국인/기관 매매동향), 컨센서스는
 navercomp.wisereport.co.kr 의 컴퍼니가이드(c1010001.aspx)를 쓴다. 둘 다 실측
-검증됨(2026-08-12). 컨센서스는 상장 초기·소형주에서 흔히 비어 있으므로 실패해도
+검증됨(수급 API 전환: 2026-10-23). 컨센서스는 상장 초기·소형주에서 흔히 비어 있으므로 실패해도
 수급까지 죽이면 안 된다 — fetch_stock_detail 이 개별로 감싼다.
 """
 from __future__ import annotations
 
 import html
+import json
+import math
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, wait
+from datetime import date
 
 from quant.adapters.http import client
 
-FRGN_URL = "https://finance.naver.com/item/frgn.naver?code={code}"
+FRGN_URL = "https://stock.naver.com/api/stockSecurity/investor-trend/v2/domestic/{code}?exchangeType=krx&size=20"
 CONSENSUS_URL = "https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx?cmp_cd={code}"
 OPINION_LABELS = ("강력매도", "매도", "중립", "매수", "강력매수")
 
@@ -74,6 +77,31 @@ def opinion_label(score: float) -> str:
 
 
 def parse_investor_flow(raw: bytes) -> list[dict]:
+    if raw.lstrip().startswith(b"{"):
+        try:
+            rows = []
+            for item in json.loads(raw)["items"]:
+                krx = item["krx"]
+                row = {
+                    "date": date.fromisoformat(item["localTradedAt"]).isoformat(),
+                    "close": _int(krx["regularMarketClosingPrice"]),
+                    "change_pct": _float(krx["regularMarketChangeRate"]),
+                    "volume": _int(krx["tradingVolume"]),
+                    "inst_net": _int(krx["organizationNetVolume"]),
+                    "foreign_net": _int(krx["foreignNetVolume"]),
+                    "foreign_hold_pct": _float(item["foreignHoldingRatio"]),
+                }
+                if row["close"] <= 0 or row["volume"] < 0 or not all(
+                    math.isfinite(row[k]) for k in ("change_pct", "foreign_hold_pct")
+                ):
+                    raise ValueError("invalid investor values")
+                rows.append(row)
+            if not rows:
+                raise ValueError("empty investor items")
+            return sorted(rows, key=lambda row: row["date"], reverse=True)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("투자자 수급 JSON 필수 필드 파싱 실패") from exc
+    # 과거 HTML 픽스처/저장본 재현을 위한 호환 파서.
     text = _decode(raw)
     rows: list[dict] = []
     for tr in _TR.findall(text):
@@ -232,8 +260,8 @@ def fetch_many(
             code = future_to_code[future]
             try:
                 done[code] = future.result()
-            except Exception:
-                continue
+            except Exception as exc:
+                print(f"수급 조회 실패 {code}: {type(exc).__name__}", file=sys.stderr)
         if pending:
             for future in pending:
                 future.cancel()

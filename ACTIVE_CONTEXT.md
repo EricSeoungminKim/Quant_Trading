@@ -1,4 +1,11 @@
-# Active Project Context — 2026-09-30 KR catalyst focus
+# Active Project Context — 2026-10-23 flow recovery
+
+## Current repair / deployment checkpoint
+- Owner authorized flow collection recovery, stale FRGN blocking, Telegram formatting fix, E2E and EC2 deploy.
+- New Naver stock/index JSON paths verified live; fresh source dates10/22,20rows. Current decisions exclude unfinished/future/stale/gapped series.
+- Assembly revalidates persisted FRGN labels and preserves held symbols; report/manual candidates share explicit-date gate. Watch alert HTML escaped.
+- Clean checkout: 7279 tests passed; E2E137 passed; architecture9 passed; CLI smokes passed. Server deployment pending. No parameter/capital/order changes authorized by repair.
+- Static KR holiday table remains maintenance-dependent; unknown holidays conservatively abstain. Historical ledger untouched.
 
 ## Invariants / authorization
 - Four planes remain isolated; no LLM/network calls in trading hot path.

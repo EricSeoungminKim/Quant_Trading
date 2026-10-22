@@ -21,7 +21,9 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from quant.adapters.data.service import Capability, MarketDataService, SourceRoute
 from quant.adapters.execution.paper import PaperBroker
@@ -35,10 +37,12 @@ from quant.adapters.regime_indicators import (
 )
 from quant.adapters.smart_flow_log import SmartFlowLogger
 from quant.adapters.tick_log import TickLogger
+from quant.analyze.foreign_trend import LABEL_INFLOW, LABEL_OUTFLOW_TREND, classify
 from quant.apps.config import Settings
 from quant.control.experiments import strategy_fingerprints
 from quant.control.exposure import DEFAULT_ALERT_PCT
 from quant.control.exposure import build_report as build_exposure_report
+from quant.control.frgn_flow import load_fresh_series
 from quant.control.ledger import TradeLedgerSink
 from quant.control.opstate import record_run
 from quant.core.clock import WallClock
@@ -768,6 +772,31 @@ def validated_capital_fractions(cfg: dict) -> dict[str, dict[str, float]]:
     return out
 
 
+def _fresh_foreign_tags(
+    tags: dict[str, list[str]], *,
+    path: Path = Path("data/ledger/frgn_flow.jsonl"), as_of: date | None = None,
+) -> dict[str, list[str]]:
+    """Revalidate persisted flow evidence at assembly/reload, never in a strategy.
+
+    Remove unsupported signal tags only; retain symbols for position management.
+    Do not turn unavailable evidence into a sell signal or rewrite the watchlist.
+    """
+    as_of = as_of or datetime.now(ZoneInfo("Asia/Seoul")).date()
+    result = {}
+    signal_labels = {"FRGN": LABEL_INFLOW, "FRGN_EXIT": LABEL_OUTFLOW_TREND}
+    for symbol, values in tags.items():
+        if signal_labels.keys() & set(values):
+            series = load_fresh_series(path, symbol, as_of=as_of)
+            label = classify(series)["label"] if series else None
+            result[symbol] = [tag for tag in values
+                              if tag not in signal_labels or signal_labels[tag] == label]
+            if result[symbol] != values:
+                logger.warning("%s: stale/missing/contradictory foreign-flow evidence — unsupported tags disabled", symbol)
+        else:
+            result[symbol] = list(values)
+    return result
+
+
 def rebuild_strategies(
     cfg: dict, universe=None, held_symbols: list[str] | None = None,
     leverage_of: dict[str, float] | None = None,
@@ -828,6 +857,8 @@ def rebuild_strategies(
                     "관심종목 태그 조회 실패 — news_momentum EVENT 게이트 비활성: %s: %s",
                     type(e).__name__, e,
                 )
+    if tags_of:
+        tags_of = _fresh_foreign_tags(tags_of)
     consumers = [
         sid for sid, strat_cfg in cfg.get("strategies", {}).items()
         if strat_cfg.get("enabled", True) and strat_cfg.get("universe") == WATCHLIST_OPT_IN
@@ -862,7 +893,7 @@ def rebuild_strategies(
     # 폴백이 실패를 무증상으로 만들었다(판단 13건 무체결). 배선 끝까지의
     # 주입은 tests/test_llm_trader_wiring.py 가 대조한다.
     strategies = build_strategies(effective_cfg, leverage_of=leverage_of, tags_of=tags_of,
-                                  inbox_reader=inbox_reader)
+                                  inbox_reader=inbox_reader, held_symbols=held_symbols)
     symbols = sorted({s for st in strategies for s in st.symbols})
     # 관심종목으로 새로 들어온 심볼은 settings의 us/kr 목록에 없어 매핑이 비는데,
     # 하위 계층은 전부 `.get(sym, "US")` 폴백을 쓴다 — KR 6자리 코드가 US로

@@ -1,0 +1,58 @@
+{
+  "hasNext": true,
+  "items": [
+    {
+      "localTradedAt": "2026-10-22",
+      "foreignHoldingStockQuantity": "2696979291",
+      "foreignHoldingRatio": "46.13",
+      "krx": {
+        "foreignNetVolume": "-585787",
+        "foreignBuyVolume": "3160524",
+        "foreignSellVolume": "3746311",
+        "organizationNetVolume": "-400833",
+        "organizationBuyVolume": "4737282",
+        "organizationSellVolume": "5138115",
+        "individualNetVolume": "977352",
+        "individualBuyVolume": "3502581",
+        "individualSellVolume": "2525229",
+        "closingPrice": "214500",
+        "priceMovement": "falling",
+        "basePrice": "223500",
+        "regularMarketClosingPrice": "214500",
+        "tradingVolume": "11418430",
+        "regularMarketChangePrice": "-9000",
+        "regularMarketChangeRate": "-4.03",
+        "changePrice": "-9000",
+        "changeRate": "-4.03"
+      },
+      "nxt": null
+    },
+    {
+      "localTradedAt": "2026-10-21",
+      "foreignHoldingStockQuantity": "2697565078",
+      "foreignHoldingRatio": "46.14",
+      "krx": {
+        "foreignNetVolume": "2055241",
+        "foreignBuyVolume": "8362512",
+        "foreignSellVolume": "6307271",
+        "organizationNetVolume": "313027",
+        "organizationBuyVolume": "5803805",
+        "organizationSellVolume": "5490778",
+        "individualNetVolume": "-2324529",
+        "individualBuyVolume": "3043450",
+        "individualSellVolume": "5367979",
+        "closingPrice": "223500",
+        "priceMovement": "rising",
+        "basePrice": "211500",
+        "regularMarketClosingPrice": "223500",
+        "tradingVolume": "17268762",
+        "regularMarketChangePrice": "12000",
+        "regularMarketChangeRate": "5.67",
+        "changePrice": "12000",
+        "changeRate": "5.67"
+      },
+      "nxt": null
+    }
+  ],
+  "cursor": "MjAyNjA5MjE"
+}

@@ -66,7 +66,9 @@ import json
 import logging
 from collections.abc import Callable, Iterable
 from datetime import date as _date
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yaml
@@ -304,7 +306,7 @@ def _rec_row(
 
 def foreign_accumulate_recs(
     root: Path, symbols: Iterable[str] | None = None, days: int = 20,
-    price_of: PriceLookup | None = None,
+    price_of: PriceLookup | None = None, *, as_of: _date | None = None,
 ) -> list[dict]:
     """외국인 수급 라벨이 `foreign_trend.LABEL_INFLOW`(매수 시그널/재유입)인 KR
     종목 추천. `symbols`를 안 주면 `frgn_flow.jsonl`에 기록이 있는 전 종목을 본다
@@ -317,6 +319,7 @@ def foreign_accumulate_recs(
     보내봤자 판단 불가능한 추천이다. `price_of`(기본: 로컬 일봉만)가 그래도
     가격을 못 주면 **추천 자체를 드롭한다** — 채점 불가능한 추천은 보내지
     않는다는 원칙(모듈 docstring)을 라벨 필터만이 아니라 가격 유무에도 적용."""
+    as_of = as_of or datetime.now(ZoneInfo("Asia/Seoul")).date()
     flow_path = root / "data" / "ledger" / "frgn_flow.jsonl"
     history_root = root / "data" / "history"
     get_price = price_of or _history_price_of(history_root)
@@ -324,7 +327,7 @@ def foreign_accumulate_recs(
 
     out: list[dict] = []
     for sym in candidates:
-        series = frgn_flow_ledger.load_series(flow_path, sym, days=days)
+        series = frgn_flow_ledger.load_fresh_series(flow_path, sym, days=days, as_of=as_of)
         if not series:
             continue
         info = foreign_trend.classify(series)
@@ -560,7 +563,7 @@ def volume_shock_recs(root: Path) -> list[dict]:
 def build_recs(root: Path, market: str, on: _date, price_of: PriceLookup | None = None) -> list[dict]:
     """시장별 추천 목록. KR = 외국인 적립 + 종가배팅 + RSI(2) 눌림 + 단기반전(5일)
     + 거래량충격(10일). US = 오버나이트 드리프트. `on`은 close_bet의 리포트
-    조회 + 향후 결정론 확장을 위해 받는다.
+    조회와 수급 근거 신선도 판정에 사용한다.
 
     `price_of`(2026-09-03, F1)는 frgn_accumulate/close_bet에만 넘어간다 —
     rsi2_dip과 단기반전/거래량충격은 신호 계산에 쓴 바로 그 일봉 종가를
@@ -571,7 +574,7 @@ def build_recs(root: Path, market: str, on: _date, price_of: PriceLookup | None 
         wl_path = root / "data" / "watchlist.yaml"
         rsi2_symbols = _kr_symbols_from_watchlist(wl_path) | set(_RSI2_ALWAYS_KR_SYMBOLS)
         return (
-            foreign_accumulate_recs(root, price_of=price_of)
+            foreign_accumulate_recs(root, price_of=price_of, as_of=on)
             + close_bet_recs(root, on, price_of=price_of)
             + rsi2_dip_recs(root, rsi2_symbols)
             + short_term_reversal_recs(root)

@@ -54,8 +54,8 @@ def _cont() -> dict:
 def test_us_market_returns_none_without_reading_ledger(tmp_path):
     """US 는 frgn_flow 원장 자체가 없다 — 시장 가드가 먼저 걸린다."""
     _ledger(tmp_path, [
-        {"date": "2026-08-17", "symbol": "005930", "foreign_net": 100, "inst_net": -50},
-        {"date": "2026-08-16", "symbol": "005930", "foreign_net": -30, "inst_net": 10},
+        {"date": "2026-08-14", "symbol": "005930", "foreign_net": 100, "inst_net": -50},
+        {"date": "2026-08-13", "symbol": "005930", "foreign_net": -30, "inst_net": 10},
     ])
     snap = _snap(market="US")
 
@@ -77,11 +77,11 @@ def test_builds_rows_grouped_by_sector_ordered_by_net_sum_desc(tmp_path):
     _ledger(tmp_path, [
         # 005930: 유입(+100) → 단발 이탈(-50) = 관망(잔여 있음) — 라벨 자체는
         # 여기서 검증하지 않는다(그건 test_foreign_trend.py 의 몫), 그룹핑만 확인.
-        {"date": "2026-08-14", "symbol": "005930", "foreign_net": 100, "inst_net": 0},
-        {"date": "2026-08-17", "symbol": "005930", "foreign_net": -50, "inst_net": 10},
+        {"date": "2026-08-13", "symbol": "005930", "foreign_net": 100, "inst_net": 0},
+        {"date": "2026-08-14", "symbol": "005930", "foreign_net": -50, "inst_net": 10},
         # 000660: 순매수만 계속 — 매수 시그널(재유입)
-        {"date": "2026-08-14", "symbol": "000660", "foreign_net": 50, "inst_net": 0},
-        {"date": "2026-08-17", "symbol": "000660", "foreign_net": 900, "inst_net": 5},
+        {"date": "2026-08-13", "symbol": "000660", "foreign_net": 50, "inst_net": 0},
+        {"date": "2026-08-14", "symbol": "000660", "foreign_net": 900, "inst_net": 5},
     ])
     sector_map = {"005930": "반도체와반도체장비", "000660": "반도체와반도체장비"}
     payload = {"features": {"foreign_net_100m_krw": 1234}}
@@ -101,15 +101,15 @@ def test_builds_rows_grouped_by_sector_ordered_by_net_sum_desc(tmp_path):
     assert hynix["label"] == "매수 시그널(재유입)"
     assert hynix["days"] == 2
     assert hynix["series"] == [
-        {"date": "2026-08-14", "foreign_net": 50},
-        {"date": "2026-08-17", "foreign_net": 900},
+        {"date": "2026-08-13", "foreign_net": 50},
+        {"date": "2026-08-14", "foreign_net": 900},
     ]
 
 
 def test_symbol_without_sector_map_entry_grouped_as_unclassified(tmp_path):
     _ledger(tmp_path, [
-        {"date": "2026-08-14", "symbol": "005930", "foreign_net": 10, "inst_net": 0},
-        {"date": "2026-08-17", "symbol": "005930", "foreign_net": 20, "inst_net": 0},
+        {"date": "2026-08-13", "symbol": "005930", "foreign_net": 10, "inst_net": 0},
+        {"date": "2026-08-14", "symbol": "005930", "foreign_net": 20, "inst_net": 0},
     ])
     snap = _snap(results={"kospi_flow": _kospi_flow_result()})
 
@@ -121,10 +121,10 @@ def test_symbol_without_sector_map_entry_grouped_as_unclassified(tmp_path):
 
 def test_sectors_ordered_by_foreign_net_sum_descending(tmp_path):
     _ledger(tmp_path, [
-        {"date": "2026-08-17", "symbol": "005930", "foreign_net": 10, "inst_net": 0},
-        {"date": "2026-08-16", "symbol": "005930", "foreign_net": 10, "inst_net": 0},
-        {"date": "2026-08-17", "symbol": "000660", "foreign_net": 9999, "inst_net": 0},
-        {"date": "2026-08-16", "symbol": "000660", "foreign_net": 9999, "inst_net": 0},
+        {"date": "2026-08-14", "symbol": "005930", "foreign_net": 10, "inst_net": 0},
+        {"date": "2026-08-13", "symbol": "005930", "foreign_net": 10, "inst_net": 0},
+        {"date": "2026-08-14", "symbol": "000660", "foreign_net": 9999, "inst_net": 0},
+        {"date": "2026-08-13", "symbol": "000660", "foreign_net": 9999, "inst_net": 0},
     ])
     sector_map = {"005930": "업종A", "000660": "업종B"}
     snap = _snap(results={"kospi_flow": _kospi_flow_result()})
@@ -139,8 +139,8 @@ def test_missing_kospi_flow_result_leaves_market_fields_none(tmp_path):
     """kospi_flow 결측이어도(features 에 foreign_net_100m_krw 없음) 종목 단위
     뷰는 그대로 만든다 — 시장 종합 라인만 빠진다."""
     _ledger(tmp_path, [
-        {"date": "2026-08-14", "symbol": "005930", "foreign_net": 10, "inst_net": 0},
-        {"date": "2026-08-17", "symbol": "005930", "foreign_net": 20, "inst_net": 0},
+        {"date": "2026-08-13", "symbol": "005930", "foreign_net": 10, "inst_net": 0},
+        {"date": "2026-08-14", "symbol": "005930", "foreign_net": 20, "inst_net": 0},
     ])
     snap = _snap(results={})
 

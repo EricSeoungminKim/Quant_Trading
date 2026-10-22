@@ -279,8 +279,8 @@ def test_foreign_v2_score_computed_from_frgn_flow_ledger_not_foreign_view(tmp_pa
     monkeypatch.setattr("quant.report.collect.intraday.rank_intraday", _spy)
 
     _write_frgn_flow(tmp_path, [
-        {"date": "2026-08-14", "symbol": "005930", "foreign_net": 100, "inst_net": 50},
-        {"date": "2026-08-15", "symbol": "005930", "foreign_net": 200, "inst_net": 80},
+        {"date": "2026-08-13", "symbol": "005930", "foreign_net": 100, "inst_net": 50},
+        {"date": "2026-08-14", "symbol": "005930", "foreign_net": 200, "inst_net": 80},
     ])
 
     _build_intraday_view(
@@ -393,8 +393,8 @@ def test_view_keeps_hidden_items_display_filter_is_callers_job(tmp_path):
          "trending_score100": 40, "close": 200_000.0, "change_pct": -0.5},
     ])
     _write_frgn_flow(tmp_path, [
-        {"date": "2026-08-16", "symbol": "000660", "foreign_net": 0, "inst_net": 0},
-        {"date": "2026-08-17", "symbol": "000660", "foreign_net": 0, "inst_net": 0},
+        {"date": "2026-08-13", "symbol": "000660", "foreign_net": 0, "inst_net": 0},
+        {"date": "2026-08-14", "symbol": "000660", "foreign_net": 0, "inst_net": 0},
     ])
     view = _build_intraday_view(
         tmp_path, "KR", payload, _cont(), _foreign_view(),
@@ -437,8 +437,8 @@ def test_grade_enter_blocked_by_explicit_foreign_selling(tmp_path):
         "000660": {"name": "SK하이닉스", "today_articles": 0, "titles": []},
     }
     _write_frgn_flow(tmp_path, [
-        {"date": "2026-08-16", "symbol": "005930", "foreign_net": -500, "inst_net": 0},
-        {"date": "2026-08-17", "symbol": "005930", "foreign_net": -300, "inst_net": 0},
+        {"date": "2026-08-13", "symbol": "005930", "foreign_net": -500, "inst_net": 0},
+        {"date": "2026-08-14", "symbol": "005930", "foreign_net": -300, "inst_net": 0},
     ])
     view = _build_intraday_view(
         tmp_path, "KR", _payload(), cont, _foreign_view(),
@@ -472,8 +472,8 @@ def test_sector_bullish_hits_and_rising_wired_from_sector_map_and_quotes(tmp_pat
         "000660": {"name": "SK하이닉스", "today_articles": 0, "titles": []},
     }
     _write_frgn_flow(tmp_path, [
-        {"date": "2026-08-16", "symbol": "000660", "foreign_net": 0, "inst_net": 0},
-        {"date": "2026-08-17", "symbol": "000660", "foreign_net": 0, "inst_net": 0},
+        {"date": "2026-08-13", "symbol": "000660", "foreign_net": 0, "inst_net": 0},
+        {"date": "2026-08-14", "symbol": "000660", "foreign_net": 0, "inst_net": 0},
     ])
     sector_map = {"005930": "반도체", "000660": "반도체"}
     sector_quotes = [{"name": "반도체", "change_pct": 2.0}]

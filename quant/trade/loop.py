@@ -50,6 +50,7 @@ from quant.trade.approval import STATUS_REJECTED, ApprovalGate, ApprovalRequest
 from quant.trade.control import TradingControl
 from quant.trade.risk.books import StrategyBooks
 from quant.trade.risk.manager import MARKET_CLOSED_MARKER
+from quant.trade.watch_conditions import Hit as WatchHit
 from quant.trade.watch_conditions import Rule as WatchRule
 from quant.trade.watch_conditions import apply_cooldown as apply_watch_cooldown
 from quant.trade.watch_conditions import evaluate as evaluate_watch_conditions
@@ -158,6 +159,13 @@ def _strategy_label(strategy_id: str | None) -> str:
             suffix = "촉매" if strategy_id.endswith(_CATALYST_ARM_SUFFIX) else "순수"
             label = f"{_STRATEGY_LABELS[base]}·{suffix}"
     return f"{label or strategy_id} ({strategy_id})"
+
+
+def _watch_notify_text(hit: WatchHit, now: datetime) -> str:
+    return tgfmt.esc(
+        f"👁 워치: {hit.rule_name} — {hit.value:.2f} {hit.op} {hit.threshold:g} "
+        f"({_display(hit.symbol)}, {now:%Y-%m-%d %H:%M:%S})"
+    )
 
 
 def _halt_notify_text(reason: str) -> str:
@@ -2633,10 +2641,7 @@ async def run_paper_loop(
                 watch_now = ctx.clock.now()
                 watch_hits = evaluate_watch_conditions(watch_rules, watch_quotes, watch_bars, watch_now)
                 for hit in apply_watch_cooldown(watch_hits, watch_last_hit_mono, watch_cooldown_sec, now_mono):
-                    notifier.send(
-                        f"👁 워치: {hit.rule_name} — {hit.value:.2f} {hit.op} {hit.threshold:g} "
-                        f"({_display(hit.symbol)}, {watch_now:%Y-%m-%d %H:%M:%S})"
-                    )
+                    notifier.send(_watch_notify_text(hit, watch_now))
             except Exception:
                 logger.exception("워치 조건 평가 실패 — 거래는 계속한다")
 

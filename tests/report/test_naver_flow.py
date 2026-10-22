@@ -44,3 +44,47 @@ def test_live_fetch_kospi_and_kosdaq():
     for sosok in ("01", "02"):
         d = fetch_flow(sosok, "20260811")
         assert d["rows"], sosok
+
+
+def test_json_flow_preserves_krw_units_and_combines_official_investor_groups():
+    import json
+
+    fixture = FIXTURE.with_name("naver_index_flow_20261022.json")
+    raw = fixture.read_bytes()
+    rows = parse_flow(raw)
+    assert len(rows) == 2
+    assert rows[0]["date"] == "2026-10-22"
+    assert rows[0]["개인"] == 3666.5
+    assert rows[0]["외국인"] == 504.61  # 9000 + 기타외국인 9001
+    assert rows[0]["투신"] == -2907.51  # 3000 + 사모 3100
+    assert rows[0]["연기금등"] == 1313.09  # 6000 + 국가 7000
+    for row in rows:
+        assert sum(row[name] for name in INSTITUTION_SUBS) == pytest.approx(row["기관계"])
+        assert sum(row[name] for name in ("개인", "외국인", "기관계", "기타법인")) == pytest.approx(0, abs=0.02)
+    data = json.loads(raw)
+    data["content"][0]["netAmounts"] = data["content"][0]["netAmounts"][1:]
+    assert len(parse_flow(json.dumps(data).encode())) == 1  # 결측을 0으로 위장하지 않는다
+
+
+def test_fetch_uses_new_json_api_and_requested_cutoff(monkeypatch):
+    from contextlib import contextmanager
+
+    from quant.collect.sources import naver_flow
+
+    urls = []
+    class Client:
+        def get(self, url):
+            urls.append(url)
+            class Response:
+                content = FIXTURE.with_name("naver_index_flow_20261022.json").read_bytes()
+                def raise_for_status(self):
+                    pass
+            return Response()
+    @contextmanager
+    def client():
+        yield Client()
+    monkeypatch.setattr(naver_flow, "client", client)
+    result = naver_flow.fetch_flow("02", "20261021")
+    assert urls == ["https://stock.naver.com/api/domestic/market/trend/daily?tradeType=KRX&marketType=KOSDAQ&bizdate=20261021&startIdx=0&pageSize=20"]
+    assert result["unit"] == "억원"
+    assert [row["date"] for row in result["rows"]] == ["2026-10-21"]

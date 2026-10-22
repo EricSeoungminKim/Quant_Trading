@@ -61,7 +61,7 @@ def test_foreign_accumulate_recs_only_includes_inflow_label(tmp_path):
     ])
     _write_daily_closes(tmp_path / "data" / "history" / "000001" / "1d", [70000.0])
 
-    recs = manual_recs.foreign_accumulate_recs(tmp_path)
+    recs = manual_recs.foreign_accumulate_recs(tmp_path, as_of=date(2026, 8, 28))
 
     assert {r["symbol"] for r in recs} == {"000001"}
     rec = recs[0]
@@ -87,7 +87,7 @@ def test_foreign_accumulate_recs_drops_symbol_without_any_price(tmp_path):
         {"date": "2026-08-26", "foreign_net": 200},
     ])
 
-    recs = manual_recs.foreign_accumulate_recs(tmp_path)
+    recs = manual_recs.foreign_accumulate_recs(tmp_path, as_of=date(2026, 8, 27))
 
     assert recs == []
 
@@ -105,7 +105,7 @@ def test_foreign_accumulate_recs_falls_back_to_injected_price_of(tmp_path):
     def _toss_only(sym: str):
         return (12345.0, "2026-09-03", "toss") if sym == "000001" else None
 
-    recs = manual_recs.foreign_accumulate_recs(tmp_path, price_of=_toss_only)
+    recs = manual_recs.foreign_accumulate_recs(tmp_path, price_of=_toss_only, as_of=date(2026, 8, 27))
 
     assert len(recs) == 1
     assert recs[0]["ref_price"] == pytest.approx(12345.0)
@@ -125,7 +125,7 @@ def test_foreign_accumulate_recs_respects_explicit_symbol_list(tmp_path):
     _write_daily_closes(tmp_path / "data" / "history" / "000001" / "1d", [70000.0])
     _write_daily_closes(tmp_path / "data" / "history" / "000003" / "1d", [1000.0])
 
-    recs = manual_recs.foreign_accumulate_recs(tmp_path, symbols=["000001"])
+    recs = manual_recs.foreign_accumulate_recs(tmp_path, symbols=["000001"], as_of=date(2026, 8, 27))
 
     assert {r["symbol"] for r in recs} == {"000001"}
 
@@ -636,3 +636,27 @@ def test_render_telegram_message_escapes_name_and_report_link():
     assert "A&B<x>" not in text and "A&amp;B&lt;x&gt;" in text
     assert "<STOP>" not in text and "&lt;STOP&gt;" in text
     assert '<a href="https://example.com/r?a=1&amp;b=2">전체 리포트</a>' in text
+
+
+def test_foreign_recs_reject_stale_flow_even_with_current_price(tmp_path):
+    _write_flow(tmp_path / 'data/ledger/frgn_flow.jsonl', '005930', [
+        {'date': '2026-09-08', 'foreign_net': 100},
+        {'date': '2026-09-09', 'foreign_net': 200},
+    ])
+    assert manual_recs.foreign_accumulate_recs(
+        tmp_path, as_of=date(2026, 10, 23),
+        price_of=lambda symbol: (70000.0, '2026-10-23', 'toss'),
+    ) == []
+
+
+def test_build_recs_uses_explicit_report_date_for_flow(tmp_path):
+    _write_flow(tmp_path / 'data/ledger/frgn_flow.jsonl', '005930', [
+        {'date': '2026-08-25', 'foreign_net': 100},
+        {'date': '2026-08-26', 'foreign_net': 200},
+    ])
+    recs = manual_recs.build_recs(tmp_path, 'KR', date(2026, 10, 23),
+                                 price_of=lambda symbol: (70000.0, '2026-10-23', 'toss'))
+    assert not any(rec['kind'] == 'frgn_accumulate' for rec in recs)
+    recs = manual_recs.build_recs(tmp_path, 'KR', date(2026, 8, 27),
+                                 price_of=lambda symbol: (70000.0, '2026-08-26', 'toss'))
+    assert any(rec['kind'] == 'frgn_accumulate' for rec in recs)

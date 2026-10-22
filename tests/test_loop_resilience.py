@@ -1661,3 +1661,24 @@ def test_exposure_check_none_is_a_complete_noop(tmp_path):
     ))
 
     assert not any("합산 노출" in m for m in notifier.messages)
+
+
+def test_watch_condition_loop_delivers_html_safe_alert_without_orders(tmp_path):
+    settings = make_settings(tmp_path)
+    settings.raw["watch_conditions"] = {"enabled": True, "rules": [{
+        "name": "price < threshold & watch", "symbol": "TQQQ",
+        "metric": "price", "op": "<", "threshold": 200,
+    }]}
+    notifier = FakeNotifier()
+    broker = FakeBroker()
+    ctx = Context(clock=FakeClock(market_open=False), data=FakeDataFeed(), broker=broker)
+    asyncio.run(_drive_n_cycles(
+        1, strategies=[], ctx=ctx, risk=FakeRisk(), sinks=FakeSink(),
+        settings=settings, notifier=notifier,
+    ))
+    messages = [m for m in notifier.messages if "👁 워치:" in m]
+    assert len(messages) == 1
+    assert "100.00 &lt; 200" in messages[0]
+    assert "&amp; watch" in messages[0]
+    assert "<" not in messages[0]
+    assert broker.orders == []

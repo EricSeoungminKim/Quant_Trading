@@ -165,7 +165,7 @@ def build_sources(
                 after_hours.fetch_after_hours_movers,
             ),
             "kospi_flow": (
-                naver_flow.URL_TEMPLATE.format(bizdate=bizdate, sosok="01"),
+                naver_flow.URL_TEMPLATE.format(bizdate=bizdate, market="KOSPI"),
                 lambda: naver_flow.fetch_flow("01", bizdate),
             ),
             "kr_funding": ("https://freesis.kofia.or.kr", kr_flow.fetch_kr_flow),
@@ -174,7 +174,7 @@ def build_sources(
                 toss.fetch_investor_trading,
             ),
             "kosdaq_flow": (
-                naver_flow.URL_TEMPLATE.format(bizdate=bizdate, sosok="02"),
+                naver_flow.URL_TEMPLATE.format(bizdate=bizdate, market="KOSDAQ"),
                 lambda: naver_flow.fetch_flow("02", bizdate),
             ),
         }

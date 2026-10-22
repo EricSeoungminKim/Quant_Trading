@@ -69,7 +69,29 @@ class Watchlist:
         return {symbol: ["FRGN", "EVENT", "TREND"] for symbol in self.names}
 
 
-def test_deployed_policy_builds_only_kr_cat_without_erasing_historical_accounts():
+@pytest.fixture
+def current_flow_evidence(tmp_path, monkeypatch):
+    """Market-scope cases carry real fresh flow evidence through assembly."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from quant.control.frgn_flow import append_daily
+    from quant.core.session import StaticSessionCalendar
+    now = datetime.now(ZoneInfo("Asia/Seoul"))
+    dates = []
+    calendar = StaticSessionCalendar()
+    while len(dates) < 2:
+        now -= timedelta(days=1)
+        if calendar.session("KR", now) is not None:
+            dates.append(now.date().isoformat())
+    append_daily([
+        {"symbol": symbol, "date": day, "foreign_net": 100, "inst_net": 0}
+        for symbol in ("005930", "000660") for day in dates
+    ], tmp_path / "data/ledger/frgn_flow.jsonl")
+    monkeypatch.chdir(tmp_path)
+
+
+def test_deployed_policy_builds_only_kr_cat_without_erasing_historical_accounts(current_flow_evidence):
     cfg = yaml.safe_load((Path(__file__).parents[1] / "config/settings.yaml").read_text())
     before = deepcopy(cfg)
     strategies, _, active = rebuild_strategies(cfg, Watchlist(), inbox_reader=lambda: [])
@@ -83,7 +105,7 @@ def test_deployed_policy_builds_only_kr_cat_without_erasing_historical_accounts(
     assert cfg == before
 
 
-def test_session_rebuilds_never_restore_us_even_from_held_symbols():
+def test_session_rebuilds_never_restore_us_even_from_held_symbols(current_flow_evidence):
     cfg = _config()
     block = cfg["strategies"]["vol_breakout_cat"]
     block.update(markets=["KR"], universe_filter={"KR": {"require_any": ["FRGN"]}})

@@ -40,7 +40,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -49,8 +49,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from quant.analyze import foreign_trend  # noqa: E402
 from quant.analyze.market_brief import (  # noqa: E402
     brief_text,
-    close_brief_text,
     close_bet_tokens,
+    close_brief_text,
     engine_tokens,
     foreign_flow_candidate_symbols,
     foreign_flow_tokens,
@@ -68,17 +68,17 @@ KST = ZoneInfo("Asia/Seoul")
 DEFAULT_REPORT_DIR = Path(os.environ.get("MARKET_REPORT_DIR", "."))
 
 
-def _foreign_flow_labels(report_dir: Path, symbols: set[str], days: int = 20) -> dict[str, str]:
+def _foreign_flow_labels(report_dir: Path, symbols: set[str], days: int = 20, *, as_of: date) -> dict[str, str]:
     """`symbols`(KR)의 외국인 수급 라벨. `data/ledger/frgn_flow.jsonl`을 직접 읽어
     report_cli.py의 `_build_foreign_view`와 같은 함수(`foreign_trend.classify`)를
     재적용한다 — report_cli.py는 이 라벨을 engine.json에 싣지 않으므로(market_brief.py
     "서브프로젝트 T" 절 참고) 원장에서 직접 재구성하는 것이 유일한 경로다. 시계열이
-    없는 심볼(그날 fetch_many 상위에 안 들었던 종목)은 결과에서 빠진다 — 0으로
-    위장하지 않는다."""
+    없는 심볼과 기준일 직전 완료 세션까지 연속된 수급 근거가 없는 심볼은
+    결과에서 빠진다 — 오래된 시계열로 FRGN 태그를 갱신하지 않는다."""
     path = report_dir / "data" / "ledger" / "frgn_flow.jsonl"
     out: dict[str, str] = {}
     for sym in symbols:
-        series = frgn_flow_ledger.load_series(path, sym, days=days)
+        series = frgn_flow_ledger.load_fresh_series(path, sym, days=days, as_of=as_of)
         if series:
             out[sym] = foreign_trend.classify(series)["label"]
     return out
@@ -157,7 +157,7 @@ def main() -> int:
     already_tagged = _already_frgn_tagged(a.watchlist_path) if a.market == "KR" else set()
     candidate_syms = foreign_flow_candidate_symbols(payload, a.market, already_tagged=already_tagged)
     if candidate_syms:
-        labels = _foreign_flow_labels(Path(a.report_dir), candidate_syms)
+        labels = _foreign_flow_labels(Path(a.report_dir), candidate_syms, as_of=date.fromisoformat(today))
         frgn_tokens, frgn_exit_symbols = foreign_flow_tokens(labels)
         tokens += frgn_tokens
 

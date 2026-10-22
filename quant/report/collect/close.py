@@ -146,7 +146,7 @@ def _build_close_bet_view(snap, root, cont: dict, top: int = CLOSE_BET_TOP) -> l
         score = 2
         reasons = [f"당일 +{change:.1f}%", f"{item['_board']} {item.get('rank')}위"]
         try:
-            series = frgn_flow_ledger.load_series(flow_path, sym, days=20)
+            series = frgn_flow_ledger.load_fresh_series(flow_path, sym, as_of=snap.session_date, days=20)
             label = (classify(series) or {}).get("label") or ""
         except Exception:  # noqa: BLE001 — 수급 원장 문제로 후보 전체를 버리지 않는다
             label = ""

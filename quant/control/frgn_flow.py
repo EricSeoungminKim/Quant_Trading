@@ -13,7 +13,12 @@
 from __future__ import annotations
 
 import json
+import math
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from quant.core.session import StaticSessionCalendar
 
 # 프로세스 내 파싱 캐시(2026-08-25, Phase 3 데이터 효율) — {절대경로: (mtime, rows)}.
 # 한 리포트 빌드가 4곳(agent_interpret/intraday/sector/close_bet)에서 심볼마다
@@ -95,3 +100,38 @@ def load_series(path: Path, symbol: str, days: int = 20) -> list[dict]:
         key=lambda r: r["date"],
     )
     return rows[-days:] if days else rows
+
+
+def load_fresh_series(path: Path, symbol: str, *, as_of: date, days: int = 20) -> list[dict]:
+    """Current decisions only: consecutive completed KR sessions before ``as_of``.
+
+    Same-day rows are provisional even after close; they become eligible next day.
+    Missing sessions/unknown values abstain rather than bridge a collection outage.
+    The existing static calendar is conservative: an unlisted holiday causes
+    abstention until it leaves the window. Historical ``load_series`` is unchanged.
+    """
+    calendar = StaticSessionCalendar()
+    tz = ZoneInfo("Asia/Seoul")
+
+    def previous_session(day: date) -> date:
+        day -= timedelta(days=1)
+        while calendar.session("KR", datetime.combine(day, time(12), tzinfo=tz)) is None:
+            day -= timedelta(days=1)
+        return day
+
+    try:
+        rows = load_series(path, symbol, days=0)
+        parsed = [(date.fromisoformat(r["date"]), r) for r in rows]
+        completed = [(d, r) for d, r in parsed if d < as_of]
+        completed = completed[-days:] if days else completed
+        if len(completed) < 2:
+            return []
+        expected = previous_session(as_of)
+        for day, row in reversed(completed):
+            value = row.get("foreign_net")
+            if day != expected or type(value) not in (int, float) or not math.isfinite(value):
+                return []
+            expected = previous_session(day)
+        return [row for _, row in completed]
+    except (OSError, ValueError, TypeError, KeyError):
+        return []

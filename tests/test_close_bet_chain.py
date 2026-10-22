@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import types
+from datetime import date
 
 from quant.analyze.market_brief import close_bet_tokens, engine_tokens
 from quant.analyze.watch_scorer import _VALID_TAGS, _parse_token
@@ -20,6 +21,7 @@ from quant.report.collect.close import _build_close_bet_view
 def _snap(board_items: list[dict], board_name: str = "거래대금"):
     """`_build_close_bet_view`가 읽는 snap.results["toss_rankings"] 모양."""
     return types.SimpleNamespace(
+        session_date=date(2026, 8, 5),
         results={
             "toss_rankings": types.SimpleNamespace(
                 ok=True,
@@ -35,7 +37,7 @@ def _write_frgn_flow(tmp_path, symbol: str, values: list[float]) -> None:
     path = tmp_path / "data" / "ledger" / "frgn_flow.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
-    for i, v in enumerate(values, start=1):
+    for i, v in enumerate(values, start=3):
         row = {
             "date": f"2026-08-{i:02d}",
             "symbol": symbol,

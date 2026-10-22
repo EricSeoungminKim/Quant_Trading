@@ -57,6 +57,7 @@ _STATIC_HOLIDAYS: dict[str, set[dtdate]] = {
         dtdate(2026, 9, 24),  # 추석 연휴
         dtdate(2026, 9, 25),  # 추석
         dtdate(2026, 10, 3),  # 개천절
+        dtdate(2026, 10, 5),  # 개천절 대체휴일 (KRX 2026 거래일정)
         dtdate(2026, 10, 9),  # 한글날
         dtdate(2026, 12, 25),  # 크리스마스
     },

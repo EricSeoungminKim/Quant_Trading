@@ -156,3 +156,17 @@ def test_position_report_text_is_valid_html():
     text = _position_report_text(ctx, {"088350": 4650.0})
     assert text is not None
     _assert_balanced_html(text)
+
+
+def test_watch_alert_escapes_operator_and_external_names(monkeypatch):
+    from datetime import datetime
+    from html import unescape
+
+    from quant.trade import loop
+    from quant.trade.watch_conditions import Hit
+    monkeypatch.setattr(loop, "_display", lambda symbol: "A&B <ETF>")
+    hit = Hit("급락 <관찰> & 알림", "TQQQ", "change_pct", -8.78, "<", -3)
+    text = loop._watch_notify_text(hit, datetime(2026, 10, 23, 7, 1, 1))
+    assert "<" not in text and ">" not in text
+    assert "&lt; -3" in text
+    assert unescape(text) == "👁 워치: 급락 <관찰> & 알림 — -8.78 < -3 (A&B <ETF>, 2026-10-23 07:01:01)"

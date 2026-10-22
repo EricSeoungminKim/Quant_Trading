@@ -141,7 +141,7 @@ def _build_midterm_watch_view(
         symbols = set(candidates.keys())
         if not symbols:
             return []
-        frgn_rows = _build_agent_foreign_flow(root, symbols) if market == "KR" else {}
+        frgn_rows = _build_agent_foreign_flow(root, symbols, session) if market == "KR" else {}
         bullish = _build_midterm_bullish(root, symbols, session)
         name_by_symbol = _midterm_name_by_symbol(root, market, payload)
         history = load_midterm_history(root, market)
@@ -234,7 +234,7 @@ def _build_us_news_kr_view(root: Path, telegram_result: dict, session: date) -> 
         if not titles:
             return []
         symbols = all_beneficiary_symbols()
-        frgn_rows = _build_agent_foreign_flow(root, symbols)
+        frgn_rows = _build_agent_foreign_flow(root, symbols, session)
         bullish = _build_midterm_bullish(root, symbols, session)
         return build_us_news_kr_map(titles, frgn_rows, bullish)
     except Exception as e:  # noqa: BLE001
